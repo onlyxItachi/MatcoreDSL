@@ -12,11 +12,21 @@ enum class TargetKind {
   kX86Auto,
   kX86AVX2,
   kX86AVX512,
+  kNvidiaDGPU,
+  kAmdIGPU,
+  kAmdNPU,
   kARM,
+  // Legacy aliases kept for compatibility with older bridge payloads.
   kNVPTX,
   kAMDGCN,
   kNPU,
   kTPU,
+};
+
+enum class TensorDType {
+  kFloat32,
+  kFloat16,
+  kBFloat16,
 };
 
 struct LoopRange {
@@ -60,13 +70,28 @@ struct KernelIR {
 
 struct RuntimeTensorView {
   std::string symbol;
-  float *data = nullptr;
+  void *data = nullptr;
+  TensorDType dtype = TensorDType::kFloat32;
   std::vector<std::int64_t> shape;
   std::vector<std::int64_t> strides;
   bool c_contiguous = false;
 };
 
+inline TargetKind normalizeTarget(TargetKind target) {
+  switch (target) {
+    case TargetKind::kNVPTX:
+      return TargetKind::kNvidiaDGPU;
+    case TargetKind::kAMDGCN:
+      return TargetKind::kAmdIGPU;
+    case TargetKind::kNPU:
+      return TargetKind::kAmdNPU;
+    default:
+      return target;
+  }
+}
+
 inline bool isCpuTarget(TargetKind target) {
+  target = normalizeTarget(target);
   return target == TargetKind::kX86Auto || target == TargetKind::kX86AVX2 ||
          target == TargetKind::kX86AVX512 || target == TargetKind::kARM;
 }

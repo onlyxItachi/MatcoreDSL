@@ -8,6 +8,32 @@ from dataclasses import dataclass
 from typing import Any
 
 _NATIVE_MODULE_NAME = "_matcore_native"
+SUPPORTED_TARGETS: tuple[str, ...] = (
+    "x86-auto",
+    "x86-avx2",
+    "x86-avx512",
+    "amd-igpu",
+    "nvidia-dgpu",
+    "amd-npu",
+)
+SUPPORTED_INPUT_DTYPES: tuple[str, ...] = ("float32", "float16", "bfloat16")
+_TARGET_ALIASES: dict[str, str] = {
+    "x86": "x86-auto",
+    "x86auto": "x86-auto",
+    "x86-avx2": "x86-avx2",
+    "x86_avx2": "x86-avx2",
+    "x86-avx512": "x86-avx512",
+    "x86_avx512": "x86-avx512",
+    "amdgcn": "amd-igpu",
+    "amd-igpu": "amd-igpu",
+    "amd_igpu": "amd-igpu",
+    "nvptx": "nvidia-dgpu",
+    "nvidia-dgpu": "nvidia-dgpu",
+    "nvidia_dgpu": "nvidia-dgpu",
+    "npu": "amd-npu",
+    "amd-npu": "amd-npu",
+    "amd_npu": "amd-npu",
+}
 
 
 def _expr_to_source(node: ast.AST | None) -> str | None:
@@ -54,6 +80,61 @@ def _extract_params(args: ast.arguments) -> list[str]:
     if args.kwarg is not None:
         params.append(f"**{args.kwarg.arg}")
     return params
+
+
+def _normalize_target(target: str) -> str:
+    if not isinstance(target, str):
+        raise TypeError("target must be a string")
+    normalized = target.strip().lower()
+    normalized = _TARGET_ALIASES.get(normalized, normalized)
+    if normalized not in SUPPORTED_TARGETS:
+        raise ValueError(
+            f"Unsupported target '{target}'. Supported targets: {', '.join(SUPPORTED_TARGETS)}"
+        )
+    return normalized
+
+
+def _normalize_dtype_name(dtype_name: str) -> str:
+    lowered = dtype_name.strip().lower()
+    aliases = {
+        "float32": "float32",
+        "single": "float32",
+        "float16": "float16",
+        "half": "float16",
+        "bfloat16": "bfloat16",
+        "bf16": "bfloat16",
+    }
+    return aliases.get(lowered, lowered)
+
+
+def _collect_tensor_dtypes(arrays: tuple[Any, ...], params: list[str]) -> list[dict[str, str]]:
+    tensor_dtypes: list[dict[str, str]] = []
+    for idx, array in enumerate(arrays):
+        dtype_obj = getattr(array, "dtype", None)
+        if dtype_obj is None:
+            raise TypeError(f"Argument {idx} does not expose a NumPy-compatible dtype")
+        dtype_name = _normalize_dtype_name(str(getattr(dtype_obj, "name", dtype_obj)))
+        if dtype_name not in SUPPORTED_INPUT_DTYPES:
+            raise TypeError(
+                f"Unsupported dtype '{dtype_name}' for argument {idx}. "
+                f"Supported dtypes: {', '.join(SUPPORTED_INPUT_DTYPES)}"
+            )
+        symbol = params[idx] if idx < len(params) else f"arg{idx}"
+        tensor_dtypes.append({"symbol": symbol, "dtype": dtype_name})
+    return tensor_dtypes
+
+
+def _build_runtime_ir(kernel_obj: MatCoreKernel, arrays: tuple[Any, ...]) -> dict[str, Any]:
+    base_ir = kernel_obj.ir
+    params = list(base_ir.get("params", []))
+    runtime_ir = {
+        "kernel_name": base_ir.get("kernel_name", kernel_obj.name),
+        "params": params,
+        "loops": [dict(loop) for loop in base_ir.get("loops", [])],
+        "ops": [dict(op) for op in base_ir.get("ops", [])],
+    }
+    runtime_ir["tensor_dtypes"] = _collect_tensor_dtypes(arrays, params)
+    return runtime_ir
 
 
 class MatCoreASTVisitor(ast.NodeVisitor):
@@ -260,11 +341,15 @@ def _get_native_module() -> Any:
 def launch(kernel_obj: MatCoreKernel, *arrays: Any, target: str = "x86-auto") -> Any:
     if not isinstance(kernel_obj, MatCoreKernel):
         raise TypeError("mc.launch expects a kernel object returned by @mc.kernel.")
+    normalized_target = _normalize_target(target)
+    runtime_ir = _build_runtime_ir(kernel_obj, arrays)
     native = _get_native_module()
-    return native.compile_and_run(kernel_obj.ir, target, *arrays)
+    return native.compile_and_run(runtime_ir, normalized_target, *arrays)
 
 
 class MatCoreNamespace:
+    supported_targets = SUPPORTED_TARGETS
+    supported_input_dtypes = SUPPORTED_INPUT_DTYPES
     kernel = staticmethod(kernel)
     launch = staticmethod(launch)
     load = staticmethod(load)

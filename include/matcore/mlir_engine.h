@@ -15,6 +15,9 @@ namespace matcore {
 struct LoweredModule {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   std::string entry_point;
+  TargetKind target = TargetKind::kX86Auto;
+  std::string route_description;
+  bool executable = true;
   std::size_t lhs_tensor_index = 0;
   std::size_t rhs_tensor_index = 1;
   std::size_t out_tensor_index = 2;
