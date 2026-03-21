@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ccache \
+            clang \
+            cmake \
+            libcurl4-openssl-dev \
+            libedit-dev \
+            libmlir-18-dev \
+            libzstd-dev \
+            llvm-18-dev \
+            mlir-18-tools \
+            nanobind-dev \
+            ninja-build \
+            python3-dev \
+            python3-numpy \
+            robin-map-dev
+
+      - name: Configure
+        run: cmake -B build -G Ninja
+
+      - name: Build
+        run: ninja -C build
+
+      - name: Test
+        run: python3 tests/test_matmul.py
