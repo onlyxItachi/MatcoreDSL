@@ -153,6 +153,14 @@ makeMemRef2DDescriptor(const RuntimeTensorView &tensor) {
 }
 
 template <typename ElementT>
+using MemRefMatmulEntryPoint = void (*)(
+    ElementT *, ElementT *, std::int64_t, std::int64_t, std::int64_t,
+    std::int64_t, std::int64_t, ElementT *, ElementT *, std::int64_t,
+    std::int64_t, std::int64_t, std::int64_t, std::int64_t, ElementT *,
+    ElementT *, std::int64_t, std::int64_t, std::int64_t, std::int64_t,
+    std::int64_t);
+
+template <typename ElementT>
 llvm::Error invokeWithTypedDescriptors(mlir::ExecutionEngine &engine,
                                        const std::string &entry_point,
                                        const RuntimeTensorView &lhs,
@@ -161,6 +169,19 @@ llvm::Error invokeWithTypedDescriptors(mlir::ExecutionEngine &engine,
   auto lhs_desc = makeMemRef2DDescriptor<ElementT>(lhs);
   auto rhs_desc = makeMemRef2DDescriptor<ElementT>(rhs);
   auto out_desc = makeMemRef2DDescriptor<ElementT>(out);
+
+  llvm::Expected<void *> symbol = engine.lookup(entry_point);
+  if (symbol) {
+    auto fn = reinterpret_cast<MemRefMatmulEntryPoint<ElementT>>(*symbol);
+    fn(lhs_desc.basePtr, lhs_desc.data, lhs_desc.offset, lhs_desc.sizes[0],
+       lhs_desc.sizes[1], lhs_desc.strides[0], lhs_desc.strides[1],
+       rhs_desc.basePtr, rhs_desc.data, rhs_desc.offset, rhs_desc.sizes[0],
+       rhs_desc.sizes[1], rhs_desc.strides[0], rhs_desc.strides[1],
+       out_desc.basePtr, out_desc.data, out_desc.offset, out_desc.sizes[0],
+       out_desc.sizes[1], out_desc.strides[0], out_desc.strides[1]);
+    return llvm::Error::success();
+  }
+  llvm::consumeError(symbol.takeError());
 
   llvm::Error ciface_error = engine.invoke(entry_point, lhs_desc, rhs_desc, out_desc);
   if (!ciface_error) {
