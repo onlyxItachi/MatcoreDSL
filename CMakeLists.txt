@@ -5,6 +5,16 @@ set(CMAKE_CXX_COMPILER "/usr/bin/clang++" CACHE FILEPATH "C++ compiler" FORCE)
 
 project(MatCore LANGUAGES C CXX)
 
+if(NOT EXISTS "${MLIR_DIR}/MLIRConfig.cmake" AND
+   EXISTS "/usr/lib/llvm-18/lib/cmake/mlir/MLIRConfig.cmake")
+  set(MLIR_DIR "/usr/lib/llvm-18/lib/cmake/mlir" CACHE PATH "MLIR CMake package" FORCE)
+endif()
+
+if(NOT EXISTS "${nanobind_DIR}/nanobind-config.cmake" AND
+   EXISTS "/usr/share/nanobind/cmake/nanobind-config.cmake")
+  set(nanobind_DIR "/usr/share/nanobind/cmake" CACHE PATH "nanobind CMake package" FORCE)
+endif()
+
 if(NOT CMAKE_GENERATOR STREQUAL "Ninja")
   message(WARNING "MatCore prefers Ninja; configure with: cmake -B build -G Ninja")
 endif()
@@ -19,7 +29,7 @@ if(CCACHE_PROGRAM)
   set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
 endif()
 
-find_package(MLIR 18 REQUIRED CONFIG)
+find_package(MLIR 18.1.3 REQUIRED CONFIG)
 find_package(Python COMPONENTS Interpreter Development REQUIRED)
 find_package(nanobind REQUIRED CONFIG)
 
