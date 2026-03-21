@@ -14,6 +14,7 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/GPU/Pipelines/Passes.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
@@ -21,9 +22,11 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/Dialect/Vector/Transforms/LoweringPatterns.h"
 #include "mlir/Dialect/X86Vector/X86VectorDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -35,6 +38,8 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace matcore {
 namespace {
@@ -77,6 +82,26 @@ struct VectorizeMatmulPass
         signalPassFailure();
         return;
       }
+    }
+  }
+};
+
+struct LowerResidualVectorOpsPass
+    : public mlir::PassWrapper<LowerResidualVectorOpsPass,
+                               mlir::OperationPass<mlir::func::FuncOp>> {
+  void getDependentDialects(mlir::DialectRegistry &registry) const override {
+    registry.insert<mlir::vector::VectorDialect>();
+  }
+
+  void runOnOperation() override {
+    mlir::func::FuncOp func = getOperation();
+    mlir::RewritePatternSet patterns(&getContext());
+    mlir::vector::populateVectorMultiReductionLoweringPatterns(
+        patterns, mlir::vector::VectorMultiReductionLowering::InnerReduction);
+    mlir::vector::populateVectorShapeCastLoweringPatterns(patterns);
+    if (mlir::failed(mlir::applyPatternsAndFoldGreedily(func, std::move(patterns)))) {
+      func.emitError("MatCore failed to lower residual vector ops");
+      signalPassFailure();
     }
   }
 };
@@ -316,50 +341,83 @@ void addLinalgToGpuLaunchPasses(mlir::PassManager &pm) {
   pm.addPass(mlir::createGpuKernelOutliningPass());
 }
 
+void addGpuCommonModulePasses(mlir::PassManager &pm, std::int64_t index_bitwidth) {
+  mlir::ConvertIndexToLLVMPassOptions index_to_llvm_opts;
+  index_to_llvm_opts.indexBitwidth = index_bitwidth;
+
+  pm.addPass(mlir::createConvertVectorToSCFPass());
+  pm.addPass(mlir::createConvertSCFToCFPass());
+  pm.addPass(mlir::createConvertFuncToLLVMPass());
+  pm.addPass(mlir::memref::createExpandStridedMetadataPass());
+  pm.addPass(mlir::createLowerAffinePass());
+  pm.addPass(mlir::createArithToLLVMConversionPass());
+  pm.addPass(mlir::createConvertIndexToLLVMPass(index_to_llvm_opts));
+  pm.addPass(mlir::createCanonicalizerPass());
+  pm.addPass(mlir::createCSEPass());
+}
+
+void addGpuHostPostPasses(mlir::PassManager &pm, const std::string &binary_target) {
+  mlir::GpuToLLVMConversionPassOptions gpu_to_llvm_opts;
+  gpu_to_llvm_opts.hostBarePtrCallConv = false;
+  gpu_to_llvm_opts.kernelBarePtrCallConv = false;
+  pm.addPass(mlir::createGpuToLLVMConversionPass(gpu_to_llvm_opts));
+
+  mlir::GpuModuleToBinaryPassOptions binary_opts;
+  binary_opts.compilationTarget = binary_target;
+  pm.addPass(mlir::createGpuModuleToBinaryPass(binary_opts));
+
+  pm.addPass(mlir::createConvertMathToLLVMPass());
+  pm.addPass(mlir::createCanonicalizerPass());
+  pm.addPass(mlir::createCSEPass());
+  pm.addPass(mlir::createReconcileUnrealizedCastsPass());
+}
+
 void configureCpuPassPipeline(mlir::PassManager &pm) {
   pm.addNestedPass<mlir::func::FuncOp>(std::make_unique<VectorizeMatmulPass>());
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(mlir::createCSEPass());
+  pm.addPass(mlir::createConvertLinalgToLoopsPass());
+  pm.addNestedPass<mlir::func::FuncOp>(std::make_unique<LowerResidualVectorOpsPass>());
+  pm.addPass(mlir::createCanonicalizerPass());
+  pm.addPass(mlir::createCSEPass());
+  pm.addPass(mlir::createConvertVectorToSCFPass());
   addCommonLLVMLoweringPasses(pm, /*enable_x86vector=*/true);
 }
 
 void configureNvidiaPassPipeline(mlir::PassManager &pm) {
   addLinalgToGpuLaunchPasses(pm);
 
-  mlir::GpuNVVMAttachTargetOptions nvvm_target_opts;
-  nvvm_target_opts.triple = "nvptx64-nvidia-cuda";
-  nvvm_target_opts.chip = "sm_80";
-  nvvm_target_opts.features = "+ptx80";
-  pm.addPass(mlir::createGpuNVVMAttachTarget(nvvm_target_opts));
-
-  pm.addPass(mlir::createConvertVectorToGPUPass(/*useNvGpu=*/true));
-  pm.addNestedPass<mlir::gpu::GPUModuleOp>(mlir::createConvertGpuOpsToNVVMOps());
-  pm.addNestedPass<mlir::gpu::GPUModuleOp>(mlir::createConvertNVGPUToNVVMPass());
-  mlir::GpuModuleToBinaryPassOptions binary_opts;
-  binary_opts.toolkitPath = "/usr/local/cuda-13.2";
-  binary_opts.compilationTarget = "fatbin";
-  pm.addPass(mlir::createGpuModuleToBinaryPass(binary_opts));
-  pm.addPass(mlir::createGpuToLLVMConversionPass());
-  addCommonLLVMLoweringPasses(pm, /*enable_x86vector=*/false);
+  mlir::gpu::GPUToNVVMPipelineOptions nvvm_opts;
+  nvvm_opts.indexBitWidth = 64;
+  nvvm_opts.cubinTriple = "nvptx64-nvidia-cuda";
+  nvvm_opts.cubinChip = "sm_80";
+  nvvm_opts.cubinFeatures = "+ptx80";
+  nvvm_opts.cubinFormat = "fatbin";
+  nvvm_opts.optLevel = 2;
+  nvvm_opts.kernelUseBarePtrCallConv = false;
+  nvvm_opts.hostUseBarePtrCallConv = false;
+  mlir::gpu::buildLowerToNVVMPassPipeline(pm, nvvm_opts);
 }
 
 void configureAmdPassPipeline(mlir::PassManager &pm) {
   addLinalgToGpuLaunchPasses(pm);
+  addGpuCommonModulePasses(pm, /*index_bitwidth=*/64);
 
   mlir::GpuROCDLAttachTargetOptions rocdl_target_opts;
   rocdl_target_opts.triple = "amdgcn-amd-amdhsa";
-  rocdl_target_opts.chip = "gfx900";
+  rocdl_target_opts.chip = "gfx1150";
   pm.addPass(mlir::createGpuROCDLAttachTarget(rocdl_target_opts));
 
   pm.addPass(mlir::createConvertVectorToGPUPass(/*useNvGpu=*/false));
   pm.addNestedPass<mlir::gpu::GPUModuleOp>(
-      mlir::createLowerGpuOpsToROCDLOpsPass(rocdl_target_opts.chip));
-  mlir::GpuModuleToBinaryPassOptions binary_opts;
-  binary_opts.toolkitPath = "/usr";
-  binary_opts.compilationTarget = "hsaco";
-  pm.addPass(mlir::createGpuModuleToBinaryPass(binary_opts));
-  pm.addPass(mlir::createGpuToLLVMConversionPass());
-  addCommonLLVMLoweringPasses(pm, /*enable_x86vector=*/false);
+      mlir::createLowerGpuOpsToROCDLOpsPass(
+          rocdl_target_opts.chip, /*indexBitwidth=*/64,
+          /*useBarePtrCallConv=*/false, mlir::gpu::amd::Runtime::HIP));
+  pm.addNestedPass<mlir::gpu::GPUModuleOp>(mlir::createCanonicalizerPass());
+  pm.addNestedPass<mlir::gpu::GPUModuleOp>(mlir::createCSEPass());
+  pm.addNestedPass<mlir::gpu::GPUModuleOp>(
+      mlir::createReconcileUnrealizedCastsPass());
+  addGpuHostPostPasses(pm, "binary");
 }
 
 void configurePassPipeline(mlir::PassManager &pm, LoweringRoute route) {
@@ -383,7 +441,12 @@ void runLoweringPipeline(mlir::ModuleOp module, LoweringRoute route) {
   mlir::PassManager pm(module.getContext());
   configurePassPipeline(pm, route);
   if (mlir::failed(pm.run(module))) {
-    fail("failed to run lowering pipeline for route " + std::string(routeName(route)));
+    std::string module_ir;
+    llvm::raw_string_ostream stream(module_ir);
+    module.print(stream);
+    stream.flush();
+    fail("failed to run lowering pipeline for route " + std::string(routeName(route)) +
+         "\n" + module_ir);
   }
 }
 
