@@ -1,54 +1,40 @@
 #include "matcore/mlir_engine.h"
 
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "mlir/Conversion/GPUToROCDL/GPUToROCDLPass.h"
 #include "mlir/Conversion/Passes.h"
+#include "mlir/Conversion/SCFToGPU/SCFToGPUPass.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/Dialect/X86Vector/X86VectorDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
-
-namespace mlir {
-namespace {
-
-// Keep these no-op adapters to avoid hard-coupling this phase to extra
-// transform libraries while preserving required pass order.
-struct NoOpModulePass : public PassWrapper<NoOpModulePass, OperationPass<ModuleOp>> {
-  explicit NoOpModulePass(std::string label = "noop") : label_(std::move(label)) {}
-
-  void runOnOperation() override {}
-  StringRef getArgument() const final { return "matcore-noop"; }
-  StringRef getDescription() const final { return label_; }
-
- private:
-  std::string label_;
-};
-
-}  // namespace
-
-std::unique_ptr<Pass> createLinalgFusionOfTensorOpsPass() {
-  return std::make_unique<NoOpModulePass>("matcore-linalg-fusion-noop");
-}
-
-std::unique_ptr<Pass> createLinalgTilingPass() {
-  return std::make_unique<NoOpModulePass>("matcore-linalg-tiling-noop");
-}
-
-}  // namespace mlir
+#include "mlir/Transforms/Passes.h"
 
 namespace matcore {
 namespace {
@@ -58,6 +44,41 @@ enum class LoweringRoute {
   kNvidiaNvptx,
   kAmdRocdl,
   kAmdNpuScaffold,
+};
+
+struct MatmulShape {
+  std::int64_t m = 0;
+  std::int64_t k = 0;
+  std::int64_t n = 0;
+};
+
+struct VectorizeMatmulPass
+    : public mlir::PassWrapper<VectorizeMatmulPass,
+                               mlir::OperationPass<mlir::func::FuncOp>> {
+  void getDependentDialects(mlir::DialectRegistry &registry) const override {
+    registry.insert<mlir::vector::VectorDialect>();
+  }
+
+  void runOnOperation() override {
+    mlir::func::FuncOp func = getOperation();
+    std::vector<mlir::Operation *> matmuls;
+    func.walk([&](mlir::linalg::MatmulOp op) { matmuls.push_back(op.getOperation()); });
+
+    mlir::IRRewriter rewriter(&getContext());
+    for (mlir::Operation *matmul : matmuls) {
+      if (mlir::failed(mlir::linalg::vectorizeOpPrecondition(matmul))) {
+        matmul->emitError("MatCore x86 lowering requires vectorizable linalg.matmul");
+        signalPassFailure();
+        return;
+      }
+      rewriter.setInsertionPoint(matmul);
+      if (mlir::failed(mlir::linalg::vectorize(rewriter, matmul))) {
+        matmul->emitError("MatCore failed to vectorize linalg.matmul");
+        signalPassFailure();
+        return;
+      }
+    }
+  }
 };
 
 [[noreturn]] void fail(const std::string &message) {
@@ -117,11 +138,11 @@ const char *routeName(LoweringRoute route) {
 std::string routeDescription(LoweringRoute route) {
   switch (route) {
     case LoweringRoute::kCpuVector:
-      return "linalg -> vector -> llvm";
+      return "func+memref+linalg.matmul -> loops/vector -> llvm(x86vector)";
     case LoweringRoute::kNvidiaNvptx:
-      return "linalg -> gpu/nvgpu -> nvvm -> nvptx";
+      return "linalg -> scf.parallel -> gpu.launch -> nvgpu/nvvm -> llvm";
     case LoweringRoute::kAmdRocdl:
-      return "linalg -> gpu -> rocdl -> amdgcn";
+      return "linalg -> scf.parallel -> gpu.launch -> rocdl -> llvm";
     case LoweringRoute::kAmdNpuScaffold:
       return "aie/xdna scaffold route (external toolchain required)";
   }
@@ -215,8 +236,25 @@ void validateKernel(const KernelIR &kernel, TargetKind target,
   }
 }
 
+MatmulShape extractMatmulShape(const std::vector<RuntimeTensorView> &tensors) {
+  if (tensors.size() < 2) {
+    fail("runtime must provide at least lhs and rhs tensors");
+  }
+  const RuntimeTensorView &lhs = tensors[0];
+  const RuntimeTensorView &rhs = tensors[1];
+  MatmulShape shape;
+  shape.m = lhs.shape[0];
+  shape.k = lhs.shape[1];
+  shape.n = rhs.shape[1];
+  if (shape.m <= 0 || shape.k <= 0 || shape.n <= 0) {
+    fail("matmul dimensions must be positive");
+  }
+  return shape;
+}
+
 mlir::OwningOpRef<mlir::ModuleOp> buildMatmulModule(
     const KernelIR &kernel, TensorDType input_dtype, LoweringRoute route,
+    const MatmulShape &shape,
     mlir::MLIRContext &context) {
   mlir::OpBuilder builder(&context);
   auto module = mlir::ModuleOp::create(builder.getUnknownLoc());
@@ -228,58 +266,115 @@ mlir::OwningOpRef<mlir::ModuleOp> buildMatmulModule(
   module->setAttr("matcore.route_description",
                   builder.getStringAttr(routeDescription(route)));
 
-  std::string entry_name =
+  const std::string entry_name =
       kernel.kernel_name.empty() ? "matcore_kernel" : kernel.kernel_name;
-  auto ptr_type = mlir::LLVM::LLVMPointerType::get(builder.getContext());
-  auto func_type = mlir::LLVM::LLVMFunctionType::get(
-      mlir::LLVM::LLVMVoidType::get(builder.getContext()),
-      {ptr_type, ptr_type, ptr_type}, false);
-  auto func = builder.create<mlir::LLVM::LLVMFuncOp>(
-      builder.getUnknownLoc(), entry_name, func_type);
-  builder.setInsertionPointToStart(func.addEntryBlock());
-  builder.create<mlir::LLVM::ReturnOp>(builder.getUnknownLoc(), mlir::ValueRange{});
+  const auto lhs_type = mlir::MemRefType::get({shape.m, shape.k}, element_type);
+  const auto rhs_type = mlir::MemRefType::get({shape.k, shape.n}, element_type);
+  const auto out_type = mlir::MemRefType::get({shape.m, shape.n}, element_type);
+
+  auto func = builder.create<mlir::func::FuncOp>(
+      builder.getUnknownLoc(), entry_name,
+      builder.getFunctionType({lhs_type, rhs_type, out_type}, {}));
+  func->setAttr("llvm.emit_c_interface", builder.getUnitAttr());
+  mlir::Block *entry_block = func.addEntryBlock();
+  builder.setInsertionPointToStart(entry_block);
+
+  auto zero = builder.create<mlir::arith::ConstantOp>(
+      builder.getUnknownLoc(), builder.getZeroAttr(element_type));
+  builder.create<mlir::linalg::FillOp>(
+      builder.getUnknownLoc(), mlir::ValueRange{zero},
+      mlir::ValueRange{entry_block->getArgument(2)});
+  builder.create<mlir::linalg::MatmulOp>(
+      builder.getUnknownLoc(),
+      mlir::ValueRange{entry_block->getArgument(0), entry_block->getArgument(1)},
+      mlir::ValueRange{entry_block->getArgument(2)});
+  builder.create<mlir::func::ReturnOp>(builder.getUnknownLoc());
 
   return module;
 }
 
-void addRouteMarkerPass(mlir::PassManager &pm, const std::string &label) {
-  struct RouteMarkerPass
-      : public mlir::PassWrapper<RouteMarkerPass, mlir::OperationPass<mlir::ModuleOp>> {
-    explicit RouteMarkerPass(std::string label) : label_(std::move(label)) {}
+void addCommonLLVMLoweringPasses(mlir::PassManager &pm, bool enable_x86vector) {
+  mlir::ConvertVectorToLLVMPassOptions vector_to_llvm_opts;
+  vector_to_llvm_opts.x86Vector = enable_x86vector;
 
-    void runOnOperation() override {
-      mlir::ModuleOp module = getOperation();
-      module->setAttr("matcore.route.marker",
-                      mlir::StringAttr::get(&getContext(), label_));
-    }
+  pm.addPass(mlir::createConvertSCFToCFPass());
+  pm.addPass(mlir::createConvertVectorToLLVMPass(vector_to_llvm_opts));
+  pm.addPass(mlir::createArithToLLVMConversionPass());
+  pm.addPass(mlir::createConvertControlFlowToLLVMPass());
+  pm.addPass(mlir::createConvertIndexToLLVMPass());
+  pm.addPass(mlir::createFinalizeMemRefToLLVMConversionPass());
+  pm.addPass(mlir::createConvertFuncToLLVMPass());
+  pm.addPass(mlir::createCanonicalizerPass());
+  pm.addPass(mlir::createCSEPass());
+  pm.addPass(mlir::createReconcileUnrealizedCastsPass());
+}
 
-    mlir::StringRef getArgument() const final { return "matcore-route-marker"; }
-    mlir::StringRef getDescription() const final { return "MatCore route marker pass"; }
+void addLinalgToGpuLaunchPasses(mlir::PassManager &pm) {
+  pm.addPass(mlir::createConvertLinalgToParallelLoopsPass());
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::createGpuMapParallelLoopsPass());
+  pm.addPass(mlir::createParallelLoopToGpuPass());
+  pm.addPass(mlir::createGpuKernelOutliningPass());
+}
 
-    std::string label_;
-  };
+void configureCpuPassPipeline(mlir::PassManager &pm) {
+  pm.addNestedPass<mlir::func::FuncOp>(std::make_unique<VectorizeMatmulPass>());
+  pm.addPass(mlir::createCanonicalizerPass());
+  pm.addPass(mlir::createCSEPass());
+  addCommonLLVMLoweringPasses(pm, /*enable_x86vector=*/true);
+}
 
-  pm.addPass(std::make_unique<RouteMarkerPass>("matcore-route-" + label));
+void configureNvidiaPassPipeline(mlir::PassManager &pm) {
+  addLinalgToGpuLaunchPasses(pm);
+
+  mlir::GpuNVVMAttachTargetOptions nvvm_target_opts;
+  nvvm_target_opts.triple = "nvptx64-nvidia-cuda";
+  nvvm_target_opts.chip = "sm_80";
+  nvvm_target_opts.features = "+ptx80";
+  pm.addPass(mlir::createGpuNVVMAttachTarget(nvvm_target_opts));
+
+  pm.addPass(mlir::createConvertVectorToGPUPass(/*useNvGpu=*/true));
+  pm.addNestedPass<mlir::gpu::GPUModuleOp>(mlir::createConvertGpuOpsToNVVMOps());
+  pm.addNestedPass<mlir::gpu::GPUModuleOp>(mlir::createConvertNVGPUToNVVMPass());
+  mlir::GpuModuleToBinaryPassOptions binary_opts;
+  binary_opts.toolkitPath = "/usr/local/cuda-13.2";
+  binary_opts.compilationTarget = "fatbin";
+  pm.addPass(mlir::createGpuModuleToBinaryPass(binary_opts));
+  pm.addPass(mlir::createGpuToLLVMConversionPass());
+  addCommonLLVMLoweringPasses(pm, /*enable_x86vector=*/false);
+}
+
+void configureAmdPassPipeline(mlir::PassManager &pm) {
+  addLinalgToGpuLaunchPasses(pm);
+
+  mlir::GpuROCDLAttachTargetOptions rocdl_target_opts;
+  rocdl_target_opts.triple = "amdgcn-amd-amdhsa";
+  rocdl_target_opts.chip = "gfx900";
+  pm.addPass(mlir::createGpuROCDLAttachTarget(rocdl_target_opts));
+
+  pm.addPass(mlir::createConvertVectorToGPUPass(/*useNvGpu=*/false));
+  pm.addNestedPass<mlir::gpu::GPUModuleOp>(
+      mlir::createLowerGpuOpsToROCDLOpsPass(rocdl_target_opts.chip));
+  mlir::GpuModuleToBinaryPassOptions binary_opts;
+  binary_opts.toolkitPath = "/usr";
+  binary_opts.compilationTarget = "hsaco";
+  pm.addPass(mlir::createGpuModuleToBinaryPass(binary_opts));
+  pm.addPass(mlir::createGpuToLLVMConversionPass());
+  addCommonLLVMLoweringPasses(pm, /*enable_x86vector=*/false);
 }
 
 void configurePassPipeline(mlir::PassManager &pm, LoweringRoute route) {
   switch (route) {
     case LoweringRoute::kCpuVector:
-      // Required Phase-1 pass order remains intact for CPU lowering.
-      pm.addPass(mlir::createLinalgFusionOfTensorOpsPass());
-      pm.addPass(mlir::createLinalgTilingPass());
-      pm.addPass(mlir::createConvertLinalgToLoopsPass());
-      pm.addPass(mlir::createConvertSCFToCFPass());
-      pm.addPass(mlir::createConvertVectorToLLVMPass());
+      configureCpuPassPipeline(pm);
       return;
     case LoweringRoute::kNvidiaNvptx:
-      addRouteMarkerPass(pm, "nvidia-dgpu");
+      configureNvidiaPassPipeline(pm);
       return;
     case LoweringRoute::kAmdRocdl:
-      addRouteMarkerPass(pm, "amd-igpu");
+      configureAmdPassPipeline(pm);
       return;
     case LoweringRoute::kAmdNpuScaffold:
-      addRouteMarkerPass(pm, "amd-npu");
+      fail("amd-npu lowering remains unavailable without an external AIE/XDNA toolchain");
       return;
   }
 }
@@ -298,16 +393,21 @@ LoweredModule MlirEngine::BuildAndLower(
     const KernelIR &kernel, TargetKind target,
     const std::vector<RuntimeTensorView> &tensors,
     mlir::MLIRContext &context) {
-  context.loadDialect<mlir::linalg::LinalgDialect, mlir::scf::SCFDialect,
-                      mlir::vector::VectorDialect, mlir::memref::MemRefDialect,
+  context.loadDialect<mlir::arith::ArithDialect, mlir::cf::ControlFlowDialect,
+                      mlir::func::FuncDialect, mlir::gpu::GPUDialect,
+                      mlir::linalg::LinalgDialect, mlir::memref::MemRefDialect,
+                      mlir::nvgpu::NVGPUDialect, mlir::NVVM::NVVMDialect,
+                      mlir::ROCDL::ROCDLDialect, mlir::scf::SCFDialect,
+                      mlir::vector::VectorDialect, mlir::x86vector::X86VectorDialect,
                       mlir::LLVM::LLVMDialect>();
 
   validateKernel(kernel, target, tensors);
   const TargetKind normalized_target = normalizeTarget(target);
   const LoweringRoute route = selectRoute(normalized_target);
   const TensorDType input_dtype = dominantInputDType(tensors);
+  const MatmulShape shape = extractMatmulShape(tensors);
 
-  auto module = buildMatmulModule(kernel, input_dtype, route, context);
+  auto module = buildMatmulModule(kernel, input_dtype, route, shape, context);
   runLoweringPipeline(*module, route);
 
   LoweredModule lowered;
@@ -316,7 +416,7 @@ LoweredModule MlirEngine::BuildAndLower(
       kernel.kernel_name.empty() ? "matcore_kernel" : kernel.kernel_name;
   lowered.target = normalized_target;
   lowered.route_description = routeDescription(route);
-  lowered.executable = route == LoweringRoute::kCpuVector;
+  lowered.executable = route != LoweringRoute::kAmdNpuScaffold;
   return lowered;
 }
 

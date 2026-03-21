@@ -56,22 +56,50 @@ target_include_directories(_matcore_native
 target_link_libraries(_matcore_native
   PRIVATE
     MLIR
-    MLIRIR
-    MLIRParser
-    MLIRPass
+    MLIRArithDialect
+    MLIRArithToLLVM
+    MLIRBuiltinToLLVMIRTranslation
+    MLIRControlFlowDialect
+    MLIRControlFlowToLLVM
+    MLIRExecutionEngine
     MLIRFuncDialect
+    MLIRFuncToLLVM
+    MLIRGPUDialect
+    MLIRGPUPipelines
+    MLIRGPUToLLVMIRTranslation
+    MLIRGPUToNVVMTransforms
+    MLIRGPUToROCDLTransforms
+    MLIRGPUTransforms
+    MLIRIR
+    MLIRLLVMCommonConversion
+    MLIRLLVMDialect
+    MLIRLLVMToLLVMIRTranslation
     MLIRLinalgDialect
     MLIRLinalgTransforms
     MLIRMemRefDialect
-    MLIRLLVMDialect
-    MLIRVectorDialect
+    MLIRMemRefToLLVM
+    MLIRNVGPUDialect
+    MLIRNVGPUToNVVM
+    MLIRNVGPUTransforms
+    MLIRNVVMDialect
+    MLIRNVVMTarget
+    MLIRNVVMToLLVM
+    MLIRNVVMToLLVMIRTranslation
+    MLIRParser
+    MLIRPass
+    MLIRROCDLDialect
+    MLIRROCDLTarget
+    MLIRROCDLToLLVMIRTranslation
     MLIRSCFDialect
+    MLIRSCFToGPU
     MLIRSCFToControlFlow
-    MLIRVectorToLLVMPass
-    MLIRExecutionEngine
     MLIRTargetLLVMIRExport
-    MLIRLLVMToLLVMIRTranslation
-    MLIRBuiltinToLLVMIRTranslation
+    MLIRTransforms
+    MLIRVectorDialect
+    MLIRVectorToLLVMPass
+    MLIRX86VectorDialect
+    MLIRX86VectorToLLVMIRTranslation
+    MLIRX86VectorTransforms
 )
 
 set(MATCORE_PY_OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/matcore")

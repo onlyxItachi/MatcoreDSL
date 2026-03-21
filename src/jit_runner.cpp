@@ -1,28 +1,26 @@
 #include "matcore/jit_runner.h"
 
 #include <algorithm>
-#include <bit>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <string_view>
 #include <string>
-#include <thread>
 #include <unordered_map>
 #include <vector>
 
-#if defined(__x86_64__) || defined(__i386__)
-#include <immintrin.h>
-#endif
-
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/TargetSelect.h"
 #include "mlir/ExecutionEngine/CRunnerUtils.h"
 #include "mlir/ExecutionEngine/ExecutionEngine.h"
 #include "mlir/ExecutionEngine/RunnerUtils.h"
+#include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
-#include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
-#include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
+#include "mlir/Target/LLVM/NVVM/Target.h"
+#include "mlir/Target/LLVM/ROCDL/Target.h"
+#include "mlir/Target/LLVMIR/Dialect/All.h"
 
 #include "matcore/mlir_engine.h"
 
@@ -32,10 +30,6 @@ namespace {
 [[noreturn]] void fail(const std::string &message) {
   throw std::runtime_error("MatCore JIT runner: " + message);
 }
-
-constexpr std::int64_t kRowBlock = 8;
-constexpr std::int64_t kColBlock = 128;
-constexpr std::int64_t kKBlock = 64;
 
 std::string targetName(TargetKind target) {
   switch (normalizeTarget(target)) {
@@ -75,329 +69,24 @@ std::string dtypeName(TensorDType dtype) {
   return "unknown";
 }
 
-float halfToFloat(std::uint16_t bits16) {
-  const std::uint32_t sign = static_cast<std::uint32_t>(bits16 & 0x8000U) << 16;
-  std::uint32_t exp = (bits16 & 0x7C00U) >> 10;
-  std::uint32_t mantissa = bits16 & 0x03FFU;
+std::vector<std::string> buildSharedLibraryPaths(TargetKind target) {
+  std::vector<std::string> libs = {
+      "/usr/lib/llvm-18/lib/libmlir_runner_utils.so",
+      "/usr/lib/llvm-18/lib/libmlir_c_runner_utils.so",
+  };
 
-  std::uint32_t bits32 = 0;
-  if (exp == 0) {
-    if (mantissa == 0) {
-      bits32 = sign;
-    } else {
-      // Normalize subnormal half.
-      exp = 1;
-      while ((mantissa & 0x0400U) == 0) {
-        mantissa <<= 1U;
-        --exp;
-      }
-      mantissa &= 0x03FFU;
-      const std::uint32_t exp32 = exp + (127U - 15U);
-      bits32 = sign | (exp32 << 23) | (mantissa << 13);
-    }
-  } else if (exp == 0x1FU) {
-    bits32 = sign | 0x7F800000U | (mantissa << 13);
-  } else {
-    const std::uint32_t exp32 = exp + (127U - 15U);
-    bits32 = sign | (exp32 << 23) | (mantissa << 13);
-  }
-
-  return std::bit_cast<float>(bits32);
-}
-
-std::uint16_t floatToHalf(float value) {
-  const std::uint32_t bits = std::bit_cast<std::uint32_t>(value);
-  const std::uint16_t sign = static_cast<std::uint16_t>((bits >> 16) & 0x8000U);
-  const std::uint32_t mantissa = bits & 0x007FFFFFU;
-  const int exp = static_cast<int>((bits >> 23) & 0xFFU) - 127 + 15;
-
-  if (exp <= 0) {
-    if (exp < -10) {
-      return sign;
-    }
-    std::uint32_t sub = (mantissa | 0x00800000U) >> static_cast<unsigned>(1 - exp);
-    return static_cast<std::uint16_t>(sign | ((sub + 0x00001000U) >> 13));
-  }
-
-  if (exp >= 31) {
-    if (mantissa == 0) {
-      return static_cast<std::uint16_t>(sign | 0x7C00U);
-    }
-    const std::uint16_t payload =
-        static_cast<std::uint16_t>((mantissa >> 13) ? (mantissa >> 13) : 1U);
-    return static_cast<std::uint16_t>(sign | 0x7C00U | payload);
-  }
-
-  return static_cast<std::uint16_t>(
-      sign | (static_cast<std::uint16_t>(exp) << 10) |
-      static_cast<std::uint16_t>((mantissa + 0x00001000U) >> 13));
-}
-
-float bfloat16ToFloat(std::uint16_t bits16) {
-  const std::uint32_t bits32 = static_cast<std::uint32_t>(bits16) << 16;
-  return std::bit_cast<float>(bits32);
-}
-
-std::uint16_t floatToBFloat16(float value) {
-  std::uint32_t bits = std::bit_cast<std::uint32_t>(value);
-  const std::uint32_t lsb = (bits >> 16) & 0x1U;
-  bits += 0x7FFFU + lsb;
-  return static_cast<std::uint16_t>(bits >> 16);
-}
-
-float loadElement(const RuntimeTensorView &tensor, std::int64_t index) {
-  switch (tensor.dtype) {
-    case TensorDType::kFloat32:
-      return reinterpret_cast<const float *>(tensor.data)[index];
-    case TensorDType::kFloat16:
-      return halfToFloat(reinterpret_cast<const std::uint16_t *>(tensor.data)[index]);
-    case TensorDType::kBFloat16:
-      return bfloat16ToFloat(
-          reinterpret_cast<const std::uint16_t *>(tensor.data)[index]);
-  }
-  fail("unsupported tensor dtype in load");
-}
-
-void storeElement(RuntimeTensorView &tensor, std::int64_t index, float value) {
-  switch (tensor.dtype) {
-    case TensorDType::kFloat32:
-      reinterpret_cast<float *>(tensor.data)[index] = value;
-      return;
-    case TensorDType::kFloat16:
-      reinterpret_cast<std::uint16_t *>(tensor.data)[index] = floatToHalf(value);
-      return;
-    case TensorDType::kBFloat16:
-      reinterpret_cast<std::uint16_t *>(tensor.data)[index] = floatToBFloat16(value);
-      return;
-  }
-  fail("unsupported tensor dtype in store");
-}
-
-bool isDenseRowMajor(const RuntimeTensorView &tensor) {
-  return tensor.shape.size() == 2 && tensor.strides.size() == 2 &&
-         tensor.strides[1] == 1 && tensor.strides[0] == tensor.shape[1];
-}
-
-std::vector<float> materializeToFloat(const RuntimeTensorView &tensor) {
-  if (tensor.shape.size() != 2 || tensor.strides.size() != 2) {
-    fail("tensor '" + tensor.symbol + "' must be rank-2");
-  }
-
-  const std::int64_t rows = tensor.shape[0];
-  const std::int64_t cols = tensor.shape[1];
-  std::vector<float> dense(static_cast<std::size_t>(rows * cols));
-
-  if (tensor.dtype == TensorDType::kFloat32 && isDenseRowMajor(tensor)) {
-    const float *src = reinterpret_cast<const float *>(tensor.data);
-    std::copy_n(src, dense.size(), dense.begin());
-    return dense;
-  }
-
-  for (std::int64_t i = 0; i < rows; ++i) {
-    for (std::int64_t j = 0; j < cols; ++j) {
-      const std::int64_t source_index = i * tensor.strides[0] + j * tensor.strides[1];
-      dense[static_cast<std::size_t>(i * cols + j)] = loadElement(tensor, source_index);
-    }
-  }
-  return dense;
-}
-
-void writeBackFromFloat(const std::vector<float> &dense, RuntimeTensorView tensor) {
-  if (tensor.shape.size() != 2 || tensor.strides.size() != 2) {
-    fail("tensor '" + tensor.symbol + "' must be rank-2");
-  }
-
-  const std::int64_t rows = tensor.shape[0];
-  const std::int64_t cols = tensor.shape[1];
-  if (dense.size() != static_cast<std::size_t>(rows * cols)) {
-    fail("output buffer size mismatch");
-  }
-
-  if (tensor.dtype == TensorDType::kFloat32 && isDenseRowMajor(tensor)) {
-    float *dst = reinterpret_cast<float *>(tensor.data);
-    std::copy_n(dense.data(), dense.size(), dst);
-    return;
-  }
-
-  for (std::int64_t i = 0; i < rows; ++i) {
-    for (std::int64_t j = 0; j < cols; ++j) {
-      const std::int64_t target_index = i * tensor.strides[0] + j * tensor.strides[1];
-      storeElement(tensor, target_index,
-                   dense[static_cast<std::size_t>(i * cols + j)]);
-    }
-  }
-}
-
-#if defined(__x86_64__) || defined(__i386__)
-
-bool cpuSupportsAvx2() {
-  return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
-}
-
-bool cpuSupportsAvx512() {
-  return __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("fma");
-}
-
-#else
-
-bool cpuSupportsAvx2() { return false; }
-
-bool cpuSupportsAvx512() { return false; }
-
-#endif
-
-enum class X86KernelKind {
-  kScalar,
-  kAvx2,
-  kAvx512,
-};
-
-X86KernelKind selectX86Kernel(TargetKind target) {
   switch (normalizeTarget(target)) {
-    case TargetKind::kX86AVX512:
-      if (!cpuSupportsAvx512()) {
-        fail("target 'x86-avx512' requires AVX-512F and FMA host support");
-      }
-      return X86KernelKind::kAvx512;
-    case TargetKind::kX86AVX2:
-      if (!cpuSupportsAvx2()) {
-        fail("target 'x86-avx2' requires AVX2 and FMA host support");
-      }
-      return X86KernelKind::kAvx2;
-    case TargetKind::kX86Auto:
-      if (cpuSupportsAvx512()) {
-        return X86KernelKind::kAvx512;
-      }
-      if (cpuSupportsAvx2()) {
-        return X86KernelKind::kAvx2;
-      }
-      return X86KernelKind::kScalar;
-    case TargetKind::kARM:
-      fail("ARM CPU execution is not implemented in Phase 2");
-    default:
-      fail("unsupported CPU execution target '" + targetName(target) + "'");
-  }
-}
-
-using AccumulateColumnsFn = void (*)(float *, const float *, float, std::int64_t);
-
-void accumulateColumnsScalar(float *out, const float *rhs, float lhs_value,
-                             std::int64_t cols) {
-  for (std::int64_t j = 0; j < cols; ++j) {
-    out[j] += lhs_value * rhs[j];
-  }
-}
-
-#if defined(__x86_64__) || defined(__i386__)
-
-[[gnu::target("avx2,fma")]] void accumulateColumnsAvx2(float *out, const float *rhs,
-                                                       float lhs_value,
-                                                       std::int64_t cols) {
-  const __m256 lhs_vec = _mm256_set1_ps(lhs_value);
-  std::int64_t j = 0;
-  for (; j + 8 <= cols; j += 8) {
-    const __m256 rhs_vec = _mm256_loadu_ps(rhs + j);
-    const __m256 out_vec = _mm256_loadu_ps(out + j);
-    _mm256_storeu_ps(out + j, _mm256_fmadd_ps(lhs_vec, rhs_vec, out_vec));
-  }
-  for (; j < cols; ++j) {
-    out[j] += lhs_value * rhs[j];
-  }
-}
-
-[[gnu::target("avx512f,fma")]] void accumulateColumnsAvx512(float *out,
-                                                            const float *rhs,
-                                                            float lhs_value,
-                                                            std::int64_t cols) {
-  const __m512 lhs_vec = _mm512_set1_ps(lhs_value);
-  std::int64_t j = 0;
-  for (; j + 16 <= cols; j += 16) {
-    const __m512 rhs_vec = _mm512_loadu_ps(rhs + j);
-    const __m512 out_vec = _mm512_loadu_ps(out + j);
-    _mm512_storeu_ps(out + j, _mm512_fmadd_ps(lhs_vec, rhs_vec, out_vec));
-  }
-  for (; j < cols; ++j) {
-    out[j] += lhs_value * rhs[j];
-  }
-}
-
-#endif
-
-AccumulateColumnsFn selectAccumulateColumns(TargetKind target) {
-  switch (selectX86Kernel(target)) {
-    case X86KernelKind::kScalar:
-      return &accumulateColumnsScalar;
-    case X86KernelKind::kAvx2:
-#if defined(__x86_64__) || defined(__i386__)
-      return &accumulateColumnsAvx2;
-#else
-      fail("AVX2 execution requires an x86 host");
-#endif
-    case X86KernelKind::kAvx512:
-#if defined(__x86_64__) || defined(__i386__)
-      return &accumulateColumnsAvx512;
-#else
-      fail("AVX-512 execution requires an x86 host");
-#endif
-  }
-  return &accumulateColumnsScalar;
-}
-
-std::size_t selectThreadCount(std::int64_t rows) {
-  const unsigned hardware_threads =
-      std::max(1U, std::thread::hardware_concurrency());
-  return std::max<std::size_t>(
-      1, std::min<std::size_t>(hardware_threads,
-                               static_cast<std::size_t>(std::max<std::int64_t>(
-                                   1, (rows + kRowBlock - 1) / kRowBlock))));
-}
-
-void executeBlockedCpuMatmul(const std::vector<float> &lhs,
-                             const std::vector<float> &rhs,
-                             std::vector<float> &out, std::int64_t m,
-                             std::int64_t k, std::int64_t n, TargetKind target) {
-  std::fill(out.begin(), out.end(), 0.0f);
-  const AccumulateColumnsFn accumulate_columns = selectAccumulateColumns(target);
-  const std::size_t thread_count = selectThreadCount(m);
-  const std::int64_t rows_per_thread =
-      std::max<std::int64_t>(kRowBlock, (m + static_cast<std::int64_t>(thread_count) - 1) /
-                                            static_cast<std::int64_t>(thread_count));
-
-  std::vector<std::thread> workers;
-  workers.reserve(thread_count);
-  for (std::size_t thread_index = 0; thread_index < thread_count; ++thread_index) {
-    const std::int64_t row_begin =
-        static_cast<std::int64_t>(thread_index) * rows_per_thread;
-    const std::int64_t row_end = std::min(m, row_begin + rows_per_thread);
-    if (row_begin >= row_end) {
+    case TargetKind::kNvidiaDGPU:
+      libs.emplace_back("/usr/local/cuda/targets/x86_64-linux/lib/libcudart.so");
+      libs.emplace_back("/lib/x86_64-linux-gnu/libcuda.so");
       break;
-    }
-
-    workers.emplace_back([&, row_begin, row_end]() {
-      for (std::int64_t i0 = row_begin; i0 < row_end; i0 += kRowBlock) {
-        const std::int64_t i_max = std::min(i0 + kRowBlock, row_end);
-        for (std::int64_t j0 = 0; j0 < n; j0 += kColBlock) {
-          const std::int64_t cols = std::min(kColBlock, n - j0);
-          for (std::int64_t k0 = 0; k0 < k; k0 += kKBlock) {
-            const std::int64_t k_max = std::min(k0 + kKBlock, k);
-            for (std::int64_t i = i0; i < i_max; ++i) {
-              float *out_block = out.data() + i * n + j0;
-              const float *lhs_row = lhs.data() + i * k;
-              for (std::int64_t kk = k0; kk < k_max; ++kk) {
-                const float lhs_value = lhs_row[kk];
-                const float *rhs_block = rhs.data() + kk * n + j0;
-                accumulate_columns(out_block, rhs_block, lhs_value, cols);
-              }
-            }
-          }
-        }
-      }
-    });
+    case TargetKind::kAmdIGPU:
+      libs.emplace_back("/lib/x86_64-linux-gnu/libamdhip64.so");
+      break;
+    default:
+      break;
   }
-
-  for (std::thread &worker : workers) {
-    worker.join();
-  }
+  return libs;
 }
 
 std::string buildExecutionCacheKey(const KernelIR &kernel, TargetKind target,
@@ -421,29 +110,6 @@ std::string buildExecutionCacheKey(const KernelIR &kernel, TargetKind target,
   return key;
 }
 
-void runCpuMatmul(TargetKind target, const std::vector<RuntimeTensorView> &tensors) {
-  if (tensors.size() < 3) {
-    fail("matmul execution requires lhs, rhs, and output tensors");
-  }
-
-  const RuntimeTensorView &lhs = tensors[0];
-  const RuntimeTensorView &rhs = tensors[1];
-  RuntimeTensorView out = tensors[2];
-  if (lhs.dtype != rhs.dtype || out.dtype != lhs.dtype) {
-    fail("mixed dtype matmul is not supported in Phase 2");
-  }
-
-  const std::int64_t m = lhs.shape[0];
-  const std::int64_t k = lhs.shape[1];
-  const std::int64_t n = rhs.shape[1];
-
-  std::vector<float> lhs_dense = materializeToFloat(lhs);
-  std::vector<float> rhs_dense = materializeToFloat(rhs);
-  std::vector<float> out_dense(static_cast<std::size_t>(m * n));
-  executeBlockedCpuMatmul(lhs_dense, rhs_dense, out_dense, m, k, n, target);
-  writeBackFromFloat(out_dense, out);
-}
-
 std::unique_ptr<mlir::ExecutionEngine> takeEngine(
     llvm::Expected<std::unique_ptr<mlir::ExecutionEngine>> engine) {
   if (!engine) {
@@ -460,9 +126,59 @@ void enforceExecutionPolicy(const LoweredModule &lowered) {
   if (lowered.executable) {
     return;
   }
-  fail("target '" + targetName(lowered.target) +
-       "' routed via '" + lowered.route_description +
-       "' but execution is scaffold-only in Phase 2");
+  fail("target '" + targetName(lowered.target) + "' routed via '" +
+       lowered.route_description + "' but execution is not enabled");
+}
+
+template <typename ElementT>
+::StridedMemRefType<ElementT, 2>
+makeMemRef2DDescriptor(const RuntimeTensorView &tensor) {
+  if (tensor.data == nullptr) {
+    fail("tensor '" + tensor.symbol + "' has null data pointer");
+  }
+  if (tensor.shape.size() != 2 || tensor.strides.size() != 2) {
+    fail("tensor '" + tensor.symbol + "' must be rank-2 for JIT invocation");
+  }
+
+  auto *typed = reinterpret_cast<ElementT *>(tensor.data);
+  ::StridedMemRefType<ElementT, 2> descriptor;
+  descriptor.basePtr = typed;
+  descriptor.data = typed;
+  descriptor.offset = 0;
+  descriptor.sizes[0] = tensor.shape[0];
+  descriptor.sizes[1] = tensor.shape[1];
+  descriptor.strides[0] = tensor.strides[0];
+  descriptor.strides[1] = tensor.strides[1];
+  return descriptor;
+}
+
+template <typename ElementT>
+llvm::Error invokeWithTypedDescriptors(mlir::ExecutionEngine &engine,
+                                       const std::string &entry_point,
+                                       const RuntimeTensorView &lhs,
+                                       const RuntimeTensorView &rhs,
+                                       const RuntimeTensorView &out) {
+  auto lhs_desc = makeMemRef2DDescriptor<ElementT>(lhs);
+  auto rhs_desc = makeMemRef2DDescriptor<ElementT>(rhs);
+  auto out_desc = makeMemRef2DDescriptor<ElementT>(out);
+
+  llvm::Error ciface_error = engine.invoke(entry_point, lhs_desc, rhs_desc, out_desc);
+  if (!ciface_error) {
+    return llvm::Error::success();
+  }
+
+  std::string ciface_message = llvm::toString(std::move(ciface_error));
+  std::vector<void *> packed_args = {&lhs_desc, &rhs_desc, &out_desc};
+  llvm::Error packed_error = engine.invokePacked(entry_point, packed_args);
+  if (!packed_error) {
+    return llvm::Error::success();
+  }
+
+  std::string packed_message = llvm::toString(std::move(packed_error));
+  return llvm::createStringError(
+      llvm::inconvertibleErrorCode(),
+      "ciface invoke failed: %s; packed invoke failed: %s", ciface_message.c_str(),
+      packed_message.c_str());
 }
 
 struct CachedExecution {
@@ -471,8 +187,9 @@ struct CachedExecution {
   std::unique_ptr<mlir::ExecutionEngine> engine;
 };
 
-void ensureExecutionEngineReady(const KernelIR &kernel, TargetKind target,
-                                const std::vector<RuntimeTensorView> &tensors) {
+std::shared_ptr<CachedExecution>
+getOrCreateExecution(const KernelIR &kernel, TargetKind target,
+                     const std::vector<RuntimeTensorView> &tensors) {
   static std::mutex cache_mutex;
   static auto *cache =
       new std::unordered_map<std::string, std::shared_ptr<CachedExecution>>();
@@ -480,27 +197,83 @@ void ensureExecutionEngineReady(const KernelIR &kernel, TargetKind target,
   const std::string cache_key = buildExecutionCacheKey(kernel, target, tensors);
   {
     std::lock_guard<std::mutex> lock(cache_mutex);
-    if (cache->contains(cache_key)) {
-      return;
+    auto it = cache->find(cache_key);
+    if (it != cache->end()) {
+      return it->second;
     }
   }
 
   auto compiled = std::make_shared<CachedExecution>();
   compiled->context = std::make_unique<mlir::MLIRContext>();
-  mlir::registerBuiltinDialectTranslation(*compiled->context);
-  mlir::registerLLVMDialectTranslation(*compiled->context);
+  mlir::DialectRegistry registry;
+  mlir::registerAllToLLVMIRTranslations(registry);
+  mlir::NVVM::registerNVVMTargetInterfaceExternalModels(registry);
+  mlir::ROCDL::registerROCDLTargetInterfaceExternalModels(registry);
+  compiled->context->appendDialectRegistry(registry);
+  compiled->context->loadAllAvailableDialects();
 
   compiled->lowered =
       MlirEngine::BuildAndLower(kernel, target, tensors, *compiled->context);
   enforceExecutionPolicy(compiled->lowered);
 
+  const std::vector<std::string> shared_lib_storage = buildSharedLibraryPaths(target);
+  llvm::SmallVector<llvm::StringRef, 8> shared_libs;
+  shared_libs.reserve(shared_lib_storage.size());
+  for (const std::string &path : shared_lib_storage) {
+    shared_libs.push_back(path);
+  }
+
   mlir::ExecutionEngineOptions options;
   options.jitCodeGenOptLevel = llvm::CodeGenOptLevel::Default;
+  options.sharedLibPaths = shared_libs;
   compiled->engine =
       takeEngine(mlir::ExecutionEngine::create(*compiled->lowered.module, options));
 
   std::lock_guard<std::mutex> lock(cache_mutex);
-  cache->emplace(cache_key, std::move(compiled));
+  auto [it, inserted] = cache->emplace(cache_key, compiled);
+  if (!inserted) {
+    return it->second;
+  }
+  return compiled;
+}
+
+llvm::Error invokeCompiledKernel(const CachedExecution &compiled,
+                                 const std::vector<RuntimeTensorView> &tensors) {
+  if (tensors.size() < 3) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "matmul invocation requires 3 tensors");
+  }
+  if (compiled.lowered.lhs_tensor_index >= tensors.size() ||
+      compiled.lowered.rhs_tensor_index >= tensors.size() ||
+      compiled.lowered.out_tensor_index >= tensors.size()) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "lowered tensor indices are out of range for runtime tensors");
+  }
+
+  const RuntimeTensorView &lhs = tensors[compiled.lowered.lhs_tensor_index];
+  const RuntimeTensorView &rhs = tensors[compiled.lowered.rhs_tensor_index];
+  const RuntimeTensorView &out = tensors[compiled.lowered.out_tensor_index];
+
+  if (lhs.dtype != rhs.dtype || lhs.dtype != out.dtype) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "mixed dtype invocation is not supported");
+  }
+
+  switch (lhs.dtype) {
+    case TensorDType::kFloat32:
+      return invokeWithTypedDescriptors<float>(*compiled.engine,
+                                               compiled.lowered.entry_point, lhs,
+                                               rhs, out);
+    case TensorDType::kFloat16:
+    case TensorDType::kBFloat16:
+      // MLIR lowers f16/bf16 memref elements through 16-bit storage.
+      return invokeWithTypedDescriptors<std::uint16_t>(
+          *compiled.engine, compiled.lowered.entry_point, lhs, rhs, out);
+  }
+
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "unsupported runtime dtype");
 }
 
 }  // namespace
@@ -511,8 +284,13 @@ void compileAndRun(const KernelIR &kernel, TargetKind target,
   llvm::InitializeNativeTargetAsmPrinter();
   llvm::InitializeNativeTargetAsmParser();
 
-  ensureExecutionEngineReady(kernel, target, tensors);
-  runCpuMatmul(target, tensors);
+  std::shared_ptr<CachedExecution> compiled =
+      getOrCreateExecution(kernel, target, tensors);
+  if (llvm::Error error = invokeCompiledKernel(*compiled, tensors)) {
+    const std::string message = llvm::toString(std::move(error));
+    fail("failed to invoke JIT entrypoint '" + compiled->lowered.entry_point +
+         "': " + message);
+  }
 }
 
 }  // namespace matcore
