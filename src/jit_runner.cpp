@@ -1,9 +1,11 @@
 #include "matcore/jit_runner.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string_view>
 #include <string>
@@ -11,8 +13,13 @@
 #include <vector>
 
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/TargetParser/Host.h"
+#include "llvm/TargetParser/SubtargetFeature.h"
 #include "mlir/ExecutionEngine/CRunnerUtils.h"
 #include "mlir/ExecutionEngine/ExecutionEngine.h"
 #include "mlir/ExecutionEngine/RunnerUtils.h"
@@ -22,6 +29,7 @@
 #include "mlir/Target/LLVM/ROCDL/Target.h"
 #include "mlir/Target/LLVMIR/Dialect/All.h"
 
+#include "matcore/gpu_runtime_symbols.h"
 #include "matcore/mlir_engine.h"
 
 namespace matcore {
@@ -69,6 +77,120 @@ std::string dtypeName(TensorDType dtype) {
   return "unknown";
 }
 
+bool isX86Target(TargetKind target) {
+  const TargetKind normalized = normalizeTarget(target);
+  return normalized == TargetKind::kX86Auto ||
+         normalized == TargetKind::kX86AVX2 ||
+         normalized == TargetKind::kX86AVX512;
+}
+
+struct X86TargetProfile {
+  std::string cpu;
+  std::string features;
+  std::string cache_tag;
+};
+
+bool hostFeatureEnabled(const llvm::StringMap<bool> &features,
+                        llvm::StringRef name) {
+  auto it = features.find(name);
+  return it != features.end() && it->second;
+}
+
+void addEnabledFeature(llvm::SubtargetFeatures &subtarget,
+                       const llvm::StringMap<bool> &host_features,
+                       llvm::StringRef feature_name) {
+  if (hostFeatureEnabled(host_features, feature_name)) {
+    subtarget.AddFeature(feature_name, /*Enable=*/true);
+  }
+}
+
+std::optional<X86TargetProfile> resolveX86TargetProfile(TargetKind target) {
+  if (!isX86Target(target)) {
+    return std::nullopt;
+  }
+
+  const TargetKind normalized = normalizeTarget(target);
+  llvm::StringMap<bool> host_features;
+  const bool has_host_features = llvm::sys::getHostCPUFeatures(host_features);
+  const bool host_has_avx2 = has_host_features &&
+                             hostFeatureEnabled(host_features, "avx2");
+  const bool host_has_avx512f = has_host_features &&
+                                hostFeatureEnabled(host_features, "avx512f");
+
+  if (normalized == TargetKind::kX86AVX2 && !host_has_avx2) {
+    fail("x86-avx2 requested but host CPU does not advertise AVX2");
+  }
+  if (normalized == TargetKind::kX86AVX512 && !host_has_avx512f) {
+    fail("x86-avx512 requested but host CPU does not advertise AVX-512F");
+  }
+
+  X86TargetProfile profile;
+  llvm::SubtargetFeatures subtarget;
+
+  if (normalized == TargetKind::kX86AVX512 ||
+      (normalized == TargetKind::kX86Auto && host_has_avx512f)) {
+    profile.cpu = "generic";
+    subtarget.AddFeature("avx512f", /*Enable=*/true);
+    for (llvm::StringRef feature :
+         {"avx512bw", "avx512vl", "avx512dq", "avx512cd", "avx512bf16",
+          "avx512fp16", "avx2", "fma", "f16c"}) {
+      addEnabledFeature(subtarget, host_features, feature);
+    }
+    profile.cache_tag = "x86-tier=avx512";
+  } else if (normalized == TargetKind::kX86AVX2 ||
+             (normalized == TargetKind::kX86Auto && host_has_avx2)) {
+    profile.cpu = "generic";
+    subtarget.AddFeature("avx2", /*Enable=*/true);
+    for (llvm::StringRef feature : {"fma", "f16c"}) {
+      addEnabledFeature(subtarget, host_features, feature);
+    }
+    for (llvm::StringRef feature : {"avx512f", "avx512bw", "avx512vl",
+                                    "avx512dq", "avx512cd", "avx512bf16",
+                                    "avx512fp16"}) {
+      subtarget.AddFeature(feature, /*Enable=*/false);
+    }
+    profile.cache_tag = "x86-tier=avx2";
+  } else {
+    profile.cpu = llvm::sys::getHostCPUName().str();
+    if (profile.cpu.empty()) {
+      profile.cpu = "generic";
+    }
+    profile.cache_tag = "x86-tier=baseline";
+  }
+
+  profile.features = subtarget.getString();
+  profile.cache_tag += "|cpu=" + profile.cpu;
+  profile.cache_tag += "|mattr=" + profile.features;
+  return profile;
+}
+
+std::unique_ptr<llvm::TargetMachine>
+createTargetMachine(const std::optional<X86TargetProfile> &x86_profile) {
+  if (!x86_profile.has_value()) {
+    return nullptr;
+  }
+
+  const std::string triple = llvm::sys::getProcessTriple();
+  std::string error;
+  const llvm::Target *target_info =
+      llvm::TargetRegistry::lookupTarget(triple, error);
+  if (target_info == nullptr) {
+    fail("failed to lookup target for triple '" + triple + "': " + error);
+  }
+
+  llvm::TargetOptions options;
+  llvm::TargetMachine *raw_tm = target_info->createTargetMachine(
+      triple, x86_profile->cpu, x86_profile->features, options,
+      /*RM=*/std::nullopt, /*CM=*/std::nullopt,
+      /*OL=*/llvm::CodeGenOptLevel::Default, /*JIT=*/true);
+  if (raw_tm == nullptr) {
+    fail("failed to create TargetMachine for x86 profile '" +
+         x86_profile->cache_tag + "'");
+  }
+
+  return std::unique_ptr<llvm::TargetMachine>(raw_tm);
+}
+
 std::vector<std::string> buildSharedLibraryPaths(TargetKind target) {
   std::vector<std::string> libs = {
       "/usr/lib/llvm-18/lib/libmlir_runner_utils.so",
@@ -90,9 +212,14 @@ std::vector<std::string> buildSharedLibraryPaths(TargetKind target) {
 }
 
 std::string buildExecutionCacheKey(const KernelIR &kernel, TargetKind target,
-                                   const std::vector<RuntimeTensorView> &tensors) {
+                                   const std::vector<RuntimeTensorView> &tensors,
+                                   const std::optional<X86TargetProfile> &x86_profile) {
   std::string key = kernel.kernel_name.empty() ? "matcore_kernel" : kernel.kernel_name;
   key += "|target=" + targetName(target);
+  if (x86_profile.has_value()) {
+    key += "|";
+    key += x86_profile->cache_tag;
+  }
   key += "|ops=" + std::to_string(kernel.ops.size());
   for (std::size_t i = 0; i < std::min<std::size_t>(3, tensors.size()); ++i) {
     const RuntimeTensorView &tensor = tensors[i];
@@ -153,14 +280,6 @@ makeMemRef2DDescriptor(const RuntimeTensorView &tensor) {
 }
 
 template <typename ElementT>
-using MemRefMatmulEntryPoint = void (*)(
-    ElementT *, ElementT *, std::int64_t, std::int64_t, std::int64_t,
-    std::int64_t, std::int64_t, ElementT *, ElementT *, std::int64_t,
-    std::int64_t, std::int64_t, std::int64_t, std::int64_t, ElementT *,
-    ElementT *, std::int64_t, std::int64_t, std::int64_t, std::int64_t,
-    std::int64_t);
-
-template <typename ElementT>
 llvm::Error invokeWithTypedDescriptors(mlir::ExecutionEngine &engine,
                                        const std::string &entry_point,
                                        const RuntimeTensorView &lhs,
@@ -170,35 +289,21 @@ llvm::Error invokeWithTypedDescriptors(mlir::ExecutionEngine &engine,
   auto rhs_desc = makeMemRef2DDescriptor<ElementT>(rhs);
   auto out_desc = makeMemRef2DDescriptor<ElementT>(out);
 
-  llvm::Expected<void *> symbol = engine.lookup(entry_point);
-  if (symbol) {
-    auto fn = reinterpret_cast<MemRefMatmulEntryPoint<ElementT>>(*symbol);
-    fn(lhs_desc.basePtr, lhs_desc.data, lhs_desc.offset, lhs_desc.sizes[0],
-       lhs_desc.sizes[1], lhs_desc.strides[0], lhs_desc.strides[1],
-       rhs_desc.basePtr, rhs_desc.data, rhs_desc.offset, rhs_desc.sizes[0],
-       rhs_desc.sizes[1], rhs_desc.strides[0], rhs_desc.strides[1],
-       out_desc.basePtr, out_desc.data, out_desc.offset, out_desc.sizes[0],
-       out_desc.sizes[1], out_desc.strides[0], out_desc.strides[1]);
-    return llvm::Error::success();
-  }
-  llvm::consumeError(symbol.takeError());
-
-  llvm::Error ciface_error = engine.invoke(entry_point, lhs_desc, rhs_desc, out_desc);
-  if (!ciface_error) {
-    return llvm::Error::success();
-  }
-
-  std::string ciface_message = llvm::toString(std::move(ciface_error));
-  std::vector<void *> packed_args = {&lhs_desc, &rhs_desc, &out_desc};
-  llvm::Error packed_error = engine.invokePacked(entry_point, packed_args);
+  const std::string adapter_name = std::string("_mlir_ciface_") + entry_point;
+  void *lhs_arg = &lhs_desc;
+  void *rhs_arg = &rhs_desc;
+  void *out_arg = &out_desc;
+  // The C-interface wrapper takes pointer-valued arguments, so the packed call
+  // expects addresses of those pointer values, not the descriptor storage itself.
+  std::vector<void *> packed_args = {&lhs_arg, &rhs_arg, &out_arg};
+  llvm::Error packed_error = engine.invokePacked(adapter_name, packed_args);
   if (!packed_error) {
     return llvm::Error::success();
   }
 
   std::string packed_message = llvm::toString(std::move(packed_error));
   return llvm::createStringError(
-      llvm::inconvertibleErrorCode(),
-      "ciface invoke failed: %s; packed invoke failed: %s", ciface_message.c_str(),
+      llvm::inconvertibleErrorCode(), "packed invoke failed: %s",
       packed_message.c_str());
 }
 
@@ -215,7 +320,10 @@ getOrCreateExecution(const KernelIR &kernel, TargetKind target,
   static auto *cache =
       new std::unordered_map<std::string, std::shared_ptr<CachedExecution>>();
 
-  const std::string cache_key = buildExecutionCacheKey(kernel, target, tensors);
+  const std::optional<X86TargetProfile> x86_profile =
+      resolveX86TargetProfile(target);
+  const std::string cache_key =
+      buildExecutionCacheKey(kernel, target, tensors, x86_profile);
   {
     std::lock_guard<std::mutex> lock(cache_mutex);
     auto it = cache->find(cache_key);
@@ -247,8 +355,11 @@ getOrCreateExecution(const KernelIR &kernel, TargetKind target,
   mlir::ExecutionEngineOptions options;
   options.jitCodeGenOptLevel = llvm::CodeGenOptLevel::Default;
   options.sharedLibPaths = shared_libs;
-  compiled->engine =
-      takeEngine(mlir::ExecutionEngine::create(*compiled->lowered.module, options));
+  std::unique_ptr<llvm::TargetMachine> target_machine =
+      createTargetMachine(x86_profile);
+  compiled->engine = takeEngine(mlir::ExecutionEngine::create(
+      *compiled->lowered.module, options, std::move(target_machine)));
+  registerGpuRuntimeSymbols(*compiled->engine, target);
 
   std::lock_guard<std::mutex> lock(cache_mutex);
   auto [it, inserted] = cache->emplace(cache_key, compiled);

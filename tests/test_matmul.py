@@ -9,30 +9,69 @@ if str(REPO_ROOT) not in sys.path:
 
 import numpy as np
 
-from matcore import mc
+from matcore import check_matmul_correctness, matmul_kernel
 
 
-@mc.kernel
-def matmul_kernel(a, b, c):
-    lhs = mc.load(a)
-    rhs = mc.load(b)
-    product = mc.matmul(lhs, rhs)
-    mc.store(c, product)
+def make_inputs(
+    m: int,
+    k: int,
+    n: int,
+    *,
+    dtype: np.dtype,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    rng = np.random.default_rng(seed)
+    lhs = rng.standard_normal((m, k), dtype=np.float32).astype(dtype)
+    rhs = rng.standard_normal((k, n), dtype=np.float32).astype(dtype)
+    return lhs, rhs
+
+
+def run_case(
+    *,
+    target: str,
+    dtype: np.dtype,
+    shape: tuple[int, int, int],
+    seed: int,
+) -> None:
+    m, k, n = shape
+    lhs, rhs = make_inputs(m, k, n, dtype=dtype, seed=seed)
+    out = np.zeros((m, n), dtype=dtype)
+    report = check_matmul_correctness(
+        matmul_kernel,
+        lhs,
+        rhs,
+        target=target,
+        out=out,
+    )
+    assert report.zero_copy_output
+    assert report.exact_match, report
+    print(
+        f"{target} {np.dtype(dtype).name} {m}x{k}@{k}x{n}: "
+        f"exact={report.exact_match} elapsed={report.elapsed_ms:.3f} ms"
+    )
+
+
+def maybe_bfloat16_dtype() -> np.dtype | None:
+    try:
+        return np.dtype("bfloat16")
+    except TypeError:
+        return None
 
 
 def main() -> None:
-    a = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
-    b = np.array([[5.0, 6.0], [7.0, 8.0]], dtype=np.float32)
-    c = np.zeros((2, 2), dtype=np.float32)
+    cases: list[tuple[str, np.dtype, tuple[int, int, int], int]] = [
+        ("x86-auto", np.dtype(np.float32), (2, 2, 2), 7),
+        ("x86-auto", np.dtype(np.float32), (9, 13, 5), 11),
+        ("x86-avx2", np.dtype(np.float16), (16, 16, 16), 13),
+        ("x86-avx512", np.dtype(np.float16), (24, 16, 12), 17),
+    ]
 
-    c_ptr_before = c.__array_interface__["data"][0]
-    mc.launch(matmul_kernel, a, b, c, target="x86-auto")
-    c_ptr_after = c.__array_interface__["data"][0]
+    bfloat16_dtype = maybe_bfloat16_dtype()
+    if bfloat16_dtype is not None:
+        cases.append(("x86-auto", bfloat16_dtype, (8, 10, 6), 19))
 
-    expected = a @ b
-    np.testing.assert_allclose(c, expected)
-    assert c_ptr_before == c_ptr_after
-    assert c.flags.c_contiguous
+    for target, dtype, shape, seed in cases:
+        run_case(target=target, dtype=dtype, shape=shape, seed=seed)
 
 
 if __name__ == "__main__":

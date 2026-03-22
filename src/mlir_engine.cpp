@@ -1,5 +1,6 @@
 #include "matcore/mlir_engine.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
@@ -19,8 +20,11 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
+#include "mlir/Dialect/LLVMIR/Transforms/Passes.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Passes.h"
+#include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
@@ -57,8 +61,53 @@ struct MatmulShape {
   std::int64_t n = 0;
 };
 
-struct VectorizeMatmulPass
-    : public mlir::PassWrapper<VectorizeMatmulPass,
+std::int64_t pickTilingFactor(std::int64_t dim, std::int64_t preferred) {
+  if (preferred <= 0) {
+    return 1;
+  }
+  if (dim <= 0) {
+    return preferred;
+  }
+
+  std::int64_t tile = std::min(dim, preferred);
+  while (tile > 1 && (dim % tile) != 0) {
+    tile /= 2;
+  }
+  return std::max<std::int64_t>(tile, 1);
+}
+
+llvm::SmallVector<std::int64_t, 3> selectCpuMatmulTileSizes(
+    mlir::linalg::MatmulOp matmul) {
+  auto lhs_type = llvm::dyn_cast<mlir::ShapedType>(matmul.getInputs()[0].getType());
+  auto rhs_type = llvm::dyn_cast<mlir::ShapedType>(matmul.getInputs()[1].getType());
+
+  const bool low_precision = lhs_type && lhs_type.getElementType().isIntOrFloat() &&
+                             (lhs_type.getElementType().isF16() ||
+                              lhs_type.getElementType().isBF16());
+
+  // Keep matmul tiles small enough that vectorization produces tractable
+  // micro-kernels instead of a whole-tile mega-vector.
+  const std::int64_t preferred_m = low_precision ? 8 : 8;
+  const std::int64_t preferred_n = low_precision ? 8 : 8;
+  const std::int64_t preferred_k = low_precision ? 16 : 8;
+
+  std::int64_t m = mlir::ShapedType::kDynamic;
+  std::int64_t n = mlir::ShapedType::kDynamic;
+  std::int64_t k = mlir::ShapedType::kDynamic;
+  if (lhs_type && lhs_type.hasRank() && lhs_type.getRank() == 2) {
+    m = lhs_type.getDimSize(0);
+    k = lhs_type.getDimSize(1);
+  }
+  if (rhs_type && rhs_type.hasRank() && rhs_type.getRank() == 2) {
+    n = rhs_type.getDimSize(1);
+  }
+
+  return {pickTilingFactor(m, preferred_m), pickTilingFactor(n, preferred_n),
+          pickTilingFactor(k, preferred_k)};
+}
+
+struct TileAndVectorizeMatmulPass
+    : public mlir::PassWrapper<TileAndVectorizeMatmulPass,
                                mlir::OperationPass<mlir::func::FuncOp>> {
   void getDependentDialects(mlir::DialectRegistry &registry) const override {
     registry.insert<mlir::vector::VectorDialect>();
@@ -71,16 +120,47 @@ struct VectorizeMatmulPass
 
     mlir::IRRewriter rewriter(&getContext());
     for (mlir::Operation *matmul : matmuls) {
-      if (mlir::failed(mlir::linalg::vectorizeOpPrecondition(matmul))) {
-        matmul->emitError("MatCore x86 lowering requires vectorizable linalg.matmul");
+      auto typed_matmul = llvm::dyn_cast<mlir::linalg::MatmulOp>(matmul);
+      if (!typed_matmul) {
+        matmul->emitError("MatCore expected linalg.matmul while tiling");
         signalPassFailure();
         return;
       }
+
+      mlir::linalg::LinalgTilingOptions tiling_options;
+      tiling_options.setLoopType(mlir::linalg::LinalgTilingLoopType::Loops);
+      tiling_options.setTileSizes(selectCpuMatmulTileSizes(typed_matmul));
+
       rewriter.setInsertionPoint(matmul);
-      if (mlir::failed(mlir::linalg::vectorize(rewriter, matmul))) {
-        matmul->emitError("MatCore failed to vectorize linalg.matmul");
+      mlir::FailureOr<mlir::linalg::TiledLinalgOp> tiled =
+          mlir::linalg::tileLinalgOp(rewriter, typed_matmul, tiling_options);
+      if (mlir::failed(tiled)) {
+        matmul->emitError("MatCore failed to tile linalg.matmul for x86 lowering");
         signalPassFailure();
         return;
+      }
+
+      mlir::Operation *vectorize_target = tiled->op.getOperation();
+      if (mlir::failed(mlir::linalg::vectorizeOpPrecondition(vectorize_target))) {
+        vectorize_target->emitError(
+            "MatCore x86 lowering requires vectorizable tiled linalg.matmul");
+        signalPassFailure();
+        return;
+      }
+      if (mlir::failed(mlir::linalg::vectorize(rewriter, vectorize_target))) {
+        vectorize_target->emitError("MatCore failed to vectorize tiled linalg.matmul");
+        signalPassFailure();
+        return;
+      }
+      if (typed_matmul.getOperation() != vectorize_target &&
+          typed_matmul.getOperation()->getBlock() != nullptr) {
+        rewriter.eraseOp(typed_matmul.getOperation());
+      }
+      // `linalg::vectorize` materializes the vector form but does not guarantee
+      // that the source op is erased for bufferized named ops. Leaving the
+      // tiled matmul alive makes the kernel execute the same math twice.
+      if (vectorize_target->getBlock() != nullptr) {
+        rewriter.eraseOp(vectorize_target);
       }
     }
   }
@@ -98,6 +178,7 @@ struct LowerResidualVectorOpsPass
     mlir::RewritePatternSet patterns(&getContext());
     mlir::vector::populateVectorMultiReductionLoweringPatterns(
         patterns, mlir::vector::VectorMultiReductionLowering::InnerReduction);
+    mlir::vector::populateVectorTransferPermutationMapLoweringPatterns(patterns);
     mlir::vector::populateVectorShapeCastLoweringPatterns(patterns);
     if (mlir::failed(mlir::applyPatternsAndFoldGreedily(func, std::move(patterns)))) {
       func.emitError("MatCore failed to lower residual vector ops");
@@ -328,6 +409,7 @@ void addCommonLLVMLoweringPasses(mlir::PassManager &pm, bool enable_x86vector) {
   pm.addPass(mlir::createConvertControlFlowToLLVMPass());
   pm.addPass(mlir::createConvertIndexToLLVMPass());
   pm.addPass(mlir::createFinalizeMemRefToLLVMConversionPass());
+  pm.addNestedPass<mlir::func::FuncOp>(mlir::LLVM::createRequestCWrappersPass());
   pm.addPass(mlir::createConvertFuncToLLVMPass());
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(mlir::createCSEPass());
@@ -356,7 +438,8 @@ void addGpuCommonModulePasses(mlir::PassManager &pm, std::int64_t index_bitwidth
   pm.addPass(mlir::createCSEPass());
 }
 
-void addGpuHostPostPasses(mlir::PassManager &pm, const std::string &binary_target) {
+void addGpuHostPostPasses(mlir::PassManager &pm, const std::string &binary_target,
+                          const std::string &toolkit_path = {}) {
   mlir::GpuToLLVMConversionPassOptions gpu_to_llvm_opts;
   gpu_to_llvm_opts.hostBarePtrCallConv = false;
   gpu_to_llvm_opts.kernelBarePtrCallConv = false;
@@ -364,6 +447,7 @@ void addGpuHostPostPasses(mlir::PassManager &pm, const std::string &binary_targe
 
   mlir::GpuModuleToBinaryPassOptions binary_opts;
   binary_opts.compilationTarget = binary_target;
+  binary_opts.toolkitPath = toolkit_path;
   pm.addPass(mlir::createGpuModuleToBinaryPass(binary_opts));
 
   pm.addPass(mlir::createConvertMathToLLVMPass());
@@ -373,14 +457,21 @@ void addGpuHostPostPasses(mlir::PassManager &pm, const std::string &binary_targe
 }
 
 void configureCpuPassPipeline(mlir::PassManager &pm) {
-  pm.addNestedPass<mlir::func::FuncOp>(std::make_unique<VectorizeMatmulPass>());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      std::make_unique<TileAndVectorizeMatmulPass>());
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(mlir::createCSEPass());
   pm.addPass(mlir::createConvertLinalgToLoopsPass());
+  pm.addPass(mlir::memref::createExpandStridedMetadataPass());
+  pm.addPass(mlir::memref::createExpandOpsPass());
+  pm.addPass(mlir::memref::createFoldMemRefAliasOpsPass());
+  pm.addPass(mlir::createLowerAffinePass());
   pm.addNestedPass<mlir::func::FuncOp>(std::make_unique<LowerResidualVectorOpsPass>());
+  mlir::VectorTransferToSCFOptions vector_to_scf_options;
+  vector_to_scf_options.setTargetRank(1);
+  pm.addPass(mlir::createConvertVectorToSCFPass(vector_to_scf_options));
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(mlir::createCSEPass());
-  pm.addPass(mlir::createConvertVectorToSCFPass());
   addCommonLLVMLoweringPasses(pm, /*enable_x86vector=*/true);
 }
 
@@ -417,7 +508,8 @@ void configureAmdPassPipeline(mlir::PassManager &pm) {
   pm.addNestedPass<mlir::gpu::GPUModuleOp>(mlir::createCSEPass());
   pm.addNestedPass<mlir::gpu::GPUModuleOp>(
       mlir::createReconcileUnrealizedCastsPass());
-  addGpuHostPostPasses(pm, "binary");
+  // Ubuntu packages the ROCm device bitcode under the LLVM 17 Clang resource dir.
+  addGpuHostPostPasses(pm, "bin", "/usr/lib/llvm-17/lib/clang/17");
 }
 
 void configurePassPipeline(mlir::PassManager &pm, LoweringRoute route) {

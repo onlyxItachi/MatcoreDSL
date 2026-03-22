@@ -42,6 +42,7 @@ add_definitions(${LLVM_DEFINITIONS})
 
 set(MATCORE_NATIVE_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/bindings.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_runtime_symbols.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/mlir_engine.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/jit_runner.cpp"
 )
@@ -53,8 +54,13 @@ target_include_directories(_matcore_native
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
 
+if(EXISTS "/usr/local/cuda/include")
+  target_include_directories(_matcore_native PRIVATE "/usr/local/cuda/include")
+endif()
+
 target_link_libraries(_matcore_native
   PRIVATE
+    ${CMAKE_DL_LIBS}
     MLIR
     MLIRArithDialect
     MLIRArithToLLVM
