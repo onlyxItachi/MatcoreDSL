@@ -9,13 +9,15 @@
 #include "mlir/IR/OwningOpRef.h"
 
 #include "matcore/kernel_ir.h"
+#include "matcore/target_registry.h"
 
 namespace matcore {
 
 struct LoweredModule {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   std::string entry_point;
-  TargetKind target = TargetKind::kX86Auto;
+  RequestedTargetProfile target_profile;
+  ExecutionRequirements execution_requirements;
   std::string route_description;
   bool executable = true;
   std::size_t lhs_tensor_index = 0;
@@ -25,9 +27,9 @@ struct LoweredModule {
 
 class MlirEngine {
  public:
-  static LoweredModule BuildAndLower(const KernelIR &kernel, TargetKind target,
-                                     const std::vector<RuntimeTensorView> &tensors,
-                                     mlir::MLIRContext &context);
+  static LoweredModule BuildAndLower(
+      const KernelIR &kernel, const RequestedTargetProfile &target_profile,
+      const std::vector<RuntimeTensorView> &tensors, mlir::MLIRContext &context);
 };
 
 }  // namespace matcore

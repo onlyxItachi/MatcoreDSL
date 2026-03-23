@@ -34,6 +34,9 @@ Fn loadSymbol(void *handle, const char *name) {
 
 #if __has_include("cuda.h")
 
+#define MATCORE_GPU_RUNTIME_EXPORT                                            \
+  extern "C" __attribute__((visibility("default")))
+
 struct CudaDriverApi {
   using CuInitFn = CUresult (*)(unsigned int);
   using CuGetErrorNameFn = CUresult (*)(CUresult, const char **);
@@ -174,7 +177,8 @@ struct ScopedContext {
   ~ScopedContext() { CudaDriverApi::instance().cuCtxPopCurrent(nullptr); }
 };
 
-extern "C" CUmodule mgpuModuleLoad(void *data, size_t /*gpuBlobSize*/) {
+MATCORE_GPU_RUNTIME_EXPORT CUmodule mgpuModuleLoad(void *data,
+                                                   size_t /*gpuBlobSize*/) {
   ScopedContext scoped_context;
   CUmodule module = nullptr;
   checkCuda(CudaDriverApi::instance().cuModuleLoadData(&module, data),
@@ -182,7 +186,7 @@ extern "C" CUmodule mgpuModuleLoad(void *data, size_t /*gpuBlobSize*/) {
   return module;
 }
 
-extern "C" CUmodule mgpuModuleLoadJIT(void *data, int optLevel) {
+MATCORE_GPU_RUNTIME_EXPORT CUmodule mgpuModuleLoadJIT(void *data, int optLevel) {
   ScopedContext scoped_context;
   CudaDriverApi &api = CudaDriverApi::instance();
   CUmodule module = nullptr;
@@ -206,24 +210,23 @@ extern "C" CUmodule mgpuModuleLoadJIT(void *data, int optLevel) {
   return module;
 }
 
-extern "C" void mgpuModuleUnload(CUmodule module) {
+MATCORE_GPU_RUNTIME_EXPORT void mgpuModuleUnload(CUmodule module) {
   checkCuda(CudaDriverApi::instance().cuModuleUnload(module), "cuModuleUnload");
 }
 
-extern "C" CUfunction mgpuModuleGetFunction(CUmodule module,
-                                            const char *name) {
+MATCORE_GPU_RUNTIME_EXPORT CUfunction mgpuModuleGetFunction(CUmodule module,
+                                                            const char *name) {
   CUfunction function = nullptr;
   checkCuda(CudaDriverApi::instance().cuModuleGetFunction(&function, module, name),
             "cuModuleGetFunction");
   return function;
 }
 
-extern "C" void mgpuLaunchKernel(CUfunction function, std::intptr_t gridX,
-                                 std::intptr_t gridY, std::intptr_t gridZ,
-                                 std::intptr_t blockX, std::intptr_t blockY,
-                                 std::intptr_t blockZ, int32_t smem,
-                                 CUstream stream, void **params, void **extra,
-                                 size_t /*paramsCount*/) {
+MATCORE_GPU_RUNTIME_EXPORT void mgpuLaunchKernel(
+    CUfunction function, std::intptr_t gridX, std::intptr_t gridY,
+    std::intptr_t gridZ, std::intptr_t blockX, std::intptr_t blockY,
+    std::intptr_t blockZ, int32_t smem, CUstream stream, void **params,
+    void **extra, size_t /*paramsCount*/) {
   ScopedContext scoped_context;
   checkCuda(CudaDriverApi::instance().cuLaunchKernel(
                 function, static_cast<unsigned int>(gridX),
@@ -236,7 +239,7 @@ extern "C" void mgpuLaunchKernel(CUfunction function, std::intptr_t gridX,
             "cuLaunchKernel");
 }
 
-extern "C" CUstream mgpuStreamCreate() {
+MATCORE_GPU_RUNTIME_EXPORT CUstream mgpuStreamCreate() {
   ScopedContext scoped_context;
   CUstream stream = nullptr;
   checkCuda(CudaDriverApi::instance().cuStreamCreate(&stream, CU_STREAM_NON_BLOCKING),
@@ -244,17 +247,18 @@ extern "C" CUstream mgpuStreamCreate() {
   return stream;
 }
 
-extern "C" void mgpuStreamDestroy(CUstream stream) {
+MATCORE_GPU_RUNTIME_EXPORT void mgpuStreamDestroy(CUstream stream) {
   checkCuda(CudaDriverApi::instance().cuStreamDestroy(stream), "cuStreamDestroy");
 }
 
-extern "C" void mgpuStreamSynchronize(CUstream stream) {
+MATCORE_GPU_RUNTIME_EXPORT void mgpuStreamSynchronize(CUstream stream) {
   checkCuda(CudaDriverApi::instance().cuStreamSynchronize(stream),
             "cuStreamSynchronize");
 }
 
-extern "C" void *mgpuMemAlloc(uint64_t sizeBytes, CUstream /*stream*/,
-                              bool isHostShared) {
+MATCORE_GPU_RUNTIME_EXPORT void *mgpuMemAlloc(uint64_t sizeBytes,
+                                              CUstream /*stream*/,
+                                              bool isHostShared) {
   ScopedContext scoped_context;
   if (isHostShared) {
     fail("managed CUDA allocations are not implemented in MatCore's runtime");
@@ -267,7 +271,7 @@ extern "C" void *mgpuMemAlloc(uint64_t sizeBytes, CUstream /*stream*/,
   return reinterpret_cast<void *>(ptr);
 }
 
-extern "C" void mgpuMemFree(void *ptr, CUstream /*stream*/) {
+MATCORE_GPU_RUNTIME_EXPORT void mgpuMemFree(void *ptr, CUstream /*stream*/) {
   if (ptr == nullptr) {
     return;
   }
@@ -275,29 +279,30 @@ extern "C" void mgpuMemFree(void *ptr, CUstream /*stream*/) {
             "cuMemFree");
 }
 
-extern "C" void mgpuMemcpy(void *dst, void *src, size_t sizeBytes,
-                           CUstream stream) {
+MATCORE_GPU_RUNTIME_EXPORT void mgpuMemcpy(void *dst, void *src,
+                                           size_t sizeBytes, CUstream stream) {
   checkCuda(CudaDriverApi::instance().cuMemcpyAsync(
                 reinterpret_cast<CUdeviceptr>(dst),
                 reinterpret_cast<CUdeviceptr>(src), sizeBytes, stream),
             "cuMemcpyAsync");
 }
 
-extern "C" void mgpuMemset32(void *dst, unsigned int value, size_t count,
-                             CUstream stream) {
+MATCORE_GPU_RUNTIME_EXPORT void mgpuMemset32(void *dst, unsigned int value,
+                                             size_t count, CUstream stream) {
   checkCuda(CudaDriverApi::instance().cuMemsetD32Async(
                 reinterpret_cast<CUdeviceptr>(dst), value, count, stream),
             "cuMemsetD32Async");
 }
 
-extern "C" void mgpuMemset16(void *dst, unsigned short value, size_t count,
-                             CUstream stream) {
+MATCORE_GPU_RUNTIME_EXPORT void mgpuMemset16(void *dst, unsigned short value,
+                                             size_t count, CUstream stream) {
   checkCuda(CudaDriverApi::instance().cuMemsetD16Async(
                 reinterpret_cast<CUdeviceptr>(dst), value, count, stream),
             "cuMemsetD16Async");
 }
 
-extern "C" void mgpuMemHostRegister(void *ptr, uint64_t sizeBytes) {
+MATCORE_GPU_RUNTIME_EXPORT void mgpuMemHostRegister(void *ptr,
+                                                    uint64_t sizeBytes) {
   ScopedContext scoped_context;
   checkCuda(CudaDriverApi::instance().cuMemHostRegister(
                 ptr, static_cast<size_t>(sizeBytes), 0),
@@ -329,6 +334,8 @@ void registerCudaRuntimeSymbols(mlir::ExecutionEngine &engine) {
     return symbols;
   });
 }
+
+#undef MATCORE_GPU_RUNTIME_EXPORT
 
 #endif
 

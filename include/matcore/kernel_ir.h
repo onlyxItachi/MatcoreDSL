@@ -27,6 +27,15 @@ enum class TensorDType {
   kFloat32,
   kFloat16,
   kBFloat16,
+  kInt8,
+  kInt32,
+  kFloat8E4M3FN,
+};
+
+struct QuantizationParams {
+  bool enabled = false;
+  float scale = 1.0f;
+  std::int32_t zero_point = 0;
 };
 
 struct LoopRange {
@@ -66,6 +75,7 @@ struct KernelIR {
   std::vector<std::string> params;
   std::vector<LoopRange> loops;
   std::vector<KernelOp> ops;
+  QuantizationParams global_quantization;
 };
 
 struct RuntimeTensorView {
@@ -75,6 +85,7 @@ struct RuntimeTensorView {
   std::vector<std::int64_t> shape;
   std::vector<std::int64_t> strides;
   bool c_contiguous = false;
+  QuantizationParams quantization;
 };
 
 inline TargetKind normalizeTarget(TargetKind target) {

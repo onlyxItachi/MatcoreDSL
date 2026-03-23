@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
+import re
 import textwrap
 from dataclasses import dataclass
 from typing import Any
@@ -16,7 +17,14 @@ SUPPORTED_TARGETS: tuple[str, ...] = (
     "nvidia-dgpu",
     "amd-npu",
 )
-SUPPORTED_INPUT_DTYPES: tuple[str, ...] = ("float32", "float16", "bfloat16")
+SUPPORTED_INPUT_DTYPES: tuple[str, ...] = (
+    "float32",
+    "float16",
+    "bfloat16",
+    "int8",
+    "int32",
+    "float8_e4m3fn",
+)
 _TARGET_ALIASES: dict[str, str] = {
     "x86": "x86-auto",
     "x86auto": "x86-auto",
@@ -33,6 +41,15 @@ _TARGET_ALIASES: dict[str, str] = {
     "npu": "amd-npu",
     "amd-npu": "amd-npu",
     "amd_npu": "amd-npu",
+}
+_NVIDIA_SM_TOKEN = re.compile(r"^(?:compute_)?sm?_?([0-9]{2,3})$")
+_DTYPE_STORAGE_BYTES: dict[str, int] = {
+    "float32": 4,
+    "float16": 2,
+    "bfloat16": 2,
+    "int8": 1,
+    "int32": 4,
+    "float8_e4m3fn": 1,
 }
 
 
@@ -86,12 +103,41 @@ def _normalize_target(target: str) -> str:
     if not isinstance(target, str):
         raise TypeError("target must be a string")
     normalized = target.strip().lower()
-    normalized = _TARGET_ALIASES.get(normalized, normalized)
-    if normalized not in SUPPORTED_TARGETS:
+    if not normalized:
+        raise ValueError("target must not be empty")
+
+    if match := _NVIDIA_SM_TOKEN.fullmatch(normalized):
+        return f"nvidia-dgpu:sm_{match.group(1)}"
+
+    base = normalized
+    suffix = ""
+    for separator in (":", "@", "/"):
+        if separator in normalized:
+            base, suffix = normalized.split(separator, 1)
+            break
+
+    base = _TARGET_ALIASES.get(base, base)
+    if base not in SUPPORTED_TARGETS:
         raise ValueError(
-            f"Unsupported target '{target}'. Supported targets: {', '.join(SUPPORTED_TARGETS)}"
+            "Unsupported target "
+            f"'{target}'. Supported base targets: {', '.join(SUPPORTED_TARGETS)}. "
+            "NVIDIA compile profiles may be requested as nvidia-dgpu:sm_90."
         )
-    return normalized
+
+    if not suffix:
+        return base
+
+    if base != "nvidia-dgpu":
+        raise ValueError(
+            f"Target profile suffixes are currently only supported for nvidia-dgpu, got '{target}'."
+        )
+
+    match = _NVIDIA_SM_TOKEN.fullmatch(suffix.strip())
+    if match is None:
+        raise ValueError(
+            f"Unsupported NVIDIA target profile '{target}'. Use forms like 'nvidia-dgpu:sm_90'."
+        )
+    return f"{base}:sm_{match.group(1)}"
 
 
 def _normalize_dtype_name(dtype_name: str) -> str:
@@ -103,28 +149,123 @@ def _normalize_dtype_name(dtype_name: str) -> str:
         "half": "float16",
         "bfloat16": "bfloat16",
         "bf16": "bfloat16",
+        "int8": "int8",
+        "i8": "int8",
+        "int32": "int32",
+        "i32": "int32",
+        "float8_e4m3fn": "float8_e4m3fn",
+        "float8e4m3fn": "float8_e4m3fn",
+        "f8e4m3fn": "float8_e4m3fn",
+        "fp8_e4m3fn": "float8_e4m3fn",
+        "fp8-e4m3fn": "float8_e4m3fn",
+        "e4m3fn": "float8_e4m3fn",
     }
     return aliases.get(lowered, lowered)
+
+
+def _tensor_symbol(params: list[str], idx: int) -> str:
+    return params[idx] if idx < len(params) else f"arg{idx}"
+
+
+def _logical_dtype_name(array: Any, idx: int) -> str:
+    override = getattr(array, "matcore_dtype", None)
+    if override is not None:
+        dtype_name = _normalize_dtype_name(str(override))
+    else:
+        dtype_obj = getattr(array, "dtype", None)
+        if dtype_obj is None:
+            raise TypeError(f"Argument {idx} does not expose a NumPy-compatible dtype")
+        dtype_name = _normalize_dtype_name(str(getattr(dtype_obj, "name", dtype_obj)))
+
+    if dtype_name not in SUPPORTED_INPUT_DTYPES:
+        raise TypeError(
+            f"Unsupported dtype '{dtype_name}' for argument {idx}. "
+            f"Supported dtypes: {', '.join(SUPPORTED_INPUT_DTYPES)}"
+        )
+    return dtype_name
 
 
 def _collect_tensor_dtypes(arrays: tuple[Any, ...], params: list[str]) -> list[dict[str, str]]:
     tensor_dtypes: list[dict[str, str]] = []
     for idx, array in enumerate(arrays):
-        dtype_obj = getattr(array, "dtype", None)
-        if dtype_obj is None:
-            raise TypeError(f"Argument {idx} does not expose a NumPy-compatible dtype")
-        dtype_name = _normalize_dtype_name(str(getattr(dtype_obj, "name", dtype_obj)))
-        if dtype_name not in SUPPORTED_INPUT_DTYPES:
-            raise TypeError(
-                f"Unsupported dtype '{dtype_name}' for argument {idx}. "
-                f"Supported dtypes: {', '.join(SUPPORTED_INPUT_DTYPES)}"
-            )
-        symbol = params[idx] if idx < len(params) else f"arg{idx}"
+        symbol = _tensor_symbol(params, idx)
+        dtype_name = _logical_dtype_name(array, idx)
         tensor_dtypes.append({"symbol": symbol, "dtype": dtype_name})
     return tensor_dtypes
 
 
-def _build_runtime_ir(kernel_obj: MatCoreKernel, arrays: tuple[Any, ...]) -> dict[str, Any]:
+def _parse_quant_entry(
+    *,
+    scale: Any | None,
+    zero_point: Any | None,
+    enabled: bool | None = None,
+    default_enabled: bool = False,
+) -> dict[str, Any]:
+    has_explicit = scale is not None or zero_point is not None
+    quant_enabled = bool(enabled) if enabled is not None else (default_enabled or has_explicit)
+    quant_scale = 1.0 if scale is None else float(scale)
+    quant_zero_point = 0 if zero_point is None else int(zero_point)
+    return {
+        "enabled": quant_enabled,
+        "scale": quant_scale,
+        "zero_point": quant_zero_point,
+    }
+
+
+def _collect_tensor_quantization(
+    arrays: tuple[Any, ...], params: list[str], tensor_dtypes: list[dict[str, str]]
+) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    dtype_by_symbol = {entry["symbol"]: entry["dtype"] for entry in tensor_dtypes}
+    for idx, array in enumerate(arrays):
+        symbol = _tensor_symbol(params, idx)
+        if dtype_by_symbol.get(symbol) != "int8":
+            entries.append(
+                {"symbol": symbol, "enabled": False, "scale": 1.0, "zero_point": 0}
+            )
+            continue
+        scale = getattr(array, "matcore_scale", None)
+        zero_point = getattr(array, "matcore_zero_point", None)
+        enabled = getattr(array, "matcore_quant_enabled", None)
+        quant_obj = getattr(array, "matcore_quantization", None)
+        if quant_obj is not None and isinstance(quant_obj, dict):
+            scale = quant_obj.get("scale", scale)
+            zero_point = quant_obj.get("zero_point", zero_point)
+            if "enabled" in quant_obj:
+                enabled = bool(quant_obj["enabled"])
+
+        entry = {"symbol": symbol}
+        entry.update(
+            _parse_quant_entry(
+                scale=scale,
+                zero_point=zero_point,
+                enabled=enabled,
+                default_enabled=False,
+            )
+        )
+        entries.append(entry)
+    return entries
+
+
+def _build_global_quantization(
+    quant: dict[str, Any] | None, tensor_dtypes: list[dict[str, str]]
+) -> dict[str, Any]:
+    has_int8 = any(entry["dtype"] == "int8" for entry in tensor_dtypes)
+    if quant is None:
+        return _parse_quant_entry(scale=None, zero_point=None, default_enabled=has_int8)
+    if not isinstance(quant, dict):
+        raise TypeError("quant must be a dict with optional scale/zero_point/enabled")
+    return _parse_quant_entry(
+        scale=quant.get("scale"),
+        zero_point=quant.get("zero_point"),
+        enabled=quant.get("enabled"),
+        default_enabled=has_int8,
+    )
+
+
+def _build_runtime_ir(
+    kernel_obj: MatCoreKernel, arrays: tuple[Any, ...], quant: dict[str, Any] | None
+) -> dict[str, Any]:
     base_ir = kernel_obj.ir
     params = list(base_ir.get("params", []))
     runtime_ir = {
@@ -133,8 +274,101 @@ def _build_runtime_ir(kernel_obj: MatCoreKernel, arrays: tuple[Any, ...]) -> dic
         "loops": [dict(loop) for loop in base_ir.get("loops", [])],
         "ops": [dict(op) for op in base_ir.get("ops", [])],
     }
-    runtime_ir["tensor_dtypes"] = _collect_tensor_dtypes(arrays, params)
+    tensor_dtypes = _collect_tensor_dtypes(arrays, params)
+    dtype_by_symbol = {entry["symbol"]: entry["dtype"] for entry in tensor_dtypes}
+    tensor_quantization = _collect_tensor_quantization(arrays, params, tensor_dtypes)
+    global_quantization = _build_global_quantization(quant, tensor_dtypes)
+    if global_quantization["enabled"]:
+        for entry in tensor_quantization:
+            if dtype_by_symbol.get(entry["symbol"]) == "int8" and not entry["enabled"]:
+                entry.update(global_quantization)
+
+    runtime_ir["tensor_dtypes"] = tensor_dtypes
+    runtime_ir["tensor_quantization"] = tensor_quantization
+    runtime_ir["global_quantization"] = global_quantization
     return runtime_ir
+
+
+@dataclass(frozen=True)
+class _LogicalDTypeDescriptor:
+    name: str
+    itemsize: int
+
+
+class MatCoreTensorView:
+    """Logical dtype wrapper around a NumPy-like buffer for unsupported host dtypes."""
+
+    def __init__(
+        self,
+        array: Any,
+        *,
+        dtype: str,
+        scale: float | None = None,
+        zero_point: int | None = None,
+        quant_enabled: bool | None = None,
+    ) -> None:
+        logical_dtype = _normalize_dtype_name(dtype)
+        if logical_dtype not in SUPPORTED_INPUT_DTYPES:
+            raise TypeError(
+                f"Unsupported logical dtype '{dtype}'. "
+                f"Supported dtypes: {', '.join(SUPPORTED_INPUT_DTYPES)}"
+            )
+        if logical_dtype != "int8" and (
+            scale is not None or zero_point is not None or quant_enabled is not None
+        ):
+            raise TypeError(
+                "MatCore quantization metadata is currently only supported for int8 tensors."
+            )
+        self._array = array
+        self.matcore_dtype = logical_dtype
+        if scale is not None:
+            self.matcore_scale = float(scale)
+        if zero_point is not None:
+            self.matcore_zero_point = int(zero_point)
+        if quant_enabled is not None:
+            self.matcore_quant_enabled = bool(quant_enabled)
+
+    @property
+    def dtype(self) -> _LogicalDTypeDescriptor:
+        itemsize = _DTYPE_STORAGE_BYTES[self.matcore_dtype]
+        return _LogicalDTypeDescriptor(name=self.matcore_dtype, itemsize=itemsize)
+
+    @property
+    def shape(self) -> Any:
+        return self._array.shape
+
+    @property
+    def strides(self) -> Any:
+        return self._array.strides
+
+    @property
+    def flags(self) -> Any:
+        return self._array.flags
+
+    @property
+    def __array_interface__(self) -> Any:
+        return self._array.__array_interface__
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._array, name)
+
+
+def asdtype(
+    array: Any,
+    dtype: str,
+    *,
+    scale: float | None = None,
+    zero_point: int | None = None,
+    quant_enabled: bool | None = None,
+) -> MatCoreTensorView:
+    """Wrap a NumPy-like buffer with a logical MatCore dtype (e.g. bf16/fp8/int8)."""
+    return MatCoreTensorView(
+        array,
+        dtype=dtype,
+        scale=scale,
+        zero_point=zero_point,
+        quant_enabled=quant_enabled,
+    )
 
 
 class MatCoreASTVisitor(ast.NodeVisitor):
@@ -338,11 +572,16 @@ def _get_native_module() -> Any:
     return module
 
 
-def launch(kernel_obj: MatCoreKernel, *arrays: Any, target: str = "x86-auto") -> Any:
+def launch(
+    kernel_obj: MatCoreKernel,
+    *arrays: Any,
+    target: str = "x86-auto",
+    quant: dict[str, Any] | None = None,
+) -> Any:
     if not isinstance(kernel_obj, MatCoreKernel):
         raise TypeError("mc.launch expects a kernel object returned by @mc.kernel.")
     normalized_target = _normalize_target(target)
-    runtime_ir = _build_runtime_ir(kernel_obj, arrays)
+    runtime_ir = _build_runtime_ir(kernel_obj, arrays, quant)
     native = _get_native_module()
     return native.compile_and_run(runtime_ir, normalized_target, *arrays)
 
@@ -352,6 +591,7 @@ class MatCoreNamespace:
     supported_input_dtypes = SUPPORTED_INPUT_DTYPES
     kernel = staticmethod(kernel)
     launch = staticmethod(launch)
+    asdtype = staticmethod(asdtype)
     load = staticmethod(load)
     store = staticmethod(store)
     matmul = staticmethod(matmul)

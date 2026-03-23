@@ -13,6 +13,7 @@
 
 #include "matcore/jit_runner.h"
 #include "matcore/kernel_ir.h"
+#include "matcore/target_registry.h"
 
 namespace nb = nanobind;
 
@@ -20,7 +21,7 @@ namespace {
 
 struct Invocation {
   matcore::KernelIR kernel;
-  matcore::TargetKind target;
+  matcore::RequestedTargetProfile target_profile;
   std::vector<matcore::RuntimeTensorView> tensors;
   std::vector<nb::object> keepalive_tensors;
   std::vector<std::string> tensor_dtypes;
@@ -32,6 +33,7 @@ struct ParsedTensor {
   std::vector<std::int64_t> element_strides;
   bool c_contiguous = false;
   std::string dtype_name;
+  matcore::QuantizationParams quantization;
 };
 
 std::string toString(nb::handle value) {
@@ -50,6 +52,15 @@ std::int64_t toInt64(nb::handle value, std::string_view field_name) {
   } catch (const nb::cast_error &) {
     throw std::runtime_error("Expected integer field '" + std::string(field_name) +
                              "'.");
+  }
+}
+
+float toFloat(nb::handle value, std::string_view field_name) {
+  try {
+    return static_cast<float>(nb::cast<double>(value));
+  } catch (const nb::cast_error &) {
+    throw std::runtime_error("Expected floating-point field '" +
+                             std::string(field_name) + "'.");
   }
 }
 
@@ -155,17 +166,51 @@ std::string normalizeDTypeName(std::string name) {
   if (name == "bf16") {
     return "bfloat16";
   }
+  if (name == "i8") {
+    return "int8";
+  }
+  if (name == "float8e4m3fn" || name == "f8e4m3fn" || name == "fp8_e4m3fn" ||
+      name == "fp8-e4m3fn" || name == "e4m3fn") {
+    return "float8_e4m3fn";
+  }
   return name;
 }
 
+std::int64_t expectedStorageBytesForDType(const std::string &dtype_name) {
+  if (dtype_name == "float32") {
+    return 4;
+  }
+  if (dtype_name == "int32") {
+    return 4;
+  }
+  if (dtype_name == "float16" || dtype_name == "bfloat16") {
+    return 2;
+  }
+  if (dtype_name == "int8" || dtype_name == "float8_e4m3fn") {
+    return 1;
+  }
+  throw std::runtime_error("Unsupported dtype '" + dtype_name + "'.");
+}
+
+bool dtypeSupportsQuantization(const std::string &dtype_name) {
+  return dtype_name == "int8";
+}
+
 std::string parseSupportedDType(const nb::object &tensor, std::size_t index) {
-  std::string dtype_name =
-      normalizeDTypeName(toString(tensor.attr("dtype").attr("name")));
+  std::string dtype_name;
+  if (nb::hasattr(tensor, "matcore_dtype")) {
+    dtype_name = normalizeDTypeName(toString(tensor.attr("matcore_dtype")));
+  } else {
+    dtype_name = normalizeDTypeName(toString(tensor.attr("dtype").attr("name")));
+  }
   if (dtype_name != "float32" && dtype_name != "float16" &&
-      dtype_name != "bfloat16") {
+      dtype_name != "bfloat16" && dtype_name != "int8" &&
+      dtype_name != "int32" &&
+      dtype_name != "float8_e4m3fn") {
     throw std::runtime_error("Tensor argument " + std::to_string(index) +
                              " uses unsupported dtype '" + dtype_name +
-                             "'. Supported dtypes: float32, float16, bfloat16.");
+                             "'. Supported dtypes: float32, float16, bfloat16, "
+                             "int8, int32, float8_e4m3fn.");
   }
   return dtype_name;
 }
@@ -180,12 +225,77 @@ matcore::TensorDType parseRuntimeTensorDType(const std::string &dtype_name) {
   if (dtype_name == "bfloat16") {
     return matcore::TensorDType::kBFloat16;
   }
+  if (dtype_name == "int8") {
+    return matcore::TensorDType::kInt8;
+  }
+  if (dtype_name == "int32") {
+    return matcore::TensorDType::kInt32;
+  }
+  if (dtype_name == "float8_e4m3fn") {
+    return matcore::TensorDType::kFloat8E4M3FN;
+  }
   throw std::runtime_error("Unsupported runtime tensor dtype '" + dtype_name + "'.");
+}
+
+matcore::QuantizationParams parseQuantizationConfig(const nb::dict &obj,
+                                                    bool default_enabled) {
+  matcore::QuantizationParams quant;
+  quant.enabled = default_enabled;
+  if (hasKey(obj, "enabled")) {
+    quant.enabled = nb::cast<bool>(obj["enabled"]);
+  }
+  if (hasKey(obj, "scale")) {
+    quant.scale = toFloat(obj["scale"], "scale");
+    quant.enabled = true;
+  }
+  if (hasKey(obj, "zero_point")) {
+    quant.zero_point =
+        static_cast<std::int32_t>(toInt64(obj["zero_point"], "zero_point"));
+    quant.enabled = true;
+  }
+  return quant;
+}
+
+matcore::QuantizationParams parseTensorQuantization(const nb::object &tensor,
+                                                    const std::string &dtype_name) {
+  matcore::QuantizationParams quant;
+  quant.enabled = false;
+
+  if (nb::hasattr(tensor, "matcore_quantization")) {
+    nb::object quant_obj = tensor.attr("matcore_quantization");
+    if (!nb::isinstance<nb::dict>(quant_obj)) {
+      throw std::runtime_error(
+          "Tensor matcore_quantization must be a dict when provided.");
+    }
+    quant = parseQuantizationConfig(nb::cast<nb::dict>(quant_obj),
+                                    /*default_enabled=*/false);
+  }
+
+  if (nb::hasattr(tensor, "matcore_quant_enabled")) {
+    quant.enabled = nb::cast<bool>(tensor.attr("matcore_quant_enabled"));
+  }
+  if (nb::hasattr(tensor, "matcore_scale")) {
+    quant.scale = toFloat(tensor.attr("matcore_scale"), "matcore_scale");
+    quant.enabled = true;
+  }
+  if (nb::hasattr(tensor, "matcore_zero_point")) {
+    quant.zero_point = static_cast<std::int32_t>(
+        toInt64(tensor.attr("matcore_zero_point"), "matcore_zero_point"));
+    quant.enabled = true;
+  }
+
+  if (!dtypeSupportsQuantization(dtype_name)) {
+    quant.enabled = false;
+    quant.scale = 1.0f;
+    quant.zero_point = 0;
+  }
+  return quant;
 }
 
 ParsedTensor parseTensorArgument(const nb::object &tensor, std::size_t index) {
   ParsedTensor parsed;
   parsed.dtype_name = parseSupportedDType(tensor, index);
+  parsed.quantization = parseTensorQuantization(tensor, parsed.dtype_name);
   parsed.c_contiguous = nb::cast<bool>(tensor.attr("flags").attr("c_contiguous"));
   if (!parsed.c_contiguous) {
     throw std::runtime_error("Tensor argument " + std::to_string(index) +
@@ -199,6 +309,15 @@ ParsedTensor parseTensorArgument(const nb::object &tensor, std::size_t index) {
   if (item_size <= 0) {
     throw std::runtime_error("Tensor argument " + std::to_string(index) +
                              " has invalid itemsize.");
+  }
+  const std::int64_t expected_item_size =
+      expectedStorageBytesForDType(parsed.dtype_name);
+  if (item_size != expected_item_size) {
+    throw std::runtime_error(
+        "Tensor argument " + std::to_string(index) + " declared logical dtype '" +
+        parsed.dtype_name + "' expects itemsize " +
+        std::to_string(expected_item_size) + " but runtime storage itemsize is " +
+        std::to_string(item_size) + ".");
   }
 
   nb::object strides_obj = tensor.attr("strides");
@@ -261,9 +380,60 @@ std::unordered_map<std::string, std::string> parseKernelDeclaredDtypes(
     nb::dict entry_dict = nb::borrow<nb::dict>(entry);
     std::string symbol = toString(requireKey(entry_dict, "symbol"));
     std::string dtype = normalizeDTypeName(toString(requireKey(entry_dict, "dtype")));
+    expectedStorageBytesForDType(dtype);
     out[symbol] = dtype;
   }
   return out;
+}
+
+std::unordered_map<std::string, matcore::QuantizationParams>
+parseKernelDeclaredTensorQuantization(const nb::dict &kernel_obj) {
+  std::unordered_map<std::string, matcore::QuantizationParams> out;
+  if (!hasKey(kernel_obj, "tensor_quantization")) {
+    return out;
+  }
+
+  for (nb::handle entry : parseObjectSequence(kernel_obj["tensor_quantization"],
+                                              "tensor_quantization")) {
+    if (!nb::isinstance<nb::dict>(entry)) {
+      throw std::runtime_error("Each tensor_quantization entry must be a dict.");
+    }
+    nb::dict entry_dict = nb::borrow<nb::dict>(entry);
+    std::string symbol = toString(requireKey(entry_dict, "symbol"));
+    out[symbol] = parseQuantizationConfig(entry_dict, /*default_enabled=*/false);
+  }
+  return out;
+}
+
+matcore::QuantizationParams parseKernelGlobalQuantization(const nb::dict &kernel_obj) {
+  matcore::QuantizationParams quant;
+  quant.enabled = false;
+
+  if (hasKey(kernel_obj, "global_quantization")) {
+    nb::object global_obj = kernel_obj["global_quantization"];
+    if (!nb::isinstance<nb::dict>(global_obj)) {
+      throw std::runtime_error("global_quantization must be a dict.");
+    }
+    quant = parseQuantizationConfig(nb::cast<nb::dict>(global_obj),
+                                    /*default_enabled=*/false);
+  }
+
+  // Legacy compatibility: top-level quant keys can still configure global params.
+  if (hasKey(kernel_obj, "quant_scale")) {
+    quant.scale = toFloat(kernel_obj["quant_scale"], "quant_scale");
+    quant.enabled = true;
+  }
+  if (hasKey(kernel_obj, "quant_zero_point")) {
+    quant.zero_point =
+        static_cast<std::int32_t>(toInt64(kernel_obj["quant_zero_point"],
+                                          "quant_zero_point"));
+    quant.enabled = true;
+  }
+  if (hasKey(kernel_obj, "quant_enabled")) {
+    quant.enabled = nb::cast<bool>(kernel_obj["quant_enabled"]);
+  }
+
+  return quant;
 }
 
 void appendTensorDtypeMetadata(
@@ -275,6 +445,21 @@ void appendTensorDtypeMetadata(
     op.output = "__dtype__" + tensors[i].symbol;
     op.value = dtypes[i];
     kernel.ops.emplace_back(std::move(op));
+  }
+
+  for (const matcore::RuntimeTensorView &tensor : tensors) {
+    if (!tensor.quantization.enabled) {
+      continue;
+    }
+    matcore::AssignOp scale_op;
+    scale_op.output = "__qscale__" + tensor.symbol;
+    scale_op.value = std::to_string(tensor.quantization.scale);
+    kernel.ops.emplace_back(std::move(scale_op));
+
+    matcore::AssignOp zp_op;
+    zp_op.output = "__qzp__" + tensor.symbol;
+    zp_op.value = std::to_string(tensor.quantization.zero_point);
+    kernel.ops.emplace_back(std::move(zp_op));
   }
 }
 
@@ -377,51 +562,19 @@ matcore::KernelIR parseKernelIR(const nb::dict &kernel_obj) {
     }
   }
 
+  kernel.global_quantization = parseKernelGlobalQuantization(kernel_obj);
+
   return kernel;
-}
-
-matcore::TargetKind parseTarget(const std::string &target) {
-  const std::string normalized = toLower(target);
-
-  if (normalized == "x86-auto" || normalized == "x86auto" || normalized == "x86") {
-    return matcore::TargetKind::kX86Auto;
-  }
-  if (normalized == "x86-avx2" || normalized == "x86_avx2") {
-    return matcore::TargetKind::kX86AVX2;
-  }
-  if (normalized == "x86-avx512" || normalized == "x86_avx512") {
-    return matcore::TargetKind::kX86AVX512;
-  }
-  if (normalized == "nvidia-dgpu" || normalized == "nvidia_dgpu" ||
-      normalized == "nvptx") {
-    return matcore::TargetKind::kNVPTX;
-  }
-  if (normalized == "amd-igpu" || normalized == "amd_igpu" ||
-      normalized == "amdgcn") {
-    return matcore::TargetKind::kAMDGCN;
-  }
-  if (normalized == "amd-npu" || normalized == "amd_npu" ||
-      normalized == "npu") {
-    return matcore::TargetKind::kNPU;
-  }
-  if (normalized == "arm") {
-    return matcore::TargetKind::kARM;
-  }
-  if (normalized == "tpu") {
-    return matcore::TargetKind::kTPU;
-  }
-
-  throw std::runtime_error(
-      "Unsupported target '" + target +
-      "'. Supported targets: x86-auto, x86-avx2, x86-avx512, amd-igpu, nvidia-dgpu, amd-npu.");
 }
 
 Invocation buildInvocation(const nb::dict &kernel_obj, const std::string &target,
                            const nb::args &tensor_args) {
   Invocation invocation;
   invocation.kernel = parseKernelIR(kernel_obj);
-  invocation.target = parseTarget(target);
+  invocation.target_profile = matcore::ParseRequestedTargetProfile(target);
   const auto kernel_declared_dtypes = parseKernelDeclaredDtypes(kernel_obj);
+  const auto kernel_declared_tensor_quantization =
+      parseKernelDeclaredTensorQuantization(kernel_obj);
 
   invocation.keepalive_tensors.reserve(tensor_args.size());
   invocation.tensors.reserve(tensor_args.size());
@@ -446,11 +599,32 @@ Invocation buildInvocation(const nb::dict &kernel_obj, const std::string &target
                                "' but runtime received '" + parsed.dtype_name + "'.");
     }
 
+    if (auto it = kernel_declared_tensor_quantization.find(view.symbol);
+        it != kernel_declared_tensor_quantization.end()) {
+      if (parsed.dtype_name != "int8") {
+        parsed.quantization.enabled = false;
+        parsed.quantization.scale = 1.0f;
+        parsed.quantization.zero_point = 0;
+      } else if (parsed.quantization.enabled && it->second.enabled &&
+          (parsed.quantization.scale != it->second.scale ||
+           parsed.quantization.zero_point != it->second.zero_point)) {
+        throw std::runtime_error(
+            "Tensor quantization mismatch for symbol '" + view.symbol + "'.");
+      } else if (!parsed.quantization.enabled) {
+        parsed.quantization = it->second;
+      }
+    }
+    if (!parsed.quantization.enabled && parsed.dtype_name == "int8" &&
+        invocation.kernel.global_quantization.enabled) {
+      parsed.quantization = invocation.kernel.global_quantization;
+    }
+
     view.data = reinterpret_cast<decltype(view.data)>(parsed.data_ptr);
     view.dtype = parseRuntimeTensorDType(parsed.dtype_name);
     view.c_contiguous = parsed.c_contiguous;
     view.shape = std::move(parsed.shape);
     view.strides = std::move(parsed.element_strides);
+    view.quantization = parsed.quantization;
 
     invocation.tensor_dtypes.push_back(parsed.dtype_name);
     invocation.tensors.push_back(std::move(view));
@@ -463,7 +637,8 @@ Invocation buildInvocation(const nb::dict &kernel_obj, const std::string &target
 
 void triggerCompilation(Invocation &invocation) {
   nb::gil_scoped_release release;
-  matcore::compileAndRun(invocation.kernel, invocation.target, invocation.tensors);
+  matcore::compileAndRun(invocation.kernel, invocation.target_profile,
+                         invocation.tensors);
 }
 
 }  // namespace

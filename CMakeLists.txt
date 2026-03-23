@@ -43,8 +43,11 @@ add_definitions(${LLVM_DEFINITIONS})
 set(MATCORE_NATIVE_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/bindings.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_runtime_symbols.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/lowering_pipeline.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/mlir_engine.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/jit_runner.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime_capabilities.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/target_registry.cpp"
 )
 
 nanobind_add_module(_matcore_native ${MATCORE_NATIVE_SOURCES})
