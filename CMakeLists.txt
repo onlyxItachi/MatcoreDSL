@@ -79,15 +79,18 @@ target_link_libraries(_matcore_native
     MLIRGPUToNVVMTransforms
     MLIRGPUToROCDLTransforms
     MLIRGPUTransforms
+    MLIRGPUTransformOps
     MLIRIR
     MLIRLLVMCommonConversion
     MLIRLLVMDialect
     MLIRLLVMToLLVMIRTranslation
     MLIRLinalgDialect
+    MLIRLinalgTransformOps
     MLIRLinalgTransforms
     MLIRMemRefDialect
     MLIRMemRefToLLVM
     MLIRNVGPUDialect
+    MLIRNVGPUTransformOps
     MLIRNVGPUToNVVM
     MLIRNVGPUTransforms
     MLIRNVVMDialect
@@ -103,6 +106,10 @@ target_link_libraries(_matcore_native
     MLIRSCFToGPU
     MLIRSCFToControlFlow
     MLIRTargetLLVMIRExport
+    MLIRTransformDialect
+    MLIRTransformDebugExtension
+    MLIRTransformDialectTransforms
+    MLIRTransformDialectUtils
     MLIRTransforms
     MLIRVectorDialect
     MLIRVectorToLLVMPass

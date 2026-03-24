@@ -99,7 +99,8 @@ enum class ExecutionBackend {
   kSharedLibrary,
 };
 
-constexpr std::string_view kDiskCacheVersion = "matcore-phase4-cache-v1";
+constexpr std::string_view kDiskCacheVersion =
+    "matcore-phase4-cache-v4-nvidia-shared-mma-hotfix";
 
 void addFeature(llvm::SubtargetFeatures &subtarget, llvm::StringRef feature_name,
                 bool enabled = true) {
