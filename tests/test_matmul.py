@@ -110,6 +110,27 @@ def run_fp8_capability_case(*, target: str) -> None:
     print(f"{target} fp8_e4m3fn: unsupported-clear ({message.splitlines()[0]})")
 
 
+def run_nvidia_padded_fp16_case(*, target: str) -> None:
+    lhs, rhs = make_inputs(17, 9, 19, dtype=np.float16, seed=23)
+    out = np.zeros((17, 19), dtype=np.float16)
+    report = check_matmul_correctness(
+        matmul_kernel,
+        lhs,
+        rhs,
+        target=target,
+        out=out,
+        atol=1e-2,
+        rtol=1e-1,
+    )
+    assert report.zero_copy_output
+    print(
+        f"{target} float16 padded 17x9@9x19: "
+        f"max_abs={report.max_abs_error:.6e} "
+        f"max_rel={report.max_rel_error:.6e} "
+        f"elapsed={report.elapsed_ms:.3f} ms"
+    )
+
+
 def maybe_bfloat16_dtype() -> np.dtype | None:
     try:
         return np.dtype("bfloat16")
@@ -138,6 +159,7 @@ def main() -> None:
 
     nvidia_ok, nvidia_reason = probe_backend_availability("nvidia-dgpu")
     if nvidia_ok:
+        run_nvidia_padded_fp16_case(target="nvidia-dgpu")
         run_bf16_storage_case(target="nvidia-dgpu")
         run_int8_i32_global_quant_case(target="nvidia-dgpu")
         run_fp8_capability_case(target="nvidia-dgpu")

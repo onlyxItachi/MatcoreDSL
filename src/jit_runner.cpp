@@ -19,6 +19,9 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ExecutionEngine/JITSymbol.h"
+#include "llvm/ExecutionEngine/Orc/Core.h"
+#include "llvm/ExecutionEngine/Orc/Shared/ExecutorAddress.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/MD5.h"
@@ -39,6 +42,20 @@
 #include "matcore/gpu_runtime_symbols.h"
 #include "matcore/mlir_engine.h"
 #include "matcore/runtime_capabilities.h"
+
+#if defined(__GNUC__) || defined(__clang__)
+#define MATCORE_JIT_RUNTIME_EXPORT __attribute__((visibility("default")))
+#else
+#define MATCORE_JIT_RUNTIME_EXPORT
+#endif
+
+extern "C" MATCORE_JIT_RUNTIME_EXPORT void *_mlir_malloc(std::size_t size) {
+  return std::malloc(size);
+}
+
+extern "C" MATCORE_JIT_RUNTIME_EXPORT void _mlir_free(void *ptr) {
+  std::free(ptr);
+}
 
 namespace matcore {
 namespace {
@@ -420,6 +437,20 @@ std::unique_ptr<mlir::ExecutionEngine> takeEngine(
   return std::move(*engine);
 }
 
+void registerExecutionRuntimeSymbols(mlir::ExecutionEngine &engine) {
+  engine.registerSymbols([](llvm::orc::MangleAndInterner interner) {
+    llvm::orc::SymbolMap symbols;
+    auto add_symbol = [&](llvm::StringRef name, auto *fn) {
+      symbols[interner(name)] = llvm::orc::ExecutorSymbolDef(
+          llvm::orc::ExecutorAddr::fromPtr(fn), llvm::JITSymbolFlags::Exported);
+    };
+
+    add_symbol("_mlir_malloc", &_mlir_malloc);
+    add_symbol("_mlir_free", &_mlir_free);
+    return symbols;
+  });
+}
+
 void enforceExecutionPolicy(const LoweredModule &lowered) {
   if (lowered.executable) {
     return;
@@ -724,6 +755,7 @@ getOrCreateExecution(const KernelIR &kernel,
       createTargetMachine(x86_profile);
   compiled->engine = takeEngine(mlir::ExecutionEngine::create(
       *compiled->lowered.module, options, std::move(target_machine)));
+  registerExecutionRuntimeSymbols(*compiled->engine);
   registerGpuRuntimeSymbols(*compiled->engine,
                             compiled->lowered.target_profile.kind);
   persistExecutionToDiskCache(*compiled, compile_target, disk_artifacts);
