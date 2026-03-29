@@ -278,6 +278,11 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
       pm.addPass(mlir::bufferization::createEmptyTensorToAllocTensorPass());
       pm.addPass(mlir::bufferization::createOneShotBufferizePass());
       pm.addPass(mlir::createBufferizationToMemRefPass());
+      pm.addPass(
+          mlir::bufferization::createOwnershipBasedBufferDeallocationPass());
+      pm.addPass(
+          mlir::bufferization::createBufferDeallocationSimplificationPass());
+      pm.addPass(mlir::bufferization::createLowerDeallocationsPass());
       pm.addPass(mlir::createCanonicalizerPass());
       pm.addPass(mlir::createCSEPass());
     });
