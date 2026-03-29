@@ -1,6 +1,7 @@
 #include "matcore/gpu_mapping.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstdint>
 #include <optional>
 #include <sstream>
@@ -48,6 +49,14 @@ bool isTensorCoreMmaSyncType(const MatmulLoweringSignature &signature) {
   return signature.lhs_dtype == TensorDType::kFloat16 &&
          signature.rhs_dtype == TensorDType::kFloat16 &&
          signature.out_dtype == TensorDType::kFloat16;
+}
+
+bool enableExperimentalNvidiaCopyPipelining() {
+  const char *raw = std::getenv("MATCORE_EXPERIMENTAL_NVGPU_PIPELINE");
+  if (raw == nullptr) {
+    return false;
+  }
+  return std::string(raw) == "1";
 }
 
 std::optional<std::int64_t> matchConstantIndex(mlir::Value value) {
@@ -176,9 +185,14 @@ std::string BuildNvidiaTransformMappingSequence(
         " {operands_to_promote = [0, 1], use_full_tiles_by_default,"
         " memory_space = #gpu.address_space<workgroup>} :"
         " (!transform.any_op) -> !transform.any_op\n";
-  ir << "    %pipelined = transform.nvgpu.pipeline_shared_memory_copies"
-        " failures(suppress) %k_loop {depth = 2 : i64, peel_epilogue}"
-        " : (!transform.any_op) -> !transform.any_op\n";
+  if (enableExperimentalNvidiaCopyPipelining()) {
+    // Keep this behind an opt-in gate: LLVM 18 requires a stage-0 shared-copy
+    // pattern for this transform, and MatCore's current promoted loop body still
+    // materializes linalg.copy-based shared-memory transfers.
+    ir << "    %pipelined = transform.nvgpu.pipeline_shared_memory_copies"
+          " failures(suppress) %k_loop {depth = 2 : i64, peel_epilogue}"
+          " : (!transform.any_op) -> !transform.any_op\n";
+  }
   if (!config.rewrite_to_mma_sync) {
     ir << "    %warp_tiled, %thread_forall = transform.structured.tile_using_forall"
        << " %promoted num_threads [" << config.block_threads_y << ", "
@@ -222,6 +236,8 @@ std::string BuildNvidiaMmaRewriteSequence() {
         " : (!transform.any_op) -> !transform.any_op\n";
   ir << "    transform.nvgpu.rewrite_matmul_as_mma_sync %matmul"
         " : (!transform.any_op) -> ()\n";
+  ir << "    %async_launch = transform.nvgpu.create_async_groups %launch"
+        " : (!transform.any_op) -> !transform.any_op\n";
   ir << "    transform.yield\n";
   ir << "  }\n";
   ir << "}\n";
