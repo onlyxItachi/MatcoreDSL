@@ -355,6 +355,11 @@ bool fileExists(const fs::path &path) {
   return fs::exists(path, ec) && !ec;
 }
 
+bool keepDiskCacheObjectFile() {
+  const char *raw = std::getenv("MATCORE_KEEP_CACHE_OBJECT");
+  return raw != nullptr && std::string(raw) == "1";
+}
+
 std::vector<std::string> buildSharedLibraryLinkInputs(
     const RequestedTargetProfile &target_profile) {
   std::vector<std::string> inputs = {
@@ -682,7 +687,9 @@ void persistExecutionToDiskCache(const CachedExecution &compiled,
          "' did not produce a file");
   }
   linkObjectFileToSharedLibrary(artifacts, compile_target);
-  removeArtifactIfExists(artifacts.object_path);
+  if (!keepDiskCacheObjectFile()) {
+    removeArtifactIfExists(artifacts.object_path);
+  }
 }
 
 std::shared_ptr<CachedExecution>
