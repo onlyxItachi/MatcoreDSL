@@ -209,50 +209,6 @@ bool copyFullyOverwritesBuffer(mlir::linalg::CopyOp copy, mlir::Value buffer) {
   return false;
 }
 
-std::int64_t roundUpToMultiple(std::int64_t dim, std::int64_t tile) {
-  if (dim <= 0 || tile <= 0) {
-    return dim;
-  }
-  return ((dim + tile - 1) / tile) * tile;
-}
-
-mlir::OpFoldResult ceilDivMulIndex(mlir::OpBuilder &builder, mlir::Location loc,
-                                   mlir::OpFoldResult dim,
-                                   std::int64_t tile) {
-  if (auto constant_dim = getConstantIndexFromOpFoldResult(dim)) {
-    return builder.getIndexAttr(roundUpToMultiple(*constant_dim, tile));
-  }
-
-  mlir::Value dim_value = llvm::cast<mlir::Value>(dim);
-  mlir::Value c_tile = builder.create<mlir::arith::ConstantIndexOp>(loc, tile);
-  mlir::Value c_one = builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
-  mlir::Value dim_plus_tile_minus_one = builder.create<mlir::arith::AddIOp>(
-      loc, dim_value, builder.create<mlir::arith::SubIOp>(loc, c_tile, c_one));
-  mlir::Value quotient =
-      builder.create<mlir::arith::DivUIOp>(loc, dim_plus_tile_minus_one, c_tile);
-  return builder.create<mlir::arith::MulIOp>(loc, quotient, c_tile).getResult();
-}
-
-bool isStaticallyMmaAligned(mlir::MemRefType lhs_type, mlir::MemRefType rhs_type,
-                            mlir::MemRefType out_type) {
-  if (!lhs_type || !rhs_type || !out_type || !lhs_type.hasStaticShape() ||
-      !rhs_type.hasStaticShape() || !out_type.hasStaticShape() ||
-      lhs_type.getRank() != 2 || rhs_type.getRank() != 2 ||
-      out_type.getRank() != 2) {
-    return false;
-  }
-  const std::int64_t m = lhs_type.getDimSize(0);
-  const std::int64_t k = lhs_type.getDimSize(1);
-  const std::int64_t n = rhs_type.getDimSize(1);
-  const std::int64_t out_m = out_type.getDimSize(0);
-  const std::int64_t out_n = out_type.getDimSize(1);
-  if (out_m != m || out_n != n) {
-    return false;
-  }
-  return m > 0 && n > 0 && k > 0 && (m % 16) == 0 && (n % 8) == 0 &&
-         (k % 16) == 0;
-}
-
 mlir::BlockArgument addLaunchWorkgroupAttribution(mlir::gpu::LaunchOp launch,
                                                   mlir::Type type,
                                                   mlir::Location loc) {
@@ -465,137 +421,6 @@ struct ElideRedundantWorkgroupFillPass
   }
 };
 
-struct DynamicMatmulPaddingPass
-    : public mlir::PassWrapper<DynamicMatmulPaddingPass,
-                               mlir::OperationPass<mlir::func::FuncOp>> {
-  void getDependentDialects(mlir::DialectRegistry &registry) const override {
-    registry.insert<mlir::arith::ArithDialect, mlir::linalg::LinalgDialect,
-                    mlir::memref::MemRefDialect>();
-  }
-
-  void runOnOperation() override {
-    mlir::func::FuncOp func = getOperation();
-    llvm::SmallVector<mlir::linalg::MatmulOp, 8> matmuls;
-    func.walk([&](mlir::linalg::MatmulOp op) { matmuls.push_back(op); });
-
-    mlir::OpBuilder builder(&getContext());
-    for (mlir::linalg::MatmulOp op : matmuls) {
-      if (!op->getBlock()) {
-        continue;
-      }
-
-      llvm::SmallVector<mlir::Value, 2> inputs(op.getInputs().begin(),
-                                               op.getInputs().end());
-      llvm::SmallVector<mlir::Value, 1> outputs(op.getOutputs().begin(),
-                                                op.getOutputs().end());
-      if (inputs.size() != 2 || outputs.size() != 1) {
-        continue;
-      }
-
-      mlir::Value lhs = inputs[0];
-      mlir::Value rhs = inputs[1];
-      mlir::Value out = outputs[0];
-      auto lhs_type = llvm::dyn_cast<mlir::MemRefType>(lhs.getType());
-      auto rhs_type = llvm::dyn_cast<mlir::MemRefType>(rhs.getType());
-      auto out_type = llvm::dyn_cast<mlir::MemRefType>(out.getType());
-      if (!lhs_type || !rhs_type || !out_type || !lhs_type.hasRank() ||
-          !rhs_type.hasRank() || !out_type.hasRank() || lhs_type.getRank() != 2 ||
-          rhs_type.getRank() != 2 || out_type.getRank() != 2) {
-        continue;
-      }
-
-      if (isStaticallyMmaAligned(lhs_type, rhs_type, out_type)) {
-        continue;
-      }
-
-      builder.setInsertionPoint(op);
-      const mlir::Location loc = op.getLoc();
-
-      const mlir::OpFoldResult m_size = mlir::memref::getMixedSize(builder, loc, lhs, 0);
-      const mlir::OpFoldResult k_size = mlir::memref::getMixedSize(builder, loc, lhs, 1);
-      const mlir::OpFoldResult n_size = mlir::memref::getMixedSize(builder, loc, rhs, 1);
-      const mlir::OpFoldResult out_m_size =
-          mlir::memref::getMixedSize(builder, loc, out, 0);
-      const mlir::OpFoldResult out_n_size =
-          mlir::memref::getMixedSize(builder, loc, out, 1);
-
-      const mlir::OpFoldResult mp_size = ceilDivMulIndex(builder, loc, m_size, 16);
-      const mlir::OpFoldResult kp_size = ceilDivMulIndex(builder, loc, k_size, 16);
-      const mlir::OpFoldResult np_size = ceilDivMulIndex(builder, loc, n_size, 8);
-
-      llvm::SmallVector<mlir::OpFoldResult, 2> lhs_pad_sizes = {mp_size, kp_size};
-      llvm::SmallVector<mlir::OpFoldResult, 2> rhs_pad_sizes = {kp_size, np_size};
-      llvm::SmallVector<mlir::OpFoldResult, 2> out_pad_sizes = {mp_size, np_size};
-
-      mlir::Value lhs_pad =
-          builder
-              .create<mlir::memref::AllocOp>(loc, lhs_pad_sizes,
-                                             lhs_type.getElementType(),
-                                             lhs_type.getMemorySpace())
-              .getResult();
-      mlir::Value rhs_pad =
-          builder
-              .create<mlir::memref::AllocOp>(loc, rhs_pad_sizes,
-                                             rhs_type.getElementType(),
-                                             rhs_type.getMemorySpace())
-              .getResult();
-      mlir::Value out_pad =
-          builder
-              .create<mlir::memref::AllocOp>(loc, out_pad_sizes,
-                                             out_type.getElementType(),
-                                             out_type.getMemorySpace())
-              .getResult();
-
-      auto lhs_zero = builder.create<mlir::arith::ConstantOp>(
-          loc, builder.getZeroAttr(lhs_type.getElementType()));
-      auto rhs_zero = builder.create<mlir::arith::ConstantOp>(
-          loc, builder.getZeroAttr(rhs_type.getElementType()));
-      auto out_zero = builder.create<mlir::arith::ConstantOp>(
-          loc, builder.getZeroAttr(out_type.getElementType()));
-      builder.create<mlir::linalg::FillOp>(loc, mlir::ValueRange{lhs_zero},
-                                           mlir::ValueRange{lhs_pad});
-      builder.create<mlir::linalg::FillOp>(loc, mlir::ValueRange{rhs_zero},
-                                           mlir::ValueRange{rhs_pad});
-      builder.create<mlir::linalg::FillOp>(loc, mlir::ValueRange{out_zero},
-                                           mlir::ValueRange{out_pad});
-
-      llvm::SmallVector<mlir::OpFoldResult, 2> offsets = {
-          builder.getIndexAttr(0), builder.getIndexAttr(0)};
-      llvm::SmallVector<mlir::OpFoldResult, 2> strides = {
-          builder.getIndexAttr(1), builder.getIndexAttr(1)};
-      llvm::SmallVector<mlir::OpFoldResult, 2> lhs_sizes = {m_size, k_size};
-      llvm::SmallVector<mlir::OpFoldResult, 2> rhs_sizes = {k_size, n_size};
-      llvm::SmallVector<mlir::OpFoldResult, 2> out_sizes = {out_m_size, out_n_size};
-
-      mlir::Value lhs_pad_valid = builder
-                                      .create<mlir::memref::SubViewOp>(
-                                          loc, lhs_pad, offsets, lhs_sizes, strides)
-                                      .getResult();
-      mlir::Value rhs_pad_valid = builder
-                                      .create<mlir::memref::SubViewOp>(
-                                          loc, rhs_pad, offsets, rhs_sizes, strides)
-                                      .getResult();
-      mlir::Value out_pad_valid = builder
-                                      .create<mlir::memref::SubViewOp>(
-                                          loc, out_pad, offsets, out_sizes, strides)
-                                      .getResult();
-
-      builder.create<mlir::linalg::CopyOp>(loc, mlir::ValueRange{lhs},
-                                           mlir::ValueRange{lhs_pad_valid});
-      builder.create<mlir::linalg::CopyOp>(loc, mlir::ValueRange{rhs},
-                                           mlir::ValueRange{rhs_pad_valid});
-      builder.create<mlir::linalg::CopyOp>(loc, mlir::ValueRange{out},
-                                           mlir::ValueRange{out_pad_valid});
-      builder.create<mlir::linalg::MatmulOp>(
-          loc, mlir::ValueRange{lhs_pad, rhs_pad}, mlir::ValueRange{out_pad});
-      builder.create<mlir::linalg::CopyOp>(loc, mlir::ValueRange{out_pad_valid},
-                                           mlir::ValueRange{out});
-
-      op.erase();
-    }
-  }
-};
-
 }  // namespace
 
 bool IsLowPrecisionTensorType(TensorDType dtype) {
@@ -652,14 +477,7 @@ NvidiaTileConfig SelectNvidiaTileConfig(
   config.block_tile_n = pickTilingFactor(n, 128);
   config.k_tile = pickTilingFactor(k, signature.quantized_i8 ? 32 : 16);
 
-  const bool statically_compatible_mma =
-      m != mlir::ShapedType::kDynamic && n != mlir::ShapedType::kDynamic &&
-      k != mlir::ShapedType::kDynamic && m >= 16 && n >= 8 && k >= 16 &&
-      (m % 16) == 0 && (n % 8) == 0 && (k % 16) == 0 &&
-      IsTensorCoreMmaSyncType(signature);
-  // Safety hotfix: keep the warp MMA rewrite disabled until the NVIDIA tensor
-  // core path is proven memory-safe under the strict tensor.pad flow.
-  config.rewrite_to_mma_sync = false;
+  config.rewrite_to_mma_sync = IsTensorCoreMmaSyncType(signature);
   if (config.rewrite_to_mma_sync) {
     config.block_tile_m = 16;
     config.block_tile_n = 8;
@@ -688,10 +506,6 @@ std::unique_ptr<mlir::Pass> CreatePromoteGpuWorkgroupAllocationsPass() {
 
 std::unique_ptr<mlir::Pass> CreateSpecializeNvidiaWorkgroupMatmulOperandsPass() {
   return std::make_unique<SpecializeNvidiaWorkgroupMatmulOperandsPass>();
-}
-
-std::unique_ptr<mlir::Pass> CreateDynamicMatmulPaddingPass() {
-  return std::make_unique<DynamicMatmulPaddingPass>();
 }
 
 void AddNvidiaMmaPreparationPasses(mlir::PassManager &pm) {

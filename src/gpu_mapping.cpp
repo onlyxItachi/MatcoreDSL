@@ -62,22 +62,6 @@ std::string nvidiaMatmulOpName(const MatmulLoweringSignature &signature) {
   return signature.quantized_i8 ? "linalg.quantized_matmul" : "linalg.matmul";
 }
 
-std::optional<mlir::Value> findRank2MemRefArgument(mlir::func::FuncOp func,
-                                                    unsigned ordinal) {
-  unsigned seen = 0;
-  for (mlir::BlockArgument arg : func.getArguments()) {
-    auto type = llvm::dyn_cast<mlir::MemRefType>(arg.getType());
-    if (!type || !type.hasRank() || type.getRank() != 2) {
-      continue;
-    }
-    if (seen == ordinal) {
-      return arg;
-    }
-    ++seen;
-  }
-  return std::nullopt;
-}
-
 mlir::Value buildCeilDivIndex(mlir::OpBuilder &builder, mlir::Location loc,
                               mlir::Value lhs, mlir::Value rhs) {
   return builder.create<mlir::arith::CeilDivUIOp>(loc, lhs, rhs);
@@ -139,14 +123,7 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
   config.block_tile_n = pickTilingFactor(n, 128);
   config.k_tile = pickTilingFactor(k, signature.quantized_i8 ? 32 : 16);
 
-  const bool statically_compatible_mma =
-      m != mlir::ShapedType::kDynamic && n != mlir::ShapedType::kDynamic &&
-      k != mlir::ShapedType::kDynamic && m >= 16 && n >= 8 && k >= 16 &&
-      (m % 16) == 0 && (n % 8) == 0 && (k % 16) == 0 &&
-      isTensorCoreMmaSyncType(signature);
-  // Safety hotfix: keep the warp MMA rewrite disabled until the NVIDIA tensor
-  // core path is proven memory-safe under the strict tensor.pad flow.
-  config.rewrite_to_mma_sync = false;
+  config.rewrite_to_mma_sync = isTensorCoreMmaSyncType(signature);
   if (config.rewrite_to_mma_sync) {
     // MLIR 18 rewrite_matmul_as_mma_sync assumes one warp (threadIdx.x lanes).
     config.block_tile_m = 16;
@@ -276,32 +253,56 @@ struct DynamicMacroGridMappingPass
       return mlir::failure();
     }
 
-    auto lhs = findRank2MemRefArgument(func, 0);
-    auto rhs = findRank2MemRefArgument(func, 1);
-    if (!lhs.has_value() || !rhs.has_value()) {
-      forall.emitError(
-          "MatCore dynamic macro topology requires two rank-2 memref arguments");
-      return mlir::failure();
-    }
-
     mlir::OpBuilder bounds_builder(forall);
     mlir::Location loc = forall.getLoc();
     llvm::SmallVector<mlir::Value, 3> lower_bounds =
         forall.getLowerBound(bounds_builder);
+    llvm::SmallVector<mlir::Value, 3> upper_bounds =
+        forall.getUpperBound(bounds_builder);
     llvm::SmallVector<mlir::Value, 3> steps = forall.getStep(bounds_builder);
     llvm::SmallVector<mlir::Attribute, 3> mapping_attrs;
     mapping_attrs.assign(forall.getMapping()->begin(), forall.getMapping()->end());
 
+    if (lower_bounds.size() != forall.getRank() ||
+        upper_bounds.size() != forall.getRank() ||
+        steps.size() != forall.getRank() ||
+        mapping_attrs.size() != static_cast<std::size_t>(forall.getRank())) {
+      forall.emitError(
+          "MatCore dynamic macro topology found invalid scf.forall bounds");
+      return mlir::failure();
+    }
+
     mlir::OpBuilder builder(forall);
-    mlir::Value m = builder.create<mlir::memref::DimOp>(loc, *lhs, 0);
-    mlir::Value n = builder.create<mlir::memref::DimOp>(loc, *rhs, 1);
-    mlir::Value tile_m =
-        builder.create<mlir::arith::ConstantIndexOp>(loc, block_tile_m);
-    mlir::Value tile_n =
-        builder.create<mlir::arith::ConstantIndexOp>(loc, block_tile_n);
-    mlir::Value grid_y = buildCeilDivIndex(builder, loc, m, tile_m);
-    mlir::Value grid_x = buildCeilDivIndex(builder, loc, n, tile_n);
     mlir::Value one = builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
+    mlir::Value grid_x = one;
+    mlir::Value grid_y = one;
+    mlir::Value grid_z = one;
+    for (int64_t dim = 0; dim < forall.getRank(); ++dim) {
+      auto map_attr =
+          llvm::dyn_cast<mlir::gpu::GPUBlockMappingAttr>(mapping_attrs[dim]);
+      if (!map_attr) {
+        forall.emitError("MatCore expected gpu.block mapping on top-level scf.forall");
+        return mlir::failure();
+      }
+      mlir::Value extent = builder.create<mlir::arith::SubIOp>(
+          loc, upper_bounds[dim], lower_bounds[dim]);
+      mlir::Value grid_dim = buildCeilDivIndex(builder, loc, extent, steps[dim]);
+      switch (map_attr.getRelativeIndex()) {
+        case 0:
+          grid_x = grid_dim;
+          break;
+        case 1:
+          grid_y = grid_dim;
+          break;
+        case 2:
+          grid_z = grid_dim;
+          break;
+        default:
+          forall.emitError(
+              "MatCore encountered unsupported gpu.block mapping dimension");
+          return mlir::failure();
+      }
+    }
     mlir::Value block_x =
         builder.create<mlir::arith::ConstantIndexOp>(loc, block_threads_x);
     mlir::Value block_y =
@@ -310,16 +311,9 @@ struct DynamicMacroGridMappingPass
         builder.create<mlir::arith::ConstantIndexOp>(loc, block_threads_z);
 
     auto launch = builder.create<mlir::gpu::LaunchOp>(
-        loc, grid_x, grid_y, one, block_x, block_y, block_z);
+        loc, grid_x, grid_y, grid_z, block_x, block_y, block_z);
 
     mlir::Block &launch_body = launch.getBody().front();
-
-    if (lower_bounds.size() != forall.getRank() || steps.size() != forall.getRank() ||
-        mapping_attrs.size() != static_cast<std::size_t>(forall.getRank())) {
-      forall.emitError(
-          "MatCore dynamic macro topology found invalid scf.forall bounds");
-      return mlir::failure();
-    }
 
     mlir::IRMapping mapping;
     mlir::OpBuilder launch_builder = mlir::OpBuilder::atBlockEnd(&launch_body);
