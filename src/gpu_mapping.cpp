@@ -176,6 +176,9 @@ std::string BuildNvidiaTransformMappingSequence(
         " {operands_to_promote = [0, 1], use_full_tiles_by_default,"
         " memory_space = #gpu.address_space<workgroup>} :"
         " (!transform.any_op) -> !transform.any_op\n";
+  ir << "    %pipelined = transform.nvgpu.pipeline_shared_memory_copies"
+        " failures(suppress) %k_loop {depth = 2 : i64, peel_epilogue}"
+        " : (!transform.any_op) -> !transform.any_op\n";
   if (!config.rewrite_to_mma_sync) {
     ir << "    %warp_tiled, %thread_forall = transform.structured.tile_using_forall"
        << " %promoted num_threads [" << config.block_threads_y << ", "
