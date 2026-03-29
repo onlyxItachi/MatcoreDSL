@@ -42,6 +42,8 @@ struct CudaDriverApi {
   using CuGetErrorNameFn = CUresult (*)(CUresult, const char **);
   using CuDeviceGetFn = CUresult (*)(CUdevice *, int);
   using CuDevicePrimaryCtxRetainFn = CUresult (*)(CUcontext *, CUdevice);
+  using CuCtxSetCurrentFn = CUresult (*)(CUcontext);
+  using CuCtxGetCurrentFn = CUresult (*)(CUcontext *);
   using CuCtxPushCurrentFn = CUresult (*)(CUcontext);
   using CuCtxPopCurrentFn = CUresult (*)(CUcontext *);
   using CuModuleLoadDataFn = CUresult (*)(CUmodule *, const void *);
@@ -85,6 +87,10 @@ struct CudaDriverApi {
     api.cuDeviceGet = loadSymbol<CuDeviceGetFn>(handle, "cuDeviceGet");
     api.cuDevicePrimaryCtxRetain =
         loadSymbol<CuDevicePrimaryCtxRetainFn>(handle, "cuDevicePrimaryCtxRetain");
+    api.cuCtxSetCurrent =
+        loadSymbol<CuCtxSetCurrentFn>(handle, "cuCtxSetCurrent");
+    api.cuCtxGetCurrent =
+        loadSymbol<CuCtxGetCurrentFn>(handle, "cuCtxGetCurrent");
     api.cuCtxPushCurrent =
         loadSymbol<CuCtxPushCurrentFn>(handle, "cuCtxPushCurrent");
     api.cuCtxPopCurrent =
@@ -121,6 +127,8 @@ struct CudaDriverApi {
   CuGetErrorNameFn cuGetErrorName = nullptr;
   CuDeviceGetFn cuDeviceGet = nullptr;
   CuDevicePrimaryCtxRetainFn cuDevicePrimaryCtxRetain = nullptr;
+  CuCtxSetCurrentFn cuCtxSetCurrent = nullptr;
+  CuCtxGetCurrentFn cuCtxGetCurrent = nullptr;
   CuCtxPushCurrentFn cuCtxPushCurrent = nullptr;
   CuCtxPopCurrentFn cuCtxPopCurrent = nullptr;
   CuModuleLoadDataFn cuModuleLoadData = nullptr;
@@ -171,10 +179,24 @@ struct ScopedContext {
                 "cuDevicePrimaryCtxRetain");
       return ctx;
     }();
-    checkCuda(api.cuCtxPushCurrent(context), "cuCtxPushCurrent");
+    checkCuda(api.cuCtxGetCurrent(&previous_context), "cuCtxGetCurrent");
+    if (previous_context == context) {
+      return;
+    }
+    restore_previous = true;
+    checkCuda(api.cuCtxSetCurrent(context), "cuCtxSetCurrent");
   }
 
-  ~ScopedContext() { CudaDriverApi::instance().cuCtxPopCurrent(nullptr); }
+  ~ScopedContext() {
+    if (!restore_previous) {
+      return;
+    }
+    CudaDriverApi &api = CudaDriverApi::instance();
+    api.cuCtxSetCurrent(previous_context);
+  }
+
+  CUcontext previous_context = nullptr;
+  bool restore_previous = false;
 };
 
 MATCORE_GPU_RUNTIME_EXPORT CUmodule mgpuModuleLoad(void *data,
