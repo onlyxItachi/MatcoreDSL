@@ -383,6 +383,7 @@ struct SpecializeNvidiaWorkgroupMatmulOperandsPass
     mlir::OpBuilder builder(&getContext());
     for (mlir::linalg::MatmulOp op : matmuls) {
       llvm::SmallVector<mlir::Value, 2> specialized_inputs;
+      llvm::SmallVector<mlir::Value, 1> specialized_outputs;
       bool changed = false;
       for (mlir::Value input : op.getInputs()) {
         mlir::Value replacement = input;
@@ -399,13 +400,29 @@ struct SpecializeNvidiaWorkgroupMatmulOperandsPass
         specialized_inputs.push_back(replacement);
       }
 
+      for (mlir::Value output : op.getOutputs()) {
+        mlir::Value replacement = output;
+        if (auto cast = output.getDefiningOp<mlir::memref::CastOp>()) {
+          auto source_type = llvm::dyn_cast<mlir::MemRefType>(cast.getSource().getType());
+          auto result_type = llvm::dyn_cast<mlir::MemRefType>(cast.getType());
+          if (source_type && result_type && source_type.hasStaticShape() &&
+              !result_type.hasStaticShape() &&
+              IsWorkgroupMemorySpace(source_type.getMemorySpace())) {
+            replacement = cast.getSource();
+            changed = true;
+          }
+        }
+        specialized_outputs.push_back(replacement);
+      }
+
       if (!changed) {
         continue;
       }
 
       builder.setInsertionPoint(op);
       auto replacement = builder.create<mlir::linalg::MatmulOp>(
-          op.getLoc(), mlir::ValueRange(specialized_inputs), op.getOutputs());
+          op.getLoc(), mlir::ValueRange(specialized_inputs),
+          mlir::ValueRange(specialized_outputs));
       op->replaceAllUsesWith(replacement->getResults());
       op.erase();
     }

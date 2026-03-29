@@ -36,28 +36,35 @@ namespace {
 }
 
 std::string pipelineDumpPath() {
-  const char *raw = std::getenv("MATCORE_PIPELINE_DUMP");
+  // Backward-compatible env var support:
+  // 1) MATCORE_NVIDIA_PIPELINE_DUMP (preferred)
+  // 2) MATCORE_PIPELINE_DUMP (legacy fallback)
+  const char *raw = std::getenv("MATCORE_NVIDIA_PIPELINE_DUMP");
+  if (raw == nullptr || *raw == '\0') {
+    raw = std::getenv("MATCORE_PIPELINE_DUMP");
+  }
   if (raw == nullptr || *raw == '\0') {
     return {};
   }
   return raw;
 }
 
-void overwritePipelineDump(llvm::StringRef header) {
-  const std::string path = pipelineDumpPath();
+void overwritePipelineDump(llvm::StringRef path, llvm::StringRef header) {
   if (path.empty()) {
     return;
   }
   std::error_code ec;
   llvm::raw_fd_ostream stream(path, ec, llvm::sys::fs::OF_Text);
   if (ec) {
-    fail("failed to open pipeline dump '" + path + "': " + ec.message());
+    fail("failed to open pipeline dump '" + std::string(path) + "': " +
+         ec.message());
   }
   stream << header;
 }
 
-void appendPipelineDump(llvm::StringRef stage_name, mlir::ModuleOp module) {
-  const std::string path = pipelineDumpPath();
+void appendPipelineDump(llvm::StringRef path, llvm::StringRef stage_name,
+                        mlir::ModuleOp module,
+                        const mlir::OpPrintingFlags &printing_flags) {
   if (path.empty()) {
     return;
   }
@@ -65,10 +72,11 @@ void appendPipelineDump(llvm::StringRef stage_name, mlir::ModuleOp module) {
   llvm::raw_fd_ostream stream(
       path, ec, llvm::sys::fs::OF_Text | llvm::sys::fs::OF_Append);
   if (ec) {
-    fail("failed to append pipeline dump '" + path + "': " + ec.message());
+    fail("failed to append pipeline dump '" + std::string(path) + "': " +
+         ec.message());
   }
   stream << "\n// ----- " << stage_name << " -----\n";
-  module.print(stream);
+  module.print(stream, printing_flags);
   stream << "\n";
 }
 
@@ -292,22 +300,30 @@ void configureLoweringPipeline(mlir::PassManager &pm, const LoweringPlan &plan,
 void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
                          const MatmulLoweringSignature &signature,
                          llvm::StringRef nvidia_chip) {
-  if (!pipelineDumpPath().empty()) {
+  const std::string dump_path =
+      plan.route == LoweringRoute::kNvidiaNvptx ? pipelineDumpPath()
+                                                 : std::string{};
+  mlir::OpPrintingFlags dump_printing_flags;
+  dump_printing_flags.useLocalScope();
+
+  if (!dump_path.empty()) {
     module.getContext()->disableMultithreading();
-    overwritePipelineDump("// MatCore pipeline dump\n");
-    appendPipelineDump("initial-module", module);
+    overwritePipelineDump(
+        dump_path,
+        "// MatCore NVIDIA lowering pipeline dump (deterministic)\n");
+    appendPipelineDump(dump_path, "initial-module", module, dump_printing_flags);
   }
   auto run_stage = [&](llvm::StringRef stage_name, auto &&configure_stage) {
     mlir::PassManager pm(module.getContext());
     configure_stage(pm);
     std::unique_ptr<llvm::raw_fd_ostream> ir_stream;
-    if (!pipelineDumpPath().empty()) {
+    if (!dump_path.empty()) {
       std::error_code ec;
       ir_stream = std::make_unique<llvm::raw_fd_ostream>(
-          pipelineDumpPath(), ec,
+          dump_path, ec,
           llvm::sys::fs::OF_Text | llvm::sys::fs::OF_Append);
       if (ec) {
-        fail("failed to append pipeline dump '" + pipelineDumpPath() + "': " +
+        fail("failed to append pipeline dump '" + dump_path + "': " +
              ec.message());
       }
       *ir_stream << "\n// ===== begin stage " << stage_name << " =====\n";
@@ -317,7 +333,7 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
           /*printModuleScope=*/true,
           /*printAfterOnlyOnChange=*/false,
           /*printAfterOnlyOnFailure=*/false, *ir_stream,
-          mlir::OpPrintingFlags().enableDebugInfo());
+          dump_printing_flags);
     }
     std::string diagnostics;
     mlir::ScopedDiagnosticHandler diag_handler(
@@ -335,7 +351,7 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
            (diagnostics.empty() ? std::string() : "\n" + diagnostics) + "\n" +
            DumpModuleIR(module));
     }
-    appendPipelineDump(stage_name, module);
+    appendPipelineDump(dump_path, stage_name, module, dump_printing_flags);
   };
 
   if (plan.route == LoweringRoute::kNvidiaNvptx) {
@@ -354,9 +370,11 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
     const NvidiaMappingConfig mapping =
         selectNvidiaMappingForModule(module, signature);
     try {
-      appendPipelineDump("before-nvidia-apply-transform", module);
+      appendPipelineDump(dump_path, "before-nvidia-apply-transform", module,
+                         dump_printing_flags);
       ApplyNvidiaMmaTransformToModule(module, signature, mapping);
-      appendPipelineDump("after-nvidia-apply-transform", module);
+      appendPipelineDump(dump_path, "after-nvidia-apply-transform", module,
+                         dump_printing_flags);
     } catch (const std::exception &exc) {
       fail("failed to run lowering pipeline for route " +
            std::string(routeName(plan.route)) +
@@ -377,9 +395,11 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
         AddNvidiaMmaPreparationPasses(pm);
       });
       try {
-        appendPipelineDump("before-nvidia-rewrite-mma-sync", module);
+        appendPipelineDump(dump_path, "before-nvidia-rewrite-mma-sync", module,
+                           dump_printing_flags);
         ApplyNvidiaMmaRewriteToModule(module);
-        appendPipelineDump("after-nvidia-rewrite-mma-sync", module);
+        appendPipelineDump(dump_path, "after-nvidia-rewrite-mma-sync", module,
+                           dump_printing_flags);
       } catch (const std::exception &exc) {
         fail("failed to run lowering pipeline for route " +
              std::string(routeName(plan.route)) +
@@ -398,7 +418,11 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
       });
     } else {
       try {
+        appendPipelineDump(dump_path, "before-nvidia-map-threads", module,
+                           dump_printing_flags);
         ApplyNvidiaThreadMappingToModule(module, mapping);
+        appendPipelineDump(dump_path, "after-nvidia-map-threads", module,
+                           dump_printing_flags);
       } catch (const std::exception &exc) {
         fail("failed to run lowering pipeline for route " +
              std::string(routeName(plan.route)) +

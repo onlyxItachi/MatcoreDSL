@@ -188,7 +188,7 @@ std::string BuildNvidiaTransformMappingSequence(
      << " %block_tiled [0, 0, " << config.k_tile
      << "] : (!transform.any_op) -> (!transform.any_op, !transform.any_op)\n";
   ir << "    %promoted = transform.structured.promote %k_tiled"
-        " {operands_to_promote = [0, 1], use_full_tiles_by_default,"
+        " {operands_to_promote = [0, 1, 2], use_full_tiles_by_default,"
         " memory_space = #gpu.address_space<workgroup>} :"
         " (!transform.any_op) -> !transform.any_op\n";
   if (!config.rewrite_to_mma_sync) {
