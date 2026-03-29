@@ -13,6 +13,7 @@
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Conversion/SCFToGPU/SCFToGPUPass.h"
 #include "mlir/Conversion/VectorToGPU/VectorToGPU.h"
+#include "mlir/Dialect/Bufferization/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/Pipelines/Passes.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
@@ -273,6 +274,13 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
   };
 
   if (plan.route == LoweringRoute::kNvidiaNvptx) {
+    run_stage("nvidia-tensor-bufferize", [&](mlir::PassManager &pm) {
+      pm.addPass(mlir::bufferization::createEmptyTensorToAllocTensorPass());
+      pm.addPass(mlir::bufferization::createOneShotBufferizePass());
+      pm.addPass(mlir::createBufferizationToMemRefPass());
+      pm.addPass(mlir::createCanonicalizerPass());
+      pm.addPass(mlir::createCSEPass());
+    });
     const NvidiaMappingConfig mapping =
         selectNvidiaMappingForModule(module, signature);
     try {

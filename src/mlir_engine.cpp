@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -16,8 +17,10 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/X86Vector/X86VectorDialect.h"
+#include "mlir/InitAllDialects.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Builders.h"
 
@@ -233,6 +236,44 @@ std::string requestedNvidiaChip(const RequestedTargetProfile &target_profile) {
   return "sm_80";
 }
 
+std::int64_t roundUpToMultiple(std::int64_t dim, std::int64_t tile) {
+  if (dim <= 0 || tile <= 0) {
+    return dim;
+  }
+  return ((dim + tile - 1) / tile) * tile;
+}
+
+bool useTensorPadMatmul(const LoweringPlan &plan,
+                        const MatmulLoweringSignature &signature) {
+  return plan.route == LoweringRoute::kNvidiaNvptx &&
+         signature.lhs_dtype == TensorDType::kFloat16 &&
+         signature.rhs_dtype == TensorDType::kFloat16 &&
+         signature.out_dtype == TensorDType::kFloat16 &&
+         !signature.quantized_i8;
+}
+
+mlir::Value createZeroPaddedTensor(mlir::OpBuilder &builder, mlir::Location loc,
+                                   mlir::Value tensor,
+                                   mlir::RankedTensorType result_type,
+                                   std::int64_t high_pad0,
+                                   std::int64_t high_pad1) {
+  if (high_pad0 == 0 && high_pad1 == 0) {
+    return tensor;
+  }
+
+  auto element_type = result_type.getElementType();
+  auto zero = builder.create<mlir::arith::ConstantOp>(
+      loc, builder.getZeroAttr(element_type));
+  llvm::SmallVector<mlir::OpFoldResult, 2> low = {builder.getIndexAttr(0),
+                                                  builder.getIndexAttr(0)};
+  llvm::SmallVector<mlir::OpFoldResult, 2> high = {
+      builder.getIndexAttr(high_pad0), builder.getIndexAttr(high_pad1)};
+  return builder
+      .create<mlir::tensor::PadOp>(loc, result_type, tensor, low, high,
+                                   zero.getResult())
+      .getResult();
+}
+
 mlir::OwningOpRef<mlir::ModuleOp> buildMatmulModule(
     const KernelIR &kernel, const MatmulLoweringSignature &signature,
     const LoweringPlan &plan, const std::vector<RuntimeTensorView> &tensors,
@@ -264,11 +305,74 @@ mlir::OwningOpRef<mlir::ModuleOp> buildMatmulModule(
   mlir::Block *entry_block = func.addEntryBlock();
   builder.setInsertionPointToStart(entry_block);
 
+  const mlir::Location loc = builder.getUnknownLoc();
   auto zero = builder.create<mlir::arith::ConstantOp>(
-      builder.getUnknownLoc(), builder.getZeroAttr(out_element_type));
-  builder.create<mlir::linalg::FillOp>(
-      builder.getUnknownLoc(), mlir::ValueRange{zero},
-      mlir::ValueRange{entry_block->getArgument(2)});
+      loc, builder.getZeroAttr(out_element_type));
+  if (useTensorPadMatmul(plan, signature)) {
+    const std::int64_t padded_m = roundUpToMultiple(shape.m, 16);
+    const std::int64_t padded_k = roundUpToMultiple(shape.k, 16);
+    const std::int64_t padded_n = roundUpToMultiple(shape.n, 8);
+
+    auto lhs_tensor = builder.create<mlir::bufferization::ToTensorOp>(
+        loc, entry_block->getArgument(0), /*restrict=*/true,
+        /*writable=*/false);
+    auto rhs_tensor = builder.create<mlir::bufferization::ToTensorOp>(
+        loc, entry_block->getArgument(1), /*restrict=*/true,
+        /*writable=*/false);
+
+    auto lhs_tensor_type =
+        mlir::RankedTensorType::get({shape.m, shape.k}, lhs_element_type);
+    auto rhs_tensor_type =
+        mlir::RankedTensorType::get({shape.k, shape.n}, rhs_element_type);
+    auto padded_lhs_type =
+        mlir::RankedTensorType::get({padded_m, padded_k}, lhs_element_type);
+    auto padded_rhs_type =
+        mlir::RankedTensorType::get({padded_k, padded_n}, rhs_element_type);
+    auto padded_out_type =
+        mlir::RankedTensorType::get({padded_m, padded_n}, out_element_type);
+    auto out_tensor_type =
+        mlir::RankedTensorType::get({shape.m, shape.n}, out_element_type);
+
+    mlir::Value lhs_padded = createZeroPaddedTensor(
+        builder, loc, lhs_tensor.getResult(), padded_lhs_type, padded_m - shape.m,
+        padded_k - shape.k);
+    mlir::Value rhs_padded = createZeroPaddedTensor(
+        builder, loc, rhs_tensor.getResult(), padded_rhs_type, padded_k - shape.k,
+        padded_n - shape.n);
+
+    auto padded_empty = builder.create<mlir::tensor::EmptyOp>(
+        loc, llvm::ArrayRef<std::int64_t>{padded_m, padded_n}, out_element_type);
+    mlir::Value padded_zero =
+        builder.create<mlir::linalg::FillOp>(loc, mlir::ValueRange{zero},
+                                             mlir::ValueRange{padded_empty})
+            .getResult(0);
+    mlir::Value padded_result =
+        builder
+            .create<mlir::linalg::MatmulOp>(
+                loc, mlir::ValueRange{lhs_padded, rhs_padded},
+                mlir::ValueRange{padded_zero})
+            .getResult(0);
+
+    llvm::SmallVector<mlir::OpFoldResult, 2> offsets = {
+        builder.getIndexAttr(0), builder.getIndexAttr(0)};
+    llvm::SmallVector<mlir::OpFoldResult, 2> sizes = {
+        builder.getIndexAttr(shape.m), builder.getIndexAttr(shape.n)};
+    llvm::SmallVector<mlir::OpFoldResult, 2> strides = {
+        builder.getIndexAttr(1), builder.getIndexAttr(1)};
+    mlir::Value sliced_result =
+        builder
+            .create<mlir::tensor::ExtractSliceOp>(
+                loc, out_tensor_type, padded_result, offsets, sizes, strides)
+            .getResult();
+    builder.create<mlir::bufferization::MaterializeInDestinationOp>(
+        loc, mlir::Type(), sliced_result, entry_block->getArgument(2),
+        /*restrict=*/true, /*writable=*/true);
+    builder.create<mlir::func::ReturnOp>(loc);
+    return module;
+  }
+
+  builder.create<mlir::linalg::FillOp>(loc, mlir::ValueRange{zero},
+                                       mlir::ValueRange{entry_block->getArgument(2)});
   if (signature.quantized_i8) {
     const std::int32_t lhs_zero_point =
         tensors[0].quantization.enabled ? tensors[0].quantization.zero_point
@@ -277,21 +381,21 @@ mlir::OwningOpRef<mlir::ModuleOp> buildMatmulModule(
         tensors[1].quantization.enabled ? tensors[1].quantization.zero_point
                                         : kernel.global_quantization.zero_point;
     auto lhs_zero = builder.create<mlir::arith::ConstantIntOp>(
-        builder.getUnknownLoc(), lhs_zero_point, 32);
+        loc, lhs_zero_point, 32);
     auto rhs_zero = builder.create<mlir::arith::ConstantIntOp>(
-        builder.getUnknownLoc(), rhs_zero_point, 32);
+        loc, rhs_zero_point, 32);
     builder.create<mlir::linalg::QuantizedMatmulOp>(
-        builder.getUnknownLoc(),
+        loc,
         mlir::ValueRange{entry_block->getArgument(0), entry_block->getArgument(1),
                          lhs_zero, rhs_zero},
         mlir::ValueRange{entry_block->getArgument(2)});
   } else {
     builder.create<mlir::linalg::MatmulOp>(
-        builder.getUnknownLoc(),
+        loc,
         mlir::ValueRange{entry_block->getArgument(0), entry_block->getArgument(1)},
         mlir::ValueRange{entry_block->getArgument(2)});
   }
-  builder.create<mlir::func::ReturnOp>(builder.getUnknownLoc());
+  builder.create<mlir::func::ReturnOp>(loc);
 
   return module;
 }
@@ -301,13 +405,18 @@ mlir::OwningOpRef<mlir::ModuleOp> buildMatmulModule(
 LoweredModule MlirEngine::BuildAndLower(
     const KernelIR &kernel, const RequestedTargetProfile &target_profile,
     const std::vector<RuntimeTensorView> &tensors, mlir::MLIRContext &context) {
-  context.loadDialect<mlir::arith::ArithDialect, mlir::cf::ControlFlowDialect,
-                      mlir::func::FuncDialect, mlir::gpu::GPUDialect,
-                      mlir::linalg::LinalgDialect, mlir::memref::MemRefDialect,
-                      mlir::nvgpu::NVGPUDialect, mlir::NVVM::NVVMDialect,
-                      mlir::ROCDL::ROCDLDialect, mlir::scf::SCFDialect,
-                      mlir::vector::VectorDialect, mlir::x86vector::X86VectorDialect,
-                      mlir::LLVM::LLVMDialect>();
+  mlir::DialectRegistry registry;
+  mlir::registerAllDialects(registry);
+  context.appendDialectRegistry(registry);
+  context.loadDialect<mlir::arith::ArithDialect,
+                      mlir::bufferization::BufferizationDialect,
+                      mlir::cf::ControlFlowDialect, mlir::func::FuncDialect,
+                      mlir::gpu::GPUDialect, mlir::linalg::LinalgDialect,
+                      mlir::memref::MemRefDialect, mlir::nvgpu::NVGPUDialect,
+                      mlir::NVVM::NVVMDialect, mlir::ROCDL::ROCDLDialect,
+                      mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
+                      mlir::vector::VectorDialect,
+                      mlir::x86vector::X86VectorDialect, mlir::LLVM::LLVMDialect>();
 
   validateKernel(kernel, target_profile, tensors);
   const LoweringPlan plan = selectLoweringPlan(target_profile.kind);
