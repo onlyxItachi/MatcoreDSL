@@ -243,6 +243,13 @@ std::int64_t roundUpToMultiple(std::int64_t dim, std::int64_t tile) {
   return ((dim + tile - 1) / tile) * tile;
 }
 
+mlir::Value createTypedZero(mlir::OpBuilder &builder, mlir::Location loc,
+                            mlir::Type element_type) {
+  return builder
+      .create<mlir::arith::ConstantOp>(loc, builder.getZeroAttr(element_type))
+      .getResult();
+}
+
 bool useTensorPadMatmul(const LoweringPlan &plan,
                         const MatmulLoweringSignature &signature,
                         const MatmulShape &shape) {
@@ -264,16 +271,15 @@ mlir::Value createZeroPaddedTensor(mlir::OpBuilder &builder, mlir::Location loc,
     return tensor;
   }
 
-  auto element_type = result_type.getElementType();
-  auto zero = builder.create<mlir::arith::ConstantOp>(
-      loc, builder.getZeroAttr(element_type));
+  mlir::Value zero =
+      createTypedZero(builder, loc, result_type.getElementType());
   llvm::SmallVector<mlir::OpFoldResult, 2> low = {builder.getIndexAttr(0),
                                                   builder.getIndexAttr(0)};
   llvm::SmallVector<mlir::OpFoldResult, 2> high = {
       builder.getIndexAttr(high_pad0), builder.getIndexAttr(high_pad1)};
   return builder
       .create<mlir::tensor::PadOp>(loc, result_type, tensor, low, high,
-                                   zero.getResult())
+                                   zero)
       .getResult();
 }
 
@@ -309,8 +315,7 @@ mlir::OwningOpRef<mlir::ModuleOp> buildMatmulModule(
   builder.setInsertionPointToStart(entry_block);
 
   const mlir::Location loc = builder.getUnknownLoc();
-  auto zero = builder.create<mlir::arith::ConstantOp>(
-      loc, builder.getZeroAttr(out_element_type));
+  mlir::Value zero = createTypedZero(builder, loc, out_element_type);
   if (useTensorPadMatmul(plan, signature, shape)) {
     const std::int64_t padded_m = roundUpToMultiple(shape.m, 16);
     const std::int64_t padded_k = roundUpToMultiple(shape.k, 16);
