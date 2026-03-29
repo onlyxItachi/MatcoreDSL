@@ -624,20 +624,26 @@ def _stage_nvidia_arrays(
     copybacks: list[tuple[Any, Any]] = []
     for idx, array in enumerate(arrays):
         underlying = array._array if isinstance(array, MatCoreTensorView) else array
+        is_stored_output = idx in stored_indices
         cuda_ready = hasattr(array, "__cuda_array_interface__") or hasattr(
             underlying, "__cuda_array_interface__"
         )
         if cuda_ready:
+            if is_stored_output:
+                underlying.fill(0)
             staged_arrays.append(array)
             continue
 
-        device_array = cp.asarray(underlying)
+        if is_stored_output:
+            device_array = cp.zeros_like(underlying)
+        else:
+            device_array = cp.asarray(underlying)
         if isinstance(array, MatCoreTensorView):
             staged_array = MatCoreTensorView(device_array, **_view_metadata(array))
         else:
             staged_array = device_array
         staged_arrays.append(staged_array)
-        if idx in stored_indices:
+        if is_stored_output:
             copybacks.append((underlying, device_array))
     return tuple(staged_arrays), copybacks
 

@@ -524,26 +524,50 @@ def select_matcore_target(requested_target: str) -> tuple[str | None, str]:
 
 def prepare_matcore_inputs(mc: Any, dtype: str, *, size: int, seed: int) -> tuple[Any, Any, np.ndarray, dict[str, Any] | None]:
     quant: dict[str, Any] | None = None
+    cp = _optional_import_cupy()
+    use_device = cp is not None and host_has_nvidia_gpu()
     if dtype == "float16":
         a, b = make_fp_inputs(size, seed=seed, dtype=np.float16)
-        out = np.zeros((size, size), dtype=np.float16)
+        if use_device:
+            a = cp.asarray(a)
+            b = cp.asarray(b)
+            out = cp.zeros((size, size), dtype=cp.float16)
+        else:
+            out = np.zeros((size, size), dtype=np.float16)
         return a, b, out, quant
     if dtype == "bfloat16":
         a_f32, b_f32 = make_fp_inputs(size, seed=seed, dtype=np.float32)
         a_storage = float32_to_bf16_storage(a_f32)
         b_storage = float32_to_bf16_storage(b_f32)
-        a_arg = mc.asdtype(a_storage, "bfloat16")
-        b_arg = mc.asdtype(b_storage, "bfloat16")
-        out = np.zeros((size, size), dtype=np.float32)
+        if use_device:
+            a_arg = mc.asdtype(cp.asarray(a_storage), "bfloat16")
+            b_arg = mc.asdtype(cp.asarray(b_storage), "bfloat16")
+            out = cp.zeros((size, size), dtype=cp.float32)
+        else:
+            a_arg = mc.asdtype(a_storage, "bfloat16")
+            b_arg = mc.asdtype(b_storage, "bfloat16")
+            out = np.zeros((size, size), dtype=np.float32)
         return a_arg, b_arg, out, quant
     if dtype == "int8":
         a_i8, b_i8 = make_int8_inputs(size, seed=seed)
-        a_arg = mc.asdtype(a_i8, "int8", scale=1.0, zero_point=0)
-        b_arg = mc.asdtype(b_i8, "int8", scale=1.0, zero_point=0)
-        out = np.zeros((size, size), dtype=np.int32)
+        if use_device:
+            a_arg = mc.asdtype(cp.asarray(a_i8), "int8", scale=1.0, zero_point=0)
+            b_arg = mc.asdtype(cp.asarray(b_i8), "int8", scale=1.0, zero_point=0)
+            out = cp.zeros((size, size), dtype=cp.int32)
+        else:
+            a_arg = mc.asdtype(a_i8, "int8", scale=1.0, zero_point=0)
+            b_arg = mc.asdtype(b_i8, "int8", scale=1.0, zero_point=0)
+            out = np.zeros((size, size), dtype=np.int32)
         quant = {"scale": 1.0, "zero_point": 0, "enabled": True}
         return a_arg, b_arg, out, quant
     raise ValueError(f"Unsupported dtype '{dtype}'")
+
+
+def matcore_checksum(out: Any) -> float:
+    cp = _optional_import_cupy()
+    if cp is not None and hasattr(out, "__cuda_array_interface__"):
+        return float(cp.asnumpy(cp.sum(out, dtype=cp.float64)))
+    return float(np.sum(np.asarray(out, dtype=np.float64)))
 
 
 def clear_matcore_cache() -> None:
@@ -585,8 +609,11 @@ def run_matcore_worker(
         if cache_mode in ("cold", "warm-cache"):
             start = time.perf_counter()
             launch_once()
+            cp = _optional_import_cupy()
+            if cp is not None and hasattr(out, "__cuda_array_interface__"):
+                cp.cuda.Stream.null.synchronize()
             elapsed_ms = (time.perf_counter() - start) * 1000.0
-            checksum = float(np.sum(np.asarray(out, dtype=np.float64)))
+            checksum = matcore_checksum(out)
             return WorkerResult(
                 framework="MatCore",
                 dtype=dtype,
@@ -601,8 +628,14 @@ def run_matcore_worker(
                 compile_note="disk-cache cold build" if cache_mode == "cold" else "disk-cache warm load",
             )
 
-        stats = benchmark_operation(launch_once, lambda: None, warmup=warmup, runs=runs)
-        checksum = float(np.sum(np.asarray(out, dtype=np.float64)))
+        cp = _optional_import_cupy()
+        sync = (
+            cp.cuda.Stream.null.synchronize
+            if cp is not None and hasattr(out, "__cuda_array_interface__")
+            else (lambda: None)
+        )
+        stats = benchmark_operation(launch_once, sync, warmup=warmup, runs=runs)
+        checksum = matcore_checksum(out)
         return stats_to_result(
             framework="MatCore",
             dtype=dtype,

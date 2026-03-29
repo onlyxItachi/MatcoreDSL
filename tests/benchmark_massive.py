@@ -19,6 +19,7 @@ M = 1024
 K = 1024
 N = 1024
 STEPS = 8
+INPUT_SCALE = 1.0 / 32.0
 TARGET_TIMEOUT_SECONDS = 180.0
 
 TARGETS = [
@@ -40,7 +41,18 @@ def matmul_kernel(a, b, c):
 
 def benchmark_target(target: str, a_seed: np.ndarray, b_seed: np.ndarray) -> None:
     current = a_seed.copy()
-    scratch = np.empty((BATCH, M, N), dtype=np.float16)
+    b_runtime = b_seed
+    scratch = np.zeros((BATCH, M, N), dtype=np.float16)
+    cp = None
+    if target == "nvidia-dgpu":
+        try:
+            import cupy as cp  # type: ignore
+
+            current = cp.asarray(current)
+            b_runtime = cp.asarray(b_seed)
+            scratch = cp.zeros((BATCH, M, N), dtype=cp.float16)
+        except Exception:
+            cp = None
 
     start = time.perf_counter()
     try:
@@ -49,14 +61,18 @@ def benchmark_target(target: str, a_seed: np.ndarray, b_seed: np.ndarray) -> Non
                 mc.launch(
                     matmul_kernel,
                     current[batch_idx],
-                    b_seed[batch_idx],
+                    b_runtime[batch_idx],
                     scratch[batch_idx],
                     target=target,
                 )
             current, scratch = scratch, current
 
         elapsed_ms = (time.perf_counter() - start) * 1000.0
-        checksum = float(np.sum(current, dtype=np.float64))
+        if cp is not None:
+            cp.cuda.Stream.null.synchronize()
+            checksum = float(cp.asnumpy(cp.sum(current, dtype=cp.float64)))
+        else:
+            checksum = float(np.sum(current, dtype=np.float64))
         print(f"{target}: {elapsed_ms:.3f} ms (ok, checksum={checksum:.6e})")
     except Exception as exc:
         elapsed_ms = (time.perf_counter() - start) * 1000.0
@@ -113,8 +129,12 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     rng = np.random.default_rng(20260321)
-    a_seed = rng.standard_normal((BATCH, M, K), dtype=np.float32).astype(np.float16)
-    b_seed = rng.standard_normal((BATCH, K, N), dtype=np.float32).astype(np.float16)
+    a_seed = (
+        rng.standard_normal((BATCH, M, K), dtype=np.float32) * INPUT_SCALE
+    ).astype(np.float16)
+    b_seed = (
+        rng.standard_normal((BATCH, K, N), dtype=np.float32) * INPUT_SCALE
+    ).astype(np.float16)
 
     if args.worker_target is not None:
         benchmark_target(args.worker_target, a_seed, b_seed)
