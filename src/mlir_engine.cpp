@@ -244,12 +244,15 @@ std::int64_t roundUpToMultiple(std::int64_t dim, std::int64_t tile) {
 }
 
 bool useTensorPadMatmul(const LoweringPlan &plan,
-                        const MatmulLoweringSignature &signature) {
+                        const MatmulLoweringSignature &signature,
+                        const MatmulShape &shape) {
+  const bool needs_padding =
+      (shape.m % 16) != 0 || (shape.k % 16) != 0 || (shape.n % 8) != 0;
   return plan.route == LoweringRoute::kNvidiaNvptx &&
          signature.lhs_dtype == TensorDType::kFloat16 &&
          signature.rhs_dtype == TensorDType::kFloat16 &&
          signature.out_dtype == TensorDType::kFloat16 &&
-         !signature.quantized_i8;
+         !signature.quantized_i8 && needs_padding;
 }
 
 mlir::Value createZeroPaddedTensor(mlir::OpBuilder &builder, mlir::Location loc,
@@ -308,7 +311,7 @@ mlir::OwningOpRef<mlir::ModuleOp> buildMatmulModule(
   const mlir::Location loc = builder.getUnknownLoc();
   auto zero = builder.create<mlir::arith::ConstantOp>(
       loc, builder.getZeroAttr(out_element_type));
-  if (useTensorPadMatmul(plan, signature)) {
+  if (useTensorPadMatmul(plan, signature, shape)) {
     const std::int64_t padded_m = roundUpToMultiple(shape.m, 16);
     const std::int64_t padded_k = roundUpToMultiple(shape.k, 16);
     const std::int64_t padded_n = roundUpToMultiple(shape.n, 8);
