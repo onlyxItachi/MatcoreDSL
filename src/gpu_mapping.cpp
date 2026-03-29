@@ -253,10 +253,10 @@ std::string BuildNvidiaAsyncPipelineSequence() {
         " : (!transform.any_op) -> !transform.any_op\n";
   ir << "    %loops = transform.structured.match ops{[\"scf.for\"]} in %launch"
         " : (!transform.any_op) -> !transform.any_op\n";
-  ir << "    %async = transform.nvgpu.create_async_groups %loops {bypass_l1}"
-        " : (!transform.any_op) -> !transform.any_op\n";
   ir << "    %pipelined = transform.nvgpu.pipeline_shared_memory_copies"
-        " failures(suppress) %async {depth = 2 : i64, peel_epilogue}"
+        " failures(suppress) %loops {depth = 2 : i64, peel_epilogue}"
+        " : (!transform.any_op) -> !transform.any_op\n";
+  ir << "    %async = transform.nvgpu.create_async_groups %pipelined {bypass_l1}"
         " : (!transform.any_op) -> !transform.any_op\n";
   ir << "    transform.yield\n";
   ir << "  }\n";
