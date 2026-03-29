@@ -374,8 +374,10 @@ mlir::OwningOpRef<mlir::ModuleOp> buildMatmulModule(
     return module;
   }
 
-  builder.create<mlir::linalg::FillOp>(loc, mlir::ValueRange{zero},
-                                       mlir::ValueRange{entry_block->getArgument(2)});
+  if (plan.route != LoweringRoute::kNvidiaNvptx) {
+    builder.create<mlir::linalg::FillOp>(
+        loc, mlir::ValueRange{zero}, mlir::ValueRange{entry_block->getArgument(2)});
+  }
   if (signature.quantized_i8) {
     const std::int32_t lhs_zero_point =
         tensors[0].quantization.enabled ? tensors[0].quantization.zero_point
