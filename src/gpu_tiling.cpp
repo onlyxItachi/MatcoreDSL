@@ -666,8 +666,7 @@ struct PersistNvidiaMmaAccumulatorPass
 
       mlir::Block *new_body = new_loop.getBody();
       mlir::Value loop_carried_accumulator = new_loop.getRegionIterArgs().front();
-      auto yield = llvm::cast<mlir::scf::YieldOp>(new_body->getTerminator());
-      builder.setInsertionPoint(yield);
+      builder.setInsertionPointToStart(new_body);
       for (mlir::Operation &op : body->without_terminator()) {
         if (&op == mma_sync_op.getOperation() ||
             accumulator_load_slice.contains(&op) ||
@@ -680,7 +679,7 @@ struct PersistNvidiaMmaAccumulatorPass
       mlir::Operation *cloned_mma =
           builder.clone(*mma_sync_op.getOperation(), mapping);
       cloned_mma->setOperand(2, loop_carried_accumulator);
-      yield->setOperands(cloned_mma->getResult(0));
+      builder.create<mlir::scf::YieldOp>(loop.getLoc(), cloned_mma->getResult(0));
 
       builder.setInsertionPointAfter(new_loop);
       storeAccumulatorFragmentToWorkgroup(builder, loop.getLoc(),
