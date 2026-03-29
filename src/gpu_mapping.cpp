@@ -144,8 +144,9 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
       k != mlir::ShapedType::kDynamic && m >= 16 && n >= 8 && k >= 16 &&
       (m % 16) == 0 && (n % 8) == 0 && (k % 16) == 0 &&
       isTensorCoreMmaSyncType(signature);
-  config.rewrite_to_mma_sync =
-      !signature.quantized_i8 && statically_compatible_mma;
+  // Safety hotfix: keep the warp MMA rewrite disabled until the NVIDIA tensor
+  // core path is proven memory-safe under the strict tensor.pad flow.
+  config.rewrite_to_mma_sync = false;
   if (config.rewrite_to_mma_sync) {
     // MLIR 18 rewrite_matmul_as_mma_sync assumes one warp (threadIdx.x lanes).
     config.block_tile_m = 16;
