@@ -887,8 +887,7 @@ NvidiaTileConfig SelectNvidiaTileConfig(
         1, ceilDiv(config.block_tile_n, config.thread_tile_n));
     config.block_threads_z = std::max<std::int64_t>(
         1, ceilDiv(config.block_tile_m, config.thread_tile_m));
-    config.k_tile = std::max<std::int64_t>(
-        16, pickTilingFactor(k, 32));
+    config.k_tile = 16;
     return config;
   }
 
