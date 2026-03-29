@@ -80,6 +80,20 @@ void appendPipelineDump(llvm::StringRef path, llvm::StringRef stage_name,
   stream << "\n";
 }
 
+void appendPipelineMarker(llvm::StringRef path, llvm::StringRef marker) {
+  if (path.empty()) {
+    return;
+  }
+  std::error_code ec;
+  llvm::raw_fd_ostream stream(
+      path, ec, llvm::sys::fs::OF_Text | llvm::sys::fs::OF_Append);
+  if (ec) {
+    fail("failed to append pipeline marker '" + std::string(path) + "': " +
+         ec.message());
+  }
+  stream << marker << "\n";
+}
+
 TensorDType decodeTensorDType(mlir::Type type) {
   if (type.isF32()) {
     return TensorDType::kFloat32;
@@ -310,7 +324,8 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
     module.getContext()->disableMultithreading();
     overwritePipelineDump(
         dump_path,
-        "// MatCore NVIDIA lowering pipeline dump (deterministic)\n");
+        "// MatCore NVIDIA lowering pipeline dump (deterministic)\n"
+        "// env: MATCORE_NVIDIA_PIPELINE_DUMP or MATCORE_PIPELINE_DUMP\n");
     appendPipelineDump(dump_path, "initial-module", module, dump_printing_flags);
   }
   auto run_stage = [&](llvm::StringRef stage_name, auto &&configure_stage) {
@@ -352,6 +367,8 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
            DumpModuleIR(module));
     }
     appendPipelineDump(dump_path, stage_name, module, dump_printing_flags);
+    appendPipelineMarker(dump_path, "// ===== end stage " + stage_name.str() +
+                                       " =====");
   };
 
   if (plan.route == LoweringRoute::kNvidiaNvptx) {
@@ -407,6 +424,8 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
              DumpModuleIR(module));
       }
       VerifyNoResidualNvidiaMatmulOnModule(module);
+      appendPipelineDump(dump_path, "after-nvidia-verify-no-residual-matmul",
+                         module, dump_printing_flags);
       run_stage("nvidia-launch-config", [&](mlir::PassManager &pm) {
         AddNvidiaLaunchConfigurationPasses(pm);
       });
