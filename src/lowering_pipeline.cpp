@@ -423,9 +423,6 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
              " at stage 'nvidia-rewrite-mma-sync'\n" + exc.what() + "\n" +
              DumpModuleIR(module));
       }
-      run_stage("nvidia-accumulator-locality", [&](mlir::PassManager &pm) {
-        AddNvidiaAccumulatorLocalityPasses(pm);
-      });
       VerifyNoResidualNvidiaMatmulOnModule(module);
       appendPipelineDump(dump_path, "after-nvidia-verify-no-residual-matmul",
                          module, dump_printing_flags);
