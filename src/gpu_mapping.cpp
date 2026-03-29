@@ -244,6 +244,26 @@ std::string BuildNvidiaMmaRewriteSequence() {
   return ir.str();
 }
 
+std::string BuildNvidiaAsyncPipelineSequence() {
+  std::ostringstream ir;
+  ir << "module attributes {transform.with_named_sequence} {\n";
+  ir << "  transform.named_sequence @__transform_main"
+        "(%root: !transform.any_op) {\n";
+  ir << "    %launch = transform.structured.match ops{[\"gpu.launch\"]} in %root"
+        " : (!transform.any_op) -> !transform.any_op\n";
+  ir << "    %loops = transform.structured.match ops{[\"scf.for\"]} in %launch"
+        " : (!transform.any_op) -> !transform.any_op\n";
+  ir << "    %async = transform.nvgpu.create_async_groups %loops {bypass_l1}"
+        " : (!transform.any_op) -> !transform.any_op\n";
+  ir << "    %pipelined = transform.nvgpu.pipeline_shared_memory_copies"
+        " failures(suppress) %async {depth = 2 : i64, peel_epilogue}"
+        " : (!transform.any_op) -> !transform.any_op\n";
+  ir << "    transform.yield\n";
+  ir << "  }\n";
+  ir << "}\n";
+  return ir.str();
+}
+
 namespace {
 
 struct DynamicMacroGridMappingPass

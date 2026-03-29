@@ -35,8 +35,10 @@ NvidiaTileConfig SelectNvidiaTileConfig(mlir::linalg::LinalgOp op,
 
 std::unique_ptr<mlir::Pass> CreatePromoteGpuWorkgroupAllocationsPass();
 std::unique_ptr<mlir::Pass> CreateSpecializeNvidiaWorkgroupMatmulOperandsPass();
+std::unique_ptr<mlir::Pass> CreateVectorizeNvidiaSharedMemoryCopiesPass();
 
 void AddNvidiaMmaPreparationPasses(mlir::PassManager &pm);
 void AddNvidiaLoopMaterializationPasses(mlir::PassManager &pm);
+void AddNvidiaAsyncCopyPreparationPasses(mlir::PassManager &pm);
 
 }  // namespace matcore

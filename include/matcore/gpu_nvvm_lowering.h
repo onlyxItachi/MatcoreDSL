@@ -21,6 +21,7 @@ void ApplyNvidiaMmaTransformToModule(mlir::ModuleOp module,
 void ApplyNvidiaThreadMappingToModule(mlir::ModuleOp module,
                                       const NvidiaMappingConfig &config);
 void ApplyNvidiaMmaRewriteToModule(mlir::ModuleOp module);
+void ApplyNvidiaAsyncPipelineToModule(mlir::ModuleOp module);
 
 void VerifyNoResidualNvidiaMatmulOnModule(mlir::ModuleOp module);
 

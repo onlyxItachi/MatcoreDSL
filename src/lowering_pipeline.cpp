@@ -432,6 +432,21 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
       run_stage("nvidia-loop-materialization", [&](mlir::PassManager &pm) {
         AddNvidiaLoopMaterializationPasses(pm);
       });
+      run_stage("nvidia-async-copy-preparation", [&](mlir::PassManager &pm) {
+        AddNvidiaAsyncCopyPreparationPasses(pm);
+      });
+      try {
+        appendPipelineDump(dump_path, "before-nvidia-async-pipeline", module,
+                           dump_printing_flags);
+        ApplyNvidiaAsyncPipelineToModule(module);
+        appendPipelineDump(dump_path, "after-nvidia-async-pipeline", module,
+                           dump_printing_flags);
+      } catch (const std::exception &exc) {
+        fail("failed to run lowering pipeline for route " +
+             std::string(routeName(plan.route)) +
+             " at stage 'nvidia-async-pipeline'\n" + exc.what() + "\n" +
+             DumpModuleIR(module));
+      }
       run_stage("nvidia-vector-to-gpu", [&](mlir::PassManager &pm) {
         ConfigureNvidiaVectorToGpuStage(pm);
       });

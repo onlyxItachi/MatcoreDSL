@@ -38,6 +38,7 @@ std::string BuildNvidiaThreadMappingSequence(
     const NvidiaMappingConfig &config);
 
 std::string BuildNvidiaMmaRewriteSequence();
+std::string BuildNvidiaAsyncPipelineSequence();
 
 std::unique_ptr<mlir::Pass> CreateConfigureNvidiaLaunchPass();
 void AddNvidiaLaunchConfigurationPasses(mlir::PassManager &pm);

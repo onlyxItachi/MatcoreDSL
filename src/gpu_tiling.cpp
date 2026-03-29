@@ -14,6 +14,8 @@
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -479,6 +481,220 @@ struct ElideRedundantWorkgroupFillPass
   }
 };
 
+struct Rank2CopyLoopInfo {
+  mlir::scf::ForOp outer;
+  mlir::scf::ForOp inner;
+  mlir::Value src;
+  mlir::Value dst;
+  bool src_workgroup = false;
+  bool dst_workgroup = false;
+  std::int64_t rows = 0;
+  std::int64_t cols = 0;
+};
+
+mlir::Operation *singlePayloadOp(mlir::Block &block) {
+  mlir::Operation *payload = nullptr;
+  for (mlir::Operation &op : block.without_terminator()) {
+    if (payload != nullptr) {
+      return nullptr;
+    }
+    payload = &op;
+  }
+  return payload;
+}
+
+std::optional<Rank2CopyLoopInfo> matchRank2CopyLoop(mlir::scf::ForOp outer) {
+  auto lower = matchConstantIndex(outer.getLowerBound());
+  auto step = matchConstantIndex(outer.getStep());
+  auto rows = matchConstantIndex(outer.getUpperBound());
+  if (!lower.has_value() || !step.has_value() || !rows.has_value() ||
+      *lower != 0 || *step != 1 || *rows <= 0) {
+    return std::nullopt;
+  }
+
+  auto inner = llvm::dyn_cast_or_null<mlir::scf::ForOp>(
+      singlePayloadOp(outer.getRegion().front()));
+  if (!inner) {
+    return std::nullopt;
+  }
+
+  auto inner_lower = matchConstantIndex(inner.getLowerBound());
+  auto inner_step = matchConstantIndex(inner.getStep());
+  auto cols = matchConstantIndex(inner.getUpperBound());
+  if (!inner_lower.has_value() || !inner_step.has_value() ||
+      !cols.has_value() || *inner_lower != 0 || *inner_step != 1 ||
+      *cols <= 0) {
+    return std::nullopt;
+  }
+
+  mlir::Operation *first = nullptr;
+  mlir::Operation *second = nullptr;
+  for (mlir::Operation &op : inner.getRegion().front().without_terminator()) {
+    if (first == nullptr) {
+      first = &op;
+      continue;
+    }
+    if (second == nullptr) {
+      second = &op;
+      continue;
+    }
+    return std::nullopt;
+  }
+  auto load = llvm::dyn_cast_or_null<mlir::memref::LoadOp>(first);
+  auto store = llvm::dyn_cast_or_null<mlir::memref::StoreOp>(second);
+  if (!load || !store || store.getValue() != load.getResult()) {
+    return std::nullopt;
+  }
+
+  if (load.getIndices().size() != 2 || store.getIndices().size() != 2 ||
+      load.getIndices()[0] != outer.getInductionVar() ||
+      load.getIndices()[1] != inner.getInductionVar() ||
+      store.getIndices()[0] != outer.getInductionVar() ||
+      store.getIndices()[1] != inner.getInductionVar()) {
+    return std::nullopt;
+  }
+
+  auto src_type = llvm::dyn_cast<mlir::MemRefType>(load.getMemRef().getType());
+  auto dst_type = llvm::dyn_cast<mlir::MemRefType>(store.getMemRef().getType());
+  if (!src_type || !dst_type || !src_type.hasRank() || !dst_type.hasRank() ||
+      src_type.getRank() != 2 || dst_type.getRank() != 2 ||
+      src_type.getElementType() != dst_type.getElementType() ||
+      !src_type.getElementType().isF16()) {
+    return std::nullopt;
+  }
+
+  auto src_shape = inferStaticShape(load.getMemRef());
+  auto dst_shape = inferStaticShape(store.getMemRef());
+  if (!src_shape.has_value() || !dst_shape.has_value() || src_shape->size() != 2 ||
+      dst_shape->size() != 2 || (*src_shape)[0] != *rows ||
+      (*src_shape)[1] != *cols || (*dst_shape)[0] != *rows ||
+      (*dst_shape)[1] != *cols) {
+    return std::nullopt;
+  }
+
+  const bool src_workgroup = IsWorkgroupMemRefType(src_type);
+  const bool dst_workgroup = IsWorkgroupMemRefType(dst_type);
+  if (src_workgroup == dst_workgroup) {
+    return std::nullopt;
+  }
+  if ((*cols % 8) != 0) {
+    return std::nullopt;
+  }
+
+  Rank2CopyLoopInfo info;
+  info.outer = outer;
+  info.inner = inner;
+  info.src = load.getMemRef();
+  info.dst = store.getMemRef();
+  info.src_workgroup = src_workgroup;
+  info.dst_workgroup = dst_workgroup;
+  info.rows = *rows;
+  info.cols = *cols;
+  return info;
+}
+
+bool isGlobalToWorkgroupCopyLoop(mlir::Operation *op) {
+  auto loop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(op);
+  if (!loop) {
+    return false;
+  }
+  auto info = matchRank2CopyLoop(loop);
+  return info.has_value() && !info->src_workgroup && info->dst_workgroup;
+}
+
+void emitDistributedVectorCopy(mlir::OpBuilder &builder, mlir::Location loc,
+                               const Rank2CopyLoopInfo &info) {
+  auto element_type =
+      llvm::cast<mlir::MemRefType>(info.src.getType()).getElementType();
+  auto lane = builder.create<mlir::gpu::ThreadIdOp>(loc, mlir::gpu::Dimension::x);
+  auto c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+  auto c8 = builder.create<mlir::arith::ConstantIndexOp>(loc, 8);
+  const std::int64_t segments = info.cols / 8;
+  const std::int64_t total_vectors = info.rows * segments;
+  auto c_segments =
+      builder.create<mlir::arith::ConstantIndexOp>(loc, std::max<std::int64_t>(1, segments));
+  auto c_total =
+      builder.create<mlir::arith::ConstantIndexOp>(loc, total_vectors);
+  auto vector_type = mlir::VectorType::get({8}, element_type);
+  auto zero = builder.create<mlir::arith::ConstantOp>(loc, builder.getZeroAttr(element_type));
+  auto permutation_map = mlir::AffineMap::get(
+      /*dimCount=*/2, /*symbolCount=*/0,
+      {mlir::getAffineDimExpr(1, builder.getContext())}, builder.getContext());
+  auto in_bounds = builder.getArrayAttr({builder.getBoolAttr(true)});
+
+  auto build_transfer = [&](mlir::OpBuilder &nested_builder) {
+    mlir::Value row = lane;
+    mlir::Value column = c0;
+    if (segments > 1) {
+      row = nested_builder.create<mlir::arith::DivUIOp>(loc, lane, c_segments);
+      mlir::Value segment =
+          nested_builder.create<mlir::arith::RemUIOp>(loc, lane, c_segments);
+      column = nested_builder.create<mlir::arith::MulIOp>(loc, segment, c8);
+    }
+    auto vec = nested_builder.create<mlir::vector::TransferReadOp>(
+        loc, vector_type, info.src, mlir::ValueRange{row, column},
+        permutation_map, zero, mlir::Value(), in_bounds);
+    nested_builder.create<mlir::vector::TransferWriteOp>(
+        loc, mlir::Type(), vec, info.dst, mlir::ValueRange{row, column},
+        permutation_map, mlir::Value(), in_bounds);
+  };
+
+  if (total_vectors < 32) {
+    auto in_range = builder.create<mlir::arith::CmpIOp>(
+        loc, mlir::arith::CmpIPredicate::ult, lane, c_total);
+    auto if_op = builder.create<mlir::scf::IfOp>(loc, in_range, /*withElseRegion=*/false);
+    mlir::OpBuilder then_builder =
+        mlir::OpBuilder::atBlockBegin(&if_op.getThenRegion().front());
+    build_transfer(then_builder);
+    then_builder.create<mlir::scf::YieldOp>(loc);
+  } else {
+    build_transfer(builder);
+  }
+}
+
+struct VectorizeNvidiaSharedMemoryCopiesPass
+    : public mlir::PassWrapper<VectorizeNvidiaSharedMemoryCopiesPass,
+                               mlir::OperationPass<mlir::func::FuncOp>> {
+  void getDependentDialects(mlir::DialectRegistry &registry) const override {
+    registry.insert<mlir::arith::ArithDialect, mlir::gpu::GPUDialect,
+                    mlir::memref::MemRefDialect, mlir::scf::SCFDialect,
+                    mlir::vector::VectorDialect>();
+  }
+
+  void runOnOperation() override {
+    mlir::func::FuncOp func = getOperation();
+    llvm::SmallVector<Rank2CopyLoopInfo, 16> copy_loops;
+    func.walk([&](mlir::scf::ForOp loop) {
+      if (auto info = matchRank2CopyLoop(loop)) {
+        copy_loops.push_back(*info);
+      }
+    });
+
+    mlir::OpBuilder builder(&getContext());
+    for (Rank2CopyLoopInfo &info : copy_loops) {
+      if (!info.outer->getBlock()) {
+        continue;
+      }
+
+      mlir::Operation *next_op = info.outer->getNextNode();
+      const bool needs_pre_barrier = info.src_workgroup && !info.dst_workgroup;
+      const bool needs_post_barrier =
+          !info.src_workgroup && info.dst_workgroup &&
+          !isGlobalToWorkgroupCopyLoop(next_op);
+
+      builder.setInsertionPoint(info.outer);
+      if (needs_pre_barrier) {
+        builder.create<mlir::gpu::BarrierOp>(info.outer.getLoc());
+      }
+      emitDistributedVectorCopy(builder, info.outer.getLoc(), info);
+      if (needs_post_barrier) {
+        builder.create<mlir::gpu::BarrierOp>(info.outer.getLoc());
+      }
+      info.outer.erase();
+    }
+  }
+};
+
 }  // namespace
 
 bool IsLowPrecisionTensorType(TensorDType dtype) {
@@ -580,6 +796,10 @@ std::unique_ptr<mlir::Pass> CreateSpecializeNvidiaWorkgroupMatmulOperandsPass() 
   return std::make_unique<SpecializeNvidiaWorkgroupMatmulOperandsPass>();
 }
 
+std::unique_ptr<mlir::Pass> CreateVectorizeNvidiaSharedMemoryCopiesPass() {
+  return std::make_unique<VectorizeNvidiaSharedMemoryCopiesPass>();
+}
+
 void AddNvidiaMmaPreparationPasses(mlir::PassManager &pm) {
   pm.addNestedPass<mlir::func::FuncOp>(
       std::make_unique<ElideRedundantWorkgroupFillPass>());
@@ -605,6 +825,12 @@ void AddNvidiaLoopMaterializationPasses(mlir::PassManager &pm) {
   pm.addPass(mlir::memref::createExpandOpsPass());
   pm.addPass(mlir::memref::createFoldMemRefAliasOpsPass());
   pm.addPass(mlir::createLowerAffinePass());
+  pm.addPass(mlir::createCanonicalizerPass());
+  pm.addPass(mlir::createCSEPass());
+}
+
+void AddNvidiaAsyncCopyPreparationPasses(mlir::PassManager &pm) {
+  pm.addNestedPass<mlir::func::FuncOp>(CreateVectorizeNvidiaSharedMemoryCopiesPass());
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(mlir::createCSEPass());
 }

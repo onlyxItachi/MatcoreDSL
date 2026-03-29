@@ -195,6 +195,26 @@ void ApplyNvidiaMmaRewriteToModule(mlir::ModuleOp module) {
                              "NVIDIA MMA rewrite sequence");
 }
 
+void ApplyNvidiaAsyncPipelineToModule(mlir::ModuleOp module) {
+  mlir::DialectRegistry registry;
+  RegisterNvidiaTransformDialects(registry);
+  module.getContext()->appendDialectRegistry(registry);
+  module.getContext()->loadDialect<mlir::transform::TransformDialect>();
+
+  bool has_launch = false;
+  module.walk([&](mlir::Operation *op) {
+    if (!has_launch && llvm::isa<mlir::gpu::LaunchOp>(op)) {
+      has_launch = true;
+    }
+  });
+  if (!has_launch) {
+    return;
+  }
+
+  applyNamedSequenceToModule(module, BuildNvidiaAsyncPipelineSequence(),
+                             "NVIDIA async pipeline sequence");
+}
+
 void VerifyNoResidualNvidiaMatmulOnModule(mlir::ModuleOp module) {
   bool residual_matmul = false;
   module.walk([&](mlir::Operation *op) {
