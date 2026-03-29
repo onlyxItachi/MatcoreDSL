@@ -403,20 +403,6 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
     });
 
     if (mapping.rewrite_to_mma_sync) {
-      if (!UsesSingleWarpMmaSync(mapping)) {
-        try {
-          appendPipelineDump(dump_path, "before-nvidia-map-threads", module,
-                             dump_printing_flags);
-          ApplyNvidiaThreadMappingToModule(module, mapping);
-          appendPipelineDump(dump_path, "after-nvidia-map-threads", module,
-                             dump_printing_flags);
-        } catch (const std::exception &exc) {
-          fail("failed to run lowering pipeline for route " +
-               std::string(routeName(plan.route)) +
-               " at stage 'nvidia-map-threads'\n" + exc.what() + "\n" +
-               DumpModuleIR(module));
-        }
-      }
       run_stage("nvidia-post-transform-canonicalize",
                 [&](mlir::PassManager &pm) {
                   pm.addPass(mlir::createCanonicalizerPass());

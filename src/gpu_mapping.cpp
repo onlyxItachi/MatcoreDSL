@@ -93,9 +93,37 @@ bool isBlockMappedForall(mlir::scf::ForallOp forall) {
   return true;
 }
 
+bool isThreadMappedForall(mlir::scf::ForallOp forall) {
+  auto mapping = forall.getMapping();
+  if (!mapping || mapping->empty()) {
+    return false;
+  }
+  for (mlir::Attribute attr : *mapping) {
+    if (!llvm::isa<mlir::gpu::GPUThreadMappingAttr>(attr)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 mlir::Value blockIdForMapping(mlir::gpu::LaunchOp launch,
                               mlir::gpu::GPUBlockMappingAttr attr) {
   mlir::gpu::KernelDim3 ids = launch.getBlockIds();
+  switch (attr.getRelativeIndex()) {
+    case 0:
+      return ids.x;
+    case 1:
+      return ids.y;
+    case 2:
+      return ids.z;
+    default:
+      return {};
+  }
+}
+
+mlir::Value threadIdForMapping(mlir::gpu::LaunchOp launch,
+                               mlir::gpu::GPUThreadMappingAttr attr) {
+  mlir::gpu::KernelDim3 ids = launch.getThreadIds();
   switch (attr.getRelativeIndex()) {
     case 0:
       return ids.x;
@@ -400,6 +428,79 @@ struct DynamicMacroGridMappingPass
     return mlir::success();
   }
 
+  mlir::LogicalResult lowerThreadForallToPredicatedRegion(
+      mlir::gpu::LaunchOp launch, mlir::scf::ForallOp forall) {
+    if (!isThreadMappedForall(forall)) {
+      return mlir::success();
+    }
+    if (!forall.getOutputs().empty()) {
+      forall.emitError(
+          "MatCore warp CTA lowering requires scf.forall without outputs");
+      return mlir::failure();
+    }
+
+    mlir::OpBuilder bounds_builder(forall);
+    mlir::Location loc = forall.getLoc();
+    llvm::SmallVector<mlir::Value, 3> lower_bounds =
+        forall.getLowerBound(bounds_builder);
+    llvm::SmallVector<mlir::Value, 3> upper_bounds =
+        forall.getUpperBound(bounds_builder);
+    llvm::SmallVector<mlir::Value, 3> steps = forall.getStep(bounds_builder);
+    llvm::SmallVector<mlir::Attribute, 3> mapping_attrs;
+    mapping_attrs.assign(forall.getMapping()->begin(), forall.getMapping()->end());
+
+    if (lower_bounds.size() != forall.getRank() ||
+        upper_bounds.size() != forall.getRank() ||
+        steps.size() != forall.getRank() ||
+        mapping_attrs.size() != static_cast<std::size_t>(forall.getRank())) {
+      forall.emitError("MatCore warp CTA lowering found invalid scf.forall bounds");
+      return mlir::failure();
+    }
+
+    mlir::OpBuilder builder(forall);
+    mlir::Value active;
+    mlir::IRMapping mapping;
+    for (int64_t dim = 0; dim < forall.getRank(); ++dim) {
+      auto map_attr =
+          llvm::dyn_cast<mlir::gpu::GPUThreadMappingAttr>(mapping_attrs[dim]);
+      if (!map_attr) {
+        forall.emitError("MatCore expected gpu.thread mapping on nested scf.forall");
+        return mlir::failure();
+      }
+      mlir::Value thread_id = threadIdForMapping(launch, map_attr);
+      if (!thread_id) {
+        forall.emitError("MatCore encountered unsupported gpu.thread mapping id");
+        return mlir::failure();
+      }
+      mlir::Value extent = builder.create<mlir::arith::SubIOp>(
+          loc, upper_bounds[dim], lower_bounds[dim]);
+      mlir::Value trip_count =
+          buildCeilDivIndex(builder, loc, extent, steps[dim]);
+      mlir::Value in_range = builder.create<mlir::arith::CmpIOp>(
+          loc, mlir::arith::CmpIPredicate::ult, thread_id, trip_count);
+      active = active ? builder.create<mlir::arith::AndIOp>(loc, active, in_range)
+                      : in_range;
+      mlir::Value scaled =
+          builder.create<mlir::arith::MulIOp>(loc, thread_id, steps[dim]);
+      mlir::Value iv =
+          builder.create<mlir::arith::AddIOp>(loc, lower_bounds[dim], scaled);
+      mapping.map(forall.getInductionVar(dim), iv);
+    }
+
+    auto if_op = builder.create<mlir::scf::IfOp>(loc, active,
+                                                 /*withElseRegion=*/false);
+    mlir::OpBuilder then_builder =
+        mlir::OpBuilder::atBlockTerminator(&if_op.getThenRegion().front());
+    for (mlir::Operation &op :
+         llvm::make_early_inc_range(forall.getBody()->without_terminator())) {
+      then_builder.clone(op, mapping);
+    }
+    builder.setInsertionPointAfter(if_op);
+    builder.create<mlir::gpu::BarrierOp>(loc);
+    forall.erase();
+    return mlir::success();
+  }
+
   void runOnOperation() override {
     mlir::func::FuncOp func = getOperation();
     llvm::SmallVector<mlir::scf::ForallOp, 4> top_level_foralls;
@@ -413,6 +514,27 @@ struct DynamicMacroGridMappingPass
 
     for (mlir::scf::ForallOp forall : top_level_foralls) {
       if (mlir::failed(lowerForallToLaunch(func, forall))) {
+        signalPassFailure();
+        return;
+      }
+    }
+
+    llvm::SmallVector<mlir::scf::ForallOp, 8> thread_foralls;
+    func.walk([&](mlir::gpu::LaunchOp launch) {
+      launch.walk([&](mlir::scf::ForallOp forall) {
+        if (isThreadMappedForall(forall)) {
+          thread_foralls.push_back(forall);
+        }
+      });
+    });
+    for (mlir::scf::ForallOp forall : thread_foralls) {
+      auto launch = forall->getParentOfType<mlir::gpu::LaunchOp>();
+      if (!launch) {
+        forall.emitError("MatCore expected nested thread forall inside gpu.launch");
+        signalPassFailure();
+        return;
+      }
+      if (mlir::failed(lowerThreadForallToPredicatedRegion(launch, forall))) {
         signalPassFailure();
         return;
       }
