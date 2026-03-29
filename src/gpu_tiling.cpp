@@ -644,9 +644,8 @@ void emitDistributedVectorCopy(mlir::OpBuilder &builder, mlir::Location loc,
         loc, mlir::arith::CmpIPredicate::ult, lane, c_total);
     auto if_op = builder.create<mlir::scf::IfOp>(loc, in_range, /*withElseRegion=*/false);
     mlir::OpBuilder then_builder =
-        mlir::OpBuilder::atBlockBegin(&if_op.getThenRegion().front());
+        mlir::OpBuilder::atBlockTerminator(&if_op.getThenRegion().front());
     build_transfer(then_builder);
-    then_builder.create<mlir::scf::YieldOp>(loc);
   } else {
     build_transfer(builder);
   }
