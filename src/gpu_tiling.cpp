@@ -867,13 +867,21 @@ NvidiaTileConfig SelectNvidiaTileConfig(
       IsTensorCoreMmaSyncType(signature) &&
       IsStaticallyCompatibleMmaSync(m, n, k);
   if (config.rewrite_to_mma_sync) {
-    config.block_tile_m = 16;
-    config.block_tile_n = 8;
-    config.thread_tile_m = 16;
-    config.thread_tile_n = 8;
-    config.block_threads_y = 1;
+    config.block_tile_m = std::max<std::int64_t>(
+        16, pickTilingFactor(m, 128));
+    config.block_tile_n = std::max<std::int64_t>(
+        8, pickTilingFactor(n, 128));
+    config.thread_tile_m = std::max<std::int64_t>(
+        16, pickTilingFactor(config.block_tile_m, 64));
+    config.thread_tile_n = std::max<std::int64_t>(
+        8, pickTilingFactor(config.block_tile_n, 64));
     config.block_threads_x = 32;
-    config.k_tile = 16;
+    config.block_threads_y = std::max<std::int64_t>(
+        1, ceilDiv(config.block_tile_n, config.thread_tile_n));
+    config.block_threads_z = std::max<std::int64_t>(
+        1, ceilDiv(config.block_tile_m, config.thread_tile_m));
+    config.k_tile = std::max<std::int64_t>(
+        16, pickTilingFactor(k, 32));
     return config;
   }
 

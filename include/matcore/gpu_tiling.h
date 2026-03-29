@@ -16,10 +16,13 @@ namespace matcore {
 struct NvidiaTileConfig {
   std::int64_t block_tile_m = 128;
   std::int64_t block_tile_n = 128;
+  // Mirrors the mapping config: generic per-thread tiles, or per-warp tiles on
+  // the MMA path.
   std::int64_t thread_tile_m = 16;
   std::int64_t thread_tile_n = 8;
   std::int64_t block_threads_y = 8;
   std::int64_t block_threads_x = 16;
+  std::int64_t block_threads_z = 1;
   std::int64_t k_tile = 16;
   bool rewrite_to_mma_sync = true;
 };

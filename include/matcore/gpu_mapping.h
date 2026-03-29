@@ -16,6 +16,8 @@ namespace matcore {
 struct NvidiaMappingConfig {
   std::int64_t block_tile_m = 128;
   std::int64_t block_tile_n = 128;
+  // For the generic path these are per-thread tiles. For the MMA path they
+  // represent the per-warp matmul tile handled by one warp inside the CTA.
   std::int64_t thread_tile_m = 16;
   std::int64_t thread_tile_n = 8;
   std::int64_t block_threads_x = 16;

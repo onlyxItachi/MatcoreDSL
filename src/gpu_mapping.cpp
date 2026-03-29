@@ -140,15 +140,24 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
       isTensorCoreMmaSyncType(signature) &&
       isStaticallyCompatibleMmaSync(m, n, k);
   if (config.rewrite_to_mma_sync) {
-    // MLIR 18 rewrite_matmul_as_mma_sync assumes one warp (threadIdx.x lanes).
-    config.block_tile_m = 16;
-    config.block_tile_n = 8;
-    config.thread_tile_m = 16;
-    config.thread_tile_n = 8;
-    config.block_threads_y = 1;
+    // Keep threadIdx.x as the 32-lane warp used by rewrite_matmul_as_mma_sync,
+    // but let multiple warps cooperate through threadIdx.y/z on a larger CTA
+    // tile. This preserves the working MMA path while increasing on-chip reuse.
+    config.block_tile_m = std::max<std::int64_t>(
+        16, pickTilingFactor(m, 128));
+    config.block_tile_n = std::max<std::int64_t>(
+        8, pickTilingFactor(n, 128));
+    config.thread_tile_m = std::max<std::int64_t>(
+        16, pickTilingFactor(config.block_tile_m, 64));
+    config.thread_tile_n = std::max<std::int64_t>(
+        8, pickTilingFactor(config.block_tile_n, 64));
     config.block_threads_x = 32;
-    config.block_threads_z = 1;
-    config.k_tile = 16;
+    config.block_threads_y = std::max<std::int64_t>(
+        1, ceilDiv(config.block_tile_n, config.thread_tile_n));
+    config.block_threads_z = std::max<std::int64_t>(
+        1, ceilDiv(config.block_tile_m, config.thread_tile_m));
+    config.k_tile = std::max<std::int64_t>(
+        16, pickTilingFactor(k, 32));
     return config;
   }
 
@@ -164,7 +173,8 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
 }
 
 bool UsesSingleWarpMmaSync(const NvidiaMappingConfig &config) {
-  return config.rewrite_to_mma_sync;
+  return config.rewrite_to_mma_sync && config.block_threads_x == 32 &&
+         config.block_threads_y == 1 && config.block_threads_z == 1;
 }
 
 std::string BuildNvidiaTransformMappingSequence(
@@ -195,7 +205,13 @@ std::string BuildNvidiaTransformMappingSequence(
         " {operands_to_promote = [0, 1], use_full_tiles_by_default,"
         " memory_space = #gpu.address_space<workgroup>} :"
         " (!transform.any_op) -> !transform.any_op\n";
-  if (!config.rewrite_to_mma_sync) {
+  if (config.rewrite_to_mma_sync) {
+    ir << "    %warp_tiled, %warp_forall = transform.structured.tile_using_forall"
+       << " %promoted num_threads [" << config.block_threads_z << ", "
+       << config.block_threads_y
+       << "](mapping = [#gpu.thread<z>, #gpu.thread<y>]) : (!transform.any_op)"
+          " -> (!transform.any_op, !transform.any_op)\n";
+  } else {
     ir << "    %warp_tiled, %thread_forall = transform.structured.tile_using_forall"
        << " %promoted num_threads [" << config.block_threads_y << ", "
        << config.block_threads_x
