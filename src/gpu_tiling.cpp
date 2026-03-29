@@ -474,6 +474,18 @@ bool IsTensorCoreMmaSyncType(const MatmulLoweringSignature &signature) {
          signature.out_dtype == TensorDType::kFloat16;
 }
 
+bool IsStaticallyCompatibleMmaSync(std::int64_t m, std::int64_t n,
+                                   std::int64_t k) {
+  if (m == mlir::ShapedType::kDynamic || n == mlir::ShapedType::kDynamic ||
+      k == mlir::ShapedType::kDynamic) {
+    return false;
+  }
+  if (m < 16 || n < 8 || k < 16) {
+    return false;
+  }
+  return (m % 16) == 0 && (n % 8) == 0 && (k % 16) == 0;
+}
+
 bool IsWorkgroupMemorySpace(mlir::Attribute memory_space) {
   if (!memory_space) {
     return false;
@@ -518,7 +530,9 @@ NvidiaTileConfig SelectNvidiaTileConfig(
   config.block_tile_n = pickTilingFactor(n, 128);
   config.k_tile = pickTilingFactor(k, signature.quantized_i8 ? 32 : 16);
 
-  config.rewrite_to_mma_sync = IsTensorCoreMmaSyncType(signature);
+  config.rewrite_to_mma_sync =
+      IsTensorCoreMmaSyncType(signature) &&
+      IsStaticallyCompatibleMmaSync(m, n, k);
   if (config.rewrite_to_mma_sync) {
     config.block_tile_m = 16;
     config.block_tile_n = 8;

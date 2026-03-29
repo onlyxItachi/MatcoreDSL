@@ -51,6 +51,18 @@ bool isTensorCoreMmaSyncType(const MatmulLoweringSignature &signature) {
          signature.out_dtype == TensorDType::kFloat16;
 }
 
+bool isStaticallyCompatibleMmaSync(std::int64_t m, std::int64_t n,
+                                   std::int64_t k) {
+  if (m == mlir::ShapedType::kDynamic || n == mlir::ShapedType::kDynamic ||
+      k == mlir::ShapedType::kDynamic) {
+    return false;
+  }
+  if (m < 16 || n < 8 || k < 16) {
+    return false;
+  }
+  return (m % 16) == 0 && (n % 8) == 0 && (k % 16) == 0;
+}
+
 std::optional<std::int64_t> matchConstantIndex(mlir::Value value) {
   llvm::APInt constant;
   if (!mlir::matchPattern(value, mlir::m_ConstantInt(&constant))) {
@@ -124,7 +136,9 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
   config.block_tile_n = pickTilingFactor(n, 128);
   config.k_tile = pickTilingFactor(k, signature.quantized_i8 ? 32 : 16);
 
-  config.rewrite_to_mma_sync = isTensorCoreMmaSyncType(signature);
+  config.rewrite_to_mma_sync =
+      isTensorCoreMmaSyncType(signature) &&
+      isStaticallyCompatibleMmaSync(m, n, k);
   if (config.rewrite_to_mma_sync) {
     // MLIR 18 rewrite_matmul_as_mma_sync assumes one warp (threadIdx.x lanes).
     config.block_tile_m = 16;
@@ -220,8 +234,6 @@ std::string BuildNvidiaMmaRewriteSequence() {
         " : (!transform.any_op) -> !transform.any_op\n";
   ir << "    transform.nvgpu.rewrite_matmul_as_mma_sync %matmul"
         " : (!transform.any_op) -> ()\n";
-  ir << "    %async_launch = transform.nvgpu.create_async_groups %launch"
-        " : (!transform.any_op) -> !transform.any_op\n";
   ir << "    transform.yield\n";
   ir << "  }\n";
   ir << "}\n";
