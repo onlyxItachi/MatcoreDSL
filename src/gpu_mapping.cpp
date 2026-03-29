@@ -211,6 +211,10 @@ std::string BuildNvidiaTransformMappingSequence(
        << config.block_threads_y
        << "](mapping = [#gpu.thread<z>, #gpu.thread<y>]) : (!transform.any_op)"
           " -> (!transform.any_op, !transform.any_op)\n";
+    ir << "    %micro_tiled, %micro_m_loop, %micro_n_loop ="
+          " transform.structured.tile_using_for %warp_tiled [16, 8, 0]"
+          " : (!transform.any_op) -> (!transform.any_op, !transform.any_op,"
+          " !transform.any_op)\n";
   } else {
     ir << "    %warp_tiled, %thread_forall = transform.structured.tile_using_forall"
        << " %promoted num_threads [" << config.block_threads_y << ", "

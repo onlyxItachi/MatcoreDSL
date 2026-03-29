@@ -609,6 +609,8 @@ void emitDistributedVectorCopy(mlir::OpBuilder &builder, mlir::Location loc,
   auto element_type =
       llvm::cast<mlir::MemRefType>(info.src.getType()).getElementType();
   auto lane = builder.create<mlir::gpu::ThreadIdOp>(loc, mlir::gpu::Dimension::x);
+  auto warp_y = builder.create<mlir::gpu::ThreadIdOp>(loc, mlir::gpu::Dimension::y);
+  auto warp_z = builder.create<mlir::gpu::ThreadIdOp>(loc, mlir::gpu::Dimension::z);
   auto c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
   auto c8 = builder.create<mlir::arith::ConstantIndexOp>(loc, 8);
   const std::int64_t segments = info.cols / 8;
@@ -641,16 +643,21 @@ void emitDistributedVectorCopy(mlir::OpBuilder &builder, mlir::Location loc,
         permutation_map, mlir::Value(), in_bounds);
   };
 
+  auto y_is_zero = builder.create<mlir::arith::CmpIOp>(
+      loc, mlir::arith::CmpIPredicate::eq, warp_y, c0);
+  auto z_is_zero = builder.create<mlir::arith::CmpIOp>(
+      loc, mlir::arith::CmpIPredicate::eq, warp_z, c0);
+  auto leader_warp = builder.create<mlir::arith::AndIOp>(loc, y_is_zero, z_is_zero);
+  mlir::Value active = leader_warp;
   if (total_vectors < 32) {
     auto in_range = builder.create<mlir::arith::CmpIOp>(
         loc, mlir::arith::CmpIPredicate::ult, lane, c_total);
-    auto if_op = builder.create<mlir::scf::IfOp>(loc, in_range, /*withElseRegion=*/false);
-    mlir::OpBuilder then_builder =
-        mlir::OpBuilder::atBlockTerminator(&if_op.getThenRegion().front());
-    build_transfer(then_builder);
-  } else {
-    build_transfer(builder);
+    active = builder.create<mlir::arith::AndIOp>(loc, leader_warp, in_range);
   }
+  auto if_op = builder.create<mlir::scf::IfOp>(loc, active, /*withElseRegion=*/false);
+  mlir::OpBuilder then_builder =
+      mlir::OpBuilder::atBlockTerminator(&if_op.getThenRegion().front());
+  build_transfer(then_builder);
 }
 
 struct VectorizeNvidiaSharedMemoryCopiesPass
