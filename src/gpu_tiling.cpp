@@ -5,6 +5,7 @@
 #include <optional>
 #include <stdexcept>
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
@@ -26,7 +27,6 @@
 #include "mlir/Transforms/Passes.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SmallVector.h"
-
 namespace matcore {
 namespace {
 
@@ -736,15 +736,17 @@ struct RewriteNvidiaLdmatrixFragmentLoadsPass
       auto rhs_memref = llvm::dyn_cast<mlir::MemRefType>(rhs_load.getMemRef().getType());
       auto lhs_type = llvm::dyn_cast<mlir::VectorType>(mma.getMatrixA().getType());
       auto rhs_type = llvm::dyn_cast<mlir::VectorType>(mma.getMatrixB().getType());
-      if (!lhs_memref || !rhs_memref || !lhs_type || !rhs_type ||
-          !IsWorkgroupMemRefType(lhs_memref) || !IsWorkgroupMemRefType(rhs_memref)) {
+      if (!lhs_memref || !rhs_memref || !lhs_type || !rhs_type) {
+        continue;
+      }
+      if (!IsWorkgroupMemRefType(lhs_memref) || !IsWorkgroupMemRefType(rhs_memref)) {
         continue;
       }
 
-      mlir::nvgpu::WarpMatrixInfo lhs_info{lhs_type,
-                                           mlir::nvgpu::MatMulOperandRole::A};
-      mlir::nvgpu::WarpMatrixInfo rhs_info{rhs_type,
-                                           mlir::nvgpu::MatMulOperandRole::B};
+      mlir::nvgpu::WarpMatrixInfo lhs_info{
+          lhs_type, mlir::nvgpu::MatMulOperandRole::A};
+      mlir::nvgpu::WarpMatrixInfo rhs_info{
+          rhs_type, mlir::nvgpu::MatMulOperandRole::B};
       auto lhs_params = mlir::nvgpu::getLdMatrixParams(lhs_info, /*transpose=*/false);
       auto rhs_params = mlir::nvgpu::getLdMatrixParams(rhs_info, /*transpose=*/true);
       if (mlir::failed(lhs_params) || mlir::failed(rhs_params)) {
@@ -752,14 +754,31 @@ struct RewriteNvidiaLdmatrixFragmentLoadsPass
       }
 
       builder.setInsertionPoint(mma);
+      auto lane = builder.create<mlir::gpu::ThreadIdOp>(mma.getLoc(), mlir::gpu::Dimension::x);
+      auto lhs_coord_map = mlir::nvgpu::getLaneIdToLdMatrixMatrixCoord(
+          builder, mma.getLoc(), *lhs_params);
+      auto rhs_coord_map = mlir::nvgpu::getLaneIdToLdMatrixMatrixCoord(
+          builder, mma.getLoc(), *rhs_params);
+      if (mlir::failed(lhs_coord_map) || mlir::failed(rhs_coord_map)) {
+        continue;
+      }
+
+      auto lhs_row = builder.create<mlir::affine::AffineApplyOp>(
+          mma.getLoc(), lhs_coord_map->getSubMap({0}), mlir::ValueRange{lane});
+      auto lhs_col = builder.create<mlir::affine::AffineApplyOp>(
+          mma.getLoc(), lhs_coord_map->getSubMap({1}), mlir::ValueRange{lane});
+      auto rhs_row = builder.create<mlir::affine::AffineApplyOp>(
+          mma.getLoc(), rhs_coord_map->getSubMap({0}), mlir::ValueRange{lane});
+      auto rhs_col = builder.create<mlir::affine::AffineApplyOp>(
+          mma.getLoc(), rhs_coord_map->getSubMap({1}), mlir::ValueRange{lane});
       auto lhs_ldmatrix = builder.create<mlir::nvgpu::LdMatrixOp>(
-          mma.getLoc(), lhs_type, lhs_load.getMemRef(), lhs_load.getIndices(),
-          /*transpose=*/false,
-          static_cast<std::uint32_t>(lhs_params->numTiles));
+          mma.getLoc(), lhs_type, lhs_load.getMemRef(),
+          mlir::ValueRange{lhs_row, lhs_col}, /*transpose=*/false,
+          lhs_params->numTiles);
       auto rhs_ldmatrix = builder.create<mlir::nvgpu::LdMatrixOp>(
-          mma.getLoc(), rhs_type, rhs_load.getMemRef(), rhs_load.getIndices(),
-          /*transpose=*/true,
-          static_cast<std::uint32_t>(rhs_params->numTiles));
+          mma.getLoc(), rhs_type, rhs_load.getMemRef(),
+          mlir::ValueRange{rhs_row, rhs_col}, /*transpose=*/true,
+          rhs_params->numTiles);
       mma->setOperand(0, lhs_ldmatrix.getResult());
       mma->setOperand(1, rhs_ldmatrix.getResult());
     }
