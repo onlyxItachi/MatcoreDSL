@@ -6,6 +6,7 @@
 #include <stdexcept>
 
 #include "mlir/Conversion/Passes.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -14,9 +15,13 @@
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
+#include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/Passes.h"
@@ -207,6 +212,146 @@ bool copyFullyOverwritesBuffer(mlir::linalg::CopyOp copy, mlir::Value buffer) {
     }
   }
   return false;
+}
+
+void collectValueDefiningOpsInBlock(mlir::Value value, mlir::Block *block,
+                                    llvm::SmallPtrSetImpl<mlir::Operation *> &ops) {
+  mlir::Operation *def = value.getDefiningOp();
+  if (def == nullptr || def->getBlock() != block ||
+      llvm::isa<mlir::gpu::ThreadIdOp>(def)) {
+    return;
+  }
+  if (!ops.insert(def).second) {
+    return;
+  }
+  for (mlir::Value operand : def->getOperands()) {
+    collectValueDefiningOpsInBlock(operand, block, ops);
+  }
+}
+
+void collectForwardUsersInBlock(mlir::Value value, mlir::Block *block,
+                                llvm::SmallPtrSetImpl<mlir::Operation *> &ops) {
+  for (mlir::Operation *user : value.getUsers()) {
+    if (user->getBlock() != block) {
+      continue;
+    }
+    if (!ops.insert(user).second) {
+      continue;
+    }
+    for (mlir::Value result : user->getResults()) {
+      collectForwardUsersInBlock(result, block, ops);
+    }
+  }
+}
+
+bool findUniqueAccumulatorBuffer(mlir::Value value, mlir::Block *block,
+                                 llvm::SmallPtrSetImpl<mlir::Operation *> &visited,
+                                 mlir::Value &buffer) {
+  mlir::Operation *def = value.getDefiningOp();
+  if (def == nullptr || def->getBlock() != block) {
+    return true;
+  }
+  if (!visited.insert(def).second) {
+    return true;
+  }
+
+  if (auto load = llvm::dyn_cast<mlir::memref::LoadOp>(def)) {
+    if (!buffer) {
+      buffer = load.getMemRef();
+      return true;
+    }
+    return buffer == load.getMemRef();
+  }
+
+  for (mlir::Value operand : def->getOperands()) {
+    if (!findUniqueAccumulatorBuffer(operand, block, visited, buffer)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+struct MmaAccumulatorIndices {
+  mlir::Value row0;
+  mlir::Value row1;
+  mlir::Value col0;
+  mlir::Value col1;
+};
+
+MmaAccumulatorIndices buildMmaAccumulatorIndices(mlir::OpBuilder &builder,
+                                                 mlir::Location loc,
+                                                 mlir::Value thread_id) {
+  auto c1 = builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
+  auto c2 = builder.create<mlir::arith::ConstantIndexOp>(loc, 2);
+  auto c4 = builder.create<mlir::arith::ConstantIndexOp>(loc, 4);
+  auto c8 = builder.create<mlir::arith::ConstantIndexOp>(loc, 8);
+  auto row0 = builder.create<mlir::arith::DivUIOp>(loc, thread_id, c4);
+  auto row1 = builder.create<mlir::arith::AddIOp>(loc, row0, c8);
+  auto doubled_thread = builder.create<mlir::arith::MulIOp>(loc, thread_id, c2);
+  auto row0_stride = builder.create<mlir::arith::MulIOp>(loc, row0, c8);
+  auto col0 = builder.create<mlir::arith::SubIOp>(loc, doubled_thread, row0_stride);
+  auto col1 = builder.create<mlir::arith::AddIOp>(loc, col0, c1);
+  return {
+      row0.getResult(),
+      row1.getResult(),
+      col0.getResult(),
+      col1.getResult(),
+  };
+}
+
+mlir::Value buildAccumulatorFragmentFromWorkgroup(mlir::OpBuilder &builder,
+                                                  mlir::Location loc,
+                                                  mlir::Value buffer,
+                                                  mlir::Value thread_id) {
+  auto buffer_type = llvm::dyn_cast<mlir::MemRefType>(buffer.getType());
+  auto element_type = buffer_type.getElementType();
+  auto vector_type = mlir::VectorType::get({2, 2}, element_type);
+  auto indices = buildMmaAccumulatorIndices(builder, loc, thread_id);
+  auto load00 =
+      builder.create<mlir::memref::LoadOp>(loc, buffer, mlir::ValueRange{indices.row0, indices.col0});
+  auto load01 =
+      builder.create<mlir::memref::LoadOp>(loc, buffer, mlir::ValueRange{indices.row0, indices.col1});
+  auto load10 =
+      builder.create<mlir::memref::LoadOp>(loc, buffer, mlir::ValueRange{indices.row1, indices.col0});
+  auto load11 =
+      builder.create<mlir::memref::LoadOp>(loc, buffer, mlir::ValueRange{indices.row1, indices.col1});
+  auto initial = builder.create<mlir::vector::SplatOp>(loc, vector_type, load00.getResult());
+  auto with00 =
+      builder.create<mlir::vector::InsertOp>(loc, load00.getResult(), initial.getResult(),
+                                             llvm::ArrayRef<int64_t>{0, 0});
+  auto with01 =
+      builder.create<mlir::vector::InsertOp>(loc, load01.getResult(), with00.getResult(),
+                                             llvm::ArrayRef<int64_t>{0, 1});
+  auto with10 =
+      builder.create<mlir::vector::InsertOp>(loc, load10.getResult(), with01.getResult(),
+                                             llvm::ArrayRef<int64_t>{1, 0});
+  auto with11 =
+      builder.create<mlir::vector::InsertOp>(loc, load11.getResult(), with10.getResult(),
+                                             llvm::ArrayRef<int64_t>{1, 1});
+  return with11.getResult();
+}
+
+void storeAccumulatorFragmentToWorkgroup(mlir::OpBuilder &builder,
+                                         mlir::Location loc, mlir::Value buffer,
+                                         mlir::Value thread_id,
+                                         mlir::Value accumulator) {
+  auto indices = buildMmaAccumulatorIndices(builder, loc, thread_id);
+  auto extract00 =
+      builder.create<mlir::vector::ExtractOp>(loc, accumulator, llvm::ArrayRef<int64_t>{0, 0});
+  auto extract01 =
+      builder.create<mlir::vector::ExtractOp>(loc, accumulator, llvm::ArrayRef<int64_t>{0, 1});
+  auto extract10 =
+      builder.create<mlir::vector::ExtractOp>(loc, accumulator, llvm::ArrayRef<int64_t>{1, 0});
+  auto extract11 =
+      builder.create<mlir::vector::ExtractOp>(loc, accumulator, llvm::ArrayRef<int64_t>{1, 1});
+  builder.create<mlir::memref::StoreOp>(loc, extract00.getResult(), buffer,
+                                        mlir::ValueRange{indices.row0, indices.col0});
+  builder.create<mlir::memref::StoreOp>(loc, extract01.getResult(), buffer,
+                                        mlir::ValueRange{indices.row0, indices.col1});
+  builder.create<mlir::memref::StoreOp>(loc, extract10.getResult(), buffer,
+                                        mlir::ValueRange{indices.row1, indices.col0});
+  builder.create<mlir::memref::StoreOp>(loc, extract11.getResult(), buffer,
+                                        mlir::ValueRange{indices.row1, indices.col1});
 }
 
 mlir::BlockArgument addLaunchWorkgroupAttribution(mlir::gpu::LaunchOp launch,
@@ -429,6 +574,123 @@ struct SpecializeNvidiaWorkgroupMatmulOperandsPass
   }
 };
 
+struct PersistNvidiaMmaAccumulatorPass
+    : public mlir::PassWrapper<PersistNvidiaMmaAccumulatorPass,
+                               mlir::OperationPass<mlir::func::FuncOp>> {
+  void getDependentDialects(mlir::DialectRegistry &registry) const override {
+    registry.insert<mlir::arith::ArithDialect, mlir::gpu::GPUDialect,
+                    mlir::memref::MemRefDialect, mlir::nvgpu::NVGPUDialect,
+                    mlir::scf::SCFDialect, mlir::vector::VectorDialect>();
+  }
+
+  void runOnOperation() override {
+    mlir::func::FuncOp func = getOperation();
+    llvm::SmallVector<mlir::scf::ForOp, 8> loops;
+    func.walk([&](mlir::scf::ForOp loop) { loops.push_back(loop); });
+
+    mlir::OpBuilder builder(&getContext());
+    for (mlir::scf::ForOp loop : loops) {
+      if (!loop->getBlock()) {
+        continue;
+      }
+      mlir::Block *body = loop.getBody();
+      if (body == nullptr) {
+        continue;
+      }
+
+      mlir::gpu::ThreadIdOp thread_id_op;
+      mlir::nvgpu::MmaSyncOp mma_sync_op;
+      for (mlir::Operation &op : body->without_terminator()) {
+        if (auto candidate = llvm::dyn_cast<mlir::gpu::ThreadIdOp>(&op)) {
+          if (!thread_id_op &&
+              candidate.getDimension() == mlir::gpu::Dimension::x) {
+            thread_id_op = candidate;
+          }
+          continue;
+        }
+        if (auto candidate = llvm::dyn_cast<mlir::nvgpu::MmaSyncOp>(&op)) {
+          if (mma_sync_op) {
+            mma_sync_op = {};
+            break;
+          }
+          mma_sync_op = candidate;
+        }
+      }
+
+      if (!thread_id_op || !mma_sync_op || !loop.getInitArgs().empty()) {
+        continue;
+      }
+
+      llvm::SmallPtrSet<mlir::Operation *, 16> visited;
+      mlir::Value accumulator_buffer;
+      if (!findUniqueAccumulatorBuffer(mma_sync_op.getOperand(2), body, visited,
+                                       accumulator_buffer)) {
+        continue;
+      }
+      auto accumulator_type =
+          llvm::dyn_cast<mlir::MemRefType>(accumulator_buffer.getType());
+      if (!accumulator_type || !IsWorkgroupMemRefType(accumulator_type) ||
+          !accumulator_type.hasStaticShape() ||
+          accumulator_type.getRank() != 2 ||
+          accumulator_type.getShape()[0] != 16 ||
+          accumulator_type.getShape()[1] != 8) {
+        continue;
+      }
+
+      llvm::SmallPtrSet<mlir::Operation *, 32> accumulator_load_slice;
+      collectValueDefiningOpsInBlock(mma_sync_op.getOperand(2), body,
+                                     accumulator_load_slice);
+
+      llvm::SmallPtrSet<mlir::Operation *, 16> accumulator_store_slice;
+      collectForwardUsersInBlock(mma_sync_op.getResult(), body,
+                                 accumulator_store_slice);
+      bool supported_store_slice = llvm::all_of(
+          accumulator_store_slice, [](mlir::Operation *op) {
+            return llvm::isa<mlir::vector::ExtractOp, mlir::memref::StoreOp>(op);
+          });
+      if (!supported_store_slice) {
+        continue;
+      }
+
+      builder.setInsertionPoint(loop);
+      auto cloned_thread_id =
+          builder.clone(*thread_id_op.getOperation())->getResult(0);
+      mlir::Value initial_accumulator = buildAccumulatorFragmentFromWorkgroup(
+          builder, loop.getLoc(), accumulator_buffer, cloned_thread_id);
+
+      auto new_loop = builder.create<mlir::scf::ForOp>(
+          loop.getLoc(), loop.getLowerBound(), loop.getUpperBound(),
+          loop.getStep(), mlir::ValueRange{initial_accumulator});
+      mlir::IRMapping mapping;
+      mapping.map(loop.getInductionVar(), new_loop.getInductionVar());
+
+      mlir::Block *new_body = new_loop.getBody();
+      mlir::Value loop_carried_accumulator = new_loop.getRegionIterArgs().front();
+      auto yield = llvm::cast<mlir::scf::YieldOp>(new_body->getTerminator());
+      builder.setInsertionPoint(yield);
+      for (mlir::Operation &op : body->without_terminator()) {
+        if (&op == mma_sync_op.getOperation() ||
+            accumulator_load_slice.contains(&op) ||
+            accumulator_store_slice.contains(&op)) {
+          continue;
+        }
+        builder.clone(op, mapping);
+      }
+
+      mlir::Operation *cloned_mma =
+          builder.clone(*mma_sync_op.getOperation(), mapping);
+      cloned_mma->setOperand(2, loop_carried_accumulator);
+      yield->setOperands(cloned_mma->getResult(0));
+
+      builder.setInsertionPointAfter(new_loop);
+      storeAccumulatorFragmentToWorkgroup(builder, loop.getLoc(),
+                                          accumulator_buffer, cloned_thread_id,
+                                          new_loop.getResult(0));
+      loop.erase();
+    }
+  }
+};
+
 struct ElideRedundantWorkgroupFillPass
     : public mlir::PassWrapper<ElideRedundantWorkgroupFillPass,
                                mlir::OperationPass<mlir::func::FuncOp>> {
@@ -580,6 +842,10 @@ std::unique_ptr<mlir::Pass> CreateSpecializeNvidiaWorkgroupMatmulOperandsPass() 
   return std::make_unique<SpecializeNvidiaWorkgroupMatmulOperandsPass>();
 }
 
+std::unique_ptr<mlir::Pass> CreatePersistNvidiaMmaAccumulatorPass() {
+  return std::make_unique<PersistNvidiaMmaAccumulatorPass>();
+}
+
 void AddNvidiaMmaPreparationPasses(mlir::PassManager &pm) {
   pm.addNestedPass<mlir::func::FuncOp>(
       std::make_unique<ElideRedundantWorkgroupFillPass>());
@@ -588,6 +854,12 @@ void AddNvidiaMmaPreparationPasses(mlir::PassManager &pm) {
       CreateSpecializeNvidiaWorkgroupMatmulOperandsPass());
   pm.addNestedPass<mlir::func::FuncOp>(
       std::make_unique<ElideRedundantWorkgroupFillPass>());
+  pm.addPass(mlir::createCanonicalizerPass());
+  pm.addPass(mlir::createCSEPass());
+}
+
+void AddNvidiaAccumulatorLocalityPasses(mlir::PassManager &pm) {
+  pm.addNestedPass<mlir::func::FuncOp>(CreatePersistNvidiaMmaAccumulatorPass());
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(mlir::createCSEPass());
 }
