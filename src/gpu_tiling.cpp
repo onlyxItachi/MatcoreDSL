@@ -706,6 +706,16 @@ mlir::memref::LoadOp extractBaseLoadFromFragment(mlir::Value value) {
   return {};
 }
 
+bool IsF16LhsMmaFragmentType(mlir::VectorType type) {
+  return type && type.getRank() == 2 && type.getShape()[0] == 4 &&
+         type.getShape()[1] == 2 && type.getElementType().isF16();
+}
+
+bool IsF16RhsMmaFragmentType(mlir::VectorType type) {
+  return type && type.getRank() == 2 && type.getShape()[0] == 2 &&
+         type.getShape()[1] == 2 && type.getElementType().isF16();
+}
+
 struct RewriteNvidiaLdmatrixFragmentLoadsPass
     : public mlir::PassWrapper<RewriteNvidiaLdmatrixFragmentLoadsPass,
                                mlir::OperationPass<mlir::func::FuncOp>> {
@@ -743,42 +753,42 @@ struct RewriteNvidiaLdmatrixFragmentLoadsPass
         continue;
       }
 
-      mlir::nvgpu::WarpMatrixInfo lhs_info{
-          lhs_type, mlir::nvgpu::MatMulOperandRole::A};
-      mlir::nvgpu::WarpMatrixInfo rhs_info{
-          rhs_type, mlir::nvgpu::MatMulOperandRole::B};
-      auto lhs_params = mlir::nvgpu::getLdMatrixParams(lhs_info, /*transpose=*/false);
-      auto rhs_params = mlir::nvgpu::getLdMatrixParams(rhs_info, /*transpose=*/true);
-      if (mlir::failed(lhs_params) || mlir::failed(rhs_params)) {
+      if (!IsF16LhsMmaFragmentType(lhs_type) || !IsF16RhsMmaFragmentType(rhs_type)) {
         continue;
       }
+
+      mlir::nvgpu::LdMatrixParams lhs_params{
+          lhs_type,
+          /*isAccum=*/false,
+          /*numTiles=*/4,
+          mlir::vector::IteratorType::parallel,
+          mlir::NVVM::MMALayout::row};
+      mlir::nvgpu::LdMatrixParams rhs_params{
+          rhs_type,
+          /*isAccum=*/false,
+          /*numTiles=*/2,
+          mlir::vector::IteratorType::parallel,
+          mlir::NVVM::MMALayout::col};
 
       builder.setInsertionPoint(mma);
       auto lane = builder.create<mlir::gpu::ThreadIdOp>(mma.getLoc(), mlir::gpu::Dimension::x);
-      auto lhs_coord_map = mlir::nvgpu::getLaneIdToLdMatrixMatrixCoord(
-          builder, mma.getLoc(), *lhs_params);
-      auto rhs_coord_map = mlir::nvgpu::getLaneIdToLdMatrixMatrixCoord(
-          builder, mma.getLoc(), *rhs_params);
-      if (mlir::failed(lhs_coord_map) || mlir::failed(rhs_coord_map)) {
-        continue;
-      }
-
-      auto lhs_row = builder.create<mlir::affine::AffineApplyOp>(
-          mma.getLoc(), lhs_coord_map->getSubMap({0}), mlir::ValueRange{lane});
-      auto lhs_col = builder.create<mlir::affine::AffineApplyOp>(
-          mma.getLoc(), lhs_coord_map->getSubMap({1}), mlir::ValueRange{lane});
-      auto rhs_row = builder.create<mlir::affine::AffineApplyOp>(
-          mma.getLoc(), rhs_coord_map->getSubMap({0}), mlir::ValueRange{lane});
-      auto rhs_col = builder.create<mlir::affine::AffineApplyOp>(
-          mma.getLoc(), rhs_coord_map->getSubMap({1}), mlir::ValueRange{lane});
+      auto c0 = builder.create<mlir::arith::ConstantIndexOp>(mma.getLoc(), 0);
+      auto c8 = builder.create<mlir::arith::ConstantIndexOp>(mma.getLoc(), 8);
+      auto c16 = builder.create<mlir::arith::ConstantIndexOp>(mma.getLoc(), 16);
+      auto lhs_row = builder.create<mlir::arith::RemUIOp>(mma.getLoc(), lane, c16);
+      auto lhs_col_block = builder.create<mlir::arith::DivUIOp>(mma.getLoc(), lane, c16);
+      auto lhs_col =
+          builder.create<mlir::arith::MulIOp>(mma.getLoc(), lhs_col_block, c8);
+      auto rhs_row = builder.create<mlir::arith::RemUIOp>(mma.getLoc(), lane, c16);
+      auto rhs_col = c0;
       auto lhs_ldmatrix = builder.create<mlir::nvgpu::LdMatrixOp>(
           mma.getLoc(), lhs_type, lhs_load.getMemRef(),
           mlir::ValueRange{lhs_row, lhs_col}, /*transpose=*/false,
-          lhs_params->numTiles);
+          lhs_params.numTiles);
       auto rhs_ldmatrix = builder.create<mlir::nvgpu::LdMatrixOp>(
           mma.getLoc(), rhs_type, rhs_load.getMemRef(),
           mlir::ValueRange{rhs_row, rhs_col}, /*transpose=*/true,
-          rhs_params->numTiles);
+          rhs_params.numTiles);
       mma->setOperand(0, lhs_ldmatrix.getResult());
       mma->setOperand(1, rhs_ldmatrix.getResult());
     }
