@@ -292,7 +292,8 @@ matcore::QuantizationParams parseTensorQuantization(const nb::object &tensor,
   return quant;
 }
 
-ParsedTensor parseTensorArgument(const nb::object &tensor, std::size_t index) {
+ParsedTensor parseTensorArgument(const nb::object &tensor, std::size_t index,
+                                 matcore::TargetKind target_kind) {
   ParsedTensor parsed;
   parsed.dtype_name = parseSupportedDType(tensor, index);
   parsed.quantization = parseTensorQuantization(tensor, parsed.dtype_name);
@@ -336,26 +337,34 @@ ParsedTensor parseTensorArgument(const nb::object &tensor, std::size_t index) {
     }
   }
 
-  nb::object array_interface_obj = tensor.attr("__array_interface__");
+  const bool prefer_cuda_interface =
+      matcore::normalizeTarget(target_kind) == matcore::TargetKind::kNvidiaDGPU &&
+      nb::hasattr(tensor, "__cuda_array_interface__");
+  const char *interface_name =
+      prefer_cuda_interface ? "__cuda_array_interface__" : "__array_interface__";
+  nb::object array_interface_obj = tensor.attr(interface_name);
   if (!nb::isinstance<nb::dict>(array_interface_obj)) {
     throw std::runtime_error("Tensor argument " + std::to_string(index) +
-                             " must expose a valid __array_interface__ dict.");
+                             " must expose a valid " + interface_name + " dict.");
   }
   nb::dict array_interface = nb::cast<nb::dict>(array_interface_obj);
   if (!array_interface.contains(nb::str("data"))) {
     throw std::runtime_error("Tensor argument " + std::to_string(index) +
-                             " is missing __array_interface__['data'].");
+                             " is missing " + std::string(interface_name) +
+                             "['data'].");
   }
 
   nb::object data_obj = array_interface[nb::str("data")];
   if (!nb::isinstance<nb::tuple>(data_obj)) {
     throw std::runtime_error("Tensor argument " + std::to_string(index) +
-                             " has malformed __array_interface__['data'].");
+                             " has malformed " + std::string(interface_name) +
+                             "['data'].");
   }
   nb::tuple data_tuple = nb::cast<nb::tuple>(data_obj);
   if (data_tuple.size() == 0) {
     throw std::runtime_error("Tensor argument " + std::to_string(index) +
-                             " has empty __array_interface__['data'] tuple.");
+                             " has empty " + std::string(interface_name) +
+                             "['data'] tuple.");
   }
 
   parsed.data_ptr = nb::cast<std::uintptr_t>(data_tuple[0]);
@@ -582,7 +591,8 @@ Invocation buildInvocation(const nb::dict &kernel_obj, const std::string &target
 
   for (std::size_t i = 0; i < tensor_args.size(); ++i) {
     nb::object tensor = nb::borrow<nb::object>(tensor_args[i]);
-    ParsedTensor parsed = parseTensorArgument(tensor, i);
+    ParsedTensor parsed =
+        parseTensorArgument(tensor, i, invocation.target_profile.kind);
     invocation.keepalive_tensors.push_back(tensor);
 
     matcore::RuntimeTensorView view;

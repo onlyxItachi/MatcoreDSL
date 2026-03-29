@@ -349,6 +349,10 @@ class MatCoreTensorView:
     def __array_interface__(self) -> Any:
         return self._array.__array_interface__
 
+    @property
+    def __cuda_array_interface__(self) -> Any:
+        return self._array.__cuda_array_interface__
+
     def __getattr__(self, name: str) -> Any:
         return getattr(self._array, name)
 
@@ -572,6 +576,85 @@ def _get_native_module() -> Any:
     return module
 
 
+def _optional_import_cupy() -> Any | None:
+    try:
+        return importlib.import_module("cupy")
+    except Exception:
+        return None
+
+
+def _nvidia_target_requested(target: str) -> bool:
+    return target.split(":", 1)[0] == "nvidia-dgpu"
+
+
+def _stored_arg_indices(kernel_obj: MatCoreKernel) -> set[int]:
+    stored_symbols = {
+        str(op.get("tensor"))
+        for op in kernel_obj.ir.get("ops", [])
+        if isinstance(op, dict) and op.get("op") == "store" and op.get("tensor") is not None
+    }
+    return {
+        idx
+        for idx, param in enumerate(kernel_obj.ir.get("params", []))
+        if param in stored_symbols
+    }
+
+
+def _view_metadata(array: MatCoreTensorView) -> dict[str, Any]:
+    return {
+        "dtype": array.matcore_dtype,
+        "scale": getattr(array, "matcore_scale", None),
+        "zero_point": getattr(array, "matcore_zero_point", None),
+        "quant_enabled": getattr(array, "matcore_quant_enabled", None),
+    }
+
+
+def _stage_nvidia_arrays(
+    kernel_obj: MatCoreKernel, arrays: tuple[Any, ...]
+) -> tuple[tuple[Any, ...], list[tuple[Any, Any]]]:
+    cp = _optional_import_cupy()
+    if cp is None:
+        raise RuntimeError(
+            "nvidia-dgpu execution requires CuPy or another CUDA array provider "
+            "when host NumPy arrays are passed."
+        )
+
+    stored_indices = _stored_arg_indices(kernel_obj)
+    staged_arrays: list[Any] = []
+    copybacks: list[tuple[Any, Any]] = []
+    for idx, array in enumerate(arrays):
+        underlying = array._array if isinstance(array, MatCoreTensorView) else array
+        cuda_ready = hasattr(array, "__cuda_array_interface__") or hasattr(
+            underlying, "__cuda_array_interface__"
+        )
+        if cuda_ready:
+            staged_arrays.append(array)
+            continue
+
+        device_array = cp.asarray(underlying)
+        if isinstance(array, MatCoreTensorView):
+            staged_array = MatCoreTensorView(device_array, **_view_metadata(array))
+        else:
+            staged_array = device_array
+        staged_arrays.append(staged_array)
+        if idx in stored_indices:
+            copybacks.append((underlying, device_array))
+    return tuple(staged_arrays), copybacks
+
+
+def _copy_back_staged_arrays(copybacks: list[tuple[Any, Any]]) -> None:
+    if not copybacks:
+        return
+    cp = _optional_import_cupy()
+    if cp is None:
+        raise RuntimeError("CuPy became unavailable before staged output copy-back.")
+    for host_array, device_array in copybacks:
+        try:
+            cp.asnumpy(device_array, out=host_array)
+        except TypeError:
+            host_array[...] = cp.asnumpy(device_array)
+
+
 def launch(
     kernel_obj: MatCoreKernel,
     *arrays: Any,
@@ -583,7 +666,13 @@ def launch(
     normalized_target = _normalize_target(target)
     runtime_ir = _build_runtime_ir(kernel_obj, arrays, quant)
     native = _get_native_module()
-    return native.compile_and_run(runtime_ir, normalized_target, *arrays)
+    runtime_arrays = arrays
+    copybacks: list[tuple[Any, Any]] = []
+    if _nvidia_target_requested(normalized_target):
+        runtime_arrays, copybacks = _stage_nvidia_arrays(kernel_obj, arrays)
+    native.compile_and_run(runtime_ir, normalized_target, *runtime_arrays)
+    _copy_back_staged_arrays(copybacks)
+    return None
 
 
 class MatCoreNamespace:
