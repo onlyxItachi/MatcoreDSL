@@ -273,11 +273,6 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
   };
 
   if (plan.route == LoweringRoute::kNvidiaNvptx) {
-    run_stage("nvidia-dynamic-padding", [&](mlir::PassManager &pm) {
-      pm.addNestedPass<mlir::func::FuncOp>(CreateDynamicMatmulPaddingPass());
-      pm.addPass(mlir::createCanonicalizerPass());
-      pm.addPass(mlir::createCSEPass());
-    });
     const NvidiaMappingConfig mapping =
         selectNvidiaMappingForModule(module, signature);
     try {

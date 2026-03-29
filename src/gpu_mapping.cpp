@@ -139,8 +139,13 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
   config.block_tile_n = pickTilingFactor(n, 128);
   config.k_tile = pickTilingFactor(k, signature.quantized_i8 ? 32 : 16);
 
+  const bool statically_compatible_mma =
+      m != mlir::ShapedType::kDynamic && n != mlir::ShapedType::kDynamic &&
+      k != mlir::ShapedType::kDynamic && m >= 16 && n >= 8 && k >= 16 &&
+      (m % 16) == 0 && (n % 8) == 0 && (k % 16) == 0 &&
+      isTensorCoreMmaSyncType(signature);
   config.rewrite_to_mma_sync =
-      !signature.quantized_i8 && isTensorCoreMmaSyncType(signature);
+      !signature.quantized_i8 && statically_compatible_mma;
   if (config.rewrite_to_mma_sync) {
     // MLIR 18 rewrite_matmul_as_mma_sync assumes one warp (threadIdx.x lanes).
     config.block_tile_m = 16;
