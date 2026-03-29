@@ -14,6 +14,8 @@
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
+#include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
+#include "mlir/Dialect/NVGPU/Utils/MMAUtils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -694,6 +696,76 @@ struct VectorizeNvidiaSharedMemoryCopiesPass
   }
 };
 
+mlir::memref::LoadOp extractBaseLoadFromFragment(mlir::Value value) {
+  while (auto insert = value.getDefiningOp<mlir::vector::InsertOp>()) {
+    value = insert.getDest();
+  }
+  if (auto splat = value.getDefiningOp<mlir::vector::SplatOp>()) {
+    return splat.getInput().getDefiningOp<mlir::memref::LoadOp>();
+  }
+  return {};
+}
+
+struct RewriteNvidiaLdmatrixFragmentLoadsPass
+    : public mlir::PassWrapper<RewriteNvidiaLdmatrixFragmentLoadsPass,
+                               mlir::OperationPass<mlir::func::FuncOp>> {
+  void getDependentDialects(mlir::DialectRegistry &registry) const override {
+    registry.insert<mlir::arith::ArithDialect, mlir::gpu::GPUDialect,
+                    mlir::memref::MemRefDialect, mlir::nvgpu::NVGPUDialect,
+                    mlir::vector::VectorDialect>();
+  }
+
+  void runOnOperation() override {
+    mlir::func::FuncOp func = getOperation();
+    llvm::SmallVector<mlir::nvgpu::MmaSyncOp, 16> mmas;
+    func.walk([&](mlir::nvgpu::MmaSyncOp op) { mmas.push_back(op); });
+
+    mlir::OpBuilder builder(&getContext());
+    for (mlir::nvgpu::MmaSyncOp mma : mmas) {
+      if (!mma->getBlock()) {
+        continue;
+      }
+      auto lhs_load = extractBaseLoadFromFragment(mma.getMatrixA());
+      auto rhs_load = extractBaseLoadFromFragment(mma.getMatrixB());
+      if (!lhs_load || !rhs_load || lhs_load.getIndices().size() != 2 ||
+          rhs_load.getIndices().size() != 2) {
+        continue;
+      }
+
+      auto lhs_memref = llvm::dyn_cast<mlir::MemRefType>(lhs_load.getMemRef().getType());
+      auto rhs_memref = llvm::dyn_cast<mlir::MemRefType>(rhs_load.getMemRef().getType());
+      auto lhs_type = llvm::dyn_cast<mlir::VectorType>(mma.getMatrixA().getType());
+      auto rhs_type = llvm::dyn_cast<mlir::VectorType>(mma.getMatrixB().getType());
+      if (!lhs_memref || !rhs_memref || !lhs_type || !rhs_type ||
+          !IsWorkgroupMemRefType(lhs_memref) || !IsWorkgroupMemRefType(rhs_memref)) {
+        continue;
+      }
+
+      mlir::nvgpu::WarpMatrixInfo lhs_info{lhs_type,
+                                           mlir::nvgpu::MatMulOperandRole::A};
+      mlir::nvgpu::WarpMatrixInfo rhs_info{rhs_type,
+                                           mlir::nvgpu::MatMulOperandRole::B};
+      auto lhs_params = mlir::nvgpu::getLdMatrixParams(lhs_info, /*transpose=*/false);
+      auto rhs_params = mlir::nvgpu::getLdMatrixParams(rhs_info, /*transpose=*/true);
+      if (mlir::failed(lhs_params) || mlir::failed(rhs_params)) {
+        continue;
+      }
+
+      builder.setInsertionPoint(mma);
+      auto lhs_ldmatrix = builder.create<mlir::nvgpu::LdMatrixOp>(
+          mma.getLoc(), lhs_type, lhs_load.getMemRef(), lhs_load.getIndices(),
+          /*transpose=*/false,
+          static_cast<std::uint32_t>(lhs_params->numTiles));
+      auto rhs_ldmatrix = builder.create<mlir::nvgpu::LdMatrixOp>(
+          mma.getLoc(), rhs_type, rhs_load.getMemRef(), rhs_load.getIndices(),
+          /*transpose=*/true,
+          static_cast<std::uint32_t>(rhs_params->numTiles));
+      mma->setOperand(0, lhs_ldmatrix.getResult());
+      mma->setOperand(1, rhs_ldmatrix.getResult());
+    }
+  }
+};
+
 }  // namespace
 
 bool IsLowPrecisionTensorType(TensorDType dtype) {
@@ -799,6 +871,10 @@ std::unique_ptr<mlir::Pass> CreateVectorizeNvidiaSharedMemoryCopiesPass() {
   return std::make_unique<VectorizeNvidiaSharedMemoryCopiesPass>();
 }
 
+std::unique_ptr<mlir::Pass> CreateRewriteNvidiaLdmatrixFragmentLoadsPass() {
+  return std::make_unique<RewriteNvidiaLdmatrixFragmentLoadsPass>();
+}
+
 void AddNvidiaMmaPreparationPasses(mlir::PassManager &pm) {
   pm.addNestedPass<mlir::func::FuncOp>(
       std::make_unique<ElideRedundantWorkgroupFillPass>());
@@ -830,6 +906,7 @@ void AddNvidiaLoopMaterializationPasses(mlir::PassManager &pm) {
 
 void AddNvidiaAsyncCopyPreparationPasses(mlir::PassManager &pm) {
   pm.addNestedPass<mlir::func::FuncOp>(CreateVectorizeNvidiaSharedMemoryCopiesPass());
+  pm.addNestedPass<mlir::func::FuncOp>(CreateRewriteNvidiaLdmatrixFragmentLoadsPass());
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(mlir::createCSEPass());
 }
