@@ -178,11 +178,6 @@ bool CanExecuteOnHost(const RuntimeCapabilities &runtime,
   }
 
   if (requirements.requires_nvidia_device) {
-    const char *unsafe_override = std::getenv("MATCORE_ENABLE_UNSAFE_NVIDIA");
-    if (unsafe_override == nullptr || std::string_view(unsafe_override) != "1") {
-      return deny("nvidia-dgpu is temporarily disabled by the Phase 4.6 safety hotfix; "
-                  "set MATCORE_ENABLE_UNSAFE_NVIDIA=1 to bypass this guard");
-    }
     if (!runtime.nvidia.driver_available) {
       return deny("NVIDIA driver library is unavailable");
     }
