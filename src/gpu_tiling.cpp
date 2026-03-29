@@ -266,41 +266,82 @@ struct PromoteGpuWorkgroupAllocationsPass
         }
 
         llvm::SmallVector<mlir::memref::DeallocOp, 2> deallocs;
-        mlir::memref::ViewOp view;
+        llvm::SmallVector<mlir::memref::ViewOp, 4> views;
+        llvm::SmallVector<mlir::Operation *, 4> non_dealloc_non_view_users;
         for (mlir::Operation *user : alloc->getUsers()) {
           if (auto dealloc = llvm::dyn_cast<mlir::memref::DeallocOp>(user)) {
             deallocs.push_back(dealloc);
             continue;
           }
           if (auto candidate_view = llvm::dyn_cast<mlir::memref::ViewOp>(user)) {
-            if (view && candidate_view != view) {
-              alloc.emitError("MatCore expected at most one workgroup memref.view");
-              signalPassFailure();
-              return;
-            }
-            view = candidate_view;
+            views.push_back(candidate_view);
             continue;
           }
+          non_dealloc_non_view_users.push_back(user);
         }
 
-        if (view) {
-          auto static_view_type = inferStaticViewType(view);
+        if (!views.empty()) {
+          auto static_view_type = inferStaticViewType(views.front());
           if (!static_view_type.has_value()) {
-            view.emitError("MatCore requires statically sized promoted workgroup views");
+            views.front().emitError(
+                "MatCore requires statically sized promoted workgroup views");
             signalPassFailure();
             return;
           }
 
-          mlir::BlockArgument attribution =
-              addLaunchWorkgroupAttribution(launch, *static_view_type, view.getLoc());
-          mlir::Value replacement = attribution;
-          if (attribution.getType() != view.getType()) {
-            replacement = builder.create<mlir::memref::CastOp>(view.getLoc(),
-                                                                view.getType(),
-                                                                attribution);
+          for (mlir::memref::ViewOp view : llvm::drop_begin(views)) {
+            auto candidate_type = inferStaticViewType(view);
+            if (!candidate_type.has_value()) {
+              view.emitError("MatCore requires statically sized promoted workgroup views");
+              signalPassFailure();
+              return;
+            }
+            if (*candidate_type != *static_view_type) {
+              view.emitError(
+                  "MatCore requires compatible static workgroup views for promotion");
+              signalPassFailure();
+              return;
+            }
           }
-          view.getResult().replaceAllUsesWith(replacement);
-          view.erase();
+
+          mlir::BlockArgument attribution =
+              addLaunchWorkgroupAttribution(launch, *static_view_type, alloc.getLoc());
+
+          for (mlir::memref::ViewOp view : views) {
+            mlir::Value replacement = attribution;
+            if (attribution.getType() != view.getType()) {
+              replacement = builder.create<mlir::memref::CastOp>(
+                  view.getLoc(), view.getType(), attribution);
+            }
+            view.getResult().replaceAllUsesWith(replacement);
+            view.erase();
+          }
+
+          if (!non_dealloc_non_view_users.empty()) {
+            if (!alloc.getType().hasStaticShape()) {
+              alloc.emitError(
+                  "MatCore requires static alloc type when replacing direct promoted uses");
+              signalPassFailure();
+              return;
+            }
+
+            mlir::Value replacement = attribution;
+            if (attribution.getType() != alloc.getType()) {
+              replacement = builder.create<mlir::memref::CastOp>(
+                  alloc.getLoc(), alloc.getType(), attribution);
+            }
+
+            llvm::SmallVector<mlir::OpOperand *, 8> alloc_uses;
+            for (mlir::OpOperand &use : alloc->getUses()) {
+              if (!llvm::isa<mlir::memref::DeallocOp>(use.getOwner()) &&
+                  !llvm::isa<mlir::memref::ViewOp>(use.getOwner())) {
+                alloc_uses.push_back(&use);
+              }
+            }
+            for (mlir::OpOperand *use : alloc_uses) {
+              use->set(replacement);
+            }
+          }
         } else {
           if (!alloc.getType().hasStaticShape()) {
             alloc.emitError("MatCore requires statically shaped workgroup allocations");
