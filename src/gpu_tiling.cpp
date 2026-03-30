@@ -621,17 +621,14 @@ void emitDistributedVectorCopy(mlir::OpBuilder &builder, mlir::Location loc,
       builder.create<mlir::gpu::BlockDimOp>(loc, mlir::gpu::Dimension::y);
   auto block_z =
       builder.create<mlir::gpu::BlockDimOp>(loc, mlir::gpu::Dimension::z);
-  auto c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
   auto c8 = builder.create<mlir::arith::ConstantIndexOp>(loc, 8);
+  auto c32 = builder.create<mlir::arith::ConstantIndexOp>(loc, 32);
   const std::int64_t segments = info.cols / 8;
-  const std::int64_t total_vectors = info.rows * segments;
-  if (total_vectors <= 0) {
+  if (info.rows <= 0 || segments <= 0) {
     return;
   }
-  auto c_segments =
-      builder.create<mlir::arith::ConstantIndexOp>(loc, std::max<std::int64_t>(1, segments));
-  auto c_total =
-      builder.create<mlir::arith::ConstantIndexOp>(loc, total_vectors);
+  auto c_rows = builder.create<mlir::arith::ConstantIndexOp>(loc, info.rows);
+  auto c_segments = builder.create<mlir::arith::ConstantIndexOp>(loc, segments);
   auto vector_type = mlir::VectorType::get({8}, element_type);
   auto zero = builder.create<mlir::arith::ConstantOp>(loc, builder.getZeroAttr(element_type));
   auto permutation_map = mlir::AffineMap::get(
@@ -639,16 +636,10 @@ void emitDistributedVectorCopy(mlir::OpBuilder &builder, mlir::Location loc,
       {mlir::getAffineDimExpr(1, builder.getContext())}, builder.getContext());
   auto in_bounds = builder.getArrayAttr({builder.getBoolAttr(true)});
 
-  auto build_transfer = [&](mlir::OpBuilder &nested_builder, mlir::Value vector_index) {
-    mlir::Value row = vector_index;
-    mlir::Value column = c0;
-    if (segments > 1) {
-      row =
-          nested_builder.create<mlir::arith::DivUIOp>(loc, vector_index, c_segments);
-      mlir::Value segment = nested_builder.create<mlir::arith::RemUIOp>(
-          loc, vector_index, c_segments);
-      column = nested_builder.create<mlir::arith::MulIOp>(loc, segment, c8);
-    }
+  auto build_transfer = [&](mlir::OpBuilder &nested_builder, mlir::Value row,
+                            mlir::Value segment) {
+    mlir::Value column =
+        nested_builder.create<mlir::arith::MulIOp>(loc, segment, c8);
     auto vec = nested_builder.create<mlir::vector::TransferReadOp>(
         loc, vector_type, info.src, mlir::ValueRange{row, column},
         permutation_map, zero, mlir::Value(), in_bounds);
@@ -665,55 +656,43 @@ void emitDistributedVectorCopy(mlir::OpBuilder &builder, mlir::Location loc,
       builder.create<mlir::arith::MulIOp>(loc, warp_row, block_x);
   mlir::Value cta_thread =
       builder.create<mlir::arith::AddIOp>(loc, thread_x, linear_row);
-  std::int64_t static_threads = 0;
+  mlir::Value cta_threads;
   if (auto launch = info.outer->getParentOfType<mlir::gpu::LaunchOp>()) {
     auto block_x_const = matchConstantIndex(launch.getBlockSizeX());
     auto block_y_const = matchConstantIndex(launch.getBlockSizeY());
     auto block_z_const = matchConstantIndex(launch.getBlockSizeZ());
     if (block_x_const.has_value() && block_y_const.has_value() &&
         block_z_const.has_value()) {
-      static_threads = (*block_x_const) * (*block_y_const) * (*block_z_const);
+      const std::int64_t static_threads =
+          (*block_x_const) * (*block_y_const) * (*block_z_const);
+      cta_threads = builder.create<mlir::arith::ConstantIndexOp>(loc, static_threads);
     }
   }
-
-  if (static_threads <= 0) {
+  if (!cta_threads) {
     mlir::Value xy_threads =
         builder.create<mlir::arith::MulIOp>(loc, block_x, block_y);
-    mlir::Value cta_threads =
-        builder.create<mlir::arith::MulIOp>(loc, xy_threads, block_z);
-    auto vector_loop =
-        builder.create<mlir::scf::ForOp>(loc, cta_thread, c_total, cta_threads);
-    mlir::OpBuilder loop_builder =
-        mlir::OpBuilder::atBlockTerminator(vector_loop.getBody());
-    build_transfer(loop_builder, vector_loop.getInductionVar());
-    return;
+    cta_threads = builder.create<mlir::arith::MulIOp>(loc, xy_threads, block_z);
   }
 
-  const std::int64_t rounds = ceilDiv(total_vectors, static_threads);
-  for (std::int64_t round = 0; round < rounds; ++round) {
-    mlir::Value vector_index = cta_thread;
-    if (round > 0) {
-      auto offset = builder.create<mlir::arith::ConstantIndexOp>(
-          loc, round * static_threads);
-      vector_index =
-          builder.create<mlir::arith::AddIOp>(loc, cta_thread, offset);
-    }
+  // Split the CTA into warps and keep each warp on one row at a time so
+  // adjacent lanes fetch adjacent 128-bit chunks from the same row.
+  mlir::Value warp_id =
+      builder.create<mlir::arith::DivUIOp>(loc, cta_thread, c32);
+  mlir::Value lane =
+      builder.create<mlir::arith::RemUIOp>(loc, cta_thread, c32);
+  mlir::Value warp_stride =
+      builder.create<mlir::arith::CeilDivUIOp>(loc, cta_threads, c32);
 
-    const bool is_tail_round =
-        ((round + 1) * static_threads) > total_vectors;
-    if (!is_tail_round) {
-      build_transfer(builder, vector_index);
-      continue;
-    }
-
-    auto in_range = builder.create<mlir::arith::CmpIOp>(
-        loc, mlir::arith::CmpIPredicate::ult, vector_index, c_total);
-    auto if_op =
-        builder.create<mlir::scf::IfOp>(loc, in_range, /*withElseRegion=*/false);
-    mlir::OpBuilder then_builder =
-        mlir::OpBuilder::atBlockTerminator(&if_op.getThenRegion().front());
-    build_transfer(then_builder, vector_index);
-  }
+  auto row_loop =
+      builder.create<mlir::scf::ForOp>(loc, warp_id, c_rows, warp_stride);
+  mlir::OpBuilder row_builder =
+      mlir::OpBuilder::atBlockTerminator(row_loop.getBody());
+  auto segment_loop =
+      row_builder.create<mlir::scf::ForOp>(loc, lane, c_segments, c32);
+  mlir::OpBuilder segment_builder =
+      mlir::OpBuilder::atBlockTerminator(segment_loop.getBody());
+  build_transfer(segment_builder, row_loop.getInductionVar(),
+                 segment_loop.getInductionVar());
 }
 
 constexpr llvm::StringLiteral kMatcoreAsyncKLoopAttr("matcore.async_k_loop");
