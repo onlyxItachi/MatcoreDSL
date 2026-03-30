@@ -45,6 +45,11 @@ std::int64_t ceilDiv(std::int64_t lhs, std::int64_t rhs) {
   return (lhs + rhs - 1) / rhs;
 }
 
+std::int64_t pickMmaMacroKTile(std::int64_t k) {
+  (void)k;
+  return 64;
+}
+
 bool isTensorCoreMmaSyncType(const MatmulLoweringSignature &signature) {
   return signature.lhs_dtype == TensorDType::kFloat16 &&
          signature.rhs_dtype == TensorDType::kFloat16 &&
@@ -198,7 +203,7 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
         1, ceilDiv(config.block_tile_n, config.thread_tile_n));
     config.block_threads_z = std::max<std::int64_t>(
         1, ceilDiv(config.block_tile_m, config.thread_tile_m));
-    config.k_tile = 16;
+    config.k_tile = pickMmaMacroKTile(k);
     return config;
   }
 
@@ -230,34 +235,40 @@ std::string BuildNvidiaTransformMappingSequence(
         " : (!transform.any_op) -> !transform.any_op\n";
   ir << "    %matmul = transform.structured.match ops{[\"" << op_name
      << "\"]} in %func : (!transform.any_op) -> !transform.any_op\n";
-  ir << "    %block_tiled, %block_forall = transform.structured.tile_using_forall"
+  ir << "    %block_tiled:2 = transform.structured.tile_using_forall"
      << " %matmul tile_sizes [" << config.block_tile_m << ", "
      << config.block_tile_n
      << ", 0](mapping = [#gpu.block<y>, #gpu.block<x>]) : (!transform.any_op)"
         " -> (!transform.any_op, !transform.any_op)\n";
   ir << "    %c_promoted = transform.structured.promote %block_tiled"
         " {operands_to_promote = [2], use_full_tiles_by_default,"
-        " memory_space = #gpu.address_space<workgroup>} :"
+        " memory_space = #gpu.address_space<workgroup>, alignment = 128} :"
         " (!transform.any_op) -> !transform.any_op\n";
-  ir << "    %k_tiled, %k_loop = transform.structured.tile_using_for"
+  ir << "    %k_tiled:2 = transform.structured.tile_using_for"
      << " %c_promoted [0, 0, " << config.k_tile
      << "] : (!transform.any_op) -> (!transform.any_op, !transform.any_op)\n";
+  if (config.rewrite_to_mma_sync) {
+    ir << "    transform.annotate %k_tiled \"matcore.shared_memory_k_macro_tile\""
+          " : !transform.any_op\n";
+  }
   ir << "    %promoted = transform.structured.promote %k_tiled"
         " {operands_to_promote = [0, 1], use_full_tiles_by_default,"
-        " memory_space = #gpu.address_space<workgroup>} :"
+        " memory_space = #gpu.address_space<workgroup>, alignment = 128} :"
         " (!transform.any_op) -> !transform.any_op\n";
   if (config.rewrite_to_mma_sync) {
-    ir << "    %warp_tiled, %warp_forall = transform.structured.tile_using_forall"
+    ir << "    transform.annotate %promoted \"matcore.shared_memory_swizzled\""
+          " : !transform.any_op\n";
+    ir << "    %warp_tiled:2 = transform.structured.tile_using_forall"
        << " %promoted num_threads [" << config.block_threads_z << ", "
        << config.block_threads_y
        << "](mapping = [#gpu.thread<z>, #gpu.thread<y>]) : (!transform.any_op)"
           " -> (!transform.any_op, !transform.any_op)\n";
-    ir << "    %micro_tiled, %micro_m_loop, %micro_n_loop ="
-          " transform.structured.tile_using_for %warp_tiled [16, 8, 0]"
+    ir << "    %micro_tiled:4 = transform.structured.tile_using_for"
+          " %warp_tiled [16, 8, 16]"
           " : (!transform.any_op) -> (!transform.any_op, !transform.any_op,"
-          " !transform.any_op)\n";
+          " !transform.any_op, !transform.any_op)\n";
   } else {
-    ir << "    %warp_tiled, %thread_forall = transform.structured.tile_using_forall"
+    ir << "    %warp_tiled:2 = transform.structured.tile_using_forall"
        << " %promoted num_threads [" << config.block_threads_y << ", "
        << config.block_threads_x
        << "](mapping = [#gpu.thread<y>, #gpu.thread<x>]) : (!transform.any_op)"
