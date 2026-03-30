@@ -136,6 +136,20 @@ mlir::Value threadIdForMapping(mlir::gpu::LaunchOp launch,
   }
 }
 
+mlir::Value blockSizeForThreadMapping(mlir::gpu::LaunchOp launch,
+                                      mlir::gpu::GPUThreadMappingAttr attr) {
+  switch (attr.getRelativeIndex()) {
+    case 0:
+      return launch.getBlockSizeX();
+    case 1:
+      return launch.getBlockSizeY();
+    case 2:
+      return launch.getBlockSizeZ();
+    default:
+      return {};
+  }
+}
+
 }  // namespace
 
 NvidiaMappingConfig SelectNvidiaMappingConfig(
@@ -298,9 +312,13 @@ std::string BuildNvidiaAsyncPipelineSequence() {
         "(%root: !transform.any_op) {\n";
   ir << "    %launch = transform.structured.match ops{[\"gpu.launch\"]} in %root"
         " : (!transform.any_op) -> !transform.any_op\n";
-  ir << "    %loops = transform.structured.match ops{[\"scf.for\"]} in %launch"
+  ir << "    %loops = transform.structured.match ops{[\"scf.for\"]}"
+        " attributes {matcore.async_k_loop} in %launch"
         " : (!transform.any_op) -> !transform.any_op\n";
-  ir << "    %async = transform.nvgpu.create_async_groups %loops {bypass_l1}"
+  ir << "    %pipelined = transform.nvgpu.pipeline_shared_memory_copies"
+        " failures(suppress) %loops {depth = 2, peel_epilogue}"
+        " : (!transform.any_op) -> !transform.any_op\n";
+  ir << "    %async = transform.nvgpu.create_async_groups %pipelined {bypass_l1}"
         " : (!transform.any_op) -> !transform.any_op\n";
   ir << "    transform.yield\n";
   ir << "  }\n";
@@ -476,10 +494,27 @@ struct DynamicMacroGridMappingPass
           loc, upper_bounds[dim], lower_bounds[dim]);
       mlir::Value trip_count =
           buildCeilDivIndex(builder, loc, extent, steps[dim]);
-      mlir::Value in_range = builder.create<mlir::arith::CmpIOp>(
-          loc, mlir::arith::CmpIPredicate::ult, thread_id, trip_count);
-      active = active ? builder.create<mlir::arith::AndIOp>(loc, active, in_range)
-                      : in_range;
+      mlir::Value block_size = blockSizeForThreadMapping(launch, map_attr);
+      auto lower_const = matchConstantIndex(lower_bounds[dim]);
+      auto upper_const = matchConstantIndex(upper_bounds[dim]);
+      auto step_const = matchConstantIndex(steps[dim]);
+      std::optional<std::int64_t> trip_count_const;
+      if (lower_const.has_value() && upper_const.has_value() &&
+          step_const.has_value()) {
+        trip_count_const =
+            ceilDiv(*upper_const - *lower_const, *step_const);
+      }
+      auto block_size_const = block_size ? matchConstantIndex(block_size)
+                                         : std::optional<std::int64_t>();
+      const bool fully_covered =
+          trip_count_const.has_value() && block_size_const.has_value() &&
+          *trip_count_const == *block_size_const;
+      if (!fully_covered) {
+        mlir::Value in_range = builder.create<mlir::arith::CmpIOp>(
+            loc, mlir::arith::CmpIPredicate::ult, thread_id, trip_count);
+        active = active ? builder.create<mlir::arith::AndIOp>(loc, active, in_range)
+                        : in_range;
+      }
       mlir::Value scaled =
           builder.create<mlir::arith::MulIOp>(loc, thread_id, steps[dim]);
       mlir::Value iv =
@@ -487,15 +522,22 @@ struct DynamicMacroGridMappingPass
       mapping.map(forall.getInductionVar(dim), iv);
     }
 
-    auto if_op = builder.create<mlir::scf::IfOp>(loc, active,
-                                                 /*withElseRegion=*/false);
-    mlir::OpBuilder then_builder =
-        mlir::OpBuilder::atBlockTerminator(&if_op.getThenRegion().front());
-    for (mlir::Operation &op :
-         llvm::make_early_inc_range(forall.getBody()->without_terminator())) {
-      then_builder.clone(op, mapping);
+    if (active) {
+      auto if_op = builder.create<mlir::scf::IfOp>(loc, active,
+                                                   /*withElseRegion=*/false);
+      mlir::OpBuilder then_builder =
+          mlir::OpBuilder::atBlockTerminator(&if_op.getThenRegion().front());
+      for (mlir::Operation &op :
+           llvm::make_early_inc_range(forall.getBody()->without_terminator())) {
+        then_builder.clone(op, mapping);
+      }
+      builder.setInsertionPointAfter(if_op);
+    } else {
+      for (mlir::Operation &op :
+           llvm::make_early_inc_range(forall.getBody()->without_terminator())) {
+        builder.clone(op, mapping);
+      }
     }
-    builder.setInsertionPointAfter(if_op);
     builder.create<mlir::gpu::BarrierOp>(loc);
     forall.erase();
     return mlir::success();

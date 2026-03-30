@@ -18,6 +18,7 @@
 #include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 #include "mlir/Dialect/NVGPU/Utils/MMAUtils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -664,17 +665,180 @@ void emitDistributedVectorCopy(mlir::OpBuilder &builder, mlir::Location loc,
       builder.create<mlir::arith::MulIOp>(loc, warp_row, block_x);
   mlir::Value cta_thread =
       builder.create<mlir::arith::AddIOp>(loc, thread_x, linear_row);
-  mlir::Value xy_threads =
-      builder.create<mlir::arith::MulIOp>(loc, block_x, block_y);
-  mlir::Value cta_threads =
-      builder.create<mlir::arith::MulIOp>(loc, xy_threads, block_z);
+  std::int64_t static_threads = 0;
+  if (auto launch = info.outer->getParentOfType<mlir::gpu::LaunchOp>()) {
+    auto block_x_const = matchConstantIndex(launch.getBlockSizeX());
+    auto block_y_const = matchConstantIndex(launch.getBlockSizeY());
+    auto block_z_const = matchConstantIndex(launch.getBlockSizeZ());
+    if (block_x_const.has_value() && block_y_const.has_value() &&
+        block_z_const.has_value()) {
+      static_threads = (*block_x_const) * (*block_y_const) * (*block_z_const);
+    }
+  }
 
-  auto vector_loop =
-      builder.create<mlir::scf::ForOp>(loc, cta_thread, c_total, cta_threads);
-  mlir::OpBuilder loop_builder =
-      mlir::OpBuilder::atBlockTerminator(vector_loop.getBody());
-  build_transfer(loop_builder, vector_loop.getInductionVar());
+  if (static_threads <= 0) {
+    mlir::Value xy_threads =
+        builder.create<mlir::arith::MulIOp>(loc, block_x, block_y);
+    mlir::Value cta_threads =
+        builder.create<mlir::arith::MulIOp>(loc, xy_threads, block_z);
+    auto vector_loop =
+        builder.create<mlir::scf::ForOp>(loc, cta_thread, c_total, cta_threads);
+    mlir::OpBuilder loop_builder =
+        mlir::OpBuilder::atBlockTerminator(vector_loop.getBody());
+    build_transfer(loop_builder, vector_loop.getInductionVar());
+    return;
+  }
+
+  const std::int64_t rounds = ceilDiv(total_vectors, static_threads);
+  for (std::int64_t round = 0; round < rounds; ++round) {
+    mlir::Value vector_index = cta_thread;
+    if (round > 0) {
+      auto offset = builder.create<mlir::arith::ConstantIndexOp>(
+          loc, round * static_threads);
+      vector_index =
+          builder.create<mlir::arith::AddIOp>(loc, cta_thread, offset);
+    }
+
+    const bool is_tail_round =
+        ((round + 1) * static_threads) > total_vectors;
+    if (!is_tail_round) {
+      build_transfer(builder, vector_index);
+      continue;
+    }
+
+    auto in_range = builder.create<mlir::arith::CmpIOp>(
+        loc, mlir::arith::CmpIPredicate::ult, vector_index, c_total);
+    auto if_op =
+        builder.create<mlir::scf::IfOp>(loc, in_range, /*withElseRegion=*/false);
+    mlir::OpBuilder then_builder =
+        mlir::OpBuilder::atBlockTerminator(&if_op.getThenRegion().front());
+    build_transfer(then_builder, vector_index);
+  }
 }
+
+constexpr llvm::StringLiteral kMatcoreAsyncKLoopAttr("matcore.async_k_loop");
+
+struct MarkNvidiaAsyncPipelineLoopPass
+    : public mlir::PassWrapper<MarkNvidiaAsyncPipelineLoopPass,
+                               mlir::OperationPass<mlir::func::FuncOp>> {
+  void getDependentDialects(mlir::DialectRegistry &registry) const override {
+    registry.insert<mlir::gpu::GPUDialect, mlir::nvgpu::NVGPUDialect,
+                    mlir::scf::SCFDialect>();
+  }
+
+  static bool isAsyncPipelineCandidate(mlir::scf::ForOp loop) {
+    auto lower = matchConstantIndex(loop.getLowerBound());
+    auto step = matchConstantIndex(loop.getStep());
+    if (!lower.has_value() || !step.has_value() || *lower != 0 || *step != 16) {
+      return false;
+    }
+
+    bool has_barrier = false;
+    for (mlir::Operation &op : loop.getBody()->without_terminator()) {
+      if (llvm::isa<mlir::gpu::BarrierOp>(op)) {
+        has_barrier = true;
+        break;
+      }
+    }
+    if (!has_barrier) {
+      return false;
+    }
+
+    bool has_mma = false;
+    loop.walk([&](mlir::nvgpu::MmaSyncOp) { has_mma = true; });
+    return has_mma;
+  }
+
+  void runOnOperation() override {
+    mlir::func::FuncOp func = getOperation();
+    func.walk([&](mlir::gpu::LaunchOp launch) {
+      launch.walk([&](mlir::scf::ForOp loop) {
+        loop->removeAttr(kMatcoreAsyncKLoopAttr);
+      });
+
+      mlir::scf::ForOp target;
+      launch.walk([&](mlir::scf::ForOp loop) {
+        if (target || !isAsyncPipelineCandidate(loop)) {
+          return;
+        }
+        target = loop;
+      });
+      if (!target) {
+        return;
+      }
+      target->setAttr(kMatcoreAsyncKLoopAttr,
+                      mlir::UnitAttr::get(func.getContext()));
+    });
+  }
+};
+
+struct UnrollNvidiaAsyncPipelineNestedLoopsPass
+    : public mlir::PassWrapper<UnrollNvidiaAsyncPipelineNestedLoopsPass,
+                               mlir::OperationPass<mlir::func::FuncOp>> {
+  void getDependentDialects(mlir::DialectRegistry &registry) const override {
+    registry.insert<mlir::arith::ArithDialect, mlir::scf::SCFDialect>();
+  }
+
+  static std::optional<std::tuple<std::int64_t, std::int64_t, std::int64_t>>
+  getStaticLoopRange(mlir::scf::ForOp loop) {
+    if (!loop.getInitArgs().empty() || !loop.getResults().empty()) {
+      return std::nullopt;
+    }
+    auto lower = matchConstantIndex(loop.getLowerBound());
+    auto upper = matchConstantIndex(loop.getUpperBound());
+    auto step = matchConstantIndex(loop.getStep());
+    if (!lower.has_value() || !upper.has_value() || !step.has_value() ||
+        *step <= 0 || *upper < *lower) {
+      return std::nullopt;
+    }
+    return std::make_tuple(*lower, *upper, *step);
+  }
+
+  static bool canUnroll(mlir::scf::ForOp loop) {
+    auto range = getStaticLoopRange(loop);
+    if (!range.has_value()) {
+      return false;
+    }
+    auto [lower, upper, step] = *range;
+    const std::int64_t trip_count = ceilDiv(upper - lower, step);
+    return trip_count > 0 && trip_count <= 32;
+  }
+
+  static void unrollLoop(mlir::scf::ForOp loop) {
+    auto range = getStaticLoopRange(loop);
+    if (!range.has_value()) {
+      return;
+    }
+    auto [lower, upper, step] = *range;
+    const std::int64_t trip_count = ceilDiv(upper - lower, step);
+    (void)mlir::loopUnrollByFactor(loop, trip_count);
+  }
+
+  void runOnOperation() override {
+    mlir::func::FuncOp func = getOperation();
+    llvm::SmallVector<mlir::scf::ForOp, 4> pipeline_loops;
+    func.walk([&](mlir::scf::ForOp loop) {
+      if (loop->hasAttr(kMatcoreAsyncKLoopAttr)) {
+        pipeline_loops.push_back(loop);
+      }
+    });
+
+    for (mlir::scf::ForOp pipeline_loop : pipeline_loops) {
+      llvm::SmallVector<mlir::scf::ForOp, 16> nested_loops;
+      pipeline_loop.walk([&](mlir::scf::ForOp nested) {
+        if (nested == pipeline_loop || !canUnroll(nested)) {
+          return;
+        }
+        nested_loops.push_back(nested);
+      });
+      for (mlir::scf::ForOp nested : llvm::reverse(nested_loops)) {
+        if (nested->getBlock()) {
+          unrollLoop(nested);
+        }
+      }
+    }
+  }
+};
 
 struct VectorizeNvidiaSharedMemoryCopiesPass
     : public mlir::PassWrapper<VectorizeNvidiaSharedMemoryCopiesPass,
@@ -966,6 +1130,10 @@ void AddNvidiaLoopMaterializationPasses(mlir::PassManager &pm) {
 void AddNvidiaAsyncCopyPreparationPasses(mlir::PassManager &pm) {
   pm.addNestedPass<mlir::func::FuncOp>(CreateVectorizeNvidiaSharedMemoryCopiesPass());
   pm.addNestedPass<mlir::func::FuncOp>(CreateRewriteNvidiaLdmatrixFragmentLoadsPass());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      std::make_unique<MarkNvidiaAsyncPipelineLoopPass>());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      std::make_unique<UnrollNvidiaAsyncPipelineNestedLoopsPass>());
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(mlir::createCSEPass());
 }
