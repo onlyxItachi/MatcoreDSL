@@ -804,14 +804,14 @@ struct UnrollNvidiaAsyncPipelineNestedLoopsPass
     return trip_count > 0 && trip_count <= 32;
   }
 
-  static void unrollLoop(mlir::scf::ForOp loop) {
+  static bool unrollLoop(mlir::scf::ForOp loop) {
     auto range = getStaticLoopRange(loop);
     if (!range.has_value()) {
-      return;
+      return false;
     }
     auto [lower, upper, step] = *range;
     const std::int64_t trip_count = ceilDiv(upper - lower, step);
-    (void)mlir::loopUnrollByFactor(loop, trip_count);
+    return mlir::succeeded(mlir::loopUnrollByFactor(loop, trip_count));
   }
 
   void runOnOperation() override {
@@ -824,16 +824,20 @@ struct UnrollNvidiaAsyncPipelineNestedLoopsPass
     });
 
     for (mlir::scf::ForOp pipeline_loop : pipeline_loops) {
-      llvm::SmallVector<mlir::scf::ForOp, 16> nested_loops;
-      pipeline_loop.walk([&](mlir::scf::ForOp nested) {
-        if (nested == pipeline_loop || !canUnroll(nested)) {
-          return;
-        }
-        nested_loops.push_back(nested);
-      });
-      for (mlir::scf::ForOp nested : llvm::reverse(nested_loops)) {
-        if (nested->getBlock()) {
-          unrollLoop(nested);
+      bool changed = true;
+      while (changed) {
+        changed = false;
+        llvm::SmallVector<mlir::scf::ForOp, 16> nested_loops;
+        pipeline_loop.walk([&](mlir::scf::ForOp nested) {
+          if (nested == pipeline_loop || !canUnroll(nested)) {
+            return;
+          }
+          nested_loops.push_back(nested);
+        });
+        for (mlir::scf::ForOp nested : llvm::reverse(nested_loops)) {
+          if (nested->getBlock() && unrollLoop(nested)) {
+            changed = true;
+          }
         }
       }
     }
