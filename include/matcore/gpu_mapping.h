@@ -23,7 +23,7 @@ struct NvidiaMappingConfig {
   std::int64_t block_threads_x = 16;
   std::int64_t block_threads_y = 8;
   std::int64_t block_threads_z = 1;
-  std::int64_t k_tile = 16;
+  std::int64_t k_tile = 64;
   bool rewrite_to_mma_sync = false;
 };
 

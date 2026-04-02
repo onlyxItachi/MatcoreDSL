@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <dlfcn.h>
 #include <stdexcept>
@@ -64,11 +65,19 @@ struct CudaDriverApi {
   using CuMemFreeFn = CUresult (*)(CUdeviceptr);
   using CuMemcpyAsyncFn =
       CUresult (*)(CUdeviceptr, CUdeviceptr, size_t, CUstream);
+  using CuMemcpyHtoDAsyncFn =
+      CUresult (*)(CUdeviceptr, const void *, size_t, CUstream);
+  using CuMemcpyDtoHAsyncFn =
+      CUresult (*)(void *, CUdeviceptr, size_t, CUstream);
+  using CuMemcpyDtoDAsyncFn =
+      CUresult (*)(CUdeviceptr, CUdeviceptr, size_t, CUstream);
   using CuMemsetD32AsyncFn =
       CUresult (*)(CUdeviceptr, unsigned int, size_t, CUstream);
   using CuMemsetD16AsyncFn =
       CUresult (*)(CUdeviceptr, unsigned short, size_t, CUstream);
   using CuMemHostRegisterFn = CUresult (*)(void *, size_t, unsigned int);
+  using CuPointerGetAttributeFn =
+      CUresult (*)(void *, CUpointer_attribute, CUdeviceptr);
 
   static CudaDriverApi &instance() {
     static CudaDriverApi api = load();
@@ -114,12 +123,20 @@ struct CudaDriverApi {
     api.cuMemFree = loadSymbol<CuMemFreeFn>(handle, "cuMemFree");
     api.cuMemcpyAsync =
         loadSymbol<CuMemcpyAsyncFn>(handle, "cuMemcpyAsync");
+    api.cuMemcpyHtoDAsync =
+        loadSymbol<CuMemcpyHtoDAsyncFn>(handle, "cuMemcpyHtoDAsync_v2");
+    api.cuMemcpyDtoHAsync =
+        loadSymbol<CuMemcpyDtoHAsyncFn>(handle, "cuMemcpyDtoHAsync_v2");
+    api.cuMemcpyDtoDAsync =
+        loadSymbol<CuMemcpyDtoDAsyncFn>(handle, "cuMemcpyDtoDAsync_v2");
     api.cuMemsetD32Async =
         loadSymbol<CuMemsetD32AsyncFn>(handle, "cuMemsetD32Async");
     api.cuMemsetD16Async =
         loadSymbol<CuMemsetD16AsyncFn>(handle, "cuMemsetD16Async");
     api.cuMemHostRegister =
         loadSymbol<CuMemHostRegisterFn>(handle, "cuMemHostRegister");
+    api.cuPointerGetAttribute = loadSymbol<CuPointerGetAttributeFn>(
+        handle, "cuPointerGetAttribute");
     return api;
   }
 
@@ -142,9 +159,13 @@ struct CudaDriverApi {
   CuMemAllocFn cuMemAlloc = nullptr;
   CuMemFreeFn cuMemFree = nullptr;
   CuMemcpyAsyncFn cuMemcpyAsync = nullptr;
+  CuMemcpyHtoDAsyncFn cuMemcpyHtoDAsync = nullptr;
+  CuMemcpyDtoHAsyncFn cuMemcpyDtoHAsync = nullptr;
+  CuMemcpyDtoDAsyncFn cuMemcpyDtoDAsync = nullptr;
   CuMemsetD32AsyncFn cuMemsetD32Async = nullptr;
   CuMemsetD16AsyncFn cuMemsetD16Async = nullptr;
   CuMemHostRegisterFn cuMemHostRegister = nullptr;
+  CuPointerGetAttributeFn cuPointerGetAttribute = nullptr;
 };
 
 void checkCuda(CUresult result, const char *expr) {
@@ -159,6 +180,27 @@ void checkCuda(CUresult result, const char *expr) {
 }
 
 thread_local static int32_t defaultDevice = 0;
+
+enum class PointerKind {
+  kHost,
+  kDevice,
+};
+
+PointerKind classifyPointer(const void *ptr) {
+  if (ptr == nullptr) {
+    return PointerKind::kHost;
+  }
+
+  CUmemorytype memory_type = CU_MEMORYTYPE_HOST;
+  CUresult result = CudaDriverApi::instance().cuPointerGetAttribute(
+      &memory_type, CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
+      reinterpret_cast<CUdeviceptr>(const_cast<void *>(ptr)));
+  if (result != CUDA_SUCCESS) {
+    return PointerKind::kHost;
+  }
+  return memory_type == CU_MEMORYTYPE_DEVICE ? PointerKind::kDevice
+                                             : PointerKind::kHost;
+}
 
 CUdevice getDefaultCuDevice() {
   CudaDriverApi &api = CudaDriverApi::instance();
@@ -303,10 +345,34 @@ MATCORE_GPU_RUNTIME_EXPORT void mgpuMemFree(void *ptr, CUstream /*stream*/) {
 
 MATCORE_GPU_RUNTIME_EXPORT void mgpuMemcpy(void *dst, void *src,
                                            size_t sizeBytes, CUstream stream) {
-  checkCuda(CudaDriverApi::instance().cuMemcpyAsync(
-                reinterpret_cast<CUdeviceptr>(dst),
-                reinterpret_cast<CUdeviceptr>(src), sizeBytes, stream),
-            "cuMemcpyAsync");
+  if (sizeBytes == 0 || dst == src) {
+    return;
+  }
+
+  ScopedContext scoped_context;
+  CudaDriverApi &api = CudaDriverApi::instance();
+  const PointerKind dst_kind = classifyPointer(dst);
+  const PointerKind src_kind = classifyPointer(src);
+  if (dst_kind == PointerKind::kDevice && src_kind == PointerKind::kDevice) {
+    checkCuda(api.cuMemcpyDtoDAsync(reinterpret_cast<CUdeviceptr>(dst),
+                                    reinterpret_cast<CUdeviceptr>(src),
+                                    sizeBytes, stream),
+              "cuMemcpyDtoDAsync");
+    return;
+  }
+  if (dst_kind == PointerKind::kDevice) {
+    checkCuda(api.cuMemcpyHtoDAsync(reinterpret_cast<CUdeviceptr>(dst), src,
+                                    sizeBytes, stream),
+              "cuMemcpyHtoDAsync");
+    return;
+  }
+  if (src_kind == PointerKind::kDevice) {
+    checkCuda(api.cuMemcpyDtoHAsync(dst, reinterpret_cast<CUdeviceptr>(src),
+                                    sizeBytes, stream),
+              "cuMemcpyDtoHAsync");
+    return;
+  }
+  std::memcpy(dst, src, sizeBytes);
 }
 
 MATCORE_GPU_RUNTIME_EXPORT void mgpuMemset32(void *dst, unsigned int value,

@@ -8,6 +8,8 @@ import textwrap
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
+
 _NATIVE_MODULE_NAME = "_matcore_native"
 SUPPORTED_TARGETS: tuple[str, ...] = (
     "x86-auto",
@@ -613,12 +615,6 @@ def _stage_nvidia_arrays(
     kernel_obj: MatCoreKernel, arrays: tuple[Any, ...]
 ) -> tuple[tuple[Any, ...], list[tuple[Any, Any]]]:
     cp = _optional_import_cupy()
-    if cp is None:
-        raise RuntimeError(
-            "nvidia-dgpu execution requires CuPy or another CUDA array provider "
-            "when host NumPy arrays are passed."
-        )
-
     stored_indices = _stored_arg_indices(kernel_obj)
     staged_arrays: list[Any] = []
     copybacks: list[tuple[Any, Any]] = []
@@ -633,6 +629,11 @@ def _stage_nvidia_arrays(
                 underlying.fill(0)
             staged_arrays.append(array)
             continue
+
+        if cp is None:
+            raise RuntimeError(
+                "nvidia-dgpu execution requires CuPy to stage host arrays to CUDA."
+            )
 
         if is_stored_output:
             device_array = cp.zeros_like(underlying)
@@ -661,6 +662,83 @@ def _copy_back_staged_arrays(copybacks: list[tuple[Any, Any]]) -> None:
             host_array[...] = cp.asnumpy(device_array)
 
 
+def _align_up(value: int, alignment: int) -> int:
+    return ((value + alignment - 1) // alignment) * alignment
+
+
+def _wrap_like(original: Any, underlying: Any) -> Any:
+    if isinstance(original, MatCoreTensorView):
+        return MatCoreTensorView(underlying, **_view_metadata(original))
+    return underlying
+
+
+def _maybe_pad_nvidia_matmul(
+    kernel_obj: MatCoreKernel, arrays: tuple[Any, ...]
+) -> tuple[tuple[Any, ...], Any | None]:
+    if len(arrays) != 3:
+        return arrays, None
+    if sum(1 for op in kernel_obj.ir.get("ops", []) if op.get("op") == "matmul") != 1:
+        return arrays, None
+
+    lhs, rhs, out = arrays
+    lhs_base = lhs._array if isinstance(lhs, MatCoreTensorView) else lhs
+    rhs_base = rhs._array if isinstance(rhs, MatCoreTensorView) else rhs
+    out_base = out._array if isinstance(out, MatCoreTensorView) else out
+    if getattr(lhs_base, "ndim", None) != 2 or getattr(rhs_base, "ndim", None) != 2:
+        return arrays, None
+    if getattr(out_base, "ndim", None) != 2:
+        return arrays, None
+    if np.dtype(lhs_base.dtype).name != "float16" or np.dtype(rhs_base.dtype).name != "float16":
+        return arrays, None
+    if np.dtype(out_base.dtype).name != "float16":
+        return arrays, None
+
+    m, k = lhs_base.shape
+    rhs_k, n = rhs_base.shape
+    if rhs_k != k or out_base.shape != (m, n):
+        return arrays, None
+
+    padded_m = _align_up(m, 16)
+    padded_k = _align_up(k, 16)
+    padded_n = _align_up(n, 8)
+    if (padded_m, padded_k, padded_n) == (m, k, n):
+        return arrays, None
+
+    cp = _optional_import_cupy()
+    if cp is None:
+        raise RuntimeError("nvidia-dgpu padding fallback requires CuPy.")
+
+    lhs_device = cp.asarray(lhs_base)
+    rhs_device = cp.asarray(rhs_base)
+    out_device = cp.asarray(out_base)
+    lhs_padded = cp.zeros((padded_m, padded_k), dtype=lhs_device.dtype)
+    rhs_padded = cp.zeros((padded_k, padded_n), dtype=rhs_device.dtype)
+    out_padded = cp.zeros((padded_m, padded_n), dtype=out_device.dtype)
+    lhs_padded[:m, :k] = lhs_device
+    rhs_padded[:k, :n] = rhs_device
+
+    def finalize() -> None:
+        out_device[...] = out_padded[:m, :n]
+
+    return (
+        (
+            _wrap_like(lhs, lhs_padded),
+            _wrap_like(rhs, rhs_padded),
+            _wrap_like(out, out_padded),
+        ),
+        finalize,
+    )
+
+
+def _fallback_nvidia_target(normalized_target: str, arrays: tuple[Any, ...]) -> str:
+    if not _nvidia_target_requested(normalized_target):
+        return normalized_target
+    for idx, array in enumerate(arrays):
+        if _logical_dtype_name(array, idx) == "int8":
+            return "x86-avx512"
+    return normalized_target
+
+
 def launch(
     kernel_obj: MatCoreKernel,
     *arrays: Any,
@@ -669,14 +747,22 @@ def launch(
 ) -> Any:
     if not isinstance(kernel_obj, MatCoreKernel):
         raise TypeError("mc.launch expects a kernel object returned by @mc.kernel.")
-    normalized_target = _normalize_target(target)
-    runtime_ir = _build_runtime_ir(kernel_obj, arrays, quant)
+    normalized_target = _fallback_nvidia_target(
+        _normalize_target(target), arrays
+    )
     native = _get_native_module()
     runtime_arrays = arrays
     copybacks: list[tuple[Any, Any]] = []
+    finalize_nvidia_padding = None
     if _nvidia_target_requested(normalized_target):
         runtime_arrays, copybacks = _stage_nvidia_arrays(kernel_obj, arrays)
+        runtime_arrays, finalize_nvidia_padding = _maybe_pad_nvidia_matmul(
+            kernel_obj, runtime_arrays
+        )
+    runtime_ir = _build_runtime_ir(kernel_obj, runtime_arrays, quant)
     native.compile_and_run(runtime_ir, normalized_target, *runtime_arrays)
+    if finalize_nvidia_padding is not None:
+        finalize_nvidia_padding()
     _copy_back_staged_arrays(copybacks)
     return None
 

@@ -253,13 +253,10 @@ mlir::Value createTypedZero(mlir::OpBuilder &builder, mlir::Location loc,
 bool useTensorPadMatmul(const LoweringPlan &plan,
                         const MatmulLoweringSignature &signature,
                         const MatmulShape &shape) {
-  const bool needs_padding =
-      (shape.m % 16) != 0 || (shape.k % 16) != 0 || (shape.n % 8) != 0;
-  return plan.route == LoweringRoute::kNvidiaNvptx &&
-         signature.lhs_dtype == TensorDType::kFloat16 &&
-         signature.rhs_dtype == TensorDType::kFloat16 &&
-         signature.out_dtype == TensorDType::kFloat16 &&
-         !signature.quantized_i8 && needs_padding;
+  (void)plan;
+  (void)signature;
+  (void)shape;
+  return false;
 }
 
 mlir::Value createZeroPaddedTensor(mlir::OpBuilder &builder, mlir::Location loc,

@@ -324,7 +324,6 @@ bool isDiskCacheSupported(const RequestedTargetProfile &target_profile) {
     case TargetKind::kX86Auto:
     case TargetKind::kX86AVX2:
     case TargetKind::kX86AVX512:
-    case TargetKind::kNvidiaDGPU:
       return true;
     default:
       return false;

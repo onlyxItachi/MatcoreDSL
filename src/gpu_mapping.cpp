@@ -12,6 +12,7 @@
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
@@ -46,8 +47,7 @@ std::int64_t ceilDiv(std::int64_t lhs, std::int64_t rhs) {
 }
 
 std::int64_t pickMmaMacroKTile(std::int64_t k) {
-  (void)k;
-  return 64;
+  return std::max<std::int64_t>(16, pickTilingFactor(k, 64));
 }
 
 bool isTensorCoreMmaSyncType(const MatmulLoweringSignature &signature) {
@@ -75,6 +75,9 @@ std::optional<std::int64_t> matchConstantIndex(mlir::Value value) {
   }
   return constant.getSExtValue();
 }
+
+constexpr llvm::StringLiteral kMatcoreStaticBlockSizeAttr(
+    "matcore.static_block_size");
 
 std::string nvidiaMatmulOpName(const MatmulLoweringSignature &signature) {
   return signature.quantized_i8 ? "linalg.quantized_matmul" : "linalg.matmul";
@@ -235,18 +238,24 @@ std::string BuildNvidiaTransformMappingSequence(
         " : (!transform.any_op) -> !transform.any_op\n";
   ir << "    %matmul = transform.structured.match ops{[\"" << op_name
      << "\"]} in %func : (!transform.any_op) -> !transform.any_op\n";
-  ir << "    %block_tiled:2 = transform.structured.tile_using_forall"
+  ir << "    %block_tiled, %block_forall = transform.structured.tile_using_forall"
      << " %matmul tile_sizes [" << config.block_tile_m << ", "
      << config.block_tile_n
      << ", 0](mapping = [#gpu.block<y>, #gpu.block<x>]) : (!transform.any_op)"
         " -> (!transform.any_op, !transform.any_op)\n";
-  ir << "    %c_promoted = transform.structured.promote %block_tiled"
-        " {operands_to_promote = [2], use_full_tiles_by_default,"
-        " memory_space = #gpu.address_space<workgroup>, alignment = 128} :"
-        " (!transform.any_op) -> !transform.any_op\n";
-  ir << "    %k_tiled:2 = transform.structured.tile_using_for"
-     << " %c_promoted [0, 0, " << config.k_tile
-     << "] : (!transform.any_op) -> (!transform.any_op, !transform.any_op)\n";
+  if (config.rewrite_to_mma_sync) {
+    ir << "    %k_tiled, %k_loop = transform.structured.tile_using_for"
+       << " %block_tiled [0, 0, " << config.k_tile
+       << "] : (!transform.any_op) -> (!transform.any_op, !transform.any_op)\n";
+  } else {
+    ir << "    %c_promoted = transform.structured.promote %block_tiled"
+          " {operands_to_promote = [2], use_full_tiles_by_default,"
+          " memory_space = #gpu.address_space<workgroup>, alignment = 128} :"
+          " (!transform.any_op) -> !transform.any_op\n";
+    ir << "    %k_tiled, %k_loop = transform.structured.tile_using_for"
+       << " %c_promoted [0, 0, " << config.k_tile
+       << "] : (!transform.any_op) -> (!transform.any_op, !transform.any_op)\n";
+  }
   if (config.rewrite_to_mma_sync) {
     ir << "    transform.annotate %k_tiled \"matcore.shared_memory_k_macro_tile\""
           " : !transform.any_op\n";
@@ -258,12 +267,13 @@ std::string BuildNvidiaTransformMappingSequence(
   if (config.rewrite_to_mma_sync) {
     ir << "    transform.annotate %promoted \"matcore.shared_memory_swizzled\""
           " : !transform.any_op\n";
-    ir << "    %warp_tiled:2 = transform.structured.tile_using_forall"
+    ir << "    %warp_tiled, %warp_forall = transform.structured.tile_using_forall"
        << " %promoted num_threads [" << config.block_threads_z << ", "
        << config.block_threads_y
        << "](mapping = [#gpu.thread<z>, #gpu.thread<y>]) : (!transform.any_op)"
           " -> (!transform.any_op, !transform.any_op)\n";
-    ir << "    %micro_tiled:4 = transform.structured.tile_using_for"
+    ir << "    %micro_tiled, %micro_m_loop, %micro_n_loop, %micro_k_loop ="
+          " transform.structured.tile_using_for"
           " %warp_tiled [16, 8, 16]"
           " : (!transform.any_op) -> (!transform.any_op, !transform.any_op,"
           " !transform.any_op, !transform.any_op)\n";
@@ -620,6 +630,13 @@ struct ConfigureNvidiaLaunchPass
       // fallback for degenerate launches that still carry 1x1x1.
       if (block_x.has_value() && block_y.has_value() && block_z.has_value() &&
           *block_x >= 32 && *block_y >= 1 && *block_z >= 1) {
+        launch->setAttr(
+            kMatcoreStaticBlockSizeAttr,
+            builder.getArrayAttr({
+                builder.getI64IntegerAttr(*block_x),
+                builder.getI64IntegerAttr(*block_y),
+                builder.getI64IntegerAttr(*block_z),
+            }));
         return;
       }
 
@@ -630,6 +647,13 @@ struct ConfigureNvidiaLaunchPass
       launch.getBlockSizeXMutable().set(c32.getResult());
       launch.getBlockSizeYMutable().set(c1.getResult());
       launch.getBlockSizeZMutable().set(c1.getResult());
+      launch->setAttr(
+          kMatcoreStaticBlockSizeAttr,
+          builder.getArrayAttr({
+              builder.getI64IntegerAttr(32),
+              builder.getI64IntegerAttr(1),
+              builder.getI64IntegerAttr(1),
+          }));
     });
   }
 };

@@ -1,5 +1,6 @@
 #include "matcore/gpu_tiling.h"
 
+#include <array>
 #include <algorithm>
 #include <cstdint>
 #include <optional>
@@ -63,6 +64,36 @@ std::optional<std::int64_t> matchConstantIndex(mlir::Value value) {
     return std::nullopt;
   }
   return constant.getSExtValue();
+}
+
+constexpr llvm::StringLiteral kMatcoreStaticBlockSizeAttr(
+    "matcore.static_block_size");
+
+std::optional<std::array<std::int64_t, 3>> getStaticLaunchBlockSize(
+    mlir::gpu::LaunchOp launch) {
+  if (auto attr = launch->getAttrOfType<mlir::ArrayAttr>(
+          kMatcoreStaticBlockSizeAttr)) {
+    if (attr.size() == 3) {
+      std::array<std::int64_t, 3> dims{};
+      for (std::size_t index = 0; index < dims.size(); ++index) {
+        auto int_attr =
+            llvm::dyn_cast<mlir::IntegerAttr>(attr[static_cast<unsigned>(index)]);
+        if (!int_attr) {
+          return std::nullopt;
+        }
+        dims[index] = int_attr.getInt();
+      }
+      return dims;
+    }
+  }
+
+  auto block_x = matchConstantIndex(launch.getBlockSizeX());
+  auto block_y = matchConstantIndex(launch.getBlockSizeY());
+  auto block_z = matchConstantIndex(launch.getBlockSizeZ());
+  if (!block_x.has_value() || !block_y.has_value() || !block_z.has_value()) {
+    return std::nullopt;
+  }
+  return std::array<std::int64_t, 3>{*block_x, *block_y, *block_z};
 }
 
 std::optional<mlir::MemRefType> inferStaticViewType(mlir::memref::ViewOp view) {
@@ -310,7 +341,8 @@ struct PromoteGpuWorkgroupAllocationsPass
           }
 
           mlir::BlockArgument attribution =
-              addLaunchWorkgroupAttribution(launch, *static_view_type, alloc.getLoc());
+              addLaunchWorkgroupAttribution(launch, *static_view_type,
+                                            alloc.getLoc());
 
           for (mlir::memref::ViewOp view : views) {
             mlir::Value replacement = attribution;
@@ -354,7 +386,8 @@ struct PromoteGpuWorkgroupAllocationsPass
             return;
           }
           mlir::BlockArgument attribution =
-              addLaunchWorkgroupAttribution(launch, alloc.getType(), alloc.getLoc());
+              addLaunchWorkgroupAttribution(launch, alloc.getType(),
+                                            alloc.getLoc());
           llvm::SmallVector<mlir::OpOperand *, 8> non_dealloc_uses;
           for (mlir::OpOperand &use : alloc->getUses()) {
             if (!llvm::isa<mlir::memref::DeallocOp>(use.getOwner())) {
@@ -375,6 +408,7 @@ struct PromoteGpuWorkgroupAllocationsPass
       }
     }
   }
+
 };
 
 struct SpecializeNvidiaWorkgroupMatmulOperandsPass
@@ -648,6 +682,104 @@ void emitDistributedVectorCopy(mlir::OpBuilder &builder, mlir::Location loc,
         permutation_map, mlir::Value(), in_bounds);
   };
 
+  auto launch = info.outer->getParentOfType<mlir::gpu::LaunchOp>();
+  std::optional<std::array<std::int64_t, 3>> static_block_dims =
+      launch ? getStaticLaunchBlockSize(launch) : std::nullopt;
+  if (static_block_dims.has_value()) {
+    const std::int64_t static_block_x = (*static_block_dims)[0];
+    const std::int64_t static_block_y = (*static_block_dims)[1];
+    const std::int64_t static_block_z = (*static_block_dims)[2];
+    const std::int64_t static_threads =
+        static_block_x * static_block_y * static_block_z;
+    if (static_block_x == 32 && static_block_y > 0 && static_block_z > 0 &&
+        static_threads >= 32 && (static_threads % 32) == 0 && segments <= 32) {
+      const std::int64_t warp_groups = static_block_y * static_block_z;
+      auto c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+      auto c1 = builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
+      auto c_block_y =
+          builder.create<mlir::arith::ConstantIndexOp>(loc, static_block_y);
+      auto c_warp_groups =
+          builder.create<mlir::arith::ConstantIndexOp>(loc, warp_groups);
+      mlir::Value lane = thread_x;
+      mlir::Value warp_plane =
+          builder.create<mlir::arith::MulIOp>(loc, thread_z, c_block_y);
+      mlir::Value warp_id =
+          builder.create<mlir::arith::AddIOp>(loc, thread_y, warp_plane);
+
+      if ((32 % segments) == 0) {
+        const std::int64_t rows_per_warp_iteration = 32 / segments;
+        const std::int64_t rows_per_iteration =
+            warp_groups * rows_per_warp_iteration;
+        const std::int64_t row_iterations =
+            ceilDiv(info.rows, rows_per_iteration);
+        auto c_rows_per_warp_iteration = builder.create<mlir::arith::ConstantIndexOp>(
+            loc, rows_per_warp_iteration);
+        auto c_row_iterations =
+            builder.create<mlir::arith::ConstantIndexOp>(loc, row_iterations);
+        mlir::Value lane_row =
+            builder.create<mlir::arith::DivUIOp>(loc, lane, c_segments);
+        mlir::Value lane_segment =
+            builder.create<mlir::arith::RemUIOp>(loc, lane, c_segments);
+        auto row_loop =
+            builder.create<mlir::scf::ForOp>(loc, c0, c_row_iterations, c1);
+        mlir::OpBuilder row_builder =
+            mlir::OpBuilder::atBlockTerminator(row_loop.getBody());
+        mlir::Value warp_iteration = row_builder.create<mlir::arith::MulIOp>(
+            loc, row_loop.getInductionVar(), c_warp_groups);
+        mlir::Value warp_slot = row_builder.create<mlir::arith::AddIOp>(
+            loc, warp_id, warp_iteration);
+        mlir::Value row_base = row_builder.create<mlir::arith::MulIOp>(
+            loc, warp_slot, c_rows_per_warp_iteration);
+        mlir::Value row =
+            row_builder.create<mlir::arith::AddIOp>(loc, row_base, lane_row);
+        if ((info.rows % rows_per_iteration) == 0) {
+          build_transfer(row_builder, row, lane_segment);
+          return;
+        }
+        mlir::Value row_in_bounds = row_builder.create<mlir::arith::CmpIOp>(
+            loc, mlir::arith::CmpIPredicate::ult, row, c_rows);
+        auto if_op = row_builder.create<mlir::scf::IfOp>(loc, row_in_bounds,
+                                                         /*withElseRegion=*/false);
+        mlir::OpBuilder then_builder =
+            mlir::OpBuilder::atBlockTerminator(&if_op.getThenRegion().front());
+        build_transfer(then_builder, row, lane_segment);
+        return;
+      }
+
+      const std::int64_t row_iterations = ceilDiv(info.rows, warp_groups);
+      auto c_row_iterations =
+          builder.create<mlir::arith::ConstantIndexOp>(loc, row_iterations);
+      mlir::Value lane_active = builder.create<mlir::arith::CmpIOp>(
+          loc, mlir::arith::CmpIPredicate::ult, lane, c_segments);
+      auto lane_if = builder.create<mlir::scf::IfOp>(loc, lane_active,
+                                                     /*withElseRegion=*/false);
+      mlir::OpBuilder lane_builder =
+          mlir::OpBuilder::atBlockTerminator(&lane_if.getThenRegion().front());
+      auto row_loop =
+          lane_builder.create<mlir::scf::ForOp>(loc, c0, c_row_iterations, c1);
+      mlir::OpBuilder row_builder =
+          mlir::OpBuilder::atBlockTerminator(row_loop.getBody());
+      mlir::Value row_offset = row_builder.create<mlir::arith::MulIOp>(
+          loc, row_loop.getInductionVar(), c_warp_groups);
+      mlir::Value row =
+          row_builder.create<mlir::arith::AddIOp>(loc, warp_id, row_offset);
+      if ((info.rows % warp_groups) == 0) {
+        build_transfer(row_builder, row, lane);
+        return;
+      }
+      mlir::Value row_in_bounds = row_builder.create<mlir::arith::CmpIOp>(
+          loc, mlir::arith::CmpIPredicate::ult, row, c_rows);
+      auto if_op = row_builder.create<mlir::scf::IfOp>(loc, row_in_bounds,
+                                                       /*withElseRegion=*/false);
+      mlir::OpBuilder guarded_builder =
+          mlir::OpBuilder::atBlockTerminator(&if_op.getThenRegion().front());
+      build_transfer(guarded_builder, row, lane);
+      return;
+    }
+  }
+
+  // Fallback for non-standard launch shapes. It preserves coalescing, but the
+  // bounds stay dynamic and may not be suitable for software pipelining.
   mlir::Value warp_plane =
       builder.create<mlir::arith::MulIOp>(loc, thread_z, block_y);
   mlir::Value warp_row =
@@ -657,32 +789,22 @@ void emitDistributedVectorCopy(mlir::OpBuilder &builder, mlir::Location loc,
   mlir::Value cta_thread =
       builder.create<mlir::arith::AddIOp>(loc, thread_x, linear_row);
   mlir::Value cta_threads;
-  if (auto launch = info.outer->getParentOfType<mlir::gpu::LaunchOp>()) {
-    auto block_x_const = matchConstantIndex(launch.getBlockSizeX());
-    auto block_y_const = matchConstantIndex(launch.getBlockSizeY());
-    auto block_z_const = matchConstantIndex(launch.getBlockSizeZ());
-    if (block_x_const.has_value() && block_y_const.has_value() &&
-        block_z_const.has_value()) {
-      const std::int64_t static_threads =
-          (*block_x_const) * (*block_y_const) * (*block_z_const);
-      cta_threads = builder.create<mlir::arith::ConstantIndexOp>(loc, static_threads);
-    }
+  if (static_block_dims.has_value()) {
+    const std::int64_t static_threads =
+        (*static_block_dims)[0] * (*static_block_dims)[1] * (*static_block_dims)[2];
+    cta_threads = builder.create<mlir::arith::ConstantIndexOp>(loc, static_threads);
   }
   if (!cta_threads) {
     mlir::Value xy_threads =
         builder.create<mlir::arith::MulIOp>(loc, block_x, block_y);
     cta_threads = builder.create<mlir::arith::MulIOp>(loc, xy_threads, block_z);
   }
-
-  // Split the CTA into warps and keep each warp on one row at a time so
-  // adjacent lanes fetch adjacent 128-bit chunks from the same row.
   mlir::Value warp_id =
       builder.create<mlir::arith::DivUIOp>(loc, cta_thread, c32);
   mlir::Value lane =
       builder.create<mlir::arith::RemUIOp>(loc, cta_thread, c32);
   mlir::Value warp_stride =
       builder.create<mlir::arith::CeilDivUIOp>(loc, cta_threads, c32);
-
   auto row_loop =
       builder.create<mlir::scf::ForOp>(loc, warp_id, c_rows, warp_stride);
   mlir::OpBuilder row_builder =
@@ -708,7 +830,8 @@ struct MarkNvidiaAsyncPipelineLoopPass
   static bool isAsyncPipelineCandidate(mlir::scf::ForOp loop) {
     auto lower = matchConstantIndex(loop.getLowerBound());
     auto step = matchConstantIndex(loop.getStep());
-    if (!lower.has_value() || !step.has_value() || *lower != 0 || *step != 16) {
+    if (!lower.has_value() || !step.has_value() || *lower != 0 || *step < 16 ||
+        (*step % 16) != 0) {
       return false;
     }
 
@@ -736,11 +859,17 @@ struct MarkNvidiaAsyncPipelineLoopPass
       });
 
       mlir::scf::ForOp target;
+      std::int64_t target_step = 0;
       launch.walk([&](mlir::scf::ForOp loop) {
-        if (target || !isAsyncPipelineCandidate(loop)) {
+        if (!isAsyncPipelineCandidate(loop)) {
           return;
         }
-        target = loop;
+        const std::int64_t step = *matchConstantIndex(loop.getStep());
+        if (!target || step > target_step ||
+            (step == target_step && loop->isProperAncestor(target.getOperation()))) {
+          target = loop;
+          target_step = step;
+        }
       });
       if (!target) {
         return;
@@ -927,38 +1056,45 @@ struct RewriteNvidiaLdmatrixFragmentLoadsPass
         continue;
       }
 
-      mlir::nvgpu::LdMatrixParams lhs_params{
-          lhs_type,
-          /*isAccum=*/false,
-          /*numTiles=*/4,
-          mlir::vector::IteratorType::parallel,
-          mlir::NVVM::MMALayout::row};
-      mlir::nvgpu::LdMatrixParams rhs_params{
-          rhs_type,
-          /*isAccum=*/false,
-          /*numTiles=*/2,
-          mlir::vector::IteratorType::parallel,
-          mlir::NVVM::MMALayout::col};
+      mlir::nvgpu::WarpMatrixInfo lhs_info{
+          lhs_type, mlir::nvgpu::MatMulOperandRole::A};
+      mlir::nvgpu::WarpMatrixInfo rhs_info{
+          rhs_type, mlir::nvgpu::MatMulOperandRole::B};
+      auto lhs_params =
+          mlir::nvgpu::getLdMatrixParams(lhs_info, /*transpose=*/false);
+      auto rhs_params =
+          mlir::nvgpu::getLdMatrixParams(rhs_info, /*transpose=*/true);
+      if (mlir::failed(lhs_params) || mlir::failed(rhs_params)) {
+        continue;
+      }
 
       builder.setInsertionPoint(mma);
-      auto lane = builder.create<mlir::gpu::ThreadIdOp>(mma.getLoc(), mlir::gpu::Dimension::x);
-      auto c0 = builder.create<mlir::arith::ConstantIndexOp>(mma.getLoc(), 0);
-      auto c8 = builder.create<mlir::arith::ConstantIndexOp>(mma.getLoc(), 8);
-      auto c16 = builder.create<mlir::arith::ConstantIndexOp>(mma.getLoc(), 16);
-      auto lhs_row = builder.create<mlir::arith::RemUIOp>(mma.getLoc(), lane, c16);
-      auto lhs_col_block = builder.create<mlir::arith::DivUIOp>(mma.getLoc(), lane, c16);
-      auto lhs_col =
-          builder.create<mlir::arith::MulIOp>(mma.getLoc(), lhs_col_block, c8);
-      auto rhs_row = builder.create<mlir::arith::RemUIOp>(mma.getLoc(), lane, c16);
-      auto rhs_col = c0;
+      auto lane = builder.create<mlir::gpu::ThreadIdOp>(
+          mma.getLoc(), mlir::gpu::Dimension::x);
+      auto lhs_coord_map = mlir::nvgpu::getLaneIdToLdMatrixMatrixCoord(
+          builder, mma.getLoc(), *lhs_params);
+      auto rhs_coord_map = mlir::nvgpu::getLaneIdToLdMatrixMatrixCoord(
+          builder, mma.getLoc(), *rhs_params);
+      if (mlir::failed(lhs_coord_map) || mlir::failed(rhs_coord_map)) {
+        continue;
+      }
+
+      auto lhs_row = builder.create<mlir::affine::AffineApplyOp>(
+          mma.getLoc(), lhs_coord_map->getSubMap({0}), mlir::ValueRange{lane});
+      auto lhs_col = builder.create<mlir::affine::AffineApplyOp>(
+          mma.getLoc(), lhs_coord_map->getSubMap({1}), mlir::ValueRange{lane});
+      auto rhs_row = builder.create<mlir::affine::AffineApplyOp>(
+          mma.getLoc(), rhs_coord_map->getSubMap({0}), mlir::ValueRange{lane});
+      auto rhs_col = builder.create<mlir::affine::AffineApplyOp>(
+          mma.getLoc(), rhs_coord_map->getSubMap({1}), mlir::ValueRange{lane});
       auto lhs_ldmatrix = builder.create<mlir::nvgpu::LdMatrixOp>(
           mma.getLoc(), lhs_type, lhs_load.getMemRef(),
           mlir::ValueRange{lhs_row, lhs_col}, /*transpose=*/false,
-          lhs_params.numTiles);
+          lhs_params->numTiles);
       auto rhs_ldmatrix = builder.create<mlir::nvgpu::LdMatrixOp>(
           mma.getLoc(), rhs_type, rhs_load.getMemRef(),
           mlir::ValueRange{rhs_row, rhs_col}, /*transpose=*/true,
-          rhs_params.numTiles);
+          rhs_params->numTiles);
       mma->setOperand(0, lhs_ldmatrix.getResult());
       mma->setOperand(1, rhs_ldmatrix.getResult());
     }
@@ -1050,7 +1186,7 @@ NvidiaTileConfig SelectNvidiaTileConfig(
         1, ceilDiv(config.block_tile_n, config.thread_tile_n));
     config.block_threads_z = std::max<std::int64_t>(
         1, ceilDiv(config.block_tile_m, config.thread_tile_m));
-    config.k_tile = 16;
+    config.k_tile = std::max<std::int64_t>(16, pickTilingFactor(k, 64));
     return config;
   }
 
