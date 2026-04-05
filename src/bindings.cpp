@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -13,6 +15,7 @@
 
 #include "matcore/jit_runner.h"
 #include "matcore/kernel_ir.h"
+#include "matcore/observability.h"
 #include "matcore/target_registry.h"
 
 namespace nb = nanobind;
@@ -472,14 +475,96 @@ matcore::LoopRange parseLoop(const nb::dict &obj) {
   return loop;
 }
 
+bool isOpDiscriminator(const std::string &value) {
+  return value == "load" || value == "store" || value == "matmul" ||
+         value == "mma" || value == "assign" || value == "bind" ||
+         value == "transpose" || value == "elementwise" || value == "cast";
+}
+
+matcore::ElementwiseKind parseElementwiseKind(const nb::dict &op_obj) {
+  std::string raw_kind;
+  if (hasKey(op_obj, "elementwise_kind")) {
+    raw_kind = toLower(toString(op_obj["elementwise_kind"]));
+  } else if (hasKey(op_obj, "kind")) {
+    raw_kind = toLower(toString(op_obj["kind"]));
+  } else {
+    throw std::runtime_error(
+        "Elementwise op must include 'kind' (or 'elementwise_kind').");
+  }
+
+  if (raw_kind == "add") {
+    return matcore::ElementwiseKind::kAdd;
+  }
+  if (raw_kind == "sub") {
+    return matcore::ElementwiseKind::kSub;
+  }
+  if (raw_kind == "mul") {
+    return matcore::ElementwiseKind::kMul;
+  }
+  if (raw_kind == "div") {
+    return matcore::ElementwiseKind::kDiv;
+  }
+  if (raw_kind == "relu") {
+    return matcore::ElementwiseKind::kReLU;
+  }
+  if (raw_kind == "gelu") {
+    return matcore::ElementwiseKind::kGELU;
+  }
+  if (raw_kind == "sigmoid") {
+    return matcore::ElementwiseKind::kSigmoid;
+  }
+  if (raw_kind == "neg") {
+    return matcore::ElementwiseKind::kNeg;
+  }
+  if (raw_kind == "abs") {
+    return matcore::ElementwiseKind::kAbs;
+  }
+  if (raw_kind == "sqrt") {
+    return matcore::ElementwiseKind::kSqrt;
+  }
+  if (raw_kind == "exp") {
+    return matcore::ElementwiseKind::kExp;
+  }
+
+  throw std::runtime_error("Unsupported elementwise kind '" + raw_kind + "'.");
+}
+
+bool isUnaryElementwise(matcore::ElementwiseKind kind) {
+  return kind == matcore::ElementwiseKind::kReLU ||
+         kind == matcore::ElementwiseKind::kGELU ||
+         kind == matcore::ElementwiseKind::kSigmoid ||
+         kind == matcore::ElementwiseKind::kNeg ||
+         kind == matcore::ElementwiseKind::kAbs ||
+         kind == matcore::ElementwiseKind::kSqrt ||
+         kind == matcore::ElementwiseKind::kExp;
+}
+
+std::optional<std::string> parseOptionalString(const nb::dict &obj,
+                                               const char *field_name) {
+  if (!hasKey(obj, field_name)) {
+    return std::nullopt;
+  }
+  nb::handle value = obj[nb::str(field_name)];
+  if (value.is_none()) {
+    return std::nullopt;
+  }
+  return toString(value);
+}
+
 matcore::KernelOp parseOp(const nb::dict &op_obj) {
   std::string kind;
   if (hasKey(op_obj, "op")) {
     kind = toLower(toString(op_obj["op"]));
   } else if (hasKey(op_obj, "kind")) {
-    kind = toLower(toString(op_obj["kind"]));
+    const std::string fallback_kind = toLower(toString(op_obj["kind"]));
+    if (isOpDiscriminator(fallback_kind)) {
+      kind = fallback_kind;
+    }
   } else {
     throw std::runtime_error("Kernel op is missing 'op'/'kind' discriminator.");
+  }
+  if (kind.empty()) {
+    throw std::runtime_error("Kernel op is missing 'op' discriminator.");
   }
 
   if (kind == "load") {
@@ -526,6 +611,70 @@ matcore::KernelOp parseOp(const nb::dict &op_obj) {
     } else {
       throw std::runtime_error("Assign op must include 'value' (or legacy 'expr').");
     }
+    return op;
+  }
+
+  if (kind == "transpose") {
+    matcore::TransposeOp op;
+    if (hasKey(op_obj, "result")) {
+      op.result = toString(op_obj["result"]);
+    } else {
+      op.result = toString(requireKey(op_obj, "output"));
+    }
+    if (hasKey(op_obj, "input")) {
+      op.input = toString(op_obj["input"]);
+    } else {
+      op.input = toString(requireKey(op_obj, "source"));
+    }
+    return op;
+  }
+
+  if (kind == "elementwise") {
+    matcore::ElementwiseOp op;
+    if (hasKey(op_obj, "result")) {
+      op.result = toString(op_obj["result"]);
+    } else {
+      op.result = toString(requireKey(op_obj, "output"));
+    }
+    op.kind = parseElementwiseKind(op_obj);
+    op.lhs = hasKey(op_obj, "lhs") ? toString(op_obj["lhs"])
+                                   : toString(requireKey(op_obj, "input"));
+    std::optional<std::string> rhs = parseOptionalString(op_obj, "rhs");
+    if (!rhs.has_value()) {
+      rhs = parseOptionalString(op_obj, "input_rhs");
+    }
+    if (isUnaryElementwise(op.kind)) {
+      if (rhs.has_value() && !rhs->empty()) {
+        throw std::runtime_error(
+            "Unary elementwise op must not include a non-empty 'rhs'.");
+      }
+      op.rhs.clear();
+    } else {
+      if (!rhs.has_value() || rhs->empty()) {
+        throw std::runtime_error(
+            "Binary elementwise op must include non-empty 'rhs' (or 'input_rhs').");
+      }
+      op.rhs = *rhs;
+    }
+    return op;
+  }
+
+  if (kind == "cast") {
+    matcore::CastOp op;
+    if (hasKey(op_obj, "result")) {
+      op.result = toString(op_obj["result"]);
+    } else {
+      op.result = toString(requireKey(op_obj, "output"));
+    }
+    if (hasKey(op_obj, "input")) {
+      op.input = toString(op_obj["input"]);
+    } else {
+      op.input = toString(requireKey(op_obj, "source"));
+    }
+    const std::string dtype_name = normalizeDTypeName(
+        hasKey(op_obj, "target_dtype") ? toString(op_obj["target_dtype"])
+                                        : toString(requireKey(op_obj, "dtype")));
+    op.target_dtype = parseRuntimeTensorDType(dtype_name);
     return op;
   }
 
@@ -635,10 +784,19 @@ Invocation buildInvocation(const nb::dict &kernel_obj, const std::string &target
   return invocation;
 }
 
-void triggerCompilation(Invocation &invocation) {
+void triggerCompilation(const Invocation &invocation,
+                        matcore::ObservabilityContext *obs = nullptr) {
+  if (obs) {
+    const std::size_t count =
+        std::min(invocation.tensors.size(), invocation.tensor_dtypes.size());
+    for (std::size_t i = 0; i < count; ++i) {
+      obs->traceEvent(matcore::TraceEventKind::kTensorViewBind,
+                      invocation.tensors[i].symbol, invocation.tensor_dtypes[i]);
+    }
+  }
   nb::gil_scoped_release release;
   matcore::compileAndRun(invocation.kernel, invocation.target_profile,
-                         invocation.tensors);
+                         invocation.tensors, obs);
 }
 
 }  // namespace
@@ -647,9 +805,46 @@ NB_MODULE(_matcore_native, m) {
   m.doc() = "MatCore nanobind bridge";
 
   m.def("compile_and_run",
-        [](nb::dict kernel_ir, const std::string &target, nb::args tensors) {
+        [](nb::dict kernel_ir, const std::string &target, nb::args tensors,
+           nb::kwargs kwargs) {
           Invocation invocation = buildInvocation(kernel_ir, target, tensors);
-          triggerCompilation(invocation);
+          std::unique_ptr<matcore::ObservabilityContext> obs;
+          const bool has_observability_kwargs =
+              kwargs.contains(nb::str("debug")) || kwargs.contains(nb::str("trace")) ||
+              kwargs.contains(nb::str("session_id")) ||
+              kwargs.contains(nb::str("debug_dir"));
+          if (has_observability_kwargs) {
+            matcore::ObservabilityOptions opts;
+            if (kwargs.contains(nb::str("debug"))) {
+              opts.debug_enabled = nb::cast<bool>(kwargs[nb::str("debug")]);
+            }
+            if (kwargs.contains(nb::str("trace"))) {
+              const std::string trace_str =
+                  nb::cast<std::string>(kwargs[nb::str("trace")]);
+              if (trace_str == "summary") {
+                opts.trace_mode = matcore::TraceMode::kSummary;
+              } else if (trace_str == "verbose") {
+                opts.trace_mode = matcore::TraceMode::kVerbose;
+              } else if (trace_str == "json") {
+                opts.trace_mode = matcore::TraceMode::kJson;
+              } else if (trace_str == "chrome") {
+                opts.trace_mode = matcore::TraceMode::kChrome;
+              } else {
+                opts.trace_mode = matcore::TraceMode::kNone;
+              }
+            }
+            if (kwargs.contains(nb::str("session_id"))) {
+              opts.session_id =
+                  nb::cast<std::string>(kwargs[nb::str("session_id")]);
+            }
+            if (kwargs.contains(nb::str("debug_dir"))) {
+              opts.output_dir = nb::cast<std::string>(kwargs[nb::str("debug_dir")]);
+            }
+            opts.force_recompile = opts.debug_enabled;
+            obs = std::make_unique<matcore::ObservabilityContext>(opts);
+          }
+
+          triggerCompilation(invocation, obs.get());
         },
         "Compile and run a kernel IR with zero-copy tensor views.");
 }

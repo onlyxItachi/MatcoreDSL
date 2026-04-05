@@ -1,4 +1,7 @@
 #include "matcore/gpu_runtime_symbols.h"
+#include "matcore/runtime_capabilities.h"
+
+#include "amd_runtime_symbols.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -7,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "matcore/observability.h"
 #include "llvm/ExecutionEngine/JITSymbol.h"
 #include "llvm/ExecutionEngine/Orc/Core.h"
 #include "llvm/ExecutionEngine/Orc/Shared/ExecutorAddress.h"
@@ -14,10 +18,26 @@
 
 #if __has_include("cuda.h")
 #include "cuda.h"
+#include <cstdlib>
+#include <list>
+#include <mutex>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 #endif
 
 namespace matcore {
 namespace {
+
+thread_local ObservabilityContext *g_gpu_runtime_observability = nullptr;
+
+void traceGpuRuntimeEvent(TraceEventKind kind, const std::string &name,
+                          const std::string &metadata = {}) {
+  if (g_gpu_runtime_observability == nullptr) {
+    return;
+  }
+  g_gpu_runtime_observability->traceEvent(kind, name, metadata);
+}
 
 [[noreturn]] void fail(const std::string &message) {
   throw std::runtime_error("MatCore GPU runtime: " + message);
@@ -60,6 +80,7 @@ struct CudaDriverApi {
   using CuStreamSynchronizeFn = CUresult (*)(CUstream);
   using CuMemAllocFn = CUresult (*)(CUdeviceptr *, size_t);
   using CuMemFreeFn = CUresult (*)(CUdeviceptr);
+  using CuMemcpyFn = CUresult (*)(CUdeviceptr, CUdeviceptr, size_t);
   using CuMemcpyAsyncFn =
       CUresult (*)(CUdeviceptr, CUdeviceptr, size_t, CUstream);
   using CuMemsetD32AsyncFn =
@@ -86,9 +107,9 @@ struct CudaDriverApi {
     api.cuDevicePrimaryCtxRetain =
         loadSymbol<CuDevicePrimaryCtxRetainFn>(handle, "cuDevicePrimaryCtxRetain");
     api.cuCtxPushCurrent =
-        loadSymbol<CuCtxPushCurrentFn>(handle, "cuCtxPushCurrent");
+        loadSymbol<CuCtxPushCurrentFn>(handle, "cuCtxPushCurrent_v2");
     api.cuCtxPopCurrent =
-        loadSymbol<CuCtxPopCurrentFn>(handle, "cuCtxPopCurrent");
+        loadSymbol<CuCtxPopCurrentFn>(handle, "cuCtxPopCurrent_v2");
     api.cuModuleLoadData =
         loadSymbol<CuModuleLoadDataFn>(handle, "cuModuleLoadData");
     api.cuModuleLoadDataEx =
@@ -101,11 +122,12 @@ struct CudaDriverApi {
     api.cuStreamCreate =
         loadSymbol<CuStreamCreateFn>(handle, "cuStreamCreate");
     api.cuStreamDestroy =
-        loadSymbol<CuStreamDestroyFn>(handle, "cuStreamDestroy");
+        loadSymbol<CuStreamDestroyFn>(handle, "cuStreamDestroy_v2");
     api.cuStreamSynchronize = loadSymbol<CuStreamSynchronizeFn>(
         handle, "cuStreamSynchronize");
-    api.cuMemAlloc = loadSymbol<CuMemAllocFn>(handle, "cuMemAlloc");
-    api.cuMemFree = loadSymbol<CuMemFreeFn>(handle, "cuMemFree");
+    api.cuMemAlloc = loadSymbol<CuMemAllocFn>(handle, "cuMemAlloc_v2");
+    api.cuMemFree = loadSymbol<CuMemFreeFn>(handle, "cuMemFree_v2");
+    api.cuMemcpy = loadSymbol<CuMemcpyFn>(handle, "cuMemcpy");
     api.cuMemcpyAsync =
         loadSymbol<CuMemcpyAsyncFn>(handle, "cuMemcpyAsync");
     api.cuMemsetD32Async =
@@ -113,7 +135,7 @@ struct CudaDriverApi {
     api.cuMemsetD16Async =
         loadSymbol<CuMemsetD16AsyncFn>(handle, "cuMemsetD16Async");
     api.cuMemHostRegister =
-        loadSymbol<CuMemHostRegisterFn>(handle, "cuMemHostRegister");
+        loadSymbol<CuMemHostRegisterFn>(handle, "cuMemHostRegister_v2");
     return api;
   }
 
@@ -133,6 +155,7 @@ struct CudaDriverApi {
   CuStreamSynchronizeFn cuStreamSynchronize = nullptr;
   CuMemAllocFn cuMemAlloc = nullptr;
   CuMemFreeFn cuMemFree = nullptr;
+  CuMemcpyFn cuMemcpy = nullptr;
   CuMemcpyAsyncFn cuMemcpyAsync = nullptr;
   CuMemsetD32AsyncFn cuMemsetD32Async = nullptr;
   CuMemsetD16AsyncFn cuMemsetD16Async = nullptr;
@@ -177,12 +200,213 @@ struct ScopedContext {
   ~ScopedContext() { CudaDriverApi::instance().cuCtxPopCurrent(nullptr); }
 };
 
+class GpuMemoryPool {
+public:
+  static GpuMemoryPool &instance() {
+    static GpuMemoryPool pool;
+    return pool;
+  }
+
+  void *acquire(uint64_t sizeBytes) {
+    if (sizeBytes == 0) {
+      return nullptr;
+    }
+
+    CUdeviceptr pooled_ptr = 0;
+    bool needs_alloc = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      auto it = free_lists_.find(sizeBytes);
+      if (it != free_lists_.end()) {
+        auto &list = it->second;
+        while (!list.empty()) {
+          CUdeviceptr candidate = list.back();
+          list.pop_back();
+          if (isValidPooledEntry(candidate, sizeBytes)) {
+            pooled_ptr = candidate;
+            auto pooled_it = pooled_entries_.find(candidate);
+            if (pooled_it != pooled_entries_.end()) {
+              pooled_order_.erase(pooled_it->second.order_it);
+              pooled_entries_.erase(pooled_it);
+            }
+            pooled_bytes_ -= sizeBytes;
+            break;
+          }
+        }
+      }
+      if (pooled_ptr == 0) {
+        needs_alloc = true;
+      }
+    }
+
+    if (needs_alloc) {
+      ScopedContext ctx;
+      CUdeviceptr ptr = 0;
+      checkCuda(CudaDriverApi::instance().cuMemAlloc(&ptr, sizeBytes), "cuMemAlloc");
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        allocation_sizes_[ptr] = sizeBytes;
+      }
+      return reinterpret_cast<void *>(ptr);
+    }
+    return reinterpret_cast<void *>(pooled_ptr);
+  }
+
+  void release(void *ptrVoid, CUstream stream) {
+    if (ptrVoid == nullptr) {
+      return;
+    }
+
+    (void)stream;
+    const CUdeviceptr ptr = reinterpret_cast<CUdeviceptr>(ptrVoid);
+    std::vector<CUdeviceptr> to_free;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      auto size_it = allocation_sizes_.find(ptr);
+      if (size_it == allocation_sizes_.end()) {
+        fail("attempted to free unknown CUDA pointer");
+      }
+      const uint64_t sizeBytes = size_it->second;
+
+      if (pooled_entries_.find(ptr) != pooled_entries_.end()) {
+        fail("double free detected in GPU memory pool");
+      }
+      free_lists_[sizeBytes].push_back(ptr);
+      pooled_order_.push_back(ptr);
+      PooledEntry pooled_entry{sizeBytes, std::prev(pooled_order_.end())};
+      pooled_entries_.emplace(ptr, pooled_entry);
+      pooled_bytes_ += sizeBytes;
+
+      while (pooled_bytes_ > max_pooled_bytes_ && !pooled_order_.empty()) {
+        const CUdeviceptr victim_ptr = pooled_order_.front();
+        pooled_order_.pop_front();
+        auto victim_it = pooled_entries_.find(victim_ptr);
+        if (victim_it == pooled_entries_.end()) {
+          continue;
+        }
+        const uint64_t victim_size = victim_it->second.size_bytes;
+        pooled_entries_.erase(victim_it);
+        pooled_bytes_ -= victim_size;
+        allocation_sizes_.erase(victim_ptr);
+        to_free.push_back(victim_ptr);
+      }
+    }
+
+    if (!to_free.empty()) {
+      ScopedContext ctx;
+      for (CUdeviceptr victim_ptr : to_free) {
+        checkCuda(CudaDriverApi::instance().cuMemFree(victim_ptr), "cuMemFree");
+      }
+    }
+  }
+
+private:
+  GpuMemoryPool() : max_pooled_bytes_(readMaxPoolBytes()) {}
+
+  static uint64_t readMaxPoolBytes() {
+    constexpr uint64_t kDefaultPoolMb = 512;
+    const char *raw = std::getenv("MATCORE_GPU_POOL_MB");
+    if (raw == nullptr || raw[0] == '\0') {
+      return kDefaultPoolMb * 1024ULL * 1024ULL;
+    }
+
+    char *end = nullptr;
+    unsigned long long parsed = std::strtoull(raw, &end, 10);
+    if (end == raw || (end != nullptr && *end != '\0') || parsed == 0ULL) {
+      return kDefaultPoolMb * 1024ULL * 1024ULL;
+    }
+    return static_cast<uint64_t>(parsed) * 1024ULL * 1024ULL;
+  }
+
+  bool isValidPooledEntry(CUdeviceptr ptr, uint64_t expectedSize) const {
+    auto pooled_it = pooled_entries_.find(ptr);
+    if (pooled_it == pooled_entries_.end()) {
+      return false;
+    }
+    return pooled_it->second.size_bytes == expectedSize;
+  }
+
+  struct PooledEntry {
+    uint64_t size_bytes = 0;
+    std::list<CUdeviceptr>::iterator order_it;
+  };
+
+  std::mutex mutex_;
+  std::unordered_map<uint64_t, std::vector<CUdeviceptr>> free_lists_;
+  std::unordered_map<CUdeviceptr, uint64_t> allocation_sizes_;
+  std::unordered_map<CUdeviceptr, PooledEntry> pooled_entries_;
+  std::list<CUdeviceptr> pooled_order_;
+  uint64_t pooled_bytes_ = 0;
+  uint64_t max_pooled_bytes_ = 0;
+};
+
+class GpuStreamPool {
+public:
+  static GpuStreamPool &instance() {
+    static GpuStreamPool pool;
+    return pool;
+  }
+
+  CUstream acquire() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      while (!free_streams_.empty()) {
+        CUstream stream = free_streams_.back();
+        free_streams_.pop_back();
+        if (pooled_streams_.erase(stream) != 0) {
+          return stream;
+        }
+      }
+    }
+
+    ScopedContext ctx;
+    CUstream stream = nullptr;
+    checkCuda(CudaDriverApi::instance().cuStreamCreate(&stream, CU_STREAM_NON_BLOCKING),
+              "cuStreamCreate");
+    return stream;
+  }
+
+  void release(CUstream stream) {
+    if (stream == nullptr) {
+      return;
+    }
+
+    bool should_destroy = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      auto inserted = pooled_streams_.insert(stream);
+      if (!inserted.second) {
+        fail("double destroy detected in GPU stream pool");
+      }
+      if (free_streams_.size() < kMaxPooledStreams) {
+        free_streams_.push_back(stream);
+      } else {
+        pooled_streams_.erase(stream);
+        should_destroy = true;
+      }
+    }
+
+    if (should_destroy) {
+      ScopedContext ctx;
+      checkCuda(CudaDriverApi::instance().cuStreamDestroy(stream), "cuStreamDestroy");
+    }
+  }
+
+private:
+  static constexpr size_t kMaxPooledStreams = 8;
+
+  std::mutex mutex_;
+  std::vector<CUstream> free_streams_;
+  std::unordered_set<CUstream> pooled_streams_;
+};
+
 MATCORE_GPU_RUNTIME_EXPORT CUmodule mgpuModuleLoad(void *data,
                                                    size_t /*gpuBlobSize*/) {
   ScopedContext scoped_context;
   CUmodule module = nullptr;
   checkCuda(CudaDriverApi::instance().cuModuleLoadData(&module, data),
             "cuModuleLoadData");
+  traceGpuRuntimeEvent(TraceEventKind::kGpuModuleLoad, "mgpuModuleLoad");
   return module;
 }
 
@@ -207,15 +431,18 @@ MATCORE_GPU_RUNTIME_EXPORT CUmodule mgpuModuleLoadJIT(void *data, int optLevel) 
     }
     checkCuda(result, "cuModuleLoadDataEx");
   }
+  traceGpuRuntimeEvent(TraceEventKind::kGpuModuleLoad, "mgpuModuleLoadJIT");
   return module;
 }
 
 MATCORE_GPU_RUNTIME_EXPORT void mgpuModuleUnload(CUmodule module) {
+  ScopedContext scoped_context;
   checkCuda(CudaDriverApi::instance().cuModuleUnload(module), "cuModuleUnload");
 }
 
 MATCORE_GPU_RUNTIME_EXPORT CUfunction mgpuModuleGetFunction(CUmodule module,
                                                             const char *name) {
+  ScopedContext scoped_context;
   CUfunction function = nullptr;
   checkCuda(CudaDriverApi::instance().cuModuleGetFunction(&function, module, name),
             "cuModuleGetFunction");
@@ -228,10 +455,12 @@ MATCORE_GPU_RUNTIME_EXPORT void mgpuLaunchKernel(
     std::intptr_t blockZ, int32_t smem, CUstream stream, void **params,
     void **extra, size_t /*paramsCount*/) {
   ScopedContext scoped_context;
+  constexpr const char *kKernelTraceName = "mgpuLaunchKernel";
+  traceGpuRuntimeEvent(TraceEventKind::kGpuKernelLaunch, kKernelTraceName);
   checkCuda(CudaDriverApi::instance().cuLaunchKernel(
-                function, static_cast<unsigned int>(gridX),
-                static_cast<unsigned int>(gridY),
-                static_cast<unsigned int>(gridZ),
+                 function, static_cast<unsigned int>(gridX),
+                 static_cast<unsigned int>(gridY),
+                 static_cast<unsigned int>(gridZ),
                 static_cast<unsigned int>(blockX),
                 static_cast<unsigned int>(blockY),
                 static_cast<unsigned int>(blockZ),
@@ -240,55 +469,53 @@ MATCORE_GPU_RUNTIME_EXPORT void mgpuLaunchKernel(
 }
 
 MATCORE_GPU_RUNTIME_EXPORT CUstream mgpuStreamCreate() {
-  ScopedContext scoped_context;
-  CUstream stream = nullptr;
-  checkCuda(CudaDriverApi::instance().cuStreamCreate(&stream, CU_STREAM_NON_BLOCKING),
-            "cuStreamCreate");
-  return stream;
+  return GpuStreamPool::instance().acquire();
 }
 
 MATCORE_GPU_RUNTIME_EXPORT void mgpuStreamDestroy(CUstream stream) {
-  checkCuda(CudaDriverApi::instance().cuStreamDestroy(stream), "cuStreamDestroy");
+  GpuStreamPool::instance().release(stream);
 }
 
 MATCORE_GPU_RUNTIME_EXPORT void mgpuStreamSynchronize(CUstream stream) {
+  ScopedContext scoped_context;
+  constexpr const char *kKernelTraceName = "mgpuLaunchKernel";
   checkCuda(CudaDriverApi::instance().cuStreamSynchronize(stream),
             "cuStreamSynchronize");
+  traceGpuRuntimeEvent(TraceEventKind::kGpuKernelComplete, kKernelTraceName);
 }
 
 MATCORE_GPU_RUNTIME_EXPORT void *mgpuMemAlloc(uint64_t sizeBytes,
                                               CUstream /*stream*/,
                                               bool isHostShared) {
-  ScopedContext scoped_context;
   if (isHostShared) {
     fail("managed CUDA allocations are not implemented in MatCore's runtime");
   }
-  CUdeviceptr ptr = 0;
   if (sizeBytes == 0) {
-    return reinterpret_cast<void *>(ptr);
+    return nullptr;
   }
-  checkCuda(CudaDriverApi::instance().cuMemAlloc(&ptr, sizeBytes), "cuMemAlloc");
-  return reinterpret_cast<void *>(ptr);
+  return GpuMemoryPool::instance().acquire(sizeBytes);
 }
 
-MATCORE_GPU_RUNTIME_EXPORT void mgpuMemFree(void *ptr, CUstream /*stream*/) {
-  if (ptr == nullptr) {
-    return;
-  }
-  checkCuda(CudaDriverApi::instance().cuMemFree(reinterpret_cast<CUdeviceptr>(ptr)),
-            "cuMemFree");
+MATCORE_GPU_RUNTIME_EXPORT void mgpuMemFree(void *ptr, CUstream stream) {
+  GpuMemoryPool::instance().release(ptr, stream);
 }
 
+// NOTE: Uses synchronous cuMemcpy (not cuMemcpyAsync). The stream parameter
+// is accepted for API compatibility with MLIR's gpu-to-llvm lowering but is
+// currently unused. Correctness is maintained because the staging pass inserts
+// explicit gpu.wait synchronization barriers before/after all memcpy sequences.
 MATCORE_GPU_RUNTIME_EXPORT void mgpuMemcpy(void *dst, void *src,
                                            size_t sizeBytes, CUstream stream) {
-  checkCuda(CudaDriverApi::instance().cuMemcpyAsync(
+  ScopedContext scoped_context;
+  checkCuda(CudaDriverApi::instance().cuMemcpy(
                 reinterpret_cast<CUdeviceptr>(dst),
-                reinterpret_cast<CUdeviceptr>(src), sizeBytes, stream),
-            "cuMemcpyAsync");
+                reinterpret_cast<CUdeviceptr>(src), sizeBytes),
+            "cuMemcpy");
 }
 
 MATCORE_GPU_RUNTIME_EXPORT void mgpuMemset32(void *dst, unsigned int value,
                                              size_t count, CUstream stream) {
+  ScopedContext scoped_context;
   checkCuda(CudaDriverApi::instance().cuMemsetD32Async(
                 reinterpret_cast<CUdeviceptr>(dst), value, count, stream),
             "cuMemsetD32Async");
@@ -296,6 +523,7 @@ MATCORE_GPU_RUNTIME_EXPORT void mgpuMemset32(void *dst, unsigned int value,
 
 MATCORE_GPU_RUNTIME_EXPORT void mgpuMemset16(void *dst, unsigned short value,
                                              size_t count, CUstream stream) {
+  ScopedContext scoped_context;
   checkCuda(CudaDriverApi::instance().cuMemsetD16Async(
                 reinterpret_cast<CUdeviceptr>(dst), value, count, stream),
             "cuMemsetD16Async");
@@ -317,6 +545,7 @@ void registerCudaRuntimeSymbols(mlir::ExecutionEngine &engine) {
           llvm::orc::ExecutorAddr::fromPtr(fn), llvm::JITSymbolFlags::Exported);
     };
 
+    // Register under standard names (used by gpu-to-llvm pass lowering).
     add_symbol("mgpuModuleLoad", &mgpuModuleLoad);
     add_symbol("mgpuModuleLoadJIT", &mgpuModuleLoadJIT);
     add_symbol("mgpuModuleUnload", &mgpuModuleUnload);
@@ -331,6 +560,34 @@ void registerCudaRuntimeSymbols(mlir::ExecutionEngine &engine) {
     add_symbol("mgpuMemset32", &mgpuMemset32);
     add_symbol("mgpuMemset16", &mgpuMemset16);
     add_symbol("mgpuMemHostRegister", &mgpuMemHostRegister);
+
+    // Register under _mlir_ prefixed names (used by ExecutionEngine's
+    // GPUDialectLLVMIRTranslationInterface for gpu.launch_func + gpu.binary).
+    add_symbol("_mlir_ciface_mgpuModuleLoad", &mgpuModuleLoad);
+    add_symbol("_mlir_ciface_mgpuModuleLoadJIT", &mgpuModuleLoadJIT);
+    add_symbol("_mlir_ciface_mgpuModuleUnload", &mgpuModuleUnload);
+    add_symbol("_mlir_ciface_mgpuModuleGetFunction", &mgpuModuleGetFunction);
+    add_symbol("_mlir_ciface_mgpuLaunchKernel", &mgpuLaunchKernel);
+    add_symbol("_mlir_ciface_mgpuStreamCreate", &mgpuStreamCreate);
+    add_symbol("_mlir_ciface_mgpuStreamDestroy", &mgpuStreamDestroy);
+    add_symbol("_mlir_ciface_mgpuStreamSynchronize", &mgpuStreamSynchronize);
+    add_symbol("_mlir_ciface_mgpuMemAlloc", &mgpuMemAlloc);
+    add_symbol("_mlir_ciface_mgpuMemFree", &mgpuMemFree);
+    add_symbol("_mlir_ciface_mgpuMemcpy", &mgpuMemcpy);
+
+    // Also register with bare _mlir_ prefix (JIT mangling variant).
+    add_symbol("_mlir_mgpuModuleLoad", &mgpuModuleLoad);
+    add_symbol("_mlir_mgpuModuleLoadJIT", &mgpuModuleLoadJIT);
+    add_symbol("_mlir_mgpuModuleUnload", &mgpuModuleUnload);
+    add_symbol("_mlir_mgpuModuleGetFunction", &mgpuModuleGetFunction);
+    add_symbol("_mlir_mgpuLaunchKernel", &mgpuLaunchKernel);
+    add_symbol("_mlir_mgpuStreamCreate", &mgpuStreamCreate);
+    add_symbol("_mlir_mgpuStreamDestroy", &mgpuStreamDestroy);
+    add_symbol("_mlir_mgpuStreamSynchronize", &mgpuStreamSynchronize);
+    add_symbol("_mlir_mgpuMemAlloc", &mgpuMemAlloc);
+    add_symbol("_mlir_mgpuMemFree", &mgpuMemFree);
+    add_symbol("_mlir_mgpuMemcpy", &mgpuMemcpy);
+
     return symbols;
   });
 }
@@ -341,16 +598,53 @@ void registerCudaRuntimeSymbols(mlir::ExecutionEngine &engine) {
 
 }  // namespace
 
-void registerGpuRuntimeSymbols(mlir::ExecutionEngine &engine, TargetKind target) {
-  if (normalizeTarget(target) != TargetKind::kNvidiaDGPU) {
-    return;
-  }
+void setGpuRuntimeObservabilityContext(ObservabilityContext *obs) {
+  g_gpu_runtime_observability = obs;
+}
 
+void registerGpuRuntimeSymbols(mlir::ExecutionEngine &engine, TargetKind target) {
+  // SAFETY: Only ONE GPU backend may register symbols per process lifetime.
+  // NVIDIA and AMD use the same mgpu* symbol names — registering both
+  // overwrites CUDA ptrs with HIP ptrs (or vice-versa), causing GPU MMU
+  // faults and potential kernel panics on dual-GPU systems (e.g. RTX 4060
+  // + AMD 890M iGPU sharing the same PCIe/memory bus).
+  // Uses compare_exchange to prevent TOCTOU races between threads.
+
+  switch (normalizeTarget(target)) {
+    case TargetKind::kNvidiaDGPU: {
+      std::string denial_reason;
+      if (!acquireGpuBackendClaim(TargetKind::kNvidiaDGPU, &denial_reason)) {
+        fail(denial_reason);
+      }
 #if __has_include("cuda.h")
-  registerCudaRuntimeSymbols(engine);
+      registerCudaRuntimeSymbols(engine);
 #else
-  fail("nvidia-dgpu requested but CUDA headers were not available at build time");
+      fail("nvidia-dgpu requested but CUDA headers were not available at build time");
 #endif
+      return;
+    }
+    case TargetKind::kAmdIGPU: {
+      std::string denial_reason;
+      if (!acquireGpuBackendClaim(TargetKind::kAmdIGPU, &denial_reason)) {
+        fail(denial_reason);
+      }
+      if (!registerAmdRuntimeSymbols(engine)) {
+        // Registration failed (no HIP runtime) — release the claim
+        releaseGpuBackendClaim(TargetKind::kAmdIGPU);
+      }
+      return;
+    }
+    case TargetKind::kX86Auto:
+    case TargetKind::kX86AVX2:
+    case TargetKind::kX86AVX512:
+    case TargetKind::kAmdNPU:
+    case TargetKind::kARM:
+    case TargetKind::kTPU:
+    case TargetKind::kNVPTX:
+    case TargetKind::kAMDGCN:
+    case TargetKind::kNPU:
+      return;
+  }
 }
 
 }  // namespace matcore

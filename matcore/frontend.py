@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib
 import inspect
+import json
+import os
 import re
+import sys
 import textwrap
+import time
+import warnings
 from dataclasses import dataclass
 from typing import Any
+
+import numpy as np
+
+from .config import configure, get_config, reset_config
 
 _NATIVE_MODULE_NAME = "_matcore_native"
 SUPPORTED_TARGETS: tuple[str, ...] = (
@@ -43,6 +53,7 @@ _TARGET_ALIASES: dict[str, str] = {
     "amd_npu": "amd-npu",
 }
 _NVIDIA_SM_TOKEN = re.compile(r"^(?:compute_)?sm?_?([0-9]{2,3})$")
+_AMD_GFX_TOKEN = re.compile(r"^gfx[0-9a-z]+$")
 _DTYPE_STORAGE_BYTES: dict[str, int] = {
     "float32": 4,
     "float16": 2,
@@ -68,6 +79,14 @@ def _literal_int(node: ast.AST | None, default: int) -> int:
     if isinstance(node, ast.Constant) and isinstance(node.value, int):
         return int(node.value)
     return default
+
+
+def _literal_str(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return str(node.value)
+    if isinstance(node, ast.Str):
+        return str(node.s)
+    return None
 
 
 def _indices_from_node(node: ast.AST | None) -> list[str]:
@@ -121,23 +140,30 @@ def _normalize_target(target: str) -> str:
         raise ValueError(
             "Unsupported target "
             f"'{target}'. Supported base targets: {', '.join(SUPPORTED_TARGETS)}. "
-            "NVIDIA compile profiles may be requested as nvidia-dgpu:sm_90."
+            "GPU profiles may be requested as nvidia-dgpu:sm_90 or amd-igpu:gfx90a."
         )
 
     if not suffix:
         return base
 
-    if base != "nvidia-dgpu":
-        raise ValueError(
-            f"Target profile suffixes are currently only supported for nvidia-dgpu, got '{target}'."
-        )
+    normalized_suffix = suffix.strip()
+    if base == "nvidia-dgpu":
+        match = _NVIDIA_SM_TOKEN.fullmatch(normalized_suffix)
+        if match is None:
+            raise ValueError(
+                f"Unsupported NVIDIA target profile '{target}'. Use forms like 'nvidia-dgpu:sm_90'."
+            )
+        return f"{base}:sm_{match.group(1)}"
+    if base == "amd-igpu":
+        if _AMD_GFX_TOKEN.fullmatch(normalized_suffix) is None:
+            raise ValueError(
+                f"Unsupported AMD target profile '{target}'. Use forms like 'amd-igpu:gfx90a'."
+            )
+        return f"{base}:{normalized_suffix}"
 
-    match = _NVIDIA_SM_TOKEN.fullmatch(suffix.strip())
-    if match is None:
-        raise ValueError(
-            f"Unsupported NVIDIA target profile '{target}'. Use forms like 'nvidia-dgpu:sm_90'."
-        )
-    return f"{base}:sm_{match.group(1)}"
+    raise ValueError(
+        f"Target profile suffixes are not supported for '{base}', got '{target}'."
+    )
 
 
 def _normalize_dtype_name(dtype_name: str) -> str:
@@ -377,6 +403,7 @@ class MatCoreASTVisitor(ast.NodeVisitor):
         self.params: list[str] = []
         self.loops: list[dict[str, Any]] = []
         self.ops: list[dict[str, Any]] = []
+        self._namespace_roots: set[str] = {"mc"}
         self._inside_kernel = False
 
     def build(self, module: ast.Module) -> dict[str, Any]:
@@ -391,6 +418,11 @@ class MatCoreASTVisitor(ast.NodeVisitor):
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         if node.name != self.kernel_name:
             return
+        for decorator in node.decorator_list:
+            if isinstance(decorator, ast.Attribute) and decorator.attr == "kernel":
+                root = _expr_to_source(decorator.value)
+                if root is not None:
+                    self._namespace_roots.add(root)
         self._inside_kernel = True
         self.params = _extract_params(node.args)
         self.generic_visit(node)
@@ -441,13 +473,18 @@ class MatCoreASTVisitor(ast.NodeVisitor):
             op = self._call_to_op(node.value)
             if op["op"] == "store":
                 self.ops.append(op)
+            elif op["op"] != "assign":
+                raise RuntimeError(
+                    f"Standalone mc.{op['op']}(...) is not allowed in kernel bodies; "
+                    "assign the result to a variable first."
+                )
 
     def _value_to_op(self, value: ast.AST | None) -> dict[str, Any]:
         if value is None:
             return {"op": "assign", "output": None, "value": None}
         if isinstance(value, ast.Call):
             call_op = self._call_to_op(value)
-            if call_op["op"] in {"load", "matmul"}:
+            if call_op["op"] in {"load", "matmul", "transpose", "elementwise", "cast"}:
                 return call_op
             return {"op": "assign", "output": None, "value": _expr_to_source(value)}
         if isinstance(value, ast.BinOp) and isinstance(value.op, ast.MatMult):
@@ -501,11 +538,71 @@ class MatCoreASTVisitor(ast.NodeVisitor):
                 "rhs": _expr_to_source(args[1]) if len(args) > 1 else None,
             }
 
+        if self._is_marker(fn, "transpose"):
+            if len(args) != 1 or kwargs:
+                raise RuntimeError("mc.transpose(x) expects exactly 1 positional argument.")
+            return {
+                "op": "transpose",
+                "output": None,
+                "input": _expr_to_source(args[0]),
+            }
+
+        if self._is_marker(fn, "add"):
+            if len(args) != 2 or kwargs:
+                raise RuntimeError("mc.add(x, y) expects exactly 2 positional arguments.")
+            return {
+                "op": "elementwise",
+                "output": None,
+                "kind": "add",
+                "lhs": _expr_to_source(args[0]),
+                "rhs": _expr_to_source(args[1]),
+            }
+
+        if self._is_marker(fn, "relu"):
+            if len(args) != 1 or kwargs:
+                raise RuntimeError("mc.relu(x) expects exactly 1 positional argument.")
+            return {
+                "op": "elementwise",
+                "output": None,
+                "kind": "relu",
+                "lhs": _expr_to_source(args[0]),
+                "rhs": None,
+            }
+
+        if self._is_marker(fn, "cast"):
+            if len(args) < 1 or len(args) > 2:
+                raise RuntimeError(
+                    "mc.cast(x, 'float32') expects exactly 2 arguments (dtype can be keyword)."
+                )
+            if len(kwargs) > 1 or (len(kwargs) == 1 and "dtype" not in kwargs):
+                raise RuntimeError("mc.cast only supports the 'dtype' keyword argument.")
+            dtype_node = kwargs.get("dtype")
+            if dtype_node is not None and len(args) > 1:
+                raise RuntimeError("mc.cast dtype must be provided once (positional or keyword).")
+            if dtype_node is None and len(args) == 2:
+                dtype_node = args[1]
+            target_dtype = _literal_str(dtype_node)
+            if target_dtype is None:
+                raise RuntimeError(
+                    "mc.cast(...): target dtype must be a string literal, "
+                    "for example mc.cast(x, 'float32')."
+                )
+            return {
+                "op": "cast",
+                "output": None,
+                "input": _expr_to_source(args[0]),
+                "target_dtype": target_dtype,
+            }
+
         return {"op": "assign", "output": None, "value": _expr_to_source(call)}
 
-    @staticmethod
-    def _is_marker(fn: str, marker: str) -> bool:
-        return fn == marker or fn.endswith(f".{marker}")
+    def _is_marker(self, fn: str, marker: str) -> bool:
+        if fn == marker:
+            return marker in {"load", "store", "matmul"}
+        if not fn.endswith(f".{marker}"):
+            return False
+        root = fn[: -(len(marker) + 1)]
+        return root in self._namespace_roots or root.startswith("mc")
 
 
 @dataclass(frozen=True)
@@ -556,6 +653,22 @@ def matmul(*_: Any, **__: Any) -> Any:
     _marker_error("matmul")
 
 
+def transpose(*_: Any, **__: Any) -> Any:
+    _marker_error("transpose")
+
+
+def add(*_: Any, **__: Any) -> Any:
+    _marker_error("add")
+
+
+def relu(*_: Any, **__: Any) -> Any:
+    _marker_error("relu")
+
+
+def cast(*_: Any, **__: Any) -> Any:
+    _marker_error("cast")
+
+
 def _get_native_module() -> Any:
     try:
         module = importlib.import_module(f"{__package__}.{_NATIVE_MODULE_NAME}")
@@ -572,18 +685,352 @@ def _get_native_module() -> Any:
     return module
 
 
+def _build_observability_options(
+    kernel_obj: MatCoreKernel,
+    target: str,
+    debug: bool,
+    trace: str,
+) -> dict[str, Any]:
+    """Build observability keyword arguments for the native module."""
+    env_debug_dir = os.environ.get("MATCORE_DEBUG_DIR", "")
+    env_session = os.environ.get("MATCORE_DEBUG_SESSION", "")
+
+    if not debug and trace == "none":
+        return {}
+
+    if env_session:
+        session_id = env_session
+    else:
+        hasher = hashlib.sha256()
+        hasher.update(kernel_obj.source.encode("utf-8"))
+        hasher.update(target.encode("utf-8"))
+        hasher.update(str(time.time_ns()).encode("utf-8"))
+        session_id = hasher.hexdigest()[:16]
+
+    if env_debug_dir:
+        output_dir = os.path.join(env_debug_dir, session_id)
+    else:
+        output_dir = os.path.join(".matcore_debug", session_id)
+
+    return {
+        "debug": debug,
+        "trace": trace,
+        "session_id": session_id,
+        "debug_dir": output_dir,
+    }
+
+
+def _report_trace_output(trace: str, obs_options: dict[str, Any]) -> None:
+    if trace == "none":
+        return
+    debug_dir = str(obs_options.get("debug_dir", ""))
+    if not debug_dir:
+        return
+    session_id = str(obs_options.get("session_id", "session"))
+    metadata_path = os.path.join(debug_dir, "session_metadata.json")
+    trace_path = ""
+    if trace == "json":
+        trace_path = os.path.join(debug_dir, f"{session_id}_trace.json")
+    elif trace == "chrome":
+        trace_path = os.path.join(debug_dir, "trace.json")
+
+    duration_ms: int | None = None
+    events: int | None = None
+    if os.path.isfile(metadata_path):
+        try:
+            with open(metadata_path, "r", encoding="utf-8") as fh:
+                metadata = json.load(fh)
+            duration_ms = int(metadata.get("duration_ms", 0))
+            events = int(metadata.get("trace_event_count", 0))
+        except Exception:
+            duration_ms = None
+            events = None
+
+    if duration_ms is not None and events is not None:
+        print(
+            f"MatCore trace: mode={trace} duration={duration_ms}ms events={events} dir={debug_dir}",
+            file=sys.stderr,
+        )
+    else:
+        print(f"MatCore trace: mode={trace} dir={debug_dir}", file=sys.stderr)
+    if trace_path:
+        print(f"MatCore trace file: {trace_path}", file=sys.stderr)
+
+
+def _kernel_has_matmul(kernel_ir: dict[str, Any]) -> bool:
+    return any(op.get("op") == "matmul" for op in kernel_ir.get("ops", []))
+
+
+def _matmul_tensors(arrays: tuple[Any, ...], kernel_ir: dict[str, Any]) -> tuple[Any, Any, Any]:
+    if not _kernel_has_matmul(kernel_ir):
+        raise ValueError("Kernel IR does not contain a matmul operation.")
+    params = [str(param) for param in kernel_ir.get("params", [])]
+    symbol_to_tensor = {
+        params[idx]: array for idx, array in enumerate(arrays) if idx < len(params)
+    }
+    ops = kernel_ir.get("ops", [])
+    load_sources: dict[str, str] = {}
+    matmul_op: dict[str, Any] | None = None
+    for op in ops:
+        if op.get("op") == "load":
+            output = op.get("output")
+            tensor = op.get("tensor")
+            if isinstance(output, str) and isinstance(tensor, str):
+                load_sources[output] = tensor
+        elif matmul_op is None and op.get("op") == "matmul":
+            matmul_op = op
+
+    if matmul_op is None:
+        raise ValueError("Kernel IR does not contain a matmul operation.")
+
+    lhs_symbol = matmul_op.get("lhs")
+    rhs_symbol = matmul_op.get("rhs")
+    if isinstance(lhs_symbol, str):
+        lhs_symbol = load_sources.get(lhs_symbol, lhs_symbol)
+    if isinstance(rhs_symbol, str):
+        rhs_symbol = load_sources.get(rhs_symbol, rhs_symbol)
+
+    out_symbol: str | None = None
+    matmul_value = matmul_op.get("output")
+    for op in ops:
+        if op.get("op") == "store" and op.get("value") == matmul_value:
+            tensor = op.get("tensor")
+            if isinstance(tensor, str):
+                out_symbol = tensor
+                break
+    if out_symbol is None and isinstance(matmul_value, str) and matmul_value in symbol_to_tensor:
+        out_symbol = matmul_value
+
+    lhs = symbol_to_tensor.get(lhs_symbol) if isinstance(lhs_symbol, str) else None
+    rhs = symbol_to_tensor.get(rhs_symbol) if isinstance(rhs_symbol, str) else None
+    out = symbol_to_tensor.get(out_symbol) if isinstance(out_symbol, str) else None
+
+    if lhs is None and len(arrays) >= 1:
+        lhs = arrays[0]
+    if rhs is None and len(arrays) >= 2:
+        rhs = arrays[1]
+    if out is None and len(arrays) >= 3:
+        out = arrays[2]
+    if lhs is None or rhs is None or out is None:
+        raise ValueError("Matmul kernels require resolvable lhs, rhs, and output tensors.")
+    return lhs, rhs, out
+
+
+def _shape_of_rank2(array: Any, label: str) -> tuple[int, int]:
+    shape = getattr(array, "shape", None)
+    if shape is None:
+        raise ValueError(f"{label} tensor does not expose a shape.")
+    normalized_shape = tuple(int(dim) for dim in shape)
+    if len(normalized_shape) != 2:
+        raise ValueError(
+            f"{label} tensor must be rank-2 for matmul, got shape {normalized_shape}."
+        )
+    return normalized_shape[0], normalized_shape[1]
+
+
+def _warn_non_contiguous(array: Any, idx: int) -> None:
+    flags = getattr(array, "flags", None)
+    c_contiguous = bool(getattr(flags, "c_contiguous", False)) if flags is not None else False
+    if not c_contiguous:
+        warnings.warn(
+            f"Tensor argument {idx} is not C-contiguous; this may hurt performance.",
+            stacklevel=3,
+        )
+
+
+def _warn_if_non_finite(array: Any, label: str) -> None:
+    if hasattr(array, "matcore_dtype"):
+        return
+    inspected = np.asarray(array)
+    if not np.issubdtype(inspected.dtype, np.floating):
+        return
+    if not np.isfinite(inspected).all():
+        warnings.warn(f"{label} contains NaN or Inf values.", stacklevel=3)
+
+
+def _validate_matmul_dtypes(
+    lhs_dtype: str, rhs_dtype: str, out_dtype: str, target: str
+) -> None:
+    if lhs_dtype != rhs_dtype:
+        raise ValueError(
+            f"Matmul dtype mismatch: lhs dtype '{lhs_dtype}' != rhs dtype '{rhs_dtype}'."
+        )
+    if lhs_dtype == "int32":
+        raise ValueError("Matmul dtype mismatch: int32 inputs are not supported for matmul.")
+    if lhs_dtype == "float8_e4m3fn":
+        if out_dtype != "float32":
+            raise ValueError(
+                "float8_e4m3fn matmul requires float32 output/accumulation for MLIR 18.1.3 FP8 WGMMA."
+            )
+        if not target.startswith("nvidia-dgpu"):
+            raise ValueError("float8_e4m3fn matmul is currently limited to nvidia-dgpu.")
+        return
+    allowed_outputs: dict[str, set[str]] = {
+        "float32": {"float32"},
+        "float16": {"float16", "float32"},
+        "bfloat16": {"bfloat16", "float32"},
+        "int8": {"int32"},
+    }
+    if lhs_dtype in allowed_outputs and out_dtype not in allowed_outputs[lhs_dtype]:
+        expected = ", ".join(sorted(allowed_outputs[lhs_dtype]))
+        raise ValueError(
+            f"Matmul dtype mismatch: input dtype '{lhs_dtype}' requires output dtype "
+            f"to be one of [{expected}], got '{out_dtype}'."
+        )
+    if lhs_dtype not in allowed_outputs:
+        raise ValueError(
+            f"Unsupported matmul dtype combination: lhs='{lhs_dtype}', rhs='{rhs_dtype}', out='{out_dtype}'."
+        )
+
+
+def _validate_tensors(arrays: tuple[Any, ...], kernel_ir: dict[str, Any], target: str) -> None:
+    for idx, array in enumerate(arrays):
+        _warn_non_contiguous(array, idx)
+        _warn_if_non_finite(array, f"Tensor argument {idx}")
+
+    if not _kernel_has_matmul(kernel_ir):
+        return
+
+    lhs, rhs, out = _matmul_tensors(arrays, kernel_ir)
+    lhs_rows, lhs_cols = _shape_of_rank2(lhs, "LHS")
+    rhs_rows, rhs_cols = _shape_of_rank2(rhs, "RHS")
+    out_rows, out_cols = _shape_of_rank2(out, "Output")
+
+    if lhs_cols != rhs_rows:
+        raise ValueError(
+            "Matmul shape mismatch: lhs.shape[1] must equal rhs.shape[0], "
+            f"got lhs.shape={getattr(lhs, 'shape', None)} and rhs.shape={getattr(rhs, 'shape', None)}."
+        )
+    expected_out_shape = (lhs_rows, rhs_cols)
+    actual_out_shape = (out_rows, out_cols)
+    if actual_out_shape != expected_out_shape:
+        raise ValueError(
+            "Output shape mismatch: expected output shape "
+            f"{expected_out_shape} from lhs/rhs, got {actual_out_shape}."
+        )
+
+    lhs_dtype = _logical_dtype_name(lhs, 0)
+    rhs_dtype = _logical_dtype_name(rhs, 1)
+    out_dtype = _logical_dtype_name(out, 2)
+    _validate_matmul_dtypes(lhs_dtype, rhs_dtype, out_dtype, target)
+
+
+def _resolve_output_tensor(arrays: tuple[Any, ...], kernel_ir: dict[str, Any]) -> Any:
+    params = [str(param) for param in kernel_ir.get("params", [])]
+    symbol_to_tensor = {
+        params[idx]: array for idx, array in enumerate(arrays) if idx < len(params)
+    }
+    for op in reversed(kernel_ir.get("ops", [])):
+        if op.get("op") != "store":
+            continue
+        tensor_symbol = op.get("tensor")
+        if isinstance(tensor_symbol, str) and tensor_symbol in symbol_to_tensor:
+            return symbol_to_tensor[tensor_symbol]
+    if arrays:
+        return arrays[-1]
+    raise ValueError("No output tensor could be resolved for validation.")
+
+
+def _validate_output(result: Any, arrays: tuple[Any, ...], kernel_ir: dict[str, Any]) -> None:
+    del result
+    output_tensor = _resolve_output_tensor(arrays, kernel_ir)
+    if hasattr(output_tensor, "matcore_dtype"):
+        return
+    output_arr = np.asarray(output_tensor)
+    if np.issubdtype(output_arr.dtype, np.floating) and not np.isfinite(output_arr).all():
+        warnings.warn("Output contains NaN or Inf values.", stacklevel=3)
+    if output_arr.dtype == np.dtype(np.float32) and output_arr.size > 0:
+        finite_mask = np.isfinite(output_arr)
+        if finite_mask.any():
+            max_abs = float(np.max(np.abs(output_arr[finite_mask])))
+            if max_abs > 1e15:
+                warnings.warn(
+                    f"Output magnitude is unusually large for float32 (max abs={max_abs:.3e}).",
+                    stacklevel=3,
+                )
+
+
+def _prepare_launch(
+    kernel_obj: MatCoreKernel,
+    arrays: tuple[Any, ...],
+    *,
+    target: str | None,
+    quant: dict[str, Any] | None,
+    debug: bool | None,
+    trace: str | None,
+    validate: bool | None,
+) -> tuple[dict[str, Any], str, dict[str, Any], bool]:
+    from .config import resolve_launch_options
+
+    resolved = resolve_launch_options(
+        target=target, debug=debug, trace=trace, validate=validate
+    )
+    normalized_target = _normalize_target(resolved["target"])
+    runtime_ir = _build_runtime_ir(kernel_obj, arrays, quant)
+    obs_options = _build_observability_options(
+        kernel_obj, normalized_target, resolved["debug"], resolved["trace"]
+    )
+    return runtime_ir, normalized_target, obs_options, bool(resolved["validate"])
+
+
+def _launch_immediate(
+    runtime_ir: dict[str, Any],
+    normalized_target: str,
+    arrays: tuple[Any, ...],
+    obs_options: dict[str, Any],
+) -> Any:
+    native = _get_native_module()
+    try:
+        return native.compile_and_run(runtime_ir, normalized_target, *arrays, **obs_options)
+    finally:
+        if obs_options:
+            _report_trace_output(str(obs_options.get("trace", "none")), obs_options)
+
+
 def launch(
     kernel_obj: MatCoreKernel,
     *arrays: Any,
-    target: str = "x86-auto",
+    target: str | None = None,
     quant: dict[str, Any] | None = None,
+    debug: bool | None = None,
+    trace: str | None = None,
+    validate: bool | None = None,
 ) -> Any:
     if not isinstance(kernel_obj, MatCoreKernel):
         raise TypeError("mc.launch expects a kernel object returned by @mc.kernel.")
-    normalized_target = _normalize_target(target)
-    runtime_ir = _build_runtime_ir(kernel_obj, arrays, quant)
-    native = _get_native_module()
-    return native.compile_and_run(runtime_ir, normalized_target, *arrays)
+    runtime_ir, normalized_target, obs_options, validation_enabled = _prepare_launch(
+        kernel_obj,
+        arrays,
+        target=target,
+        quant=quant,
+        debug=debug,
+        trace=trace,
+        validate=validate,
+    )
+    if validation_enabled:
+        _validate_tensors(arrays, runtime_ir, normalized_target)
+    from .graph import get_active_graph
+
+    active_graph = get_active_graph()
+    if active_graph is not None:
+        active_graph.add_node(
+            runtime_ir,
+            arrays,
+            target=normalized_target,
+            obs_options=obs_options,
+            validation_enabled=validation_enabled,
+        )
+        return None
+    launch_result = _launch_immediate(runtime_ir, normalized_target, arrays, obs_options)
+    if validation_enabled:
+        _validate_output(launch_result, arrays, runtime_ir)
+    return launch_result
+
+
+def _graph_context_manager() -> Any:
+    from .graph import graph as graph_context
+
+    return graph_context()
 
 
 class MatCoreNamespace:
@@ -595,6 +1042,14 @@ class MatCoreNamespace:
     load = staticmethod(load)
     store = staticmethod(store)
     matmul = staticmethod(matmul)
+    transpose = staticmethod(transpose)
+    add = staticmethod(add)
+    relu = staticmethod(relu)
+    cast = staticmethod(cast)
+    graph = staticmethod(_graph_context_manager)
+    config = staticmethod(configure)
+    get_config = staticmethod(get_config)
+    reset_config = staticmethod(reset_config)
 
 
 mc = MatCoreNamespace()

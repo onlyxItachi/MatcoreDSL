@@ -1,0 +1,7 @@
+# ninja log v5
+1	6	1775396604898425918	CMakeFiles/_matcore_native.dir/src/cache_manager.cpp.o	af8f8c7de7e6fc46
+1	7	1775396604898425918	CMakeFiles/_matcore_native.dir/src/bindings.cpp.o	4e09e94fd2eaac76
+7	12	1775396604903425824	CMakeFiles/_matcore_native.dir/src/diagnostics.cpp.o	289df7c38b46b6a4
+6	13	1775396604906469773	CMakeFiles/_matcore_native.dir/src/cpu_lowering.cpp.o	80994ec3776497dd
+12	18	1775396604909425711	CMakeFiles/_matcore_native.dir/src/executor.cpp.o	c6038f6ac67fa8b4
+13	19	1775396604912288468	CMakeFiles/_matcore_native.dir/src/gpu_mapping.cpp.o	2ce973b09ae3b094

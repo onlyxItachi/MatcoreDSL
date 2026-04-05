@@ -1,0 +1,12 @@
+/home/hamza-usta/MatcoreDSL/build-review/CMakeFiles/intrinsics_gen.dir
+/home/hamza-usta/MatcoreDSL/build-review/CMakeFiles/omp_gen.dir
+/home/hamza-usta/MatcoreDSL/build-review/CMakeFiles/acc_gen.dir
+/home/hamza-usta/MatcoreDSL/build-review/CMakeFiles/RISCVTargetParserTableGen.dir
+/home/hamza-usta/MatcoreDSL/build-review/CMakeFiles/mlir-tablegen-targets.dir
+/home/hamza-usta/MatcoreDSL/build-review/CMakeFiles/mlir-headers.dir
+/home/hamza-usta/MatcoreDSL/build-review/CMakeFiles/mlir-generic-headers.dir
+/home/hamza-usta/MatcoreDSL/build-review/CMakeFiles/mlir-doc.dir
+/home/hamza-usta/MatcoreDSL/build-review/CMakeFiles/_matcore_native.dir
+/home/hamza-usta/MatcoreDSL/build-review/CMakeFiles/nanobind-static.dir
+/home/hamza-usta/MatcoreDSL/build-review/CMakeFiles/edit_cache.dir
+/home/hamza-usta/MatcoreDSL/build-review/CMakeFiles/rebuild_cache.dir

@@ -24,7 +24,9 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Builders.h"
 
+#include "fp8_wgmma.h"
 #include "matcore/lowering_pipeline.h"
+#include "matcore/observability.h"
 
 namespace matcore {
 namespace {
@@ -38,6 +40,8 @@ struct MatmulShape {
   std::int64_t k = 0;
   std::int64_t n = 0;
 };
+
+std::string opTypeName(const KernelOp &op);
 
 std::string dtypeName(TensorDType dtype) {
   switch (dtype) {
@@ -108,16 +112,21 @@ MatmulLoweringSignature inferMatmulSignature(
     fail("runtime must provide lhs, rhs, and out tensors");
   }
 
+  const TargetKind normalized_target = normalizeTarget(target_profile.kind);
   MatmulLoweringSignature signature;
   signature.lhs_dtype = tensors[0].dtype;
   signature.rhs_dtype = tensors[1].dtype;
   signature.out_dtype = tensors[2].dtype;
+  signature.target_kind = normalized_target;
+  signature.nvidia_sm_major = target_profile.nvidia_sm_major.value_or(0);
+  signature.nvidia_sm_minor = target_profile.nvidia_sm_minor.value_or(0);
+  signature.matmul_m = static_cast<int>(tensors[0].shape[0]);
+  signature.matmul_k = static_cast<int>(tensors[0].shape[1]);
+  signature.matmul_n = static_cast<int>(tensors[1].shape[1]);
 
   if (signature.lhs_dtype != signature.rhs_dtype) {
     fail("lhs/rhs dtype mismatch is not supported");
   }
-
-  const TargetKind normalized_target = normalizeTarget(target_profile.kind);
   switch (signature.lhs_dtype) {
     case TensorDType::kFloat32:
       if (signature.out_dtype != TensorDType::kFloat32) {
@@ -143,6 +152,14 @@ MatmulLoweringSignature inferMatmulSignature(
       signature.quantized_i8 = true;
       return signature;
     case TensorDType::kFloat8E4M3FN:
+      if (signature.out_dtype != TensorDType::kFloat32) {
+        fail("float8_e4m3fn matmul requires float32 output/accumulation for "
+             "MLIR 18.1.3 FP8 WGMMA");
+      }
+      if (normalized_target == TargetKind::kAmdIGPU) {
+        fail("float8_e4m3fn is disabled on AMD targets: MatCore FP8 uses E4M3FN "
+             "while MLIR 18 AMDGPU lowering currently expects FNUZ FP8 types");
+      }
       if (normalized_target != TargetKind::kNvidiaDGPU) {
         fail("float8_e4m3fn matmul is currently limited to nvidia-dgpu");
       }
@@ -152,8 +169,10 @@ MatmulLoweringSignature inferMatmulSignature(
         fail("float8_e4m3fn matmul requires native NVIDIA FP8 tensor-core "
              "support (sm_90+ WGMMA); request nvidia-dgpu:sm_90 or newer");
       }
-      fail("float8_e4m3fn matmul requires a dedicated native NVIDIA FP8 WGMMA "
-           "lowering path, and MatCore does not implement that path yet");
+      if (!isEligibleForFp8Wgmma(signature)) {
+        fail("float8_e4m3fn matmul is not eligible for NVIDIA FP8 WGMMA");
+      }
+      return signature;
     case TensorDType::kInt32:
       break;
   }
@@ -166,6 +185,15 @@ MatmulLoweringSignature inferMatmulSignature(
 void validateKernel(const KernelIR &kernel,
                     const RequestedTargetProfile &target_profile,
                     const std::vector<RuntimeTensorView> &tensors) {
+  for (const KernelOp &op : kernel.ops) {
+    if (std::holds_alternative<TransposeOp>(op) ||
+        std::holds_alternative<ElementwiseOp>(op) ||
+        std::holds_alternative<CastOp>(op)) {
+      fail("operation '" + opTypeName(op) +
+           "' is not yet supported in MLIR lowering (Phase 3 pending)");
+    }
+  }
+
   if (kernel.params.size() < 3) {
     fail("kernel must expose at least 3 params (lhs, rhs, out)");
   }
@@ -224,6 +252,31 @@ MatmulShape extractMatmulShape(const std::vector<RuntimeTensorView> &tensors) {
   return shape;
 }
 
+std::string opTypeName(const KernelOp &op) {
+  if (std::holds_alternative<LoadOp>(op)) {
+    return "load";
+  }
+  if (std::holds_alternative<MatMulOp>(op)) {
+    return "matmul";
+  }
+  if (std::holds_alternative<StoreOp>(op)) {
+    return "store";
+  }
+  if (std::holds_alternative<AssignOp>(op)) {
+    return "assign";
+  }
+  if (std::holds_alternative<TransposeOp>(op)) {
+    return "transpose";
+  }
+  if (std::holds_alternative<ElementwiseOp>(op)) {
+    return "elementwise";
+  }
+  if (std::holds_alternative<CastOp>(op)) {
+    return "cast";
+  }
+  return "unknown";
+}
+
 std::string requestedNvidiaChip(const RequestedTargetProfile &target_profile) {
   if (normalizeTarget(target_profile.kind) != TargetKind::kNvidiaDGPU) {
     return "sm_80";
@@ -234,6 +287,21 @@ std::string requestedNvidiaChip(const RequestedTargetProfile &target_profile) {
            std::to_string(*target_profile.nvidia_sm_minor);
   }
   return "sm_80";
+}
+
+std::string requestedAmdChip(const RequestedTargetProfile &target_profile) {
+  if (normalizeTarget(target_profile.kind) != TargetKind::kAmdIGPU) {
+    return "gfx90a";
+  }
+  if (!target_profile.amd_chip.empty()) {
+    return target_profile.amd_chip;
+  }
+  const std::string &requested = target_profile.requested;
+  const std::size_t split = requested.find(':');
+  if (split == std::string::npos || split + 1 >= requested.size()) {
+    return "gfx90a";
+  }
+  return requested.substr(split + 1);
 }
 
 std::int64_t roundUpToMultiple(std::int64_t dim, std::int64_t tile) {
@@ -288,6 +356,15 @@ mlir::OwningOpRef<mlir::ModuleOp> buildMatmulModule(
   module->setAttr("matcore.lhs_dtype", mlir::TypeAttr::get(lhs_element_type));
   module->setAttr("matcore.rhs_dtype", mlir::TypeAttr::get(rhs_element_type));
   module->setAttr("matcore.out_dtype", mlir::TypeAttr::get(out_element_type));
+  module->setAttr("matcore.target_kind",
+                  builder.getI32IntegerAttr(static_cast<int>(signature.target_kind)));
+  module->setAttr("matcore.nvidia_sm_major",
+                  builder.getI32IntegerAttr(signature.nvidia_sm_major));
+  module->setAttr("matcore.nvidia_sm_minor",
+                  builder.getI32IntegerAttr(signature.nvidia_sm_minor));
+  module->setAttr("matcore.matmul_m", builder.getI32IntegerAttr(signature.matmul_m));
+  module->setAttr("matcore.matmul_n", builder.getI32IntegerAttr(signature.matmul_n));
+  module->setAttr("matcore.matmul_k", builder.getI32IntegerAttr(signature.matmul_k));
   module->setAttr("matcore.route", builder.getStringAttr(plan.route_name));
   module->setAttr("matcore.route_description",
                   builder.getStringAttr(plan.route_description));
@@ -404,7 +481,8 @@ mlir::OwningOpRef<mlir::ModuleOp> buildMatmulModule(
 
 LoweredModule MlirEngine::BuildAndLower(
     const KernelIR &kernel, const RequestedTargetProfile &target_profile,
-    const std::vector<RuntimeTensorView> &tensors, mlir::MLIRContext &context) {
+    const std::vector<RuntimeTensorView> &tensors, mlir::MLIRContext &context,
+    ObservabilityContext *obs) {
   mlir::DialectRegistry registry;
   mlir::registerAllDialects(registry);
   context.appendDialectRegistry(registry);
@@ -424,17 +502,29 @@ LoweredModule MlirEngine::BuildAndLower(
       inferMatmulSignature(target_profile, tensors);
   const MatmulShape shape = extractMatmulShape(tensors);
   const std::string nvidia_chip = requestedNvidiaChip(target_profile);
+  const std::string amd_chip = requestedAmdChip(target_profile);
 
   auto module =
       buildMatmulModule(kernel, signature, plan, tensors, shape, context);
   module->getOperation()->setAttr(
       "matcore.requested_target",
       mlir::StringAttr::get(&context, target_profile.canonical));
+  module->getOperation()->setAttr(
+      "matcore.requested_target_raw",
+      mlir::StringAttr::get(&context, target_profile.requested));
   if (normalizeTarget(target_profile.kind) == TargetKind::kNvidiaDGPU) {
     module->getOperation()->setAttr("matcore.nvidia_chip",
                                     mlir::StringAttr::get(&context, nvidia_chip));
+  } else if (normalizeTarget(target_profile.kind) == TargetKind::kAmdIGPU) {
+    module->getOperation()->setAttr("matcore.amd_chip",
+                                    mlir::StringAttr::get(&context, amd_chip));
   }
-  matcore::runLoweringPipeline(*module, plan, signature, nvidia_chip);
+  if (obs) {
+    obs->snapshot("mlir_construction", *module);
+    obs->snapshotText("lowering_plan", plan.route_description);
+  }
+  matcore::runLoweringPipeline(*module, plan, signature, nvidia_chip, amd_chip,
+                               obs);
 
   LoweredModule lowered;
   lowered.module = std::move(module);

@@ -657,9 +657,8 @@ NvidiaTileConfig SelectNvidiaTileConfig(
       k != mlir::ShapedType::kDynamic && m >= 16 && n >= 8 && k >= 16 &&
       (m % 16) == 0 && (n % 8) == 0 && (k % 16) == 0 &&
       IsTensorCoreMmaSyncType(signature);
-  // Safety hotfix: keep the warp MMA rewrite disabled until the NVIDIA tensor
-  // core path is proven memory-safe under the strict tensor.pad flow.
-  config.rewrite_to_mma_sync = false;
+  // GpuDataStagingPass now handles host↔device memory transfers safely.
+  config.rewrite_to_mma_sync = statically_compatible_mma;
   if (config.rewrite_to_mma_sync) {
     config.block_tile_m = 16;
     config.block_tile_n = 8;

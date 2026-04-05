@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import statistics
 import subprocess
 import sys
 import time
@@ -43,8 +44,10 @@ def benchmark_target(target: str, a_seed: np.ndarray, b_seed: np.ndarray) -> Non
     scratch = np.empty((BATCH, M, N), dtype=np.float16)
 
     start = time.perf_counter()
+    step_times_ms: list[float] = []
     try:
         for _ in range(STEPS):
+            step_start = time.perf_counter()
             for batch_idx in range(BATCH):
                 mc.launch(
                     matmul_kernel,
@@ -53,11 +56,25 @@ def benchmark_target(target: str, a_seed: np.ndarray, b_seed: np.ndarray) -> Non
                     scratch[batch_idx],
                     target=target,
                 )
+            step_times_ms.append((time.perf_counter() - step_start) * 1000.0)
             current, scratch = scratch, current
 
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         checksum = float(np.sum(current, dtype=np.float64))
-        print(f"{target}: {elapsed_ms:.3f} ms (ok, checksum={checksum:.6e})")
+
+        total_matmuls = STEPS * BATCH
+        flops_per_matmul = 2 * M * K * N
+        total_flops = total_matmuls * flops_per_matmul
+        tflops = total_flops / (elapsed_ms / 1000.0) / 1e12
+
+        median_step = statistics.median(step_times_ms)
+        step_tflops = (BATCH * 2 * M * K * N) / (median_step / 1000.0) / 1e12
+
+        print(
+            f"{target}: {elapsed_ms:.3f} ms (ok, checksum={checksum:.6e}, "
+            f"{tflops:.4f} TFLOP/s, median_step={median_step:.3f} ms, "
+            f"step={step_tflops:.4f} TFLOP/s)"
+        )
     except Exception as exc:
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         print(f"{target}: FAILED after {elapsed_ms:.3f} ms ({type(exc).__name__}: {exc})")
@@ -107,6 +124,7 @@ def benchmark_target_isolated(target: str) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--worker-target", default=None)
+    parser.add_argument("--targets", nargs="*", default=list(TARGETS))
     return parser.parse_args()
 
 
@@ -124,7 +142,7 @@ def main() -> None:
         f"MatCore massive benchmark: batch={BATCH}, shape={M}x{K} @ {K}x{N}, "
         f"dtype=float16, steps={STEPS}"
     )
-    for target in TARGETS:
+    for target in args.targets:
         benchmark_target_isolated(target)
 
 
