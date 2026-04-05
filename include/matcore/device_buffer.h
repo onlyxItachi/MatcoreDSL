@@ -42,6 +42,11 @@ bool matcore_device_is_valid(DeviceBufferHandle handle);
 /// Uses ScopedContext + stream synchronize.
 void matcore_device_zero(DeviceBufferHandle handle);
 
+/// Zero-fill a raw device pointer. Used by execute_plan() for output zeroing
+/// without needing a DeviceBufferHandle. No ownership validation — caller
+/// must ensure pointer is valid.
+void matcore_device_zero_raw(void *device_ptr, uint64_t size_bytes);
+
 }  // namespace matcore
 
 #endif  // MATCORE_DEVICE_BUFFER_H_

@@ -17,6 +17,7 @@
 #include "matcore/kernel_ir.h"
 #include "matcore/device_buffer.h"
 #include "matcore/observability.h"
+#include "matcore/plan.h"
 #include "matcore/target_registry.h"
 
 namespace nb = nanobind;
@@ -928,4 +929,55 @@ NB_MODULE(_matcore_native, m) {
           matcore::matcore_device_zero(handle);
         },
         "Zero-fill a device buffer.");
+
+  // V2: MatcorePlan — pre-compiled execution plan for near-zero dispatch
+  nb::class_<matcore::MatcorePlan>(m, "MatcorePlan")
+      .def_prop_ro("generation_id", &matcore::MatcorePlan::generationId)
+      .def_prop_ro("has_device_tensors", &matcore::MatcorePlan::hasDeviceTensors)
+      .def_prop_ro("num_tensors", &matcore::MatcorePlan::numTensors);
+
+  m.def("create_plan",
+        [](nb::dict kernel_ir, const std::string &target, nb::args tensor_args)
+            -> matcore::MatcorePlan * {
+          // Reuse existing buildInvocation for parsing
+          Invocation invocation = buildInvocation(kernel_ir, target, tensor_args);
+          nb::gil_scoped_release release;
+          auto plan = matcore::MatcorePlan::create(
+              invocation.kernel, invocation.tensors, target, nullptr);
+          return plan.release();  // Transfer ownership to nanobind
+        },
+        nb::rv_policy::take_ownership,
+        "Create a pre-compiled execution plan (expensive, call once).");
+
+  m.def("execute_plan",
+        [](matcore::MatcorePlan &plan, nb::args tensor_args) {
+          // Parse tensors using the same path as compile_and_run
+          std::vector<matcore::RuntimeTensorView> tensors;
+          std::vector<nb::object> keepalive;
+          tensors.reserve(tensor_args.size());
+          keepalive.reserve(tensor_args.size());
+          for (std::size_t i = 0; i < tensor_args.size(); ++i) {
+            nb::object tensor = nb::borrow<nb::object>(tensor_args[i]);
+            ParsedTensor parsed = parseTensorArgument(tensor, i);
+            keepalive.push_back(tensor);
+            matcore::RuntimeTensorView view;
+            // Use frozen meta symbols if available
+            if (i < plan.numTensors()) {
+              view.symbol = plan.frozenMeta()[i].symbol;
+            } else {
+              view.symbol = "arg" + std::to_string(i);
+            }
+            view.data = reinterpret_cast<void *>(parsed.data_ptr);
+            view.dtype = parseRuntimeTensorDType(parsed.dtype_name);
+            view.c_contiguous = parsed.c_contiguous;
+            view.is_device_resident = parsed.is_device_resident;
+            view.shape = std::move(parsed.shape);
+            view.strides = std::move(parsed.element_strides);
+            view.quantization = parsed.quantization;
+            tensors.push_back(std::move(view));
+          }
+          nb::gil_scoped_release release;
+          plan.execute(tensors);
+        },
+        "Execute a pre-compiled plan with near-zero overhead.");
 }
