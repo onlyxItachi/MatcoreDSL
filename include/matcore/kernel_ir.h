@@ -68,7 +68,43 @@ struct AssignOp {
   std::string value;
 };
 
-using KernelOp = std::variant<LoadOp, MatMulOp, StoreOp, AssignOp>;
+// Transpose operation: swap last two dimensions
+struct TransposeOp {
+  std::string result;
+  std::string input;
+};
+
+enum class ElementwiseKind {
+  kAdd,
+  kSub,
+  kMul,
+  kDiv,
+  kReLU,
+  kGELU,
+  kSigmoid,
+  kNeg,
+  kAbs,
+  kSqrt,
+  kExp,
+};
+
+// Elementwise operation: apply unary/binary op to tiles
+struct ElementwiseOp {
+  std::string result;
+  ElementwiseKind kind = ElementwiseKind::kAdd;
+  std::string lhs;
+  std::string rhs;
+};
+
+// Cast operation: explicit dtype conversion
+struct CastOp {
+  std::string result;
+  std::string input;
+  TensorDType target_dtype = TensorDType::kFloat32;
+};
+
+using KernelOp = std::variant<LoadOp, MatMulOp, StoreOp, AssignOp, TransposeOp,
+                              ElementwiseOp, CastOp>;
 
 struct KernelIR {
   std::string kernel_name;

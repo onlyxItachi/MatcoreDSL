@@ -25,13 +25,15 @@ DEFAULT_WARMUP = 16
 DEFAULT_RUNS = 4
 DEFAULT_DTYPES = ("float16", "bfloat16", "int8")
 DEFAULT_TIMEOUT_SECONDS = 1800.0
-DEFAULT_ARENA = "gpu"
+DEFAULT_ARENA = "nvidia"
 ARENA_FRAMEWORKS: dict[str, tuple[str, ...]] = {
-    "gpu": ("matcore", "torch", "cupy"),
+    "nvidia": ("matcore", "torch", "cupy"),
+    "amd-igpu": ("matcore",),
     "cpu": ("matcore", "numpy"),
 }
 ARENA_MATCORE_TARGET: dict[str, str] = {
-    "gpu": "nvidia-dgpu",
+    "nvidia": "nvidia-dgpu",
+    "amd-igpu": "amd-igpu",
     "cpu": "x86-avx512",
 }
 
@@ -153,6 +155,7 @@ class MatCorePhases:
     cold_compile: WorkerResult
     warm_cache_boot: WorkerResult
     warm_steady: WorkerResult
+    ongoing: WorkerResult
 
 
 def float32_to_bf16_storage(values: np.ndarray) -> np.ndarray:
@@ -272,6 +275,21 @@ def worker_fail(
         target=target,
         cache_mode=cache_mode,
         compile_note=compile_note,
+    )
+
+
+def is_unavailable_target_error(exc: Exception) -> bool:
+    lowered = str(exc).lower()
+    return any(
+        token in lowered
+        for token in (
+            "execution denied",
+            "no amd hip device is available",
+            "no cuda device",
+            "cuda runtime",
+            "rocm runtime is present but no amd hip device is available",
+            "hardware limits for target",
+        )
     )
 
 
@@ -601,6 +619,40 @@ def run_matcore_worker(
                 compile_note="disk-cache cold build" if cache_mode == "cold" else "disk-cache warm load",
             )
 
+        if cache_mode == "ongoing":
+            launch_once()
+            ongoing_runs = 100
+            samples_ms: list[float] = []
+            for _ in range(ongoing_runs):
+                t0 = time.perf_counter()
+                launch_once()
+                samples_ms.append((time.perf_counter() - t0) * 1000.0)
+
+            checksum = float(np.sum(np.asarray(out, dtype=np.float64)))
+            median_ms = statistics.median(samples_ms)
+            p50_ms = median_ms
+            mean_ms = statistics.fmean(samples_ms)
+            min_ms = min(samples_ms)
+            max_ms = max(samples_ms)
+
+            return WorkerResult(
+                framework="MatCore",
+                dtype=dtype,
+                status="OK",
+                message=f"target={target} ({target_note})",
+                warmup=0,
+                runs=ongoing_runs,
+                cold_ms=None,
+                warm_mean_ms=mean_ms,
+                warm_min_ms=min_ms,
+                warm_p50_ms=p50_ms,
+                warm_max_ms=max_ms,
+                checksum=checksum,
+                target=target,
+                cache_mode="ongoing",
+                compile_note="ongoing cached execution (100 iters)",
+            )
+
         stats = benchmark_operation(launch_once, lambda: None, warmup=warmup, runs=runs)
         checksum = float(np.sum(np.asarray(out, dtype=np.float64)))
         return stats_to_result(
@@ -617,6 +669,10 @@ def run_matcore_worker(
         )
     except MemoryError as exc:
         return worker_skip("MatCore", dtype, f"OOM: {exc}", warmup=warmup, runs=runs, target=target, cache_mode=cache_mode)
+    except RuntimeError as exc:
+        if is_unavailable_target_error(exc):
+            return worker_skip("MatCore", dtype, str(exc), warmup=warmup, runs=runs, target=target, cache_mode=cache_mode)
+        return worker_fail("MatCore", dtype, exc, warmup=warmup, runs=runs, target=target, cache_mode=cache_mode)
     except Exception as exc:
         return worker_fail("MatCore", dtype, exc, warmup=warmup, runs=runs, target=target, cache_mode=cache_mode)
     finally:
@@ -627,7 +683,7 @@ def run_worker(args: argparse.Namespace) -> WorkerResult:
     framework = args.worker_framework
     dtype = args.worker_dtype
     arena = args.arena
-    matcore_target = ARENA_MATCORE_TARGET[arena]
+    matcore_target = args.matcore_target if args.matcore_target != "auto" else ARENA_MATCORE_TARGET[arena]
     if framework == "matcore":
         return run_matcore_worker(
             dtype,
@@ -649,7 +705,7 @@ def run_worker(args: argparse.Namespace) -> WorkerResult:
             )
         return run_numpy_worker(dtype, size=args.size, warmup=args.warmup, runs=args.runs, seed=args.seed)
     if framework == "torch":
-        if arena != "gpu":
+        if arena != "nvidia":
             return worker_skip(
                 "PyTorch",
                 dtype,
@@ -666,7 +722,7 @@ def run_worker(args: argparse.Namespace) -> WorkerResult:
             require_cuda=True,
         )
     if framework == "cupy":
-        if arena != "gpu":
+        if arena != "nvidia":
             return worker_skip(
                 "CuPy",
                 dtype,
@@ -791,14 +847,26 @@ def format_speedup(reference_ms: float | None, candidate_ms: float | None) -> st
     return f"{reference_ms / candidate_ms:.2f}x"
 
 
-def print_worker_result(result: WorkerResult) -> None:
+def throughput_line(dtype: str, size: int, time_ms: float | None) -> str:
+    if time_ms is None or time_ms <= 0 or not np.isfinite(time_ms):
+        return ""
+    flops = 2 * size * size * size
+    tput = flops / (time_ms / 1000.0) / 1e12
+    unit = "TOPS" if dtype == "int8" else "TFLOP/s"
+    return f" [{tput:.4f} {unit}]"
+
+
+def print_worker_result(result: WorkerResult, *, size: int) -> None:
     prefix = result.framework
     if result.framework == "MatCore" and result.cache_mode:
         prefix = f"{prefix}[{result.cache_mode}]"
     if result.status == "OK":
+        tput = ""
+        if result.framework != "MatCore" or result.cache_mode in ("steady", "ongoing"):
+            tput = throughput_line(result.dtype, size, result.warm_mean_ms)
         print(
             f"[OK]   {prefix:<18} {result.dtype:<8} cold={format_ms(result.cold_ms)} "
-            f"warm_mean={format_ms(result.warm_mean_ms)}"
+            f"warm_mean={format_ms(result.warm_mean_ms)}{tput}"
         )
         note = result.message
         if result.compile_note:
@@ -813,7 +881,7 @@ def print_worker_result(result: WorkerResult) -> None:
 
 
 def benchmark_matcore_phases(args: argparse.Namespace, dtype: str) -> MatCorePhases:
-    matcore_target = ARENA_MATCORE_TARGET[args.arena]
+    matcore_target = args.matcore_target if args.matcore_target != "auto" else ARENA_MATCORE_TARGET[args.arena]
     cold = run_worker_process(
         "matcore",
         dtype,
@@ -850,11 +918,23 @@ def benchmark_matcore_phases(args: argparse.Namespace, dtype: str) -> MatCorePha
         matcore_cache_mode="steady",
         timeout_seconds=args.timeout,
     )
-    return MatCorePhases(cold_compile=cold, warm_cache_boot=warm_cache, warm_steady=steady)
+    ongoing = run_worker_process(
+        "matcore",
+        dtype,
+        arena=args.arena,
+        size=args.size,
+        warmup=0,
+        runs=1,
+        seed=args.seed,
+        matcore_target=matcore_target,
+        matcore_cache_mode="ongoing",
+        timeout_seconds=args.timeout,
+    )
+    return MatCorePhases(cold_compile=cold, warm_cache_boot=warm_cache, warm_steady=steady, ongoing=ongoing)
 
 
 def run_framework(args: argparse.Namespace, framework: str, dtype: str) -> WorkerResult:
-    matcore_target = ARENA_MATCORE_TARGET[args.arena]
+    matcore_target = args.matcore_target if args.matcore_target != "auto" else ARENA_MATCORE_TARGET[args.arena]
     return run_worker_process(
         framework,
         dtype,
@@ -892,6 +972,14 @@ def print_speed_summary(
         print(f"       MatCore steady: {format_speedup(numpy_warm, matcore_warm)}")
         return
 
+    if arena == "amd-igpu":
+        print(f"       speed summary [{dtype}]:")
+        print("       MatCore only in this arena")
+        return
+
+    if arena != "nvidia":
+        return
+
     print(f"       speed vs PyTorch CUDA [{dtype}]:")
     print(f"       MatCore steady: {format_speedup(torch_warm, matcore_warm)}")
     print(f"       CuPy          : {format_speedup(torch_warm, cupy_warm)}")
@@ -901,11 +989,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Gladiator benchmark arena with arena-specific framework matchups for "
-            "the Phase 4.1 hotfix, using MatCore cold-build, warm-cache, and "
-            "steady-state timings."
+            "the Phase 4.1 hotfix, using MatCore cold-build, warm-cache, steady-state, "
+            "and ongoing timings."
         )
     )
-    parser.add_argument("--arena", choices=sorted(ARENA_FRAMEWORKS.keys()), default=DEFAULT_ARENA)
+    arena_choices = sorted({*ARENA_FRAMEWORKS.keys(), "gpu"})
+    parser.add_argument("--arena", choices=arena_choices, default=DEFAULT_ARENA)
     parser.add_argument("--size", type=int, default=DEFAULT_SIZE)
     parser.add_argument("--warmup", type=int, default=DEFAULT_WARMUP)
     parser.add_argument("--runs", type=int, default=DEFAULT_RUNS)
@@ -916,12 +1005,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--matcore-target", default="auto", help=argparse.SUPPRESS)
     parser.add_argument("--worker-framework", default=None)
     parser.add_argument("--worker-dtype", default=None)
-    parser.add_argument("--matcore-cache-mode", choices=["cold", "warm-cache", "steady"], default="steady")
+    parser.add_argument("--matcore-cache-mode", choices=["cold", "warm-cache", "steady", "ongoing"], default="steady")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    if args.arena == "gpu":
+        if args.worker_framework is None:
+            print("warning: --arena gpu is deprecated; use --arena nvidia.", file=sys.stderr)
+        args.arena = "nvidia"
     if args.worker_framework is not None:
         worker_result = run_worker(args)
         print(json.dumps(asdict(worker_result), sort_keys=True))
@@ -932,12 +1025,21 @@ def main() -> None:
         f"(python={sys.executable}, size={args.size}, warmup={args.warmup}, runs={args.runs})"
     )
     print(f"cache_dir={CACHE_DIR}")
-    print(f"arena={args.arena} matcore_target={ARENA_MATCORE_TARGET[args.arena]}")
-    print("MatCore reports cold-build, warm-cache boot, and steady-state separately.")
+    resolved_target = args.matcore_target if args.matcore_target != "auto" else ARENA_MATCORE_TARGET[args.arena]
+    print(f"arena={args.arena} matcore_target={resolved_target}")
+    print("MatCore reports cold-build, warm-cache boot, steady-state, and ongoing separately.")
     print("NumPy, PyTorch, and CuPy run in isolated worker processes with the same warm-up count.")
     if args.frameworks is not None:
         print("note: --frameworks is ignored; framework set is derived from --arena.")
     frameworks = set(ARENA_FRAMEWORKS[args.arena])
+    if args.arena in ("nvidia", "amd-igpu"):
+        from gpu_preflight import run_full_preflight
+
+        report = run_full_preflight(args.arena)
+        if not report.overall_ok:
+            print(f"GPU preflight FAILED for {args.arena}: {report.summary}")
+            sys.exit(1)
+        print(f"GPU preflight PASSED: {report.summary}")
 
     for dtype in [item.strip().lower() for item in args.dtypes]:
         print(f"\n=== dtype={dtype} ===")
@@ -948,21 +1050,22 @@ def main() -> None:
 
         if "matcore" in frameworks:
             matcore_phases = benchmark_matcore_phases(args, dtype)
-            print_worker_result(matcore_phases.cold_compile)
-            print_worker_result(matcore_phases.warm_cache_boot)
-            print_worker_result(matcore_phases.warm_steady)
+            print_worker_result(matcore_phases.cold_compile, size=args.size)
+            print_worker_result(matcore_phases.warm_cache_boot, size=args.size)
+            print_worker_result(matcore_phases.warm_steady, size=args.size)
+            print_worker_result(matcore_phases.ongoing, size=args.size)
 
         if "numpy" in frameworks:
             numpy_result = run_framework(args, "numpy", dtype)
-            print_worker_result(numpy_result)
+            print_worker_result(numpy_result, size=args.size)
 
         if "torch" in frameworks:
             torch_result = run_framework(args, "torch", dtype)
-            print_worker_result(torch_result)
+            print_worker_result(torch_result, size=args.size)
 
         if "cupy" in frameworks:
             cupy_result = run_framework(args, "cupy", dtype)
-            print_worker_result(cupy_result)
+            print_worker_result(cupy_result, size=args.size)
 
         print_speed_summary(
             arena=args.arena,

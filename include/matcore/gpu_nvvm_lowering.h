@@ -26,7 +26,8 @@ void VerifyNoResidualNvidiaMatmulOnModule(mlir::ModuleOp module);
 
 void ConfigureNvidiaGenericGpuStage(mlir::PassManager &pm);
 void ConfigureNvidiaVectorToGpuStage(mlir::PassManager &pm);
-void ConfigureNvidiaNvvmStage(mlir::PassManager &pm, llvm::StringRef cubin_chip);
+void ConfigureNvidiaNvvmStage(mlir::PassManager &pm, llvm::StringRef cubin_chip,
+                              ObservabilityContext *obs = nullptr);
 
 std::string DumpModuleIR(mlir::ModuleOp module);
 

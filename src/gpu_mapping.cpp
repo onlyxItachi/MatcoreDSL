@@ -3,9 +3,9 @@
 #include <algorithm>
 #include <cstdint>
 #include <optional>
-#include <sstream>
 #include <string>
 
+#include "transform_builder.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -15,6 +15,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace matcore {
 namespace {
@@ -56,10 +57,6 @@ std::optional<std::int64_t> matchConstantIndex(mlir::Value value) {
     return std::nullopt;
   }
   return constant.getSExtValue();
-}
-
-std::string nvidiaMatmulOpName(const MatmulLoweringSignature &signature) {
-  return signature.quantized_i8 ? "linalg.quantized_matmul" : "linalg.matmul";
 }
 
 std::optional<mlir::Value> findRank2MemRefArgument(mlir::func::FuncOp func,
@@ -144,9 +141,8 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
       k != mlir::ShapedType::kDynamic && m >= 16 && n >= 8 && k >= 16 &&
       (m % 16) == 0 && (n % 8) == 0 && (k % 16) == 0 &&
       isTensorCoreMmaSyncType(signature);
-  // Safety hotfix: keep the warp MMA rewrite disabled until the NVIDIA tensor
-  // core path is proven memory-safe under the strict tensor.pad flow.
-  config.rewrite_to_mma_sync = false;
+  // GpuDataStagingPass now handles host↔device memory transfers safely.
+  config.rewrite_to_mma_sync = statically_compatible_mma;
   if (config.rewrite_to_mma_sync) {
     // MLIR 18 rewrite_matmul_as_mma_sync assumes one warp (threadIdx.x lanes).
     config.block_tile_m = 16;
@@ -178,74 +174,37 @@ bool UsesSingleWarpMmaSync(const NvidiaMappingConfig &config) {
 std::string BuildNvidiaTransformMappingSequence(
     const MatmulLoweringSignature &signature,
     const NvidiaMappingConfig &config) {
-  const std::string op_name = nvidiaMatmulOpName(signature);
-  std::ostringstream ir;
-  ir << "module attributes {transform.with_named_sequence} {\n";
-  ir << "  transform.named_sequence @__transform_main"
-        "(%root: !transform.any_op) {\n";
-  ir << "    %func = transform.structured.match ops{[\"func.func\"]} in %root"
-        " : (!transform.any_op) -> !transform.any_op\n";
-  ir << "    %matmul = transform.structured.match ops{[\"" << op_name
-     << "\"]} in %func : (!transform.any_op) -> !transform.any_op\n";
-  ir << "    %block_tiled, %block_forall = transform.structured.tile_using_forall"
-     << " %matmul tile_sizes [" << config.block_tile_m << ", "
-     << config.block_tile_n
-     << ", 0](mapping = [#gpu.block<y>, #gpu.block<x>]) : (!transform.any_op)"
-        " -> (!transform.any_op, !transform.any_op)\n";
-  ir << "    %k_tiled, %k_loop = transform.structured.tile_using_for"
-     << " %block_tiled [0, 0, " << config.k_tile
-     << "] : (!transform.any_op) -> (!transform.any_op, !transform.any_op)\n";
-  ir << "    %promoted = transform.structured.promote %k_tiled"
-        " {operands_to_promote = [0, 1], use_full_tiles_by_default,"
-        " memory_space = #gpu.address_space<workgroup>} :"
-        " (!transform.any_op) -> !transform.any_op\n";
-  if (!config.rewrite_to_mma_sync) {
-    ir << "    %warp_tiled, %thread_forall = transform.structured.tile_using_forall"
-       << " %promoted num_threads [" << config.block_threads_y << ", "
-       << config.block_threads_x
-       << "](mapping = [#gpu.thread<y>, #gpu.thread<x>]) : (!transform.any_op)"
-          " -> (!transform.any_op, !transform.any_op)\n";
-  }
-  ir << "    transform.yield\n";
-  ir << "  }\n";
-  ir << "}\n";
-  return ir.str();
+  mlir::MLIRContext transform_ctx;
+  auto transform_module = BuildNvidiaTransformMappingModule(
+      &transform_ctx, mlir::UnknownLoc::get(&transform_ctx), signature, config);
+  std::string ir;
+  llvm::raw_string_ostream stream(ir);
+  transform_module->print(stream);
+  stream.flush();
+  return ir;
 }
 
 std::string BuildNvidiaThreadMappingSequence(
     const NvidiaMappingConfig &config) {
-  std::ostringstream ir;
-  ir << "module attributes {transform.with_named_sequence} {\n";
-  ir << "  transform.named_sequence @__transform_main"
-        "(%root: !transform.any_op) {\n";
-  ir << "    %launch = transform.structured.match ops{[\"gpu.launch\"]} in %root"
-        " : (!transform.any_op) -> !transform.any_op\n";
-  ir << "    %mapped = transform.gpu.map_nested_forall_to_threads"
-        " %launch block_dims = [" << config.block_threads_x << ", "
-     << config.block_threads_y << ", " << config.block_threads_z
-     << "] sync_after_distribute = true warp_size = 32"
-        " : (!transform.any_op) -> !transform.any_op\n";
-  ir << "    transform.yield\n";
-  ir << "  }\n";
-  ir << "}\n";
-  return ir.str();
+  mlir::MLIRContext transform_ctx;
+  auto transform_module = BuildNvidiaThreadMappingModule(
+      &transform_ctx, mlir::UnknownLoc::get(&transform_ctx), config);
+  std::string ir;
+  llvm::raw_string_ostream stream(ir);
+  transform_module->print(stream);
+  stream.flush();
+  return ir;
 }
 
 std::string BuildNvidiaMmaRewriteSequence() {
-  std::ostringstream ir;
-  ir << "module attributes {transform.with_named_sequence} {\n";
-  ir << "  transform.named_sequence @__transform_main"
-        "(%root: !transform.any_op) {\n";
-  ir << "    %launch = transform.structured.match ops{[\"gpu.launch\"]} in %root"
-        " : (!transform.any_op) -> !transform.any_op\n";
-  ir << "    %matmul = transform.structured.match ops{[\"linalg.matmul\"]} in %launch"
-        " : (!transform.any_op) -> !transform.any_op\n";
-  ir << "    transform.nvgpu.rewrite_matmul_as_mma_sync %matmul"
-        " : (!transform.any_op) -> ()\n";
-  ir << "    transform.yield\n";
-  ir << "  }\n";
-  ir << "}\n";
-  return ir.str();
+  mlir::MLIRContext transform_ctx;
+  auto transform_module = BuildNvidiaMmaRewriteModule(
+      &transform_ctx, mlir::UnknownLoc::get(&transform_ctx));
+  std::string ir;
+  llvm::raw_string_ostream stream(ir);
+  transform_module->print(stream);
+  stream.flush();
+  return ir;
 }
 
 namespace {

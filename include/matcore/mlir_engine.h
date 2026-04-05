@@ -13,6 +13,8 @@
 
 namespace matcore {
 
+class ObservabilityContext;
+
 struct LoweredModule {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   std::string entry_point;
@@ -29,7 +31,8 @@ class MlirEngine {
  public:
   static LoweredModule BuildAndLower(
       const KernelIR &kernel, const RequestedTargetProfile &target_profile,
-      const std::vector<RuntimeTensorView> &tensors, mlir::MLIRContext &context);
+      const std::vector<RuntimeTensorView> &tensors, mlir::MLIRContext &context,
+      ObservabilityContext *obs = nullptr);
 };
 
 }  // namespace matcore

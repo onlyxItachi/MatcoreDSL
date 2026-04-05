@@ -96,10 +96,10 @@ def run_bf16_storage_case(*, target: str) -> None:
     )
 
 
-def run_fp8_capability_case(*, target: str) -> None:
+def run_fp8_capability_case(*, target: str, expected_substring: str) -> None:
     status, payload = run_fp8_case_with_capability(target)
     if status == "ok":
-        out = np.asarray(payload, dtype=np.float16)
+        out = np.asarray(payload, dtype=np.float32)
         assert out.shape == (2, 2)
         assert np.isfinite(out).all()
         print(f"{target} fp8_e4m3fn: ok")
@@ -107,6 +107,7 @@ def run_fp8_capability_case(*, target: str) -> None:
 
     message = str(payload)
     assert "float8" in message.lower() or "f8e4m3fn" in message.lower()
+    assert expected_substring.lower() in message.lower(), message
     print(f"{target} fp8_e4m3fn: unsupported-clear ({message.splitlines()[0]})")
 
 
@@ -155,17 +156,26 @@ def main() -> None:
 
     run_int8_i32_global_quant_case(target="x86-avx512")
     run_bf16_storage_case(target="x86-avx512")
-    run_fp8_capability_case(target="x86-avx512")
+    run_fp8_capability_case(
+        target="x86-avx512",
+        expected_substring="float8_e4m3fn matmul is currently limited to nvidia-dgpu",
+    )
 
-    nvidia_ok, nvidia_reason = probe_backend_availability("nvidia-dgpu")
+    nvidia_ok, nvidia_reason = probe_backend_availability("nvidia-dgpu:sm_90")
     if nvidia_ok:
         run_nvidia_padded_fp16_case(target="nvidia-dgpu")
         run_bf16_storage_case(target="nvidia-dgpu")
         run_int8_i32_global_quant_case(target="nvidia-dgpu")
-        run_fp8_capability_case(target="nvidia-dgpu")
+        run_fp8_capability_case(
+            target="nvidia-dgpu:sm_90",
+            expected_substring="eligible for nvidia fp8 wgmma on sm_90+",
+        )
     else:
         assert nvidia_reason is not None and len(nvidia_reason) > 0
-        print(f"nvidia-dgpu unavailable, skipping bf16/int8/fp8 checks: {nvidia_reason}")
+        print(
+            "nvidia-dgpu:sm_90 unavailable, skipping bf16/int8/fp8 checks: "
+            f"{nvidia_reason}"
+        )
 
 
 if __name__ == "__main__":

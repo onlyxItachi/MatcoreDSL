@@ -16,6 +16,7 @@ struct RequestedTargetProfile {
   std::string canonical;
   std::optional<int> nvidia_sm_major;
   std::optional<int> nvidia_sm_minor;
+  std::string amd_chip;
 };
 
 // Execution-side requirements derived from a requested target profile.
