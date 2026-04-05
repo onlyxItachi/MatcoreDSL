@@ -15,6 +15,7 @@
 
 #include "matcore/jit_runner.h"
 #include "matcore/kernel_ir.h"
+#include "matcore/device_buffer.h"
 #include "matcore/observability.h"
 #include "matcore/target_registry.h"
 
@@ -35,6 +36,7 @@ struct ParsedTensor {
   std::vector<std::int64_t> shape;
   std::vector<std::int64_t> element_strides;
   bool c_contiguous = false;
+  bool is_device_resident = false;
   std::string dtype_name;
   matcore::QuantizationParams quantization;
 };
@@ -297,6 +299,25 @@ matcore::QuantizationParams parseTensorQuantization(const nb::object &tensor,
 
 ParsedTensor parseTensorArgument(const nb::object &tensor, std::size_t index) {
   ParsedTensor parsed;
+
+  // Check if this is a DeviceTensor (GPU-resident).
+  if (nb::hasattr(tensor, "_matcore_device_tensor")) {
+    nb::object handle_obj = tensor.attr("device_ptr");
+    auto &handle = nb::cast<matcore::DeviceBufferHandle &>(handle_obj);
+    if (!matcore::matcore_device_is_valid(handle)) {
+      throw std::runtime_error("Tensor argument " + std::to_string(index) +
+                               " is a DeviceTensor with an invalid or freed handle.");
+    }
+    parsed.data_ptr = static_cast<std::uintptr_t>(handle.ptr);
+    parsed.is_device_resident = true;
+    parsed.dtype_name = nb::cast<std::string>(tensor.attr("dtype"));
+    parsed.shape = parseInt64Sequence(tensor.attr("shape"), "shape");
+    parsed.element_strides = parseInt64Sequence(tensor.attr("strides"), "strides");
+    parsed.c_contiguous = true;  // DeviceTensor enforces contiguous in to_device()
+    return parsed;
+  }
+
+  // Standard numpy array path.
   parsed.dtype_name = parseSupportedDType(tensor, index);
   parsed.quantization = parseTensorQuantization(tensor, parsed.dtype_name);
   parsed.c_contiguous = nb::cast<bool>(tensor.attr("flags").attr("c_contiguous"));
@@ -771,12 +792,27 @@ Invocation buildInvocation(const nb::dict &kernel_obj, const std::string &target
     view.data = reinterpret_cast<decltype(view.data)>(parsed.data_ptr);
     view.dtype = parseRuntimeTensorDType(parsed.dtype_name);
     view.c_contiguous = parsed.c_contiguous;
+    view.is_device_resident = parsed.is_device_resident;
     view.shape = std::move(parsed.shape);
     view.strides = std::move(parsed.element_strides);
     view.quantization = parsed.quantization;
 
     invocation.tensor_dtypes.push_back(parsed.dtype_name);
     invocation.tensors.push_back(std::move(view));
+  }
+
+  // Reject mixed host/device tensor sets.
+  {
+    bool has_device = false, has_host = false;
+    for (const auto &tv : invocation.tensors) {
+      if (tv.is_device_resident) has_device = true;
+      else has_host = true;
+    }
+    if (has_device && has_host) {
+      throw std::runtime_error(
+          "mc.launch() does not support mixed host/device tensors. "
+          "Use mc.to_device() on all tensors or none.");
+    }
   }
 
   appendTensorDtypeMetadata(invocation.kernel, invocation.tensors,
@@ -847,4 +883,49 @@ NB_MODULE(_matcore_native, m) {
           triggerCompilation(invocation, obs.get());
         },
         "Compile and run a kernel IR with zero-copy tensor views.");
+
+  // DeviceBufferHandle type exposed to Python as opaque handle.
+  nb::class_<matcore::DeviceBufferHandle>(m, "DeviceBufferHandle")
+      .def_ro("ptr", &matcore::DeviceBufferHandle::ptr)
+      .def_ro("size_bytes", &matcore::DeviceBufferHandle::size_bytes)
+      .def_ro("alloc_id", &matcore::DeviceBufferHandle::alloc_id);
+
+  m.def("matcore_device_alloc",
+        [](std::uint64_t size_bytes) {
+          nb::gil_scoped_release release;
+          return matcore::matcore_device_alloc(size_bytes);
+        },
+        "Allocate GPU device memory via the memory pool.");
+
+  m.def("matcore_device_free",
+        [](matcore::DeviceBufferHandle handle) {
+          nb::gil_scoped_release release;
+          matcore::matcore_device_free(handle);
+        },
+        "Release GPU device memory back to the pool.");
+
+  m.def("matcore_device_upload",
+        [](matcore::DeviceBufferHandle dst, std::uintptr_t host_src,
+           std::uint64_t size_bytes) {
+          nb::gil_scoped_release release;
+          matcore::matcore_device_upload(
+              dst, reinterpret_cast<const void *>(host_src), size_bytes);
+        },
+        "Copy data from host to device buffer.");
+
+  m.def("matcore_device_download",
+        [](std::uintptr_t host_dst, matcore::DeviceBufferHandle src,
+           std::uint64_t size_bytes) {
+          nb::gil_scoped_release release;
+          matcore::matcore_device_download(
+              reinterpret_cast<void *>(host_dst), src, size_bytes);
+        },
+        "Copy data from device buffer to host.");
+
+  m.def("matcore_device_zero",
+        [](matcore::DeviceBufferHandle handle) {
+          nb::gil_scoped_release release;
+          matcore::matcore_device_zero(handle);
+        },
+        "Zero-fill a device buffer.");
 }

@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 
 from .config import configure, get_config, reset_config
+from .device_tensor import DeviceTensor, to_device
 
 _NATIVE_MODULE_NAME = "_matcore_native"
 SUPPORTED_TARGETS: tuple[str, ...] = (
@@ -998,6 +999,30 @@ def launch(
 ) -> Any:
     if not isinstance(kernel_obj, MatCoreKernel):
         raise TypeError("mc.launch expects a kernel object returned by @mc.kernel.")
+
+    # Detect and reject mixed host/device tensor sets early (better error message).
+    has_device = any(isinstance(a, DeviceTensor) for a in arrays)
+    has_host = any(not isinstance(a, DeviceTensor) for a in arrays)
+    if has_device and has_host:
+        raise TypeError(
+            "mc.launch() does not support mixed host/device tensors. "
+            "Use mc.to_device() on all tensors or none."
+        )
+
+    # Device-resident tensors require NVIDIA backend (v1 limitation).
+    if has_device:
+        _tgt = (target or "").lower()
+        if _tgt and "nvidia" not in _tgt:
+            raise ValueError(
+                "DeviceTensors are only supported with nvidia-dgpu target (v1). "
+                f"Got target={target!r}."
+            )
+        # Auto-zero the output tensor (last arg, C) before launch.
+        # The MLIR module skips linalg.fill for device-resident output, so
+        # the caller must pre-zero it for the accumulation (C += A @ B).
+        if len(arrays) > 2 and isinstance(arrays[-1], DeviceTensor):
+            arrays[-1].zero_()
+
     runtime_ir, normalized_target, obs_options, validation_enabled = _prepare_launch(
         kernel_obj,
         arrays,
@@ -1038,6 +1063,8 @@ class MatCoreNamespace:
     supported_input_dtypes = SUPPORTED_INPUT_DTYPES
     kernel = staticmethod(kernel)
     launch = staticmethod(launch)
+    to_device = staticmethod(to_device)
+    DeviceTensor = DeviceTensor
     asdtype = staticmethod(asdtype)
     load = staticmethod(load)
     store = staticmethod(store)

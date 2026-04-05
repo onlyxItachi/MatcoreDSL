@@ -15,6 +15,50 @@
 namespace matcore {
 namespace {
 
+/// Trace a memref Value back through view-like ops (subview, cast,
+/// reinterpret_cast, expand_shape, collapse_shape, view) to find the root
+/// source. If the root is a BlockArgument of the enclosing func's ENTRY block,
+/// return it. Returns nullptr for non-func block args (e.g. scf.for iter args).
+static mlir::BlockArgument traceToFuncArg(mlir::Value memref) {
+  mlir::Value current = memref;
+  for (;;) {
+    if (auto subview = current.getDefiningOp<mlir::memref::SubViewOp>()) {
+      current = subview.getSource();
+    } else if (auto cast = current.getDefiningOp<mlir::memref::CastOp>()) {
+      current = cast.getSource();
+    } else if (auto ri = current.getDefiningOp<mlir::memref::ReinterpretCastOp>()) {
+      current = ri.getSource();
+    } else if (auto expand = current.getDefiningOp<mlir::memref::ExpandShapeOp>()) {
+      current = expand.getSrc();
+    } else if (auto collapse = current.getDefiningOp<mlir::memref::CollapseShapeOp>()) {
+      current = collapse.getSrc();
+    } else if (auto view = current.getDefiningOp<mlir::memref::ViewOp>()) {
+      current = view.getSource();
+    } else {
+      break;
+    }
+  }
+  auto arg = llvm::dyn_cast<mlir::BlockArgument>(current);
+  if (!arg)
+    return {};
+  // Only accept args from the function's entry block — not scf.for iter args
+  // or other region args which would give false positives.
+  auto func = llvm::dyn_cast<mlir::func::FuncOp>(arg.getOwner()->getParentOp());
+  if (!func || arg.getOwner() != &func.getBody().front())
+    return {};
+  return arg;
+}
+
+/// Check if a captured memref traces back to a func argument tagged with
+/// the "matcore.device_resident" attribute.
+static bool isDeviceResident(mlir::Value memref, mlir::func::FuncOp func) {
+  mlir::BlockArgument arg = traceToFuncArg(memref);
+  if (!arg)
+    return false;
+  unsigned idx = arg.getArgNumber();
+  return func.getArgAttr(idx, "matcore.device_resident") != nullptr;
+}
+
 /// Collect every memref-typed Value that is *used* inside the gpu.launch body
 /// but *defined* outside it (i.e. host-resident buffers captured by the kernel).
 llvm::SetVector<mlir::Value> collectCapturedMemrefs(mlir::gpu::LaunchOp launch) {
@@ -160,6 +204,23 @@ struct GpuDataStagingPass
     if (captured.empty())
       return mlir::success();
 
+    // Get enclosing FuncOp for device-residency checks.
+    auto func = launch->getParentOfType<mlir::func::FuncOp>();
+
+    // Partition: device-resident memrefs are already on GPU — skip them.
+    llvm::SetVector<mlir::Value> host_captured;
+    for (mlir::Value memref : captured) {
+      if (func && isDeviceResident(memref, func)) {
+        // Already on device — no alloc, no H→D copy, no D→H copy needed.
+        continue;
+      }
+      host_captured.insert(memref);
+    }
+
+    // If all captured memrefs are device-resident, nothing to stage.
+    if (host_captured.empty())
+      return mlir::success();
+
     mlir::Location loc = launch.getLoc();
     auto token_type =
         mlir::gpu::AsyncTokenType::get(launch->getContext());
@@ -176,7 +237,7 @@ struct GpuDataStagingPass
         loc, token_type, mlir::ValueRange{});
     mlir::Value current_token = initial_wait.getAsyncToken();
 
-    for (mlir::Value host_memref : captured) {
+    for (mlir::Value host_memref : host_captured) {
       auto memref_type = llvm::cast<mlir::MemRefType>(host_memref.getType());
 
       // gpu.alloc async [token] → (memref, token)

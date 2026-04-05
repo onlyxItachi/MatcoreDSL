@@ -1,4 +1,5 @@
 #include "matcore/gpu_runtime_symbols.h"
+#include "matcore/device_buffer.h"
 #include "matcore/runtime_capabilities.h"
 
 #include "amd_runtime_symbols.h"
@@ -537,6 +538,122 @@ MATCORE_GPU_RUNTIME_EXPORT void mgpuMemHostRegister(void *ptr,
             "cuMemHostRegister");
 }
 
+// ---------------------------------------------------------------------------
+// Device Buffer Manager — ownership-tracked device allocations for Python
+// DeviceTensor objects. Uses GpuMemoryPool for allocation/free. Each handle
+// carries a monotonic alloc_id to prevent use-after-free / stale handle bugs.
+// ---------------------------------------------------------------------------
+class DeviceBufferManager {
+public:
+  static DeviceBufferManager &instance() {
+    static DeviceBufferManager mgr;
+    return mgr;
+  }
+
+  DeviceBufferHandle allocate(uint64_t size_bytes) {
+    if (size_bytes == 0) {
+      fail("matcore_device_alloc: size_bytes must be > 0");
+    }
+    void *raw = GpuMemoryPool::instance().acquire(size_bytes);
+    const CUdeviceptr ptr = reinterpret_cast<CUdeviceptr>(raw);
+    DeviceBufferHandle handle;
+    handle.ptr = static_cast<uint64_t>(ptr);
+    handle.size_bytes = size_bytes;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      handle.alloc_id = next_alloc_id_++;
+      live_allocations_[handle.alloc_id] = {ptr, size_bytes};
+    }
+    return handle;
+  }
+
+  void free(DeviceBufferHandle handle) {
+    CUdeviceptr ptr = 0;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      auto it = live_allocations_.find(handle.alloc_id);
+      if (it == live_allocations_.end()) {
+        fail("matcore_device_free: invalid or already-freed handle "
+             "(alloc_id=" + std::to_string(handle.alloc_id) + ")");
+      }
+      if (it->second.ptr != static_cast<CUdeviceptr>(handle.ptr) ||
+          it->second.size_bytes != handle.size_bytes) {
+        fail("matcore_device_free: handle fields don't match live allocation");
+      }
+      ptr = it->second.ptr;
+      live_allocations_.erase(it);
+    }
+    GpuMemoryPool::instance().release(reinterpret_cast<void *>(ptr), nullptr);
+  }
+
+  void upload(DeviceBufferHandle dst, const void *host_src, uint64_t size_bytes) {
+    validateLive(dst, "matcore_device_upload");
+    if (size_bytes > dst.size_bytes) {
+      fail("matcore_device_upload: size_bytes (" + std::to_string(size_bytes) +
+           ") exceeds buffer capacity (" + std::to_string(dst.size_bytes) + ")");
+    }
+    if (host_src == nullptr) {
+      fail("matcore_device_upload: host_src is null");
+    }
+    ScopedContext ctx;
+    checkCuda(CudaDriverApi::instance().cuMemcpy(
+                  static_cast<CUdeviceptr>(dst.ptr),
+                  reinterpret_cast<CUdeviceptr>(host_src), size_bytes),
+              "cuMemcpy(H→D)");
+  }
+
+  void download(void *host_dst, DeviceBufferHandle src, uint64_t size_bytes) {
+    validateLive(src, "matcore_device_download");
+    if (size_bytes > src.size_bytes) {
+      fail("matcore_device_download: size_bytes (" + std::to_string(size_bytes) +
+           ") exceeds buffer capacity (" + std::to_string(src.size_bytes) + ")");
+    }
+    if (host_dst == nullptr) {
+      fail("matcore_device_download: host_dst is null");
+    }
+    ScopedContext ctx;
+    checkCuda(CudaDriverApi::instance().cuMemcpy(
+                  reinterpret_cast<CUdeviceptr>(host_dst),
+                  static_cast<CUdeviceptr>(src.ptr), size_bytes),
+              "cuMemcpy(D→H)");
+  }
+
+  bool isValid(DeviceBufferHandle handle) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = live_allocations_.find(handle.alloc_id);
+    if (it == live_allocations_.end()) {
+      return false;
+    }
+    return it->second.ptr == static_cast<CUdeviceptr>(handle.ptr) &&
+           it->second.size_bytes == handle.size_bytes;
+  }
+
+private:
+  DeviceBufferManager() = default;
+
+  void validateLive(DeviceBufferHandle handle, const char *caller) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = live_allocations_.find(handle.alloc_id);
+    if (it == live_allocations_.end()) {
+      fail(std::string(caller) + ": invalid or freed handle (alloc_id=" +
+           std::to_string(handle.alloc_id) + ")");
+    }
+    if (it->second.ptr != static_cast<CUdeviceptr>(handle.ptr)) {
+      fail(std::string(caller) + ": handle pointer mismatch (stale handle?)");
+    }
+  }
+
+  struct LiveAllocation {
+    CUdeviceptr ptr = 0;
+    uint64_t size_bytes = 0;
+  };
+
+  std::mutex mutex_;
+  uint64_t next_alloc_id_ = 1;
+  std::unordered_map<uint64_t, LiveAllocation> live_allocations_;
+};
+
+
 void registerCudaRuntimeSymbols(mlir::ExecutionEngine &engine) {
   engine.registerSymbols([](llvm::orc::MangleAndInterner interner) {
     llvm::orc::SymbolMap symbols;
@@ -646,5 +763,78 @@ void registerGpuRuntimeSymbols(mlir::ExecutionEngine &engine, TargetKind target)
       return;
   }
 }
+
+#if __has_include("cuda.h")
+
+DeviceBufferHandle matcore_device_alloc(std::uint64_t size_bytes) {
+  return DeviceBufferManager::instance().allocate(size_bytes);
+}
+
+void matcore_device_free(DeviceBufferHandle handle) {
+  DeviceBufferManager::instance().free(handle);
+}
+
+void matcore_device_upload(DeviceBufferHandle dst, const void *host_src,
+                           std::uint64_t size_bytes) {
+  DeviceBufferManager::instance().upload(dst, host_src, size_bytes);
+}
+
+void matcore_device_download(void *host_dst, DeviceBufferHandle src,
+                             std::uint64_t size_bytes) {
+  DeviceBufferManager::instance().download(host_dst, src, size_bytes);
+}
+
+bool matcore_device_is_valid(DeviceBufferHandle handle) {
+  return DeviceBufferManager::instance().isValid(handle);
+}
+
+void matcore_device_zero(DeviceBufferHandle handle) {
+  auto &mgr = DeviceBufferManager::instance();
+  if (!mgr.isValid(handle))
+    throw std::runtime_error("matcore_device_zero: invalid or stale handle");
+  ScopedContext ctx;
+  CUdeviceptr dptr = static_cast<CUdeviceptr>(handle.ptr);
+  // Use D32 memset for 4-aligned sizes, D16 for 2-aligned, else error.
+  // Tensor element sizes (f16=2, f32=4, i8=1, i32=4) guarantee >= 2-alignment
+  // for any non-scalar tensor.
+  if (handle.size_bytes % 4 == 0) {
+    CUresult err = CudaDriverApi::instance().cuMemsetD32Async(dptr, 0, handle.size_bytes / 4,
+                                          /*stream=*/nullptr);
+    if (err != CUDA_SUCCESS)
+      throw std::runtime_error("matcore_device_zero: cuMemsetD32Async failed, err=" +
+                               std::to_string(err));
+  } else if (handle.size_bytes % 2 == 0) {
+    CUresult err = CudaDriverApi::instance().cuMemsetD16Async(dptr, 0, handle.size_bytes / 2,
+                                          /*stream=*/nullptr);
+    if (err != CUDA_SUCCESS)
+      throw std::runtime_error("matcore_device_zero: cuMemsetD16Async failed, err=" +
+                               std::to_string(err));
+  } else {
+    throw std::runtime_error(
+        "matcore_device_zero: buffer size not 2-aligned (" +
+        std::to_string(handle.size_bytes) + " bytes)");
+  }
+}
+
+#else
+
+DeviceBufferHandle matcore_device_alloc(std::uint64_t) {
+  throw std::runtime_error("matcore_device_alloc: CUDA not available at build time");
+}
+void matcore_device_free(DeviceBufferHandle) {
+  throw std::runtime_error("matcore_device_free: CUDA not available at build time");
+}
+void matcore_device_upload(DeviceBufferHandle, const void *, std::uint64_t) {
+  throw std::runtime_error("matcore_device_upload: CUDA not available at build time");
+}
+void matcore_device_download(void *, DeviceBufferHandle, std::uint64_t) {
+  throw std::runtime_error("matcore_device_download: CUDA not available at build time");
+}
+bool matcore_device_is_valid(DeviceBufferHandle) { return false; }
+void matcore_device_zero(DeviceBufferHandle) {
+  throw std::runtime_error("matcore_device_zero: CUDA not available at build time");
+}
+
+#endif
 
 }  // namespace matcore
