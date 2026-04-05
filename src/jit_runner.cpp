@@ -1,6 +1,7 @@
 #include "matcore/jit_runner.h"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -40,9 +41,11 @@
 
 #include "cache_manager.h"
 #include "executor.h"
+#include "matcore/device_buffer.h"
 #include "matcore/gpu_runtime_symbols.h"
 #include "matcore/mlir_engine.h"
 #include "matcore/observability.h"
+#include "matcore/plan.h"
 #include "matcore/runtime_capabilities.h"
 #include "jit_runner_internal.h"
 
@@ -658,6 +661,155 @@ void compileAndRun(const KernelIR &kernel,
     }
   }
   run();
+}
+
+// -------------------------------------------------------------------------
+// V2: MatcorePlan — pre-compiled execution plan for near-zero-overhead dispatch
+// -------------------------------------------------------------------------
+
+static std::atomic<uint64_t> g_plan_generation_counter{1};
+
+uint64_t MatcorePlan::nextGenerationId() {
+  return g_plan_generation_counter.fetch_add(1, std::memory_order_relaxed);
+}
+
+MatcorePlan::~MatcorePlan() = default;
+MatcorePlan::MatcorePlan(MatcorePlan &&) noexcept = default;
+MatcorePlan &MatcorePlan::operator=(MatcorePlan &&) noexcept = default;
+
+std::unique_ptr<MatcorePlan>
+MatcorePlan::create(const KernelIR &kernel,
+                    const std::vector<RuntimeTensorView> &template_tensors,
+                    const std::string &target_str,
+                    ObservabilityContext *obs) {
+  static std::once_flag native_target_once;
+  std::call_once(native_target_once, [] {
+    llvm::InitializeNativeTarget();
+    llvm::InitializeNativeTargetAsmPrinter();
+    llvm::InitializeNativeTargetAsmParser();
+  });
+
+  // Parse target string to RequestedTargetProfile
+  const RequestedTargetProfile target_profile = ParseRequestedTargetProfile(target_str);
+  const RuntimeCapabilities &runtime = cachedRuntimeCapabilities();
+
+  // Full JIT compilation — this is the expensive part (done once)
+  std::shared_ptr<CachedExecution> compiled =
+      getOrCreateExecution(kernel, target_profile, template_tensors, runtime, obs);
+
+  // Build the plan
+  auto plan = std::unique_ptr<MatcorePlan>(new MatcorePlan());
+  plan->generation_id_ = nextGenerationId();
+  plan->execution_ = std::move(compiled);
+
+  // Freeze tensor metadata
+  plan->frozen_meta_.reserve(template_tensors.size());
+  for (size_t i = 0; i < template_tensors.size(); ++i) {
+    const auto &t = template_tensors[i];
+    FrozenTensorMeta meta;
+    meta.symbol = t.symbol;
+    meta.dtype = t.dtype;
+    meta.rank = static_cast<int64_t>(t.shape.size());
+    meta.shape = t.shape;
+    meta.strides = t.strides;
+    meta.is_device_resident = t.is_device_resident;
+    // Output tensor is the last one (index 2 for matmul)
+    meta.is_output = (i == plan->execution_->lowered.out_tensor_index);
+    plan->frozen_meta_.push_back(std::move(meta));
+    if (t.is_device_resident) {
+      plan->has_device_tensors_ = true;
+    }
+  }
+
+  return plan;
+}
+
+bool MatcorePlan::validateTensors(const std::vector<RuntimeTensorView> &tensors,
+                                  std::string *error_msg) const {
+  if (tensors.size() != frozen_meta_.size()) {
+    if (error_msg) {
+      *error_msg = "expected " + std::to_string(frozen_meta_.size()) +
+                   " tensors, got " + std::to_string(tensors.size());
+    }
+    return false;
+  }
+
+  for (size_t i = 0; i < tensors.size(); ++i) {
+    const auto &t = tensors[i];
+    const auto &m = frozen_meta_[i];
+
+    if (t.dtype != m.dtype) {
+      if (error_msg) {
+        *error_msg = "tensor[" + std::to_string(i) + "] dtype mismatch";
+      }
+      return false;
+    }
+    if (static_cast<int64_t>(t.shape.size()) != m.rank) {
+      if (error_msg) {
+        *error_msg = "tensor[" + std::to_string(i) + "] rank mismatch";
+      }
+      return false;
+    }
+    if (t.shape != m.shape) {
+      if (error_msg) {
+        *error_msg = "tensor[" + std::to_string(i) + "] shape mismatch — "
+                     "plans are shape-locked, create a new plan for different shapes";
+      }
+      return false;
+    }
+    if (t.strides != m.strides) {
+      if (error_msg) {
+        *error_msg = "tensor[" + std::to_string(i) + "] strides mismatch";
+      }
+      return false;
+    }
+    if (t.is_device_resident != m.is_device_resident) {
+      if (error_msg) {
+        *error_msg = "tensor[" + std::to_string(i) + "] residency mismatch — "
+                     "cannot mix host/device tensors with a device-resident plan";
+      }
+      return false;
+    }
+  }
+
+  return true;
+}
+
+void MatcorePlan::execute(const std::vector<RuntimeTensorView> &tensors) {
+  // Step 1: Validate tensors match frozen plan (per-call check — cheap)
+  std::string error_msg;
+  if (!validateTensors(tensors, &error_msg)) {
+    fail("execute_plan: " + error_msg);
+  }
+
+  // Step 2: Zero device-resident output tensors
+  if (has_device_tensors_) {
+    for (size_t i = 0; i < tensors.size(); ++i) {
+      if (frozen_meta_[i].is_output && tensors[i].is_device_resident &&
+          tensors[i].data != nullptr) {
+        uint64_t size_bytes = 1;
+        for (auto dim : frozen_meta_[i].shape) size_bytes *= dim;
+        switch (frozen_meta_[i].dtype) {
+          case TensorDType::kFloat16:
+          case TensorDType::kBFloat16: size_bytes *= 2; break;
+          case TensorDType::kFloat32:
+          case TensorDType::kInt32: size_bytes *= 4; break;
+          case TensorDType::kInt8:
+          case TensorDType::kFloat8E4M3FN: break;
+        }
+        matcore_device_zero_raw(tensors[i].data, size_bytes);
+      }
+    }
+  }
+
+  // Step 3: Invoke the cached compiled kernel directly
+  // This skips ALL of: IR building, cache key, dict parsing, preflight
+  setGpuRuntimeObservabilityContext(nullptr);
+  if (llvm::Error error = invokeCompiledKernel(*execution_, tensors)) {
+    const std::string message = llvm::toString(std::move(error));
+    fail("execute_plan: failed to invoke kernel '" +
+         execution_->lowered.entry_point + "': " + message);
+  }
 }
 
 }  // namespace matcore

@@ -1058,11 +1058,72 @@ def _graph_context_manager() -> Any:
     return graph_context()
 
 
+def create_plan(
+    kernel_obj: MatCoreKernel,
+    *template_tensors: Any,
+    target: str | None = None,
+) -> Any:
+    """Create a pre-compiled execution plan. Expensive (JIT compiles) — call once.
+
+    The returned plan object can be executed repeatedly with near-zero overhead
+    via mc.execute_plan(). Plans are shape-locked: tensors must have identical
+    dtype, shape, strides, and residency on every execute_plan() call.
+
+    Usage:
+        plan = mc.create_plan(kernel, dA, dB, dC, target="nvidia-dgpu:sm_89")
+        mc.execute_plan(plan, dA, dB, dC)  # near-zero overhead
+        mc.execute_plan(plan, dA, dB, dC)  # reuse compiled kernel
+    """
+    if not isinstance(kernel_obj, MatCoreKernel):
+        raise TypeError("mc.create_plan expects a kernel object returned by @mc.kernel.")
+
+    has_device = any(isinstance(a, DeviceTensor) for a in template_tensors)
+    has_host = any(not isinstance(a, DeviceTensor) for a in template_tensors)
+    if has_device and has_host:
+        raise TypeError(
+            "mc.create_plan() does not support mixed host/device tensors."
+        )
+
+    if has_device:
+        _tgt = (target or "").lower()
+        if _tgt and "nvidia" not in _tgt:
+            raise ValueError(
+                "DeviceTensors are only supported with nvidia-dgpu target (v1)."
+            )
+
+    runtime_ir, normalized_target, _, _ = _prepare_launch(
+        kernel_obj,
+        template_tensors,
+        target=target,
+        quant=None,
+        debug=None,
+        trace=None,
+        validate=None,
+    )
+
+    native = _get_native_module()
+    return native.create_plan(runtime_ir, normalized_target, *template_tensors)
+
+
+def execute_plan(plan: Any, *tensors: Any) -> None:
+    """Execute a pre-compiled plan with near-zero overhead.
+
+    Skips ALL Python IR building, target normalization, cache key computation,
+    and C++ dict parsing. Goes directly to the cached compiled kernel.
+
+    The plan validates that tensor metadata matches what was frozen at create time.
+    """
+    native = _get_native_module()
+    native.execute_plan(plan, *tensors)
+
+
 class MatCoreNamespace:
     supported_targets = SUPPORTED_TARGETS
     supported_input_dtypes = SUPPORTED_INPUT_DTYPES
     kernel = staticmethod(kernel)
     launch = staticmethod(launch)
+    create_plan = staticmethod(create_plan)
+    execute_plan = staticmethod(execute_plan)
     to_device = staticmethod(to_device)
     DeviceTensor = DeviceTensor
     asdtype = staticmethod(asdtype)

@@ -544,15 +544,12 @@ bool acquireGpuBackendClaim(TargetKind target, std::string *denial_reason) {
   return false;
 }
 
-void releaseGpuBackendClaim(TargetKind target) {
-  const GpuBackendClaim desired_claim = claimForTarget(target);
-  if (desired_claim == GpuBackendClaim::kNone) {
-    return;
-  }
-
-  int expected = static_cast<int>(desired_claim);
-  g_gpu_backend_claim.compare_exchange_strong(
-      expected, static_cast<int>(GpuBackendClaim::kNone));
+void releaseGpuBackendClaim(TargetKind /*target*/) {
+  // V2 SAFETY: Backend claim is process-sticky. Once a GPU backend is claimed,
+  // it remains claimed for the entire process lifetime. Releasing and
+  // re-acquiring risks cross-backend symbol collision on dual-GPU systems
+  // (e.g. NVIDIA RTX 4060 + AMD 890M iGPU sharing mgpu* symbols).
+  // This is a deliberate no-op.
 }
 
 bool CanExecuteOnHost(const RuntimeCapabilities &runtime,

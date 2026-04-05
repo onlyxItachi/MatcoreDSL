@@ -89,6 +89,12 @@ struct CudaDriverApi {
   using CuMemsetD16AsyncFn =
       CUresult (*)(CUdeviceptr, unsigned short, size_t, CUstream);
   using CuMemHostRegisterFn = CUresult (*)(void *, size_t, unsigned int);
+  // V2: Event + stream capture symbols for stream-correct execution
+  using CuEventCreateFn = CUresult (*)(CUevent *, unsigned int);
+  using CuEventRecordFn = CUresult (*)(CUevent, CUstream);
+  using CuEventQueryFn = CUresult (*)(CUevent);
+  using CuEventDestroyFn = CUresult (*)(CUevent);
+  using CuStreamIsCapturingFn = CUresult (*)(CUstream, CUstreamCaptureStatus *);
 
   static CudaDriverApi &instance() {
     static CudaDriverApi api = load();
@@ -137,6 +143,17 @@ struct CudaDriverApi {
         loadSymbol<CuMemsetD16AsyncFn>(handle, "cuMemsetD16Async");
     api.cuMemHostRegister =
         loadSymbol<CuMemHostRegisterFn>(handle, "cuMemHostRegister_v2");
+    // V2: Event + stream capture symbols
+    api.cuEventCreate =
+        loadSymbol<CuEventCreateFn>(handle, "cuEventCreate");
+    api.cuEventRecord =
+        loadSymbol<CuEventRecordFn>(handle, "cuEventRecord");
+    api.cuEventQuery =
+        loadSymbol<CuEventQueryFn>(handle, "cuEventQuery");
+    api.cuEventDestroy =
+        loadSymbol<CuEventDestroyFn>(handle, "cuEventDestroy_v2");
+    api.cuStreamIsCapturing =
+        loadSymbol<CuStreamIsCapturingFn>(handle, "cuStreamIsCapturing");
     return api;
   }
 
@@ -161,6 +178,12 @@ struct CudaDriverApi {
   CuMemsetD32AsyncFn cuMemsetD32Async = nullptr;
   CuMemsetD16AsyncFn cuMemsetD16Async = nullptr;
   CuMemHostRegisterFn cuMemHostRegister = nullptr;
+  // V2: Event + stream capture symbols
+  CuEventCreateFn cuEventCreate = nullptr;
+  CuEventRecordFn cuEventRecord = nullptr;
+  CuEventQueryFn cuEventQuery = nullptr;
+  CuEventDestroyFn cuEventDestroy = nullptr;
+  CuStreamIsCapturingFn cuStreamIsCapturing = nullptr;
 };
 
 void checkCuda(CUresult result, const char *expr) {
@@ -201,6 +224,23 @@ struct ScopedContext {
   ~ScopedContext() { CudaDriverApi::instance().cuCtxPopCurrent(nullptr); }
 };
 
+// V2 SAFETY: Global (not thread-local) device context for plan-bound execution.
+// Plans store this context at creation time and push it on every execute_plan()
+// call, regardless of which thread executes them.
+CUcontext getDeviceContext() {
+  static CUcontext g_context = []() {
+    CudaDriverApi &api = CudaDriverApi::instance();
+    checkCuda(api.cuInit(0), "cuInit");
+    CUdevice device = 0;
+    checkCuda(api.cuDeviceGet(&device, defaultDevice), "cuDeviceGet");
+    CUcontext ctx = nullptr;
+    checkCuda(api.cuDevicePrimaryCtxRetain(&ctx, device),
+              "cuDevicePrimaryCtxRetain");
+    return ctx;
+  }();
+  return g_context;
+}
+
 class GpuMemoryPool {
 public:
   static GpuMemoryPool &instance() {
@@ -214,6 +254,7 @@ public:
     }
 
     CUdeviceptr pooled_ptr = 0;
+    CUevent event_to_destroy = nullptr;
     bool needs_alloc = false;
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -224,12 +265,24 @@ public:
           CUdeviceptr candidate = list.back();
           list.pop_back();
           if (isValidPooledEntry(candidate, sizeBytes)) {
-            pooled_ptr = candidate;
             auto pooled_it = pooled_entries_.find(candidate);
             if (pooled_it != pooled_entries_.end()) {
+              // V2 SAFETY: Check fence event before reuse — only reuse if
+              // GPU work on this buffer has completed.
+              CUevent fence = pooled_it->second.fence_event;
+              if (fence != nullptr) {
+                CUresult status = CudaDriverApi::instance().cuEventQuery(fence);
+                if (status == CUDA_ERROR_NOT_READY) {
+                  // GPU still using this buffer — skip it, try next candidate
+                  list.insert(list.begin(), candidate);
+                  continue;
+                }
+                event_to_destroy = fence;
+              }
               pooled_order_.erase(pooled_it->second.order_it);
               pooled_entries_.erase(pooled_it);
             }
+            pooled_ptr = candidate;
             pooled_bytes_ -= sizeBytes;
             break;
           }
@@ -238,6 +291,10 @@ public:
       if (pooled_ptr == 0) {
         needs_alloc = true;
       }
+    }
+
+    if (event_to_destroy != nullptr) {
+      CudaDriverApi::instance().cuEventDestroy(event_to_destroy);
     }
 
     if (needs_alloc) {
@@ -258,9 +315,28 @@ public:
       return;
     }
 
-    (void)stream;
     const CUdeviceptr ptr = reinterpret_cast<CUdeviceptr>(ptrVoid);
+
+    // V2 SAFETY: Record event on the provided stream so we know when GPU
+    // work using this buffer completes. Acquired buffers won't be reused
+    // until the event signals completion.
+    CUevent event = nullptr;
+    if (stream != nullptr) {
+      CudaDriverApi &api = CudaDriverApi::instance();
+      CUresult err = api.cuEventCreate(&event, CU_EVENT_DISABLE_TIMING);
+      if (err == CUDA_SUCCESS) {
+        err = api.cuEventRecord(event, stream);
+        if (err != CUDA_SUCCESS) {
+          api.cuEventDestroy(event);
+          event = nullptr;
+        }
+      } else {
+        event = nullptr;
+      }
+    }
+
     std::vector<CUdeviceptr> to_free;
+    std::vector<CUevent> events_to_destroy;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       auto size_it = allocation_sizes_.find(ptr);
@@ -274,7 +350,7 @@ public:
       }
       free_lists_[sizeBytes].push_back(ptr);
       pooled_order_.push_back(ptr);
-      PooledEntry pooled_entry{sizeBytes, std::prev(pooled_order_.end())};
+      PooledEntry pooled_entry{sizeBytes, std::prev(pooled_order_.end()), event};
       pooled_entries_.emplace(ptr, pooled_entry);
       pooled_bytes_ += sizeBytes;
 
@@ -286,6 +362,9 @@ public:
           continue;
         }
         const uint64_t victim_size = victim_it->second.size_bytes;
+        if (victim_it->second.fence_event != nullptr) {
+          events_to_destroy.push_back(victim_it->second.fence_event);
+        }
         pooled_entries_.erase(victim_it);
         pooled_bytes_ -= victim_size;
         allocation_sizes_.erase(victim_ptr);
@@ -298,6 +377,9 @@ public:
       for (CUdeviceptr victim_ptr : to_free) {
         checkCuda(CudaDriverApi::instance().cuMemFree(victim_ptr), "cuMemFree");
       }
+    }
+    for (CUevent e : events_to_destroy) {
+      CudaDriverApi::instance().cuEventDestroy(e);
     }
   }
 
@@ -330,6 +412,7 @@ private:
   struct PooledEntry {
     uint64_t size_bytes = 0;
     std::list<CUdeviceptr>::iterator order_it;
+    CUevent fence_event = nullptr;  // V2: stream-ordering fence
   };
 
   std::mutex mutex_;
@@ -414,7 +497,7 @@ MATCORE_GPU_RUNTIME_EXPORT CUmodule mgpuModuleLoad(void *data,
 MATCORE_GPU_RUNTIME_EXPORT CUmodule mgpuModuleLoadJIT(void *data, int optLevel) {
   ScopedContext scoped_context;
   CudaDriverApi &api = CudaDriverApi::instance();
-  CUmodule module = nullptr;
+  CUmodule module = nullptr;  // V2 SAFETY: null-init before load attempt
   char error_log[8192] = {};
   CUjit_option options[] = {CU_JIT_ERROR_LOG_BUFFER,
                             CU_JIT_ERROR_LOG_BUFFER_SIZE_BYTES,
@@ -427,6 +510,12 @@ MATCORE_GPU_RUNTIME_EXPORT CUmodule mgpuModuleLoadJIT(void *data, int optLevel) 
   const CUresult result =
       api.cuModuleLoadDataEx(&module, data, 3, options, values);
   if (result != CUDA_SUCCESS) {
+    // V2 SAFETY: Ensure module handle is null on failure (driver may leave
+    // it in partial state). Clean up before throwing.
+    if (module != nullptr) {
+      api.cuModuleUnload(module);
+      module = nullptr;
+    }
     if (error_log[0] != '\0') {
       std::fprintf(stderr, "CUDA JIT compilation failed with: '%s'\n", error_log);
     }
@@ -456,6 +545,31 @@ MATCORE_GPU_RUNTIME_EXPORT void mgpuLaunchKernel(
     std::intptr_t blockZ, int32_t smem, CUstream stream, void **params,
     void **extra, size_t /*paramsCount*/) {
   ScopedContext scoped_context;
+
+  // V2 SAFETY: Param validation gate — dry-run mode to catch bad params
+  // before they reach the GPU and potentially cause kernel panics.
+  static const bool validate_params =
+      std::getenv("MATCORE_VALIDATE_KERNEL_PARAMS") != nullptr;
+  if (validate_params) {
+    if (function == nullptr) {
+      fail("MATCORE_VALIDATE_KERNEL_PARAMS: kernel function is null");
+    }
+    if (gridX <= 0 || gridY <= 0 || gridZ <= 0) {
+      fail("MATCORE_VALIDATE_KERNEL_PARAMS: invalid grid dimensions (" +
+           std::to_string(gridX) + "," + std::to_string(gridY) + "," +
+           std::to_string(gridZ) + ")");
+    }
+    if (blockX <= 0 || blockY <= 0 || blockZ <= 0) {
+      fail("MATCORE_VALIDATE_KERNEL_PARAMS: invalid block dimensions (" +
+           std::to_string(blockX) + "," + std::to_string(blockY) + "," +
+           std::to_string(blockZ) + ")");
+    }
+    if (smem < 0) {
+      fail("MATCORE_VALIDATE_KERNEL_PARAMS: negative shared memory (" +
+           std::to_string(smem) + ")");
+    }
+  }
+
   constexpr const char *kKernelTraceName = "mgpuLaunchKernel";
   traceGpuRuntimeEvent(TraceEventKind::kGpuKernelLaunch, kKernelTraceName);
   checkCuda(CudaDriverApi::instance().cuLaunchKernel(
@@ -479,6 +593,18 @@ MATCORE_GPU_RUNTIME_EXPORT void mgpuStreamDestroy(CUstream stream) {
 
 MATCORE_GPU_RUNTIME_EXPORT void mgpuStreamSynchronize(CUstream stream) {
   ScopedContext scoped_context;
+  // V2 SAFETY: cuStreamSynchronize is ILLEGAL during CUDA graph capture.
+  // If the stream is currently being captured, skip the sync — the graph
+  // captures ordering dependencies implicitly.
+  if (stream != nullptr) {
+    CUstreamCaptureStatus capture_status;
+    CUresult qr = CudaDriverApi::instance().cuStreamIsCapturing(
+        stream, &capture_status);
+    if (qr == CUDA_SUCCESS &&
+        capture_status == CU_STREAM_CAPTURE_STATUS_ACTIVE) {
+      return;  // Skip sync during capture
+    }
+  }
   constexpr const char *kKernelTraceName = "mgpuLaunchKernel";
   checkCuda(CudaDriverApi::instance().cuStreamSynchronize(stream),
             "cuStreamSynchronize");
@@ -501,17 +627,16 @@ MATCORE_GPU_RUNTIME_EXPORT void mgpuMemFree(void *ptr, CUstream stream) {
   GpuMemoryPool::instance().release(ptr, stream);
 }
 
-// NOTE: Uses synchronous cuMemcpy (not cuMemcpyAsync). The stream parameter
-// is accepted for API compatibility with MLIR's gpu-to-llvm lowering but is
-// currently unused. Correctness is maintained because the staging pass inserts
-// explicit gpu.wait synchronization barriers before/after all memcpy sequences.
+// V2 SAFETY: Uses cuMemcpyAsync with the execution stream. This is required
+// for CUDA graph stream capture — synchronous cuMemcpy cannot be captured.
+// The staging pass inserts explicit gpu.wait barriers, so async is safe here.
 MATCORE_GPU_RUNTIME_EXPORT void mgpuMemcpy(void *dst, void *src,
                                            size_t sizeBytes, CUstream stream) {
   ScopedContext scoped_context;
-  checkCuda(CudaDriverApi::instance().cuMemcpy(
+  checkCuda(CudaDriverApi::instance().cuMemcpyAsync(
                 reinterpret_cast<CUdeviceptr>(dst),
-                reinterpret_cast<CUdeviceptr>(src), sizeBytes),
-            "cuMemcpy");
+                reinterpret_cast<CUdeviceptr>(src), sizeBytes, stream),
+            "cuMemcpyAsync");
 }
 
 MATCORE_GPU_RUNTIME_EXPORT void mgpuMemset32(void *dst, unsigned int value,
@@ -794,9 +919,6 @@ void matcore_device_zero(DeviceBufferHandle handle) {
     throw std::runtime_error("matcore_device_zero: invalid or stale handle");
   ScopedContext ctx;
   CUdeviceptr dptr = static_cast<CUdeviceptr>(handle.ptr);
-  // Use D32 memset for 4-aligned sizes, D16 for 2-aligned, else error.
-  // Tensor element sizes (f16=2, f32=4, i8=1, i32=4) guarantee >= 2-alignment
-  // for any non-scalar tensor.
   if (handle.size_bytes % 4 == 0) {
     CUresult err = CudaDriverApi::instance().cuMemsetD32Async(dptr, 0, handle.size_bytes / 4,
                                           /*stream=*/nullptr);
@@ -813,6 +935,25 @@ void matcore_device_zero(DeviceBufferHandle handle) {
     throw std::runtime_error(
         "matcore_device_zero: buffer size not 2-aligned (" +
         std::to_string(handle.size_bytes) + " bytes)");
+  }
+}
+
+void matcore_device_zero_raw(void *device_ptr, uint64_t size_bytes) {
+  if (device_ptr == nullptr || size_bytes == 0) return;
+  ScopedContext ctx;
+  CUdeviceptr dptr = reinterpret_cast<CUdeviceptr>(device_ptr);
+  if (size_bytes % 4 == 0) {
+    checkCuda(CudaDriverApi::instance().cuMemsetD32Async(
+                  dptr, 0, size_bytes / 4, /*stream=*/nullptr),
+              "cuMemsetD32Async(zero_raw)");
+  } else if (size_bytes % 2 == 0) {
+    checkCuda(CudaDriverApi::instance().cuMemsetD16Async(
+                  dptr, 0, size_bytes / 2, /*stream=*/nullptr),
+              "cuMemsetD16Async(zero_raw)");
+  } else {
+    throw std::runtime_error(
+        "matcore_device_zero_raw: buffer size not 2-aligned (" +
+        std::to_string(size_bytes) + " bytes)");
   }
 }
 
@@ -833,6 +974,9 @@ void matcore_device_download(void *, DeviceBufferHandle, std::uint64_t) {
 bool matcore_device_is_valid(DeviceBufferHandle) { return false; }
 void matcore_device_zero(DeviceBufferHandle) {
   throw std::runtime_error("matcore_device_zero: CUDA not available at build time");
+}
+void matcore_device_zero_raw(void *, uint64_t) {
+  throw std::runtime_error("matcore_device_zero_raw: CUDA not available at build time");
 }
 
 #endif
