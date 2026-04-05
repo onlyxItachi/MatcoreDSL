@@ -385,10 +385,30 @@ mlir::OwningOpRef<mlir::ModuleOp> buildMatmulModule(
   const mlir::Location loc = builder.getUnknownLoc();
   auto zero = builder.create<mlir::arith::ConstantOp>(
       loc, builder.getZeroAttr(out_element_type));
+
+  // Check if any tensor is device-resident.
+  const bool any_device_resident =
+      std::any_of(tensors.begin(), tensors.end(),
+                  [](const RuntimeTensorView &t) { return t.is_device_resident; });
+
   if (useTensorPadMatmul(plan, signature)) {
     const std::int64_t padded_m = roundUpToMultiple(shape.m, 16);
     const std::int64_t padded_k = roundUpToMultiple(shape.k, 16);
     const std::int64_t padded_n = roundUpToMultiple(shape.n, 8);
+    const bool needs_actual_padding =
+        padded_m != shape.m || padded_k != shape.k || padded_n != shape.n;
+
+    // The padded path uses bufferization::ToTensorOp which reads func args
+    // on the HOST side. Device-resident pointers would segfault here.
+    // When dims are already aligned, skip the padded path and fall through
+    // to the direct memref path which works with device pointers.
+    if (any_device_resident && needs_actual_padding) {
+      fail("device-resident tensors are not supported with tensor.pad lowering "
+           "(shapes that require padding). Use dimensions that are multiples of "
+           "16 (M,K) and 8 (N), or use host tensors.");
+    }
+
+    if (!any_device_resident) {
 
     auto lhs_tensor = builder.create<mlir::bufferization::ToTensorOp>(
         loc, entry_block->getArgument(0), /*restrict=*/true,
@@ -446,10 +466,19 @@ mlir::OwningOpRef<mlir::ModuleOp> buildMatmulModule(
         /*restrict=*/true, /*writable=*/true);
     builder.create<mlir::func::ReturnOp>(loc);
     return module;
+    } // end if (!any_device_resident) — device-resident with aligned dims falls through
   }
 
-  builder.create<mlir::linalg::FillOp>(loc, mlir::ValueRange{zero},
-                                       mlir::ValueRange{entry_block->getArgument(2)});
+  // For device-resident output, skip host-side zero-fill — the output must be
+  // pre-zeroed on device (via DeviceTensor.zero_()) before each launch.
+  // The linalg.fill operates on the func arg memref, which has a device ptr
+  // when device-resident → host access would segfault.
+  const bool out_device_resident =
+      tensors.size() > 2 && tensors[2].is_device_resident;
+  if (!out_device_resident) {
+    builder.create<mlir::linalg::FillOp>(loc, mlir::ValueRange{zero},
+                                         mlir::ValueRange{entry_block->getArgument(2)});
+  }
   if (signature.quantized_i8) {
     const std::int32_t lhs_zero_point =
         tensors[0].quantization.enabled ? tensors[0].quantization.zero_point
@@ -523,6 +552,22 @@ LoweredModule MlirEngine::BuildAndLower(
     obs->snapshot("mlir_construction", *module);
     obs->snapshotText("lowering_plan", plan.route_description);
   }
+
+  // Tag function arguments that correspond to device-resident tensors
+  // with "matcore.device_resident" so the staging pass can skip them.
+  {
+    mlir::func::FuncOp func_op;
+    module->walk([&](mlir::func::FuncOp f) { func_op = f; });
+    if (func_op) {
+      for (std::size_t i = 0; i < tensors.size() && i < func_op.getNumArguments(); ++i) {
+        if (tensors[i].is_device_resident) {
+          func_op.setArgAttr(static_cast<unsigned>(i), "matcore.device_resident",
+                             mlir::UnitAttr::get(&context));
+        }
+      }
+    }
+  }
+
   matcore::runLoweringPipeline(*module, plan, signature, nvidia_chip, amd_chip,
                                obs);
 

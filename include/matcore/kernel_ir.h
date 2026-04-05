@@ -121,6 +121,7 @@ struct RuntimeTensorView {
   std::vector<std::int64_t> shape;
   std::vector<std::int64_t> strides;
   bool c_contiguous = false;
+  bool is_device_resident = false;  // True when backed by DeviceTensor (GPU ptr)
   QuantizationParams quantization;
 };
 

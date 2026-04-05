@@ -111,6 +111,9 @@ std::string buildExecutionCacheKey(
       key += "x";
       key += std::to_string(tensor.shape[1]);
     }
+    if (tensor.is_device_resident) {
+      key += ":dev";
+    }
     if (tensor.quantization.enabled) {
       key += ":q=";
       key += std::to_string(tensor.quantization.scale);

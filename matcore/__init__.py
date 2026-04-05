@@ -1,4 +1,5 @@
 from .config import configure, get_config, reset_config
+from .device_tensor import DeviceTensor, to_device
 from .frontend import (
     MatCoreNamespace,
     MatCoreTensorView,
@@ -35,6 +36,8 @@ __all__ = [
     "mc",
     "kernel",
     "launch",
+    "to_device",
+    "DeviceTensor",
     "asdtype",
     "load",
     "add",
