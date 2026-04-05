@@ -47,6 +47,11 @@ void matcore_device_zero(DeviceBufferHandle handle);
 /// must ensure pointer is valid.
 void matcore_device_zero_raw(void *device_ptr, uint64_t size_bytes);
 
+/// Zero-fill a raw device pointer on a specific stream. Required for CUDA
+/// graph capture — zeroing must be on the capture stream to be recorded.
+void matcore_device_zero_raw_on_stream(void *device_ptr, uint64_t size_bytes,
+                                       void *stream);
+
 }  // namespace matcore
 
 #endif  // MATCORE_DEVICE_BUFFER_H_
