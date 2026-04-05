@@ -2,9 +2,16 @@ build/
 .deps/
 .matcore_cache/
 .venv_gladiator/
+.venv/
 __pycache__/
 *.pyc
 *.pyo
 *.so
 *.dylib
 *.dll
+*.o
+*.a
+*.bin
+*.cubin
+*.fatbin
+*.ptx
