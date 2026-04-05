@@ -937,13 +937,19 @@ NB_MODULE(_matcore_native, m) {
       .def_prop_ro("num_tensors", &matcore::MatcorePlan::numTensors);
 
   m.def("create_plan",
-        [](nb::dict kernel_ir, const std::string &target, nb::args tensor_args)
+        [](nb::dict kernel_ir, const std::string &target, nb::args tensor_args,
+           nb::kwargs kwargs)
             -> matcore::MatcorePlan * {
+          bool graph_mode = false;
+          if (kwargs.contains("graph_mode")) {
+            graph_mode = nb::cast<bool>(kwargs["graph_mode"]);
+          }
           // Reuse existing buildInvocation for parsing
           Invocation invocation = buildInvocation(kernel_ir, target, tensor_args);
           nb::gil_scoped_release release;
           auto plan = matcore::MatcorePlan::create(
-              invocation.kernel, invocation.tensors, target, nullptr);
+              invocation.kernel, invocation.tensors, target, nullptr,
+              graph_mode);
           return plan.release();  // Transfer ownership to nanobind
         },
         nb::rv_policy::take_ownership,

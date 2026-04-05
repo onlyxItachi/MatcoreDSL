@@ -673,15 +673,64 @@ uint64_t MatcorePlan::nextGenerationId() {
   return g_plan_generation_counter.fetch_add(1, std::memory_order_relaxed);
 }
 
-MatcorePlan::~MatcorePlan() = default;
-MatcorePlan::MatcorePlan(MatcorePlan &&) noexcept = default;
-MatcorePlan &MatcorePlan::operator=(MatcorePlan &&) noexcept = default;
+MatcorePlan::~MatcorePlan() {
+  // V2: Destroy CUDA graph resources before releasing execution bundle
+  if (graph_exec_) {
+    matcore_graph_exec_destroy(graph_exec_);
+    graph_exec_ = nullptr;
+  }
+  if (graph_stream_) {
+    matcore_graph_stream_destroy(graph_stream_);
+    graph_stream_ = nullptr;
+  }
+}
+MatcorePlan::MatcorePlan(MatcorePlan &&other) noexcept
+    : generation_id_(other.generation_id_),
+      execution_(std::move(other.execution_)),
+      frozen_meta_(std::move(other.frozen_meta_)),
+      has_device_tensors_(other.has_device_tensors_),
+      cache_key_(std::move(other.cache_key_)),
+      graph_mode_(other.graph_mode_),
+      graph_stream_(other.graph_stream_),
+      graph_exec_(other.graph_exec_),
+      graph_captured_(other.graph_captured_),
+      captured_ptrs_(std::move(other.captured_ptrs_)) {
+  // Null the source to prevent double-destroy of CUDA resources
+  other.graph_stream_ = nullptr;
+  other.graph_exec_ = nullptr;
+  other.graph_captured_ = false;
+}
+
+MatcorePlan &MatcorePlan::operator=(MatcorePlan &&other) noexcept {
+  if (this != &other) {
+    // Destroy our own graph resources first
+    if (graph_exec_) matcore_graph_exec_destroy(graph_exec_);
+    if (graph_stream_) matcore_graph_stream_destroy(graph_stream_);
+
+    generation_id_ = other.generation_id_;
+    execution_ = std::move(other.execution_);
+    frozen_meta_ = std::move(other.frozen_meta_);
+    has_device_tensors_ = other.has_device_tensors_;
+    cache_key_ = std::move(other.cache_key_);
+    graph_mode_ = other.graph_mode_;
+    graph_stream_ = other.graph_stream_;
+    graph_exec_ = other.graph_exec_;
+    graph_captured_ = other.graph_captured_;
+    captured_ptrs_ = std::move(other.captured_ptrs_);
+
+    other.graph_stream_ = nullptr;
+    other.graph_exec_ = nullptr;
+    other.graph_captured_ = false;
+  }
+  return *this;
+}
 
 std::unique_ptr<MatcorePlan>
 MatcorePlan::create(const KernelIR &kernel,
                     const std::vector<RuntimeTensorView> &template_tensors,
                     const std::string &target_str,
-                    ObservabilityContext *obs) {
+                    ObservabilityContext *obs,
+                    bool graph_mode) {
   static std::once_flag native_target_once;
   std::call_once(native_target_once, [] {
     llvm::InitializeNativeTarget();
@@ -719,6 +768,12 @@ MatcorePlan::create(const KernelIR &kernel,
     if (t.is_device_resident) {
       plan->has_device_tensors_ = true;
     }
+  }
+
+  // V2 Pillar 2: Create dedicated graph stream if graph_mode requested
+  plan->graph_mode_ = graph_mode;
+  if (graph_mode) {
+    plan->graph_stream_ = matcore_graph_stream_create();
   }
 
   return plan;
@@ -775,35 +830,110 @@ bool MatcorePlan::validateTensors(const std::vector<RuntimeTensorView> &tensors,
   return true;
 }
 
+void MatcorePlan::zeroOutputs(const std::vector<RuntimeTensorView> &tensors) {
+  for (size_t i = 0; i < tensors.size(); ++i) {
+    if (frozen_meta_[i].is_output && tensors[i].is_device_resident &&
+        tensors[i].data != nullptr) {
+      uint64_t size_bytes = 1;
+      for (auto dim : frozen_meta_[i].shape) size_bytes *= dim;
+      switch (frozen_meta_[i].dtype) {
+        case TensorDType::kFloat16:
+        case TensorDType::kBFloat16: size_bytes *= 2; break;
+        case TensorDType::kFloat32:
+        case TensorDType::kInt32: size_bytes *= 4; break;
+        case TensorDType::kInt8:
+        case TensorDType::kFloat8E4M3FN: break;
+      }
+      matcore_device_zero_raw(tensors[i].data, size_bytes);
+    }
+  }
+}
+
+void MatcorePlan::zeroOutputsOnStream(
+    const std::vector<RuntimeTensorView> &tensors, void *stream) {
+  for (size_t i = 0; i < tensors.size(); ++i) {
+    if (frozen_meta_[i].is_output && tensors[i].is_device_resident &&
+        tensors[i].data != nullptr) {
+      uint64_t size_bytes = 1;
+      for (auto dim : frozen_meta_[i].shape) size_bytes *= dim;
+      switch (frozen_meta_[i].dtype) {
+        case TensorDType::kFloat16:
+        case TensorDType::kBFloat16: size_bytes *= 2; break;
+        case TensorDType::kFloat32:
+        case TensorDType::kInt32: size_bytes *= 4; break;
+        case TensorDType::kInt8:
+        case TensorDType::kFloat8E4M3FN: break;
+      }
+      matcore_device_zero_raw_on_stream(tensors[i].data, size_bytes, stream);
+    }
+  }
+}
+
 void MatcorePlan::execute(const std::vector<RuntimeTensorView> &tensors) {
-  // Step 1: Validate tensors match frozen plan (per-call check — cheap)
+  // Step 1: Validate tensors match frozen plan
   std::string error_msg;
   if (!validateTensors(tensors, &error_msg)) {
     fail("execute_plan: " + error_msg);
   }
 
-  // Step 2: Zero device-resident output tensors
-  if (has_device_tensors_) {
+  // ---- Graph replay fast path ----
+  if (graph_mode_ && graph_captured_) {
     for (size_t i = 0; i < tensors.size(); ++i) {
-      if (frozen_meta_[i].is_output && tensors[i].is_device_resident &&
-          tensors[i].data != nullptr) {
-        uint64_t size_bytes = 1;
-        for (auto dim : frozen_meta_[i].shape) size_bytes *= dim;
-        switch (frozen_meta_[i].dtype) {
-          case TensorDType::kFloat16:
-          case TensorDType::kBFloat16: size_bytes *= 2; break;
-          case TensorDType::kFloat32:
-          case TensorDType::kInt32: size_bytes *= 4; break;
-          case TensorDType::kInt8:
-          case TensorDType::kFloat8E4M3FN: break;
-        }
-        matcore_device_zero_raw(tensors[i].data, size_bytes);
+      if (tensors[i].data != captured_ptrs_[i]) {
+        fail("execute_plan: tensor[" + std::to_string(i) +
+             "] data pointer changed since graph capture. "
+             "CUDA graphs bake addresses — use the same DeviceTensors, "
+             "or create a new plan to re-capture.");
       }
     }
+    matcore_graph_launch(graph_exec_, graph_stream_);
+    matcore_stream_synchronize(graph_stream_);
+    return;
   }
 
-  // Step 3: Invoke the cached compiled kernel directly
-  // This skips ALL of: IR building, cache key, dict parsing, preflight
+  // ---- First call with graph_mode: warm-up then capture ----
+  if (graph_mode_ && !graph_captured_) {
+    // Phase 1: Warm-up invocation — caches module/function, skips unload.
+    matcore_set_graph_warmup(true);
+    zeroOutputs(tensors);
+    setGpuRuntimeObservabilityContext(nullptr);
+    if (llvm::Error error = invokeCompiledKernel(*execution_, tensors)) {
+      matcore_set_graph_warmup(false);
+      const std::string message = llvm::toString(std::move(error));
+      fail("execute_plan: warm-up failed: " + message);
+    }
+    matcore_set_graph_warmup(false);
+
+    // Phase 2: Capture. Stream override routes all GPU ops to capture stream.
+    matcore_set_capture_stream_override(graph_stream_);
+    matcore_graph_begin_capture(graph_stream_);
+
+    zeroOutputsOnStream(tensors, graph_stream_);
+
+    if (llvm::Error error = invokeCompiledKernel(*execution_, tensors)) {
+      matcore_set_capture_stream_override(nullptr);
+      try {
+        void *exec = matcore_graph_end_capture(graph_stream_);
+        if (exec) matcore_graph_exec_destroy(exec);
+      } catch (...) {}
+      const std::string message = llvm::toString(std::move(error));
+      fail("execute_plan: capture failed: " + message);
+    }
+
+    matcore_set_capture_stream_override(nullptr);
+    graph_exec_ = matcore_graph_end_capture(graph_stream_);
+    graph_captured_ = true;
+    captured_ptrs_.clear();
+    captured_ptrs_.reserve(tensors.size());
+    for (const auto &t : tensors) {
+      captured_ptrs_.push_back(t.data);
+    }
+    matcore_stream_synchronize(graph_stream_);
+    return;
+  }
+
+  // ---- Normal (non-graph) execution ----
+  zeroOutputs(tensors);
   setGpuRuntimeObservabilityContext(nullptr);
   if (llvm::Error error = invokeCompiledKernel(*execution_, tensors)) {
     const std::string message = llvm::toString(std::move(error));

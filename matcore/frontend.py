@@ -1062,6 +1062,7 @@ def create_plan(
     kernel_obj: MatCoreKernel,
     *template_tensors: Any,
     target: str | None = None,
+    graph_mode: bool = False,
 ) -> Any:
     """Create a pre-compiled execution plan. Expensive (JIT compiles) — call once.
 
@@ -1069,10 +1070,18 @@ def create_plan(
     via mc.execute_plan(). Plans are shape-locked: tensors must have identical
     dtype, shape, strides, and residency on every execute_plan() call.
 
+    Set graph_mode=True to enable CUDA graph capture on first execute_plan().
+    Subsequent calls replay the captured graph with near-zero dispatch overhead.
+
     Usage:
         plan = mc.create_plan(kernel, dA, dB, dC, target="nvidia-dgpu:sm_89")
         mc.execute_plan(plan, dA, dB, dC)  # near-zero overhead
         mc.execute_plan(plan, dA, dB, dC)  # reuse compiled kernel
+
+        # With CUDA graphs:
+        plan = mc.create_plan(kernel, dA, dB, dC, target="nvidia-dgpu:sm_89", graph_mode=True)
+        mc.execute_plan(plan, dA, dB, dC)  # captures graph
+        mc.execute_plan(plan, dA, dB, dC)  # replays graph (~0.005ms)
     """
     if not isinstance(kernel_obj, MatCoreKernel):
         raise TypeError("mc.create_plan expects a kernel object returned by @mc.kernel.")
@@ -1102,7 +1111,10 @@ def create_plan(
     )
 
     native = _get_native_module()
-    return native.create_plan(runtime_ir, normalized_target, *template_tensors)
+    return native.create_plan(
+        runtime_ir, normalized_target, *template_tensors,
+        graph_mode=graph_mode,
+    )
 
 
 def execute_plan(plan: Any, *tensors: Any) -> None:

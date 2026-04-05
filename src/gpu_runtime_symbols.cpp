@@ -32,6 +32,23 @@ namespace {
 
 thread_local ObservabilityContext *g_gpu_runtime_observability = nullptr;
 
+// V2 Pillar 2: Thread-local capture stream override.
+// When set, mgpuStreamCreate() returns this stream instead of creating one,
+// and mgpuStreamDestroy() is a no-op. This ensures the kernel executes on
+// the capture stream so cuStreamBeginCapture captures all GPU ops.
+thread_local CUstream g_capture_stream_override = nullptr;
+
+// V2: Module/function cache during graph capture.
+// MLIR-generated code loads the module on every invokePacked. During capture,
+// we cache the module+function from the first (pre-capture) call and reuse them.
+struct CaptureModuleCache {
+  CUmodule module = nullptr;
+  CUfunction function = nullptr;
+  bool active = false;  // true during capture — reuse cached values
+  bool warmup = false;  // true during warm-up — cache values, skip unload
+};
+thread_local CaptureModuleCache g_capture_module_cache;
+
 void traceGpuRuntimeEvent(TraceEventKind kind, const std::string &name,
                           const std::string &metadata = {}) {
   if (g_gpu_runtime_observability == nullptr) {
@@ -95,6 +112,14 @@ struct CudaDriverApi {
   using CuEventQueryFn = CUresult (*)(CUevent);
   using CuEventDestroyFn = CUresult (*)(CUevent);
   using CuStreamIsCapturingFn = CUresult (*)(CUstream, CUstreamCaptureStatus *);
+  // V2 Pillar 2: CUDA Graph symbols
+  using CuStreamBeginCaptureFn = CUresult (*)(CUstream, CUstreamCaptureMode);
+  using CuStreamEndCaptureFn = CUresult (*)(CUstream, CUgraph *);
+  using CuGraphInstantiateFn = CUresult (*)(CUgraphExec *, CUgraph,
+                                            unsigned long long);
+  using CuGraphLaunchFn = CUresult (*)(CUgraphExec, CUstream);
+  using CuGraphExecDestroyFn = CUresult (*)(CUgraphExec);
+  using CuGraphDestroyFn = CUresult (*)(CUgraph);
 
   static CudaDriverApi &instance() {
     static CudaDriverApi api = load();
@@ -154,6 +179,19 @@ struct CudaDriverApi {
         loadSymbol<CuEventDestroyFn>(handle, "cuEventDestroy_v2");
     api.cuStreamIsCapturing =
         loadSymbol<CuStreamIsCapturingFn>(handle, "cuStreamIsCapturing");
+    // V2 Pillar 2: CUDA Graph symbols
+    api.cuStreamBeginCapture =
+        loadSymbol<CuStreamBeginCaptureFn>(handle, "cuStreamBeginCapture");
+    api.cuStreamEndCapture =
+        loadSymbol<CuStreamEndCaptureFn>(handle, "cuStreamEndCapture");
+    api.cuGraphInstantiate =
+        loadSymbol<CuGraphInstantiateFn>(handle, "cuGraphInstantiateWithFlags");
+    api.cuGraphLaunch =
+        loadSymbol<CuGraphLaunchFn>(handle, "cuGraphLaunch");
+    api.cuGraphExecDestroy =
+        loadSymbol<CuGraphExecDestroyFn>(handle, "cuGraphExecDestroy");
+    api.cuGraphDestroy =
+        loadSymbol<CuGraphDestroyFn>(handle, "cuGraphDestroy");
     return api;
   }
 
@@ -184,6 +222,13 @@ struct CudaDriverApi {
   CuEventQueryFn cuEventQuery = nullptr;
   CuEventDestroyFn cuEventDestroy = nullptr;
   CuStreamIsCapturingFn cuStreamIsCapturing = nullptr;
+  // V2 Pillar 2: CUDA Graph symbols
+  CuStreamBeginCaptureFn cuStreamBeginCapture = nullptr;
+  CuStreamEndCaptureFn cuStreamEndCapture = nullptr;
+  CuGraphInstantiateFn cuGraphInstantiate = nullptr;
+  CuGraphLaunchFn cuGraphLaunch = nullptr;
+  CuGraphExecDestroyFn cuGraphExecDestroy = nullptr;
+  CuGraphDestroyFn cuGraphDestroy = nullptr;
 };
 
 void checkCuda(CUresult result, const char *expr) {
@@ -495,6 +540,11 @@ MATCORE_GPU_RUNTIME_EXPORT CUmodule mgpuModuleLoad(void *data,
 }
 
 MATCORE_GPU_RUNTIME_EXPORT CUmodule mgpuModuleLoadJIT(void *data, int optLevel) {
+  // V2: During graph capture, reuse cached module (cuModuleLoadDataEx not capturable)
+  if (g_capture_stream_override != nullptr && g_capture_module_cache.active &&
+      g_capture_module_cache.module != nullptr) {
+    return g_capture_module_cache.module;
+  }
   ScopedContext scoped_context;
   CudaDriverApi &api = CudaDriverApi::instance();
   CUmodule module = nullptr;  // V2 SAFETY: null-init before load attempt
@@ -521,21 +571,34 @@ MATCORE_GPU_RUNTIME_EXPORT CUmodule mgpuModuleLoadJIT(void *data, int optLevel) 
     }
     checkCuda(result, "cuModuleLoadDataEx");
   }
+  // Cache for graph capture reuse
+  g_capture_module_cache.module = module;
   traceGpuRuntimeEvent(TraceEventKind::kGpuModuleLoad, "mgpuModuleLoadJIT");
   return module;
 }
 
 MATCORE_GPU_RUNTIME_EXPORT void mgpuModuleUnload(CUmodule module) {
+  // V2: During graph capture or warm-up, don't unload — module must stay valid
+  if (g_capture_module_cache.active || g_capture_module_cache.warmup) {
+    return;
+  }
   ScopedContext scoped_context;
   checkCuda(CudaDriverApi::instance().cuModuleUnload(module), "cuModuleUnload");
 }
 
 MATCORE_GPU_RUNTIME_EXPORT CUfunction mgpuModuleGetFunction(CUmodule module,
                                                             const char *name) {
+  // V2: During graph capture, reuse cached function
+  if (g_capture_stream_override != nullptr && g_capture_module_cache.active &&
+      g_capture_module_cache.function != nullptr) {
+    return g_capture_module_cache.function;
+  }
   ScopedContext scoped_context;
   CUfunction function = nullptr;
   checkCuda(CudaDriverApi::instance().cuModuleGetFunction(&function, module, name),
             "cuModuleGetFunction");
+  // Cache for graph capture reuse
+  g_capture_module_cache.function = function;
   return function;
 }
 
@@ -584,10 +647,18 @@ MATCORE_GPU_RUNTIME_EXPORT void mgpuLaunchKernel(
 }
 
 MATCORE_GPU_RUNTIME_EXPORT CUstream mgpuStreamCreate() {
+  // V2: During graph capture, return the capture stream so all ops are captured.
+  if (g_capture_stream_override != nullptr) {
+    return g_capture_stream_override;
+  }
   return GpuStreamPool::instance().acquire();
 }
 
 MATCORE_GPU_RUNTIME_EXPORT void mgpuStreamDestroy(CUstream stream) {
+  // V2: If using capture override, don't destroy the shared capture stream.
+  if (g_capture_stream_override != nullptr && stream == g_capture_stream_override) {
+    return;
+  }
   GpuStreamPool::instance().release(stream);
 }
 
@@ -620,10 +691,20 @@ MATCORE_GPU_RUNTIME_EXPORT void *mgpuMemAlloc(uint64_t sizeBytes,
   if (sizeBytes == 0) {
     return nullptr;
   }
+  // V2: cuMemAlloc is not capturable. If we're inside graph capture,
+  // staging buffers indicate a non-device-resident path — reject.
+  if (g_capture_stream_override != nullptr) {
+    fail("mgpuMemAlloc called during CUDA graph capture. "
+         "graph_mode requires all tensors to be device-resident (no staging).");
+  }
   return GpuMemoryPool::instance().acquire(sizeBytes);
 }
 
 MATCORE_GPU_RUNTIME_EXPORT void mgpuMemFree(void *ptr, CUstream stream) {
+  // V2: Skip free during graph capture (matches alloc guard above)
+  if (g_capture_stream_override != nullptr) {
+    return;
+  }
   GpuMemoryPool::instance().release(ptr, stream);
 }
 
@@ -957,6 +1038,121 @@ void matcore_device_zero_raw(void *device_ptr, uint64_t size_bytes) {
   }
 }
 
+void matcore_device_zero_raw_on_stream(void *device_ptr, uint64_t size_bytes,
+                                       void *stream) {
+  if (device_ptr == nullptr || size_bytes == 0) return;
+  ScopedContext ctx;
+  CUdeviceptr dptr = reinterpret_cast<CUdeviceptr>(device_ptr);
+  CUstream cu_stream = reinterpret_cast<CUstream>(stream);
+  if (size_bytes % 4 == 0) {
+    checkCuda(CudaDriverApi::instance().cuMemsetD32Async(
+                  dptr, 0, size_bytes / 4, cu_stream),
+              "cuMemsetD32Async(zero_raw_on_stream)");
+  } else if (size_bytes % 2 == 0) {
+    checkCuda(CudaDriverApi::instance().cuMemsetD16Async(
+                  dptr, 0, size_bytes / 2, cu_stream),
+              "cuMemsetD16Async(zero_raw_on_stream)");
+  } else {
+    throw std::runtime_error(
+        "matcore_device_zero_raw_on_stream: buffer size not 2-aligned (" +
+        std::to_string(size_bytes) + " bytes)");
+  }
+}
+
+// -------------------------------------------------------------------------
+// V2 Pillar 2: CUDA Graph capture/replay
+// -------------------------------------------------------------------------
+
+void *matcore_graph_stream_create() {
+  ScopedContext ctx;
+  CUstream stream = nullptr;
+  checkCuda(CudaDriverApi::instance().cuStreamCreate(
+                &stream, CU_STREAM_NON_BLOCKING),
+            "cuStreamCreate(graph)");
+  return reinterpret_cast<void *>(stream);
+}
+
+void matcore_graph_begin_capture(void *stream) {
+  ScopedContext ctx;
+  CUstream cu_stream = reinterpret_cast<CUstream>(stream);
+  if (cu_stream == nullptr) {
+    fail("matcore_graph_begin_capture: stream is null");
+  }
+  checkCuda(CudaDriverApi::instance().cuStreamBeginCapture(
+                cu_stream, CU_STREAM_CAPTURE_MODE_GLOBAL),
+            "cuStreamBeginCapture");
+}
+
+void *matcore_graph_end_capture(void *stream) {
+  ScopedContext ctx;
+  CUstream cu_stream = reinterpret_cast<CUstream>(stream);
+  CUgraph graph = nullptr;
+  checkCuda(CudaDriverApi::instance().cuStreamEndCapture(cu_stream, &graph),
+            "cuStreamEndCapture");
+  if (graph == nullptr) {
+    fail("matcore_graph_end_capture: capture produced null graph");
+  }
+  CUgraphExec graph_exec = nullptr;
+  checkCuda(CudaDriverApi::instance().cuGraphInstantiate(
+                &graph_exec, graph, 0),
+            "cuGraphInstantiateWithFlags");
+  // Destroy the intermediate graph object — we only need the exec
+  CudaDriverApi::instance().cuGraphDestroy(graph);
+  return reinterpret_cast<void *>(graph_exec);
+}
+
+void matcore_graph_launch(void *graph_exec, void *stream) {
+  ScopedContext ctx;
+  CUgraphExec cu_exec = reinterpret_cast<CUgraphExec>(graph_exec);
+  CUstream cu_stream = reinterpret_cast<CUstream>(stream);
+  if (cu_exec == nullptr) {
+    fail("matcore_graph_launch: graph_exec is null");
+  }
+  checkCuda(CudaDriverApi::instance().cuGraphLaunch(cu_exec, cu_stream),
+            "cuGraphLaunch");
+}
+
+void matcore_graph_exec_destroy(void *graph_exec) {
+  if (graph_exec == nullptr) return;
+  ScopedContext ctx;
+  CUgraphExec cu_exec = reinterpret_cast<CUgraphExec>(graph_exec);
+  checkCuda(CudaDriverApi::instance().cuGraphExecDestroy(cu_exec),
+            "cuGraphExecDestroy");
+}
+
+void matcore_graph_stream_destroy(void *stream) {
+  if (stream == nullptr) return;
+  ScopedContext ctx;
+  CUstream cu_stream = reinterpret_cast<CUstream>(stream);
+  checkCuda(CudaDriverApi::instance().cuStreamDestroy(cu_stream),
+            "cuStreamDestroy(graph)");
+}
+
+void matcore_set_capture_stream_override(void *stream) {
+  g_capture_stream_override = reinterpret_cast<CUstream>(stream);
+  if (stream != nullptr) {
+    g_capture_module_cache.active = true;
+  } else {
+    g_capture_module_cache.active = false;
+  }
+}
+
+void matcore_set_graph_warmup(bool enable) {
+  g_capture_module_cache.warmup = enable;
+  if (enable) {
+    // Clear stale cache before warm-up
+    g_capture_module_cache.module = nullptr;
+    g_capture_module_cache.function = nullptr;
+  }
+}
+
+void matcore_stream_synchronize(void *stream) {
+  ScopedContext ctx;
+  CUstream cu_stream = reinterpret_cast<CUstream>(stream);
+  checkCuda(CudaDriverApi::instance().cuStreamSynchronize(cu_stream),
+            "cuStreamSynchronize(graph)");
+}
+
 #else
 
 DeviceBufferHandle matcore_device_alloc(std::uint64_t) {
@@ -978,6 +1174,26 @@ void matcore_device_zero(DeviceBufferHandle) {
 void matcore_device_zero_raw(void *, uint64_t) {
   throw std::runtime_error("matcore_device_zero_raw: CUDA not available at build time");
 }
+void matcore_device_zero_raw_on_stream(void *, uint64_t, void *) {
+  throw std::runtime_error("matcore_device_zero_raw_on_stream: CUDA not available at build time");
+}
+void *matcore_graph_stream_create() {
+  throw std::runtime_error("CUDA not available at build time");
+}
+void matcore_graph_begin_capture(void *) {
+  throw std::runtime_error("CUDA not available at build time");
+}
+void *matcore_graph_end_capture(void *) {
+  throw std::runtime_error("CUDA not available at build time");
+}
+void matcore_graph_launch(void *, void *) {
+  throw std::runtime_error("CUDA not available at build time");
+}
+void matcore_graph_exec_destroy(void *) {}
+void matcore_graph_stream_destroy(void *) {}
+void matcore_set_capture_stream_override(void *) {}
+void matcore_set_graph_warmup(bool) {}
+void matcore_stream_synchronize(void *) {}
 
 #endif
 
