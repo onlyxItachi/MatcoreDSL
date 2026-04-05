@@ -159,6 +159,61 @@ std::optional<llvm::SmallVector<std::int64_t, 4>> inferStaticShape(mlir::Value v
   return std::nullopt;
 }
 
+mlir::Value materializeIndexOpFoldResult(mlir::OpBuilder &builder,
+                                         mlir::Location loc,
+                                         mlir::OpFoldResult ofr) {
+  if (auto attr = llvm::dyn_cast<mlir::Attribute>(ofr)) {
+    if (auto int_attr = llvm::dyn_cast<mlir::IntegerAttr>(attr)) {
+      return builder.create<mlir::arith::ConstantIndexOp>(loc, int_attr.getInt());
+    }
+  }
+  return llvm::cast<mlir::Value>(ofr);
+}
+
+struct TransferAccessView {
+  mlir::Value memref;
+  std::array<mlir::Value, 2> offsets;
+};
+
+TransferAccessView resolveTransferAccessView(mlir::OpBuilder &builder,
+                                             mlir::Location loc,
+                                             mlir::Value memref) {
+  if (auto cast = memref.getDefiningOp<mlir::memref::CastOp>()) {
+    return resolveTransferAccessView(builder, loc, cast.getSource());
+  }
+
+  if (auto subview = memref.getDefiningOp<mlir::memref::SubViewOp>()) {
+    auto source_type =
+        llvm::dyn_cast<mlir::MemRefType>(subview.getSource().getType());
+    auto subview_type = llvm::dyn_cast<mlir::MemRefType>(subview.getType());
+    if (source_type && subview_type && source_type.getRank() == 2 &&
+        subview_type.getRank() == 2) {
+      bool unit_strides = true;
+      for (mlir::OpFoldResult stride : subview.getMixedStrides()) {
+        auto constant_stride = getConstantIndexFromOpFoldResult(stride);
+        if (!constant_stride.has_value() || *constant_stride != 1) {
+          unit_strides = false;
+          break;
+        }
+      }
+      if (unit_strides) {
+        TransferAccessView base =
+            resolveTransferAccessView(builder, loc, subview.getSource());
+        for (unsigned i = 0; i < 2; ++i) {
+          mlir::Value offset = materializeIndexOpFoldResult(
+              builder, loc, subview.getMixedOffsets()[i]);
+          base.offsets[i] =
+              builder.create<mlir::arith::AddIOp>(loc, base.offsets[i], offset);
+        }
+        return base;
+      }
+    }
+  }
+
+  auto c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+  return TransferAccessView{memref, {c0, c0}};
+}
+
 bool isSameBufferOrFullSubview(mlir::Value maybe_subview, mlir::Value base) {
   if (maybe_subview == base) {
     return true;
@@ -643,6 +698,8 @@ void emitDistributedVectorCopy(mlir::OpBuilder &builder, mlir::Location loc,
                                const Rank2CopyLoopInfo &info) {
   auto element_type =
       llvm::cast<mlir::MemRefType>(info.src.getType()).getElementType();
+  TransferAccessView src_access = resolveTransferAccessView(builder, loc, info.src);
+  TransferAccessView dst_access = resolveTransferAccessView(builder, loc, info.dst);
   auto thread_x =
       builder.create<mlir::gpu::ThreadIdOp>(loc, mlir::gpu::Dimension::x);
   auto thread_y =
@@ -674,11 +731,20 @@ void emitDistributedVectorCopy(mlir::OpBuilder &builder, mlir::Location loc,
                             mlir::Value segment) {
     mlir::Value column =
         nested_builder.create<mlir::arith::MulIOp>(loc, segment, c8);
+    mlir::Value src_row = nested_builder.create<mlir::arith::AddIOp>(
+        loc, row, src_access.offsets[0]);
+    mlir::Value src_column = nested_builder.create<mlir::arith::AddIOp>(
+        loc, column, src_access.offsets[1]);
+    mlir::Value dst_row = nested_builder.create<mlir::arith::AddIOp>(
+        loc, row, dst_access.offsets[0]);
+    mlir::Value dst_column = nested_builder.create<mlir::arith::AddIOp>(
+        loc, column, dst_access.offsets[1]);
     auto vec = nested_builder.create<mlir::vector::TransferReadOp>(
-        loc, vector_type, info.src, mlir::ValueRange{row, column},
+        loc, vector_type, src_access.memref, mlir::ValueRange{src_row, src_column},
         permutation_map, zero, mlir::Value(), in_bounds);
     nested_builder.create<mlir::vector::TransferWriteOp>(
-        loc, mlir::Type(), vec, info.dst, mlir::ValueRange{row, column},
+        loc, mlir::Type(), vec, dst_access.memref,
+        mlir::ValueRange{dst_row, dst_column},
         permutation_map, mlir::Value(), in_bounds);
   };
 
@@ -829,9 +895,21 @@ struct MarkNvidiaAsyncPipelineLoopPass
 
   static bool isAsyncPipelineCandidate(mlir::scf::ForOp loop) {
     auto lower = matchConstantIndex(loop.getLowerBound());
+    auto upper = matchConstantIndex(loop.getUpperBound());
     auto step = matchConstantIndex(loop.getStep());
     if (!lower.has_value() || !step.has_value() || *lower != 0 || *step < 16 ||
         (*step % 16) != 0) {
+      return false;
+    }
+    if (!upper.has_value() || *upper <= *lower) {
+      return false;
+    }
+
+    const std::int64_t trip_count = (*upper - *lower) / *step;
+    // The depth-2 NVGPU pipeliner is currently unstable on two-iteration
+    // macro-K loops: the prologue/epilogue reuses the first slab and skips the
+    // second. Keep pipelining only when the steady-state loop is non-empty.
+    if (trip_count <= 2) {
       return false;
     }
 

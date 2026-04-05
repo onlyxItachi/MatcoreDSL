@@ -244,8 +244,12 @@ std::string BuildNvidiaTransformMappingSequence(
      << ", 0](mapping = [#gpu.block<y>, #gpu.block<x>]) : (!transform.any_op)"
         " -> (!transform.any_op, !transform.any_op)\n";
   if (config.rewrite_to_mma_sync) {
+    ir << "    %c_promoted = transform.structured.promote %block_tiled"
+          " {operands_to_promote = [2], use_full_tiles_by_default,"
+          " memory_space = #gpu.address_space<workgroup>, alignment = 128} :"
+          " (!transform.any_op) -> !transform.any_op\n";
     ir << "    %k_tiled, %k_loop = transform.structured.tile_using_for"
-       << " %block_tiled [0, 0, " << config.k_tile
+       << " %c_promoted [0, 0, " << config.k_tile
        << "] : (!transform.any_op) -> (!transform.any_op, !transform.any_op)\n";
   } else {
     ir << "    %c_promoted = transform.structured.promote %block_tiled"

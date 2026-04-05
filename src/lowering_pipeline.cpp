@@ -49,6 +49,14 @@ std::string pipelineDumpPath() {
   return raw;
 }
 
+bool disableNvidiaAsyncPipelineDebug() {
+  const char *raw = std::getenv("MATCORE_DISABLE_NVIDIA_ASYNC_PIPELINE");
+  if (raw == nullptr || *raw == '\0') {
+    return false;
+  }
+  return std::string(raw) == "1";
+}
+
 void overwritePipelineDump(llvm::StringRef path, llvm::StringRef header) {
   if (path.empty()) {
     return;
@@ -432,20 +440,22 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
       run_stage("nvidia-loop-materialization", [&](mlir::PassManager &pm) {
         AddNvidiaLoopMaterializationPasses(pm);
       });
-      run_stage("nvidia-async-copy-preparation", [&](mlir::PassManager &pm) {
-        AddNvidiaAsyncCopyPreparationPasses(pm);
-      });
-      try {
-        appendPipelineDump(dump_path, "before-nvidia-async-pipeline", module,
-                           dump_printing_flags);
-        ApplyNvidiaAsyncPipelineToModule(module);
-        appendPipelineDump(dump_path, "after-nvidia-async-pipeline", module,
-                           dump_printing_flags);
-      } catch (const std::exception &exc) {
-        fail("failed to run lowering pipeline for route " +
-             std::string(routeName(plan.route)) +
-             " at stage 'nvidia-async-pipeline'\n" + exc.what() + "\n" +
-             DumpModuleIR(module));
+      if (!disableNvidiaAsyncPipelineDebug()) {
+        run_stage("nvidia-async-copy-preparation", [&](mlir::PassManager &pm) {
+          AddNvidiaAsyncCopyPreparationPasses(pm);
+        });
+        try {
+          appendPipelineDump(dump_path, "before-nvidia-async-pipeline", module,
+                             dump_printing_flags);
+          ApplyNvidiaAsyncPipelineToModule(module);
+          appendPipelineDump(dump_path, "after-nvidia-async-pipeline", module,
+                             dump_printing_flags);
+        } catch (const std::exception &exc) {
+          fail("failed to run lowering pipeline for route " +
+               std::string(routeName(plan.route)) +
+               " at stage 'nvidia-async-pipeline'\n" + exc.what() + "\n" +
+               DumpModuleIR(module));
+        }
       }
       run_stage("nvidia-vector-to-gpu", [&](mlir::PassManager &pm) {
         ConfigureNvidiaVectorToGpuStage(pm);
