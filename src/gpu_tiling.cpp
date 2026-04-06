@@ -660,13 +660,33 @@ NvidiaTileConfig SelectNvidiaTileConfig(
   // GpuDataStagingPass now handles host↔device memory transfers safely.
   config.rewrite_to_mma_sync = statically_compatible_mma;
   if (config.rewrite_to_mma_sync) {
+    constexpr int64_t kMinGridBlocks = 100;
+    struct TileCandidate { int64_t m_pref, n_pref; };
+    constexpr TileCandidate candidates[] = {{64, 64}, {32, 32}};
+
     config.block_tile_m = 16;
     config.block_tile_n = 8;
+    for (const auto &c : candidates) {
+      auto tm = pickTilingFactor(m, c.m_pref);
+      auto tn = pickTilingFactor(n, c.n_pref);
+      if (tm >= 16 && tn >= 8) {
+        auto grid = (m / tm) * (n / tn);
+        if (grid >= kMinGridBlocks) {
+          config.block_tile_m = tm;
+          config.block_tile_n = tn;
+          break;
+        }
+      }
+    }
+
     config.thread_tile_m = 16;
     config.thread_tile_n = 8;
     config.block_threads_y = 1;
     config.block_threads_x = 32;
-    config.k_tile = 16;
+    const bool needs_subtiling =
+        config.block_tile_m > 16 || config.block_tile_n > 8;
+    config.k_tile = needs_subtiling ? pickTilingFactor(k, 32) : 16;
+    config.mma_micro_k = needs_subtiling ? 16 : 0;
     return config;
   }
 

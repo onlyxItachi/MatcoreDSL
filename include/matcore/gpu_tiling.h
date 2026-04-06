@@ -21,6 +21,7 @@ struct NvidiaTileConfig {
   std::int64_t block_threads_y = 8;
   std::int64_t block_threads_x = 16;
   std::int64_t k_tile = 16;
+  std::int64_t mma_micro_k = 0;
   bool rewrite_to_mma_sync = true;
 };
 

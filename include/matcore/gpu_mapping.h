@@ -22,6 +22,7 @@ struct NvidiaMappingConfig {
   std::int64_t block_threads_y = 8;
   std::int64_t block_threads_z = 1;
   std::int64_t k_tile = 16;
+  std::int64_t mma_micro_k = 0;  // Inner K-tile for mma.sync (0 = no inner tiling)
   bool rewrite_to_mma_sync = false;
 };
 
