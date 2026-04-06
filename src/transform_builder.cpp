@@ -219,7 +219,13 @@ mlir::OwningOpRef<mlir::ModuleOp> BuildNvidiaTransformMappingModule(
       {config.block_tile_m, config.block_tile_n, 0});
   transform_builder.tileLinalgWithFor({0, 0, config.k_tile});
   transform_builder.promoteTensorToSharedMemory();
-  if (!config.rewrite_to_mma_sync) {
+
+  if (config.rewrite_to_mma_sync) {
+    if (config.block_tile_m > 16 || config.block_tile_n > 8 ||
+        config.k_tile > 16) {
+      transform_builder.tileLinalgWithFor({16, 8, 16});
+    }
+  } else {
     transform_builder.tileLinalgToGpuThreads(
         {config.block_threads_y, config.block_threads_x});
   }

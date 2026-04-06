@@ -41,6 +41,8 @@ struct GpuPreflightResult {
 };
 
 RuntimeCapabilities DetectRuntimeCapabilities();
+RuntimeCapabilities &cachedRuntimeCapabilities();
+void probeNvidiaIfNeeded(RuntimeCapabilities &runtime);
 GpuPreflightResult gpuPreflightCheck(TargetKind target);
 bool acquireGpuBackendClaim(TargetKind target, std::string *denial_reason);
 void releaseGpuBackendClaim(TargetKind target);

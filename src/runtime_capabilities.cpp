@@ -555,7 +555,7 @@ void releaseGpuBackendClaim(TargetKind /*target*/) {
 bool CanExecuteOnHost(const RuntimeCapabilities &runtime,
                       const ExecutionRequirements &requirements,
                       std::string *denial_reason) {
-  // Use mutable ref for lazy probing
+  // Safe mutable ref for lazy probing — cachedRuntimeCapabilities() is non-const
   auto &mutable_runtime = const_cast<RuntimeCapabilities &>(runtime);
   auto deny = [&](const std::string &message) {
     if (denial_reason != nullptr) {

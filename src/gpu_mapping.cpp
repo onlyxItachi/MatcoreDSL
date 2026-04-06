@@ -144,15 +144,40 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
   // GpuDataStagingPass now handles host↔device memory transfers safely.
   config.rewrite_to_mma_sync = statically_compatible_mma;
   if (config.rewrite_to_mma_sync) {
-    // MLIR 18 rewrite_matmul_as_mma_sync assumes one warp (threadIdx.x lanes).
+    // Occupancy-aware adaptive tiling: choose the largest block tile
+    // that keeps enough grid blocks for SM occupancy. With 1 warp per
+    // block, we need many blocks to hide memory latency.
+    constexpr int64_t kMinGridBlocks = 100;
+
+    struct TileCandidate { int64_t m_pref, n_pref; };
+    constexpr TileCandidate candidates[] = {{64, 64}, {32, 32}};
+
     config.block_tile_m = 16;
     config.block_tile_n = 8;
+    for (const auto &c : candidates) {
+      auto tm = pickTilingFactor(m, c.m_pref);
+      auto tn = pickTilingFactor(n, c.n_pref);
+      if (tm >= 16 && tn >= 8) {
+        auto grid = (m / tm) * (n / tn);
+        if (grid >= kMinGridBlocks) {
+          config.block_tile_m = tm;
+          config.block_tile_n = tn;
+          break;
+        }
+      }
+    }
+
     config.thread_tile_m = 16;
     config.thread_tile_n = 8;
     config.block_threads_y = 1;
     config.block_threads_x = 32;
     config.block_threads_z = 1;
-    config.k_tile = 16;
+    // Only use k_tile=32 when block tiles are large enough for sub-tiling.
+    // For 16×8 blocks, inner K-tiling adds loop overhead with no reuse benefit.
+    const bool needs_subtiling =
+        config.block_tile_m > 16 || config.block_tile_n > 8;
+    config.k_tile = needs_subtiling ? pickTilingFactor(k, 32) : 16;
+    config.mma_micro_k = needs_subtiling ? 16 : 0;
     return config;
   }
 
@@ -351,10 +376,10 @@ struct ConfigureNvidiaLaunchPass
       auto block_y = matchConstantIndex(launch.getBlockSizeY());
       auto block_z = matchConstantIndex(launch.getBlockSizeZ());
 
-      // Preserve mapped launch geometry when already configured. Only fill a
-      // fallback for degenerate launches that still carry 1x1x1.
+      // Preserve any launch geometry already materialized by the mapping
+      // passes. Only fill a 32x1x1 fallback for degenerate 1x1x1 launches.
       if (block_x.has_value() && block_y.has_value() && block_z.has_value() &&
-          *block_x >= 32 && *block_y >= 1 && *block_z >= 1) {
+          (*block_x != 1 || *block_y != 1 || *block_z != 1)) {
         return;
       }
 

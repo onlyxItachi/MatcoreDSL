@@ -366,14 +366,21 @@ const mlir::DialectRegistry &sharedDialectRegistry() {
   return registry;
 }
 
-const RuntimeCapabilities &cachedRuntimeCapabilities() {
-  static const RuntimeCapabilities runtime = DetectRuntimeCapabilities();
+}  // anonymous namespace
+
+RuntimeCapabilities &cachedRuntimeCapabilities() {
+  static RuntimeCapabilities runtime = DetectRuntimeCapabilities();
   return runtime;
 }
 
 RequestedTargetProfile resolveCompilationTargetProfile(
     const RequestedTargetProfile &target_profile,
-    const RuntimeCapabilities &runtime) {
+    RuntimeCapabilities &runtime) {
+  // Ensure GPU capabilities are probed before reading compute_major.
+  // Without this, the lazy probe hasn't fired yet and we fall back to sm_80.
+  if (normalizeTarget(target_profile.kind) == TargetKind::kNvidiaDGPU) {
+    probeNvidiaIfNeeded(runtime);
+  }
   RequestedTargetProfile resolved = target_profile;
   if (normalizeTarget(resolved.kind) == TargetKind::kNvidiaDGPU &&
       !resolved.nvidia_sm_major.has_value() &&
@@ -385,6 +392,8 @@ RequestedTargetProfile resolveCompilationTargetProfile(
   }
   return resolved;
 }
+
+namespace {
 
 std::shared_ptr<CachedExecution> tryLoadDiskCachedExecution(
     const KernelIR &kernel, const RequestedTargetProfile &compile_target,
@@ -464,7 +473,7 @@ std::shared_ptr<CachedExecution>
 getOrCreateExecution(const KernelIR &kernel,
                      const RequestedTargetProfile &target_profile,
                      const std::vector<RuntimeTensorView> &tensors,
-                     const RuntimeCapabilities &runtime,
+                     RuntimeCapabilities &runtime,
                      ObservabilityContext *obs) {
   static std::mutex cache_mutex;
   static auto *cache =
@@ -612,7 +621,7 @@ void compileAndRun(const KernelIR &kernel,
     llvm::InitializeNativeTargetAsmPrinter();
     llvm::InitializeNativeTargetAsmParser();
   });
-  const RuntimeCapabilities &runtime = cachedRuntimeCapabilities();
+  RuntimeCapabilities &runtime = cachedRuntimeCapabilities();
   auto run = [&]() {
     const bool trace_timing = std::getenv("MATCORE_TRACE_TIMING") != nullptr;
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -740,7 +749,7 @@ MatcorePlan::create(const KernelIR &kernel,
 
   // Parse target string to RequestedTargetProfile
   const RequestedTargetProfile target_profile = ParseRequestedTargetProfile(target_str);
-  const RuntimeCapabilities &runtime = cachedRuntimeCapabilities();
+  RuntimeCapabilities &runtime = cachedRuntimeCapabilities();
 
   // Full JIT compilation — this is the expensive part (done once)
   std::shared_ptr<CachedExecution> compiled =
