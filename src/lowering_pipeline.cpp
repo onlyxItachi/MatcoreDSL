@@ -19,6 +19,7 @@
 #include <string_view>
 
 #include "mlir/Conversion/Passes.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Conversion/VectorToGPU/VectorToGPU.h"
 #include "mlir/Dialect/Bufferization/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -42,30 +43,38 @@
 namespace matcore {
 namespace {
 
-// Lowers vector.multi_reduction (3D) to 1D vector.reduction + extract/insert
-// before LLVM conversion. Required for the multi-warp kernel where the MMA
-// accumulator reduction produces vector.multi_reduction ops that
-// ConvertVectorToLLVM cannot handle after ConvertGpuOpsToNVVMOps has already
-// converted surrounding ops to LLVM types.
-struct LowerVectorMultiReductionPass
-    : public mlir::PassWrapper<LowerVectorMultiReductionPass,
+// Lowers residual vector ops (multi_reduction, broadcast, transpose, shape_cast)
+// BEFORE ConvertGpuOpsToNVVMOps. This is critical because ConvertVectorToLLVMPass
+// (which would normally handle these) ALSO converts the vector<2xf16> operands of
+// nvvm.mma.sync, destroying the MMA intrinsic and causing fallback to scalar FP16.
+// By decomposing these ops before NVVM conversion, we avoid needing
+// ConvertVectorToLLVMPass entirely, preserving Tensor Core emission.
+struct LowerResidualVectorOpsPass
+    : public mlir::PassWrapper<LowerResidualVectorOpsPass,
                                mlir::OperationPass<>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LowerVectorMultiReductionPass)
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LowerResidualVectorOpsPass)
 
   llvm::StringRef getArgument() const override {
-    return "matcore-lower-vector-multi-reduction";
+    return "matcore-lower-residual-vector-ops";
   }
   llvm::StringRef getDescription() const override {
-    return "Lower vector.multi_reduction to 1D reductions";
+    return "Lower vector.multi_reduction/broadcast/transpose before NVVM conversion";
   }
   void getDependentDialects(mlir::DialectRegistry &registry) const override {
     registry.insert<mlir::vector::VectorDialect>();
   }
   void runOnOperation() override {
     mlir::RewritePatternSet patterns(&getContext());
+    // Multi-reduction: 3D accumulator reduction → 1D vector.reduction + extract/insert
     mlir::vector::populateVectorMultiReductionLoweringPatterns(
         patterns,
         mlir::vector::VectorMultiReductionLowering::InnerReduction);
+    // Broadcast: vector.broadcast → insert/extract chains
+    mlir::vector::populateVectorBroadcastLoweringPatterns(patterns);
+    // Transpose: vector.transpose → shufflevector/insert/extract
+    mlir::vector::populateVectorTransposeLoweringPatterns(
+        patterns, mlir::vector::VectorTransformsOptions());
+    // Shape cast: vector.shape_cast → insert/extract
     mlir::vector::populateVectorShapeCastLoweringPatterns(patterns);
     if (mlir::failed(mlir::applyPatternsAndFoldGreedily(
             getOperation(), std::move(patterns)))) {
@@ -766,7 +775,72 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
       run_stage("nvidia-mma-preparation", [&](mlir::PassManager &pm) {
         AddNvidiaMmaPreparationPasses(pm);
       });
-      // No RewriteMatmulAsMmaSync — vectorize() already created vector.contract
+      // Rewrite 16×8×16 linalg.matmul → nvvm.mma.sync (same as V3 single-warp)
+      // The vectorize path was abandoned because transform.structured.vectorize
+      // produces arith.mulf + vector.multi_reduction instead of vector.contract,
+      // which ConvertVectorToGPU cannot convert to nvgpu.mma.sync.
+      {
+        if (obs) {
+          obs->snapshot("nvidia-rewrite-mma-sync_pre", module);
+        }
+        [[maybe_unused]] auto rewrite_trace =
+            create_stage_trace("nvidia-rewrite-mma-sync");
+        const int stage_index = nextStageIndex();
+        const std::string ir_before = captureIrForDiagnostics(module);
+
+        // Collect existing gpu.thread_id ops BEFORE MMA rewrite
+        llvm::SmallPtrSet<mlir::Operation *, 16> pre_mma_thread_ids;
+        module->walk([&](mlir::gpu::ThreadIdOp op) {
+          pre_mma_thread_ids.insert(op.getOperation());
+        });
+
+        try {
+          ApplyNvidiaMmaRewriteToModule(module);
+        } catch (const std::exception &exc) {
+          std::string normalized = normalizeFailureMessage(exc.what());
+          std::vector<CapturedDiagnostic> captured = {{
+              .pass_name = "nvidia-rewrite-mma-sync",
+              .severity = "error",
+              .message = normalized,
+          }};
+          fail_with_report("nvidia-rewrite-mma-sync", stage_index,
+                           normalized, "nvidia-rewrite-mma-sync",
+                           std::move(captured), ir_before);
+        }
+
+        // Fix MMA lane IDs for multi-warp:
+        // RewriteMatmulAsMmaSyncOp generates gpu.thread_id x for MMA fragment
+        // positions, assuming thread_id_x == lane_id (true for single-warp).
+        // In multi-warp with block_threads_x > 32, thread_id_x ranges beyond
+        // 0-31, causing threads in warp 1+ to compute wrong MMA positions.
+        // Fix: replace NEW thread_id_x ops (from MMA rewrite) with
+        // thread_id_x % warp_size to get the correct lane_id.
+        if (mapping.block_threads_x > 32) {
+          llvm::SmallVector<mlir::gpu::ThreadIdOp, 8> mma_thread_ids;
+          module->walk([&](mlir::gpu::ThreadIdOp op) {
+            if (!pre_mma_thread_ids.contains(op.getOperation()) &&
+                op.getDimension() == mlir::gpu::Dimension::x) {
+              mma_thread_ids.push_back(op);
+            }
+          });
+
+          for (auto op : mma_thread_ids) {
+            mlir::OpBuilder builder(op->getContext());
+            builder.setInsertionPointAfter(op);
+            auto loc = op.getLoc();
+            auto c32 = builder.create<mlir::arith::ConstantIndexOp>(loc, 32);
+            auto lane =
+                builder.create<mlir::arith::RemUIOp>(loc, op.getResult(), c32);
+            llvm::SmallPtrSet<mlir::Operation *, 1> except;
+            except.insert(lane.getOperation());
+            op.getResult().replaceAllUsesExcept(lane.getResult(), except);
+          }
+        }
+
+        if (obs) {
+          obs->snapshot("nvidia-rewrite-mma-sync_post", module);
+        }
+      }
       run_stage("nvidia-launch-config", [&](mlir::PassManager &pm) {
         AddNvidiaLaunchConfigurationPasses(pm);
       });
@@ -774,7 +848,7 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
       run_stage("nvidia-loop-materialization", [&](mlir::PassManager &pm) {
         AddNvidiaLoopMaterializationPasses(pm);
       });
-      // VectorToGPU: converts vector.contract → nvgpu.mma.sync
+      // VectorToGPU: converts any remaining vector.contract → nvgpu.mma.sync
       run_stage("nvidia-vector-to-gpu", [&](mlir::PassManager &pm) {
         ConfigureNvidiaVectorToGpuStage(pm);
       });
@@ -932,26 +1006,19 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
         pm.addPass(mlir::createGpuNVVMAttachTarget(target_opts));
       });
       run_stage("nvvm-phase4-gpu-module", [&](mlir::PassManager &pm) {
+        // Match single-warp Phase 4 (gpu_nvvm_lowering.cpp:312-323).
+        // ConvertGpuOpsToNVVM is a mega-pass that internally includes
+        // arith-to-LLVM, vector-to-LLVM, memref-to-LLVM patterns — all
+        // sharing a single LLVMTypeConverter where NVVM ops are legal.
+        // Do NOT add standalone ConvertVectorToLLVM or ArithToLLVM here:
+        // they create separate type converters that corrupt nvvm.mma.sync
+        // operand types (vector<2xf16> → llvm.vec<2xf16>), causing 0 HMMA.
         auto &gpu_pm = pm.nest<mlir::gpu::GPUModuleOp>();
         gpu_pm.addPass(mlir::createStripDebugInfoPass());
-        // Lower vector.multi_reduction BEFORE LLVM conversion — the MMA
-        // accumulator produces 3D vector reductions that ConvertVectorToLLVM
-        // can't handle after ConvertGpuOpsToNVVMOps wraps them in LLVM types.
-        gpu_pm.addPass(std::make_unique<LowerVectorMultiReductionPass>());
-        gpu_pm.addPass(mlir::createCanonicalizerPass());
         mlir::ConvertGpuOpsToNVVMOpsOptions nvvm_conv_opts;
         nvvm_conv_opts.indexBitwidth = 64;
         nvvm_conv_opts.useBarePtrCallConv = false;
         gpu_pm.addPass(mlir::createConvertGpuOpsToNVVMOps(nvvm_conv_opts));
-        // Multi-warp kernels have vector.broadcast/transpose from the vectorize
-        // path that ConvertGpuOpsToNVVMOps doesn't mark as illegal. Convert them.
-        // Also convert remaining arith.constant with multi-dim vector types
-        // (the zero accumulator: dense<0.0> : vector<16x8x16xf16>).
-        gpu_pm.addPass(mlir::createConvertVectorToLLVMPass());
-        // Required: catches arith ops introduced inside gpu.module by Phase 2's
-        // module-scoped passes (NVVMToLLVM, MathToLLVM) that the func-scoped
-        // ArithToLLVM in Phase 2 intentionally skipped.
-        gpu_pm.addPass(mlir::createArithToLLVMConversionPass());
         gpu_pm.addPass(mlir::createCanonicalizerPass());
         gpu_pm.addPass(mlir::createCSEPass());
         gpu_pm.addPass(mlir::createReconcileUnrealizedCastsPass());
