@@ -29,6 +29,7 @@
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/Dialect/Vector/Transforms/LoweringPatterns.h"
 #include "mlir/Dialect/Vector/Transforms/VectorRewritePatterns.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/OperationSupport.h"
@@ -56,6 +57,9 @@ struct LowerVectorMultiReductionPass
   }
   llvm::StringRef getDescription() const override {
     return "Lower vector.multi_reduction to 1D reductions";
+  }
+  void getDependentDialects(mlir::DialectRegistry &registry) const override {
+    registry.insert<mlir::vector::VectorDialect>();
   }
   void runOnOperation() override {
     mlir::RewritePatternSet patterns(&getContext());
@@ -871,6 +875,27 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
         ConfigureNvidiaVectorToGpuStage(pm);
       });
     }
+    // Verify no residual linalg.matmul — catches silent vectorize failures
+    // that would produce garbage code or crash during NVVM lowering.
+    {
+      [[maybe_unused]] auto verify_trace =
+          create_stage_trace("nvidia-verify-no-residual-matmul");
+      const int verify_stage_index = nextStageIndex();
+      const std::string verify_ir_before = captureIrForDiagnostics(module);
+      try {
+        VerifyNoResidualNvidiaMatmulOnModule(module);
+      } catch (const std::exception &exc) {
+        std::string normalized = normalizeFailureMessage(exc.what());
+        std::vector<CapturedDiagnostic> captured = {{
+            .pass_name = "nvidia-verify-no-residual-matmul",
+            .severity = "error",
+            .message = normalized,
+        }};
+        fail_with_report("nvidia-verify-no-residual-matmul", verify_stage_index,
+                         normalized, "nvidia-verify-no-residual-matmul",
+                         std::move(captured), verify_ir_before);
+      }
+    }
     run_stage("nvidia-gpu-data-staging", [&](mlir::PassManager &pm) {
       pm.addNestedPass<mlir::func::FuncOp>(CreateGpuDataStagingPass());
     });
@@ -923,6 +948,9 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
         // Also convert remaining arith.constant with multi-dim vector types
         // (the zero accumulator: dense<0.0> : vector<16x8x16xf16>).
         gpu_pm.addPass(mlir::createConvertVectorToLLVMPass());
+        // Required: catches arith ops introduced inside gpu.module by Phase 2's
+        // module-scoped passes (NVVMToLLVM, MathToLLVM) that the func-scoped
+        // ArithToLLVM in Phase 2 intentionally skipped.
         gpu_pm.addPass(mlir::createArithToLLVMConversionPass());
         gpu_pm.addPass(mlir::createCanonicalizerPass());
         gpu_pm.addPass(mlir::createCSEPass());
