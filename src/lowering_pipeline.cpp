@@ -27,16 +27,22 @@
 #include "mlir/Dialect/GPU/Pipelines/Passes.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
+#include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Vector/Transforms/LoweringPatterns.h"
 #include "mlir/Dialect/Vector/Transforms/VectorRewritePatterns.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Pass/PassInstrumentation.h"
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -86,6 +92,486 @@ struct LowerResidualVectorOpsPass
 [[noreturn]] void fail(const std::string &message) {
   throw std::runtime_error("MatCore lowering pipeline: " + message);
 }
+
+// ============================================================================
+// Phase A (MW-7): Sub-tile loop unrolling.
+// After MMA rewrite, the K-loop body contains nested M/N sub-tile loops.
+// Unrolling them exposes 8 sequential MMA ops for Phase B accumulator hoisting.
+// ============================================================================
+struct SubTileUnrollPass
+    : public mlir::PassWrapper<SubTileUnrollPass, mlir::OperationPass<>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SubTileUnrollPass)
+
+  llvm::StringRef getArgument() const override {
+    return "matcore-sub-tile-unroll";
+  }
+  llvm::StringRef getDescription() const override {
+    return "Unroll M/N sub-tile loops to expose all MMA ops in K-loop body";
+  }
+  void runOnOperation() override {
+    mlir::Operation *op = getOperation();
+    llvm::SmallVector<mlir::scf::ForOp, 8> loopsToUnroll;
+    // Collect small-trip-count loops (sub-tile: 2 or 4 iterations).
+    int loopCount = 0;
+    op->walk([&](mlir::scf::ForOp forOp) {
+      loopCount++;
+      auto lb = forOp.getLowerBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
+      auto ub = forOp.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
+      auto step = forOp.getStep().getDefiningOp<mlir::arith::ConstantIndexOp>();
+      fprintf(stderr, "[SubTileUnroll] Loop %d: lb=%s ub=%s step=%s\n",
+              loopCount,
+              lb ? std::to_string(lb.value()).c_str() : "dynamic",
+              ub ? std::to_string(ub.value()).c_str() : "dynamic",
+              step ? std::to_string(step.value()).c_str() : "dynamic");
+      fflush(stderr);
+      if (!lb || !ub || !step || step.value() == 0)
+        return;
+      int64_t trip = (ub.value() - lb.value()) / step.value();
+      if (trip >= 2 && trip <= 4) {
+        loopsToUnroll.push_back(forOp);
+      }
+    });
+    // Unroll innermost first (reverse walk order gives outer-first, so reverse).
+    fprintf(stderr, "[SubTileUnroll] Unrolling %lu loops\n",
+            (unsigned long)loopsToUnroll.size());
+    fflush(stderr);
+    for (auto it = loopsToUnroll.rbegin(); it != loopsToUnroll.rend(); ++it) {
+      int64_t trip =
+          (*it).getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>().value() /
+          (*it).getStep().getDefiningOp<mlir::arith::ConstantIndexOp>().value();
+      auto result = mlir::loopUnrollByFactor(*it, trip);
+      fprintf(stderr, "[SubTileUnroll]   Unroll factor %ld: %s\n",
+              trip, mlir::succeeded(result) ? "OK" : "FAILED");
+      fflush(stderr);
+    }
+  }
+};
+
+// ============================================================================
+// Phase B (MW-7): K-loop accumulator hoisting.
+// Promotes MMA C accumulators from global memory to scf.for iter_args
+// (registers). Eliminates N×8 global C loads/stores per K-iteration.
+// ============================================================================
+struct AccumulatorHoistPass
+    : public mlir::PassWrapper<AccumulatorHoistPass, mlir::OperationPass<>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AccumulatorHoistPass)
+
+  llvm::StringRef getArgument() const override {
+    return "matcore-accumulator-hoist";
+  }
+  llvm::StringRef getDescription() const override {
+    return "Hoist MMA C accumulators out of K-loop as iter_args";
+  }
+
+  // Check if a value depends on anything defined inside the given block
+  // or on the loop induction variable.
+  static bool dependsOnLoop(mlir::Value val, mlir::Block *loopBody,
+                            mlir::Value iv,
+                            llvm::SmallPtrSetImpl<mlir::Value> &visited) {
+    if (!visited.insert(val).second)
+      return false;
+    if (val == iv)
+      return true;
+    auto *defOp = val.getDefiningOp();
+    if (!defOp)
+      return false; // block argument (not IV) — loop-invariant
+    if (defOp->getBlock() == loopBody) {
+      // Defined inside loop — check if its operands depend on loop
+      for (mlir::Value operand : defOp->getOperands()) {
+        if (dependsOnLoop(operand, loopBody, iv, visited))
+          return true;
+      }
+    }
+    return false;
+  }
+
+  // Clone a value's definition chain outside the loop.
+  // Only works for values that are loop-invariant (don't depend on IV).
+  static mlir::Value cloneOutsideLoop(mlir::Value val, mlir::Block *loopBody,
+                                      mlir::Value iv,
+                                      mlir::OpBuilder &builder,
+                                      mlir::IRMapping &mapping) {
+    if (mlir::Value mapped = mapping.lookupOrNull(val))
+      return mapped;
+    auto *defOp = val.getDefiningOp();
+    if (!defOp || defOp->getBlock() != loopBody) {
+      // Defined outside loop — use directly
+      mapping.map(val, val);
+      return val;
+    }
+    // Clone operands first (recursive)
+    for (mlir::Value operand : defOp->getOperands()) {
+      if (!cloneOutsideLoop(operand, loopBody, iv, builder, mapping))
+        return nullptr;
+    }
+    mlir::Operation *cloned = builder.clone(*defOp, mapping);
+    for (auto [oldRes, newRes] :
+         llvm::zip(defOp->getResults(), cloned->getResults())) {
+      mapping.map(oldRes, newRes);
+    }
+    return mapping.lookup(val);
+  }
+
+  // Represents one MMA result → extract → store pattern.
+  struct MmaStorePattern {
+    mlir::vector::ExtractOp extract;
+    mlir::memref::StoreOp store;
+  };
+
+  void runOnOperation() override {
+    mlir::Operation *top = getOperation();
+    // Find the K-loop: the outermost scf.for containing nvgpu.mma.sync ops.
+    mlir::scf::ForOp kLoop;
+    int forCount = 0;
+    llvm::SmallVector<mlir::scf::ForOp, 4> allLoops;
+    top->walk([&](mlir::scf::ForOp forOp) {
+      forCount++;
+      allLoops.push_back(forOp);
+    });
+    // Print all loops for debugging
+    for (int i = 0; i < (int)allLoops.size(); i++) {
+      auto f = allLoops[i];
+      auto lb = f.getLowerBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
+      auto ub = f.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
+      auto st = f.getStep().getDefiningOp<mlir::arith::ConstantIndexOp>();
+      int mmaCount = 0;
+      f.getBody()->walk([&](mlir::nvgpu::MmaSyncOp) { mmaCount++; });
+      fprintf(stderr, "[AccHoist] Loop[%d]: lb=%ld ub=%ld step=%ld mmas=%d\n",
+              i, lb ? (long)lb.value() : -1,
+              ub ? (long)ub.value() : -1,
+              st ? (long)st.value() : -1, mmaCount);
+    }
+    fflush(stderr);
+    
+    // Select K-loop: the OUTERMOST loop containing MMA ops
+    // (largest trip count / largest upper bound among loops with MMA)
+    for (auto &f : allLoops) {
+      bool hasMma = false;
+      f.getBody()->walk([&](mlir::nvgpu::MmaSyncOp) { hasMma = true; });
+      if (!hasMma) continue;
+      if (!kLoop) {
+        kLoop = f;
+        continue;
+      }
+      // Prefer the loop with larger upper bound (K-loop has ub=N, sub-tile has ub=32)
+      auto curUb = kLoop.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
+      auto newUb = f.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
+      if (curUb && newUb && newUb.value() > curUb.value())
+        kLoop = f;
+      else if (!curUb && newUb)
+        kLoop = f; // prefer dynamic upper bound (K-loop for variable-size)
+    }
+    fprintf(stderr, "[AccHoist] Found %d scf.for loops, K-loop=%s\n",
+            forCount, kLoop ? "YES" : "NO");
+    if (kLoop) {
+      // Print K-loop bounds info
+      auto lbCst = kLoop.getLowerBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
+      auto ubCst = kLoop.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
+      auto stepCst = kLoop.getStep().getDefiningOp<mlir::arith::ConstantIndexOp>();
+      fprintf(stderr, "[AccHoist] K-loop: lb=%ld ub=%ld step=%ld\n",
+              lbCst ? (long)lbCst.value() : -1,
+              ubCst ? (long)ubCst.value() : -1,
+              stepCst ? (long)stepCst.value() : -1);
+      // Count ALL ops in K-loop body
+      int totalOps = 0;
+      for (auto &op : *kLoop.getBody()) totalOps++;
+      fprintf(stderr, "[AccHoist] K-loop body has %d direct ops\n", totalOps);
+      // Count ALL MMA ops (including nested)
+      int totalMma = 0;
+      kLoop.getBody()->walk([&](mlir::nvgpu::MmaSyncOp) { totalMma++; });
+      fprintf(stderr, "[AccHoist] K-loop has %d total MMA ops (incl nested)\n", totalMma);
+    }
+    fflush(stderr);
+    if (!kLoop)
+      return;
+
+    mlir::Block *oldBody = kLoop.getBody();
+    mlir::Value oldIv = kLoop.getInductionVar();
+
+    // Collect MMA ops in program order.
+    llvm::SmallVector<mlir::nvgpu::MmaSyncOp, 8> oldMmas;
+    for (mlir::Operation &op : *oldBody) {
+      if (auto mma = llvm::dyn_cast<mlir::nvgpu::MmaSyncOp>(op))
+        oldMmas.push_back(mma);
+    }
+    if (oldMmas.empty())
+      return;
+    fprintf(stderr, "[AccHoist] Found %lu MMA ops in K-loop\n",
+            (unsigned long)oldMmas.size());
+    fflush(stderr);
+
+    // Collect extract→store patterns for each MMA (for post-loop stores).
+    llvm::SmallVector<llvm::SmallVector<MmaStorePattern, 4>, 8> mmaStorePatterns;
+    mmaStorePatterns.reserve(oldMmas.size());
+    for (mlir::nvgpu::MmaSyncOp mma : oldMmas) {
+      llvm::SmallVector<MmaStorePattern, 4> patterns;
+      for (mlir::Operation *user : mma.getResult().getUsers()) {
+        auto extract = llvm::dyn_cast<mlir::vector::ExtractOp>(user);
+        if (!extract)
+          continue;
+        for (mlir::Operation *eu : extract.getResult().getUsers()) {
+          auto store = llvm::dyn_cast<mlir::memref::StoreOp>(eu);
+          if (store && store.getValueToStore() == extract.getResult())
+            patterns.push_back({extract, store});
+        }
+      }
+      if (patterns.empty()) {
+        fprintf(stderr, "[AccHoist] BAIL: no extract→store pattern for MMA\n");
+        // Check what users the MMA result actually has
+        for (mlir::Operation *user : mma.getResult().getUsers()) {
+          fprintf(stderr, "[AccHoist]   user: %s\n",
+                  user->getName().getStringRef().str().c_str());
+        }
+        fflush(stderr);
+        return;
+      }
+      mmaStorePatterns.push_back(std::move(patterns));
+    }
+    fprintf(stderr, "[AccHoist] Found store patterns for all MMAs\n");
+    fflush(stderr);
+
+    // Verify store addresses are loop-invariant (don't depend on K IV).
+    for (size_t si = 0; si < mmaStorePatterns.size(); si++) {
+      for (size_t pi = 0; pi < mmaStorePatterns[si].size(); pi++) {
+        MmaStorePattern &pat = mmaStorePatterns[si][pi];
+        llvm::SmallPtrSet<mlir::Value, 16> vis;
+        if (dependsOnLoop(pat.store.getMemRef(), oldBody, oldIv, vis)) {
+          fprintf(stderr, "[AccHoist] BAIL: store[%lu][%lu] memref depends on K-loop IV\n",
+                  (unsigned long)si, (unsigned long)pi);
+          // Trace why
+          mlir::Value memref = pat.store.getMemRef();
+          auto *defOp = memref.getDefiningOp();
+          if (defOp) {
+            fprintf(stderr, "[AccHoist]   memref defined by: %s in block=%p, loopBody=%p\n",
+                    defOp->getName().getStringRef().str().c_str(),
+                    (void*)defOp->getBlock(), (void*)oldBody);
+            for (mlir::Value op : defOp->getOperands()) {
+              auto *opDef = op.getDefiningOp();
+              bool isIv = (op == oldIv);
+              fprintf(stderr, "[AccHoist]     operand: %s isIV=%d\n",
+                      opDef ? opDef->getName().getStringRef().str().c_str() : "blockarg",
+                      isIv);
+            }
+          } else {
+            fprintf(stderr, "[AccHoist]   memref is blockarg, isIV=%d\n",
+                    memref == oldIv);
+          }
+          fflush(stderr);
+          return;
+        }
+        for (size_t ii = 0; ii < pat.store.getIndices().size(); ii++) {
+          mlir::Value idx = pat.store.getIndices()[ii];
+          llvm::SmallPtrSet<mlir::Value, 16> ivis;
+          if (dependsOnLoop(idx, oldBody, oldIv, ivis)) {
+            fprintf(stderr, "[AccHoist] BAIL: store[%lu][%lu] index[%lu] depends on K-loop IV\n",
+                    (unsigned long)si, (unsigned long)pi, (unsigned long)ii);
+            fflush(stderr);
+            return;
+          }
+        }
+      }
+    }
+    fprintf(stderr, "[AccHoist] Store addresses are loop-invariant ✓\n");
+    fflush(stderr);
+
+    // Collect the set of ops that form C-load and C-store chains (to skip
+    // during cloning). These are: extract→store from MMA result, and the
+    // load→insert chain feeding MMA operand 2.
+    // IMPORTANT: Only skip ops whose ALL users are also in the C-chain.
+    // Ops shared with non-C code (e.g., subviews also used by inner loops)
+    // must NOT be skipped.
+    llvm::SmallPtrSet<mlir::Operation *, 32> cChainCandidates;
+    for (mlir::nvgpu::MmaSyncOp mma : oldMmas) {
+      // Output side: extract + store
+      for (mlir::Operation *user : mma.getResult().getUsers()) {
+        if (auto extract = llvm::dyn_cast<mlir::vector::ExtractOp>(user)) {
+          cChainCandidates.insert(extract);
+          for (mlir::Operation *eu : extract.getResult().getUsers()) {
+            if (llvm::isa<mlir::memref::StoreOp>(eu))
+              cChainCandidates.insert(eu);
+          }
+        }
+      }
+      // Input side: trace MMA operand 2 (C accumulator input) back to loads.
+      // The C input is typically: splat/insert chain from scalar memref.loads
+      mlir::Value cInput = mma.getMatrixC();
+      llvm::SmallVector<mlir::Value, 16> worklist;
+      worklist.push_back(cInput);
+      while (!worklist.empty()) {
+        mlir::Value v = worklist.pop_back_val();
+        auto *def = v.getDefiningOp();
+        if (!def || def->getBlock() != oldBody)
+          continue;
+        if (cChainCandidates.insert(def).second) {
+          for (mlir::Value operand : def->getOperands())
+            worklist.push_back(operand);
+        }
+      }
+    }
+    
+    // Filter: only skip ops whose ALL result users are also safe to skip.
+    // Iterate until convergence to handle transitive dependencies.
+    llvm::SmallPtrSet<mlir::Operation *, 32> cChainOps;
+    for (mlir::Operation *op : cChainCandidates)
+      cChainOps.insert(op);
+    
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      llvm::SmallVector<mlir::Operation *, 16> toRemove;
+      for (mlir::Operation *op : cChainOps) {
+        for (mlir::Value result : op->getResults()) {
+          for (mlir::Operation *user : result.getUsers()) {
+            if (!cChainOps.contains(user)) {
+              toRemove.push_back(op);
+              goto next_op;
+            }
+          }
+        }
+        next_op:;
+      }
+      for (mlir::Operation *op : toRemove) {
+        cChainOps.erase(op);
+        changed = true;
+      }
+    }
+    // Also exclude the MMA ops themselves from skip set (we MUST clone them)
+    for (mlir::nvgpu::MmaSyncOp mma : oldMmas)
+      cChainOps.erase(mma);
+
+    fprintf(stderr, "[AccHoist] C-chain: %lu candidates, %lu safe to skip\n",
+            (unsigned long)cChainCandidates.size(),
+            (unsigned long)cChainOps.size());
+    fflush(stderr);
+
+    // Create zero-initialized accumulators.
+    mlir::IRRewriter rewriter(kLoop.getContext());
+    rewriter.setInsertionPoint(kLoop);
+    llvm::SmallVector<mlir::Value, 8> zeroInits;
+    for (mlir::nvgpu::MmaSyncOp mma : oldMmas) {
+      auto vecTy = llvm::dyn_cast<mlir::VectorType>(mma.getResult().getType());
+      if (!vecTy)
+        return;
+      auto zeroAttr = rewriter.getZeroAttr(vecTy);
+      zeroInits.push_back(
+          rewriter.create<mlir::arith::ConstantOp>(mma.getLoc(), vecTy, zeroAttr));
+    }
+
+    // Build new init args: old iter_args + zero accumulators.
+    llvm::SmallVector<mlir::Value, 16> newInitArgs(kLoop.getInitArgs());
+    newInitArgs.append(zeroInits.begin(), zeroInits.end());
+    const unsigned oldIterCount = kLoop.getNumRegionIterArgs();
+
+    // Capture cloned MMA ops during body building.
+    llvm::SmallVector<mlir::nvgpu::MmaSyncOp, 8> newMmas;
+    auto newFor = rewriter.create<mlir::scf::ForOp>(
+        kLoop.getLoc(), kLoop.getLowerBound(), kLoop.getUpperBound(),
+        kLoop.getStep(), newInitArgs,
+        [&](mlir::OpBuilder &b, mlir::Location loc, mlir::Value iv,
+            mlir::ValueRange iterArgs) {
+          mlir::IRMapping bodyMapping;
+          bodyMapping.map(oldIv, iv);
+          for (auto [oldArg, newArg] :
+               llvm::zip(kLoop.getRegionIterArgs(),
+                         iterArgs.take_front(oldIterCount))) {
+            bodyMapping.map(oldArg, newArg);
+          }
+
+          // Clone body ops, SKIPPING C-chain ops (loads/stores for C).
+          for (mlir::Operation &op : oldBody->without_terminator()) {
+            if (cChainOps.contains(&op))
+              continue;
+            mlir::Operation *cloned = b.clone(op, bodyMapping);
+            if (auto mma = llvm::dyn_cast<mlir::nvgpu::MmaSyncOp>(cloned))
+              newMmas.push_back(mma);
+          }
+
+          // Rewire MMA operand 2 (C input) → iter_arg accumulator.
+          for (auto [idx, mma] : llvm::enumerate(newMmas)) {
+            mma->setOperand(2, iterArgs[oldIterCount + idx]);
+          }
+
+          // Build yield: old yield values + MMA results.
+          llvm::SmallVector<mlir::Value, 16> yieldVals;
+          auto oldYield =
+              llvm::cast<mlir::scf::YieldOp>(oldBody->getTerminator());
+          for (mlir::Value v : oldYield.getOperands())
+            yieldVals.push_back(bodyMapping.lookup(v));
+          for (auto mma : newMmas)
+            yieldVals.push_back(mma.getResult());
+          b.create<mlir::scf::YieldOp>(loc, yieldVals);
+        });
+
+    if (newMmas.size() != oldMmas.size())
+      return; // Safety: mismatch means something went wrong
+
+    // Create post-loop stores: extract from final accumulators → global C.
+    rewriter.setInsertionPointAfter(newFor);
+    mlir::IRMapping postLoopMapping;
+    for (auto [mmaIdx, storePatterns] : llvm::enumerate(mmaStorePatterns)) {
+      mlir::Value finalAcc =
+          newFor.getResult(kLoop.getNumResults() + mmaIdx);
+      for (MmaStorePattern &pat : storePatterns) {
+        auto pos = pat.extract.getStaticPosition();
+        mlir::Value extracted = rewriter.create<mlir::vector::ExtractOp>(
+            pat.store.getLoc(), finalAcc, pos);
+        mlir::Value memref = cloneOutsideLoop(
+            pat.store.getMemRef(), oldBody, oldIv, rewriter, postLoopMapping);
+        if (!memref)
+          return;
+        llvm::SmallVector<mlir::Value, 4> indices;
+        for (mlir::Value oldIdx : pat.store.getIndices()) {
+          mlir::Value newIdx = cloneOutsideLoop(oldIdx, oldBody, oldIv,
+                                                rewriter, postLoopMapping);
+          if (!newIdx)
+            return;
+          indices.push_back(newIdx);
+        }
+        rewriter.create<mlir::memref::StoreOp>(pat.store.getLoc(), extracted,
+                                               memref, indices);
+      }
+    }
+
+    // Replace old loop results and erase.
+    for (auto [oldRes, newRes] :
+         llvm::zip(kLoop.getResults(),
+                   newFor.getResults().take_front(kLoop.getNumResults()))) {
+      oldRes.replaceAllUsesWith(newRes);
+    }
+    rewriter.eraseOp(kLoop);
+    fprintf(stderr, "[AccHoist] SUCCESS: hoisted %lu MMA accumulators as iter_args\n",
+            (unsigned long)oldMmas.size());
+    fflush(stderr);
+  }
+};
+
+// ============================================================================
+// Phase C (MW-7): Insert gpu.barrier after shared memory copy ops.
+// Ensures all warps finish writing smem A/B before any warp reads from them.
+// ============================================================================
+struct InsertSmemBarriersPass
+    : public mlir::PassWrapper<InsertSmemBarriersPass, mlir::OperationPass<>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(InsertSmemBarriersPass)
+
+  llvm::StringRef getArgument() const override {
+    return "matcore-insert-smem-barriers";
+  }
+  llvm::StringRef getDescription() const override {
+    return "Insert gpu.barrier after shared memory copy ops";
+  }
+  void runOnOperation() override {
+    mlir::Operation *op = getOperation();
+    llvm::SmallVector<mlir::Operation *, 8> copyOps;
+    op->walk([&](mlir::linalg::CopyOp copyOp) {
+      copyOps.push_back(copyOp.getOperation());
+    });
+    for (mlir::Operation *copyOp : copyOps) {
+      mlir::OpBuilder builder(copyOp->getContext());
+      builder.setInsertionPointAfter(copyOp);
+      builder.create<mlir::gpu::BarrierOp>(copyOp->getLoc());
+    }
+  }
+};
 
 std::string dtypeName(TensorDType dtype) {
   switch (dtype) {
@@ -772,6 +1258,21 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
                   pm.addPass(mlir::createCanonicalizerPass());
                   pm.addPass(mlir::createCSEPass());
                 });
+      // === MW-7 Phase A: Sub-tile loop unrolling ===
+      // Unroll M/N sub-tile loops to expose all 8 MMA ops in K-loop body.
+      run_stage("nvidia-sub-tile-unroll", [&](mlir::PassManager &pm) {
+        pm.addPass(std::make_unique<SubTileUnrollPass>());
+        pm.addPass(mlir::createCanonicalizerPass());
+        pm.addPass(mlir::createCSEPass());
+      });
+
+      // === MW-7 Phase G: Address math simplification ===
+      // After unrolling, many address computations become constant-foldable.
+      run_stage("nvidia-address-math-simplify", [&](mlir::PassManager &pm) {
+        pm.addPass(mlir::createCanonicalizerPass());
+        pm.addPass(mlir::createCSEPass());
+      });
+
       run_stage("nvidia-mma-preparation", [&](mlir::PassManager &pm) {
         AddNvidiaMmaPreparationPasses(pm);
       });
@@ -841,6 +1342,62 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
           obs->snapshot("nvidia-rewrite-mma-sync_post", module);
         }
       }
+
+      // === MW-7 Phase B: Accumulator hoisting ===
+      // Hoist MMA C accumulators from global memory to K-loop iter_args.
+      // DEBUG: dump IR before Phase B to understand C store structure
+      {
+        std::string irStr;
+        llvm::raw_string_ostream rso(irStr);
+        module.print(rso);
+        rso.flush();
+        FILE *f = fopen("/tmp/mw_pre_phaseB.mlir", "w");
+        if (f) { fprintf(f, "%s", irStr.c_str()); fclose(f); }
+        fprintf(stderr, "[MW-7] IR dumped to /tmp/mw_pre_phaseB.mlir (%lu bytes)\n",
+                (unsigned long)irStr.size());
+        fflush(stderr);
+      }
+      run_stage("nvidia-accumulator-hoist", [&](mlir::PassManager &pm) {
+        pm.addPass(std::make_unique<AccumulatorHoistPass>());
+        pm.addPass(mlir::createCanonicalizerPass());
+        pm.addPass(mlir::createCSEPass());
+      });
+
+      // DEBUG: dump IR after Phase B
+      {
+        fprintf(stderr, "[MW-7] Entering post-Phase-B diagnostic...\n");
+        fflush(stderr);
+        
+        // Try to verify first (might crash if IR is corrupted)
+        fprintf(stderr, "[MW-7] Attempting IR verification...\n");
+        fflush(stderr);
+        if (mlir::failed(module.verify())) {
+          fprintf(stderr, "[MW-7] ERROR: IR verification FAILED after Phase B!\n");
+          fflush(stderr);
+        } else {
+          fprintf(stderr, "[MW-7] IR verification PASSED after Phase B\n");
+          fflush(stderr);
+        }
+        
+        fprintf(stderr, "[MW-7] Attempting IR dump...\n");
+        fflush(stderr);
+        std::string irStr;
+        llvm::raw_string_ostream rso(irStr);
+        module.print(rso);
+        rso.flush();
+        FILE *f = fopen("/tmp/mw_post_phaseB.mlir", "w");
+        if (f) { fprintf(f, "%s", irStr.c_str()); fclose(f); }
+        fprintf(stderr, "[MW-7] Post-Phase-B IR dumped (%lu bytes)\n",
+                (unsigned long)irStr.size());
+        fflush(stderr);
+      }
+
+      // === MW-7 Phase C: Shared memory barriers ===
+      // Ensure all warps finish writing smem A/B before any warp reads.
+      run_stage("nvidia-smem-barriers", [&](mlir::PassManager &pm) {
+        pm.addPass(std::make_unique<InsertSmemBarriersPass>());
+      });
+
       run_stage("nvidia-launch-config", [&](mlir::PassManager &pm) {
         AddNvidiaLaunchConfigurationPasses(pm);
       });
