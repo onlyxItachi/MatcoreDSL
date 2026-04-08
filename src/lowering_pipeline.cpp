@@ -573,6 +573,198 @@ struct InsertSmemBarriersPass
   }
 };
 
+// ============================================================================
+// Phase F (MW-7): Async vectorized A/B tile copies (global → shared memory).
+// Replaces linalg.copy with nvgpu.device_async_copy (CP.ASYNC.CG.SHARED.GLOBAL).
+// Each of 128 threads issues one 16-byte async copy per tile, bypassing
+// registers entirely (data flows global → L2 → shared memory directly).
+// Combines Phase F (vectorize) + Phase D (cp.async) in one pass.
+// MUST run after Phase C (barriers already inserted; this pass replaces them
+// with proper async commit/wait + barrier).
+// ============================================================================
+struct VectorizeTileCopyPass
+    : public mlir::PassWrapper<VectorizeTileCopyPass, mlir::OperationPass<>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(VectorizeTileCopyPass)
+
+  llvm::StringRef getArgument() const override {
+    return "matcore-vectorize-tile-copy";
+  }
+  llvm::StringRef getDescription() const override {
+    return "Replace linalg.copy with nvgpu.device_async_copy (CP.ASYNC)";
+  }
+
+  void runOnOperation() override {
+    mlir::Operation *top = getOperation();
+
+    // Collect global→workgroup linalg.copy ops
+    llvm::SmallVector<mlir::linalg::CopyOp, 4> copyOps;
+    top->walk([&](mlir::linalg::CopyOp copy) {
+      auto dstType = mlir::cast<mlir::MemRefType>(copy.getOutputs()[0].getType());
+      auto dstAS = dstType.getMemorySpace();
+      if (!dstAS) return;
+      auto gpuAS = mlir::dyn_cast<mlir::gpu::AddressSpaceAttr>(dstAS);
+      if (!gpuAS || gpuAS.getValue() != mlir::gpu::AddressSpace::Workgroup)
+        return;
+      copyOps.push_back(copy);
+    });
+    if (copyOps.empty()) return;
+
+    // Find gpu.launch to get thread block dimensions
+    mlir::gpu::LaunchOp launch;
+    top->walk([&](mlir::gpu::LaunchOp l) { launch = l; });
+    if (!launch) {
+      fprintf(stderr, "[VecCopy] No gpu.launch found, skipping\n");
+      fflush(stderr);
+      return;
+    }
+
+    auto getConstIndex = [](mlir::Value v) -> int64_t {
+      if (auto cst = v.getDefiningOp<mlir::arith::ConstantIndexOp>())
+        return cst.value();
+      return -1;
+    };
+    int64_t blockDimX = getConstIndex(launch.getBlockSizeX());
+    int64_t blockDimY = getConstIndex(launch.getBlockSizeY());
+    if (blockDimX < 0 || blockDimY < 0) {
+      fprintf(stderr, "[VecCopy] Non-constant block dims, skipping\n");
+      fflush(stderr);
+      return;
+    }
+    int64_t numThreads = blockDimX * blockDimY;
+
+    fprintf(stderr, "[VecCopy] Block dims: %ldx%ld = %ld threads\n",
+            blockDimX, blockDimY, numThreads);
+    fflush(stderr);
+
+    // cp.async copies 16 bytes = 8 f16 elements per instruction
+    const int64_t vecSize = 8;
+    auto &ctx = *top->getContext();
+    auto tokenType = mlir::nvgpu::DeviceAsyncTokenType::get(&ctx);
+
+    // Collect Phase C barriers adjacent to copies (to replace with async sync)
+    llvm::SmallVector<mlir::gpu::BarrierOp, 4> barriersToRemove;
+    for (auto copy : copyOps) {
+      auto *next = copy->getNextNode();
+      if (next) {
+        if (auto barrier = mlir::dyn_cast<mlir::gpu::BarrierOp>(next))
+          barriersToRemove.push_back(barrier);
+      }
+    }
+
+    llvm::SmallVector<mlir::Value, 4> asyncTokens;
+    mlir::Operation *lastNewOp = nullptr;
+    int replaced = 0;
+
+    for (mlir::linalg::CopyOp copy : copyOps) {
+      mlir::Value src = copy.getInputs()[0];
+      mlir::Value dst = copy.getOutputs()[0];
+
+      auto srcType = mlir::cast<mlir::MemRefType>(src.getType());
+      auto dstType = mlir::cast<mlir::MemRefType>(dst.getType());
+
+      // Validate shape: 2D, f16, inner stride 1
+      auto shape = srcType.getShape();
+      if (shape.size() != 2 || !srcType.getElementType().isF16())
+        continue;
+
+      int64_t rows = shape[0], cols = shape[1];
+      if (cols % vecSize != 0) continue;
+
+      // Verify inner stride is 1 (contiguous elements for cp.async)
+      int64_t offset;
+      llvm::SmallVector<int64_t, 2> srcStrides;
+      if (mlir::failed(mlir::getStridesAndOffset(srcType, srcStrides, offset)))
+        continue;
+      if (srcStrides.back() != 1) continue;
+
+      int64_t vecsPerRow = cols / vecSize;
+      int64_t totalVecs = rows * vecsPerRow;
+      if (totalVecs % numThreads != 0) continue;
+      int64_t vecsPerThread = totalVecs / numThreads;
+
+      fprintf(stderr, "[VecCopy] Async copy %ldx%ld: %ld vecs/thread, "
+              "vec_size=%ld (cp.async 16B)\n",
+              rows, cols, vecsPerThread, vecSize);
+      fflush(stderr);
+
+      mlir::OpBuilder b(copy);
+      mlir::Location loc = copy.getLoc();
+
+      // Thread IDs → linear thread index
+      auto tidX = b.create<mlir::gpu::ThreadIdOp>(loc, mlir::gpu::Dimension::x);
+      auto tidY = b.create<mlir::gpu::ThreadIdOp>(loc, mlir::gpu::Dimension::y);
+      auto blockDimXVal = b.create<mlir::arith::ConstantIndexOp>(loc, blockDimX);
+      auto linearTid = b.create<mlir::arith::AddIOp>(loc,
+          b.create<mlir::arith::MulIOp>(loc, tidY, blockDimXVal), tidX);
+
+      auto vecsPerRowVal = b.create<mlir::arith::ConstantIndexOp>(loc, vecsPerRow);
+      auto vecSizeVal = b.create<mlir::arith::ConstantIndexOp>(loc, vecSize);
+      auto dstElements = b.getIntegerAttr(b.getIndexType(), vecSize);
+
+      for (int64_t v = 0; v < vecsPerThread; ++v) {
+        mlir::Value vecIdx;
+        if (vecsPerThread == 1) {
+          vecIdx = linearTid;
+        } else {
+          auto off = b.create<mlir::arith::ConstantIndexOp>(loc, v * numThreads);
+          vecIdx = b.create<mlir::arith::AddIOp>(loc, linearTid, off);
+        }
+
+        // row = vecIdx / vecsPerRow, col = (vecIdx % vecsPerRow) * vecSize
+        auto row = b.create<mlir::arith::DivUIOp>(loc, vecIdx, vecsPerRowVal);
+        auto colVec = b.create<mlir::arith::RemUIOp>(loc, vecIdx, vecsPerRowVal);
+        auto col = b.create<mlir::arith::MulIOp>(loc, colVec, vecSizeVal);
+
+        // nvgpu.device_async_copy: src[row,col] → dst[row,col], 8 elements
+        // Hardware: CP.ASYNC.CG.SHARED.GLOBAL [smem], [global], 16
+        auto token = b.create<mlir::nvgpu::DeviceAsyncCopyOp>(
+            loc, tokenType,
+            dst, mlir::ValueRange{row, col},   // shared mem destination
+            src, mlir::ValueRange{row, col},   // global mem source
+            dstElements,
+            /*srcElements=*/mlir::Value(),     // no partial copy
+            /*bypassL1=*/mlir::UnitAttr());    // bypass L1 for streaming
+
+        asyncTokens.push_back(token.getAsyncToken());
+        lastNewOp = token.getOperation();
+      }
+
+      ++replaced;
+    }
+
+    if (replaced == 0) return;
+
+    // After all async copies: commit group → wait → barrier
+    mlir::OpBuilder b(lastNewOp);
+    b.setInsertionPointAfter(lastNewOp);
+    auto loc = lastNewOp->getLoc();
+
+    // Commit all pending async copies into one group
+    auto groupToken = b.create<mlir::nvgpu::DeviceAsyncCreateGroupOp>(
+        loc, tokenType, asyncTokens);
+
+    // Wait for the group to complete (numGroups=0 means wait for ALL pending)
+    b.create<mlir::nvgpu::DeviceAsyncWaitOp>(
+        loc, groupToken.getResult(),
+        b.getI32IntegerAttr(0));
+
+    // Barrier: all threads must see complete shared memory before MMA reads
+    b.create<mlir::gpu::BarrierOp>(loc);
+
+    // Remove Phase C barriers (now superseded by async wait + new barrier)
+    for (auto barrier : barriersToRemove)
+      barrier->erase();
+
+    // Erase original linalg.copy ops
+    for (auto copy : copyOps)
+      copy->erase();
+
+    fprintf(stderr, "[VecCopy] Replaced %d linalg.copy ops with "
+            "nvgpu.device_async_copy (CP.ASYNC)\n", replaced);
+    fflush(stderr);
+  }
+};
+
 std::string dtypeName(TensorDType dtype) {
   switch (dtype) {
     case TensorDType::kFloat32:
@@ -1396,6 +1588,15 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
       // Ensure all warps finish writing smem A/B before any warp reads.
       run_stage("nvidia-smem-barriers", [&](mlir::PassManager &pm) {
         pm.addPass(std::make_unique<InsertSmemBarriersPass>());
+      });
+
+      // === MW-7 Phase F: Vectorize A/B tile copies ===
+      // Replace linalg.copy with cooperative vector.load/vector.store (LDG.128).
+      // Must run after Phase C (barriers in place) and before loop materialization.
+      run_stage("nvidia-vectorize-tile-copy", [&](mlir::PassManager &pm) {
+        pm.addPass(std::make_unique<VectorizeTileCopyPass>());
+        pm.addPass(mlir::createCanonicalizerPass());
+        pm.addPass(mlir::createCSEPass());
       });
 
       run_stage("nvidia-launch-config", [&](mlir::PassManager &pm) {
