@@ -609,53 +609,30 @@ struct VectorizeTileCopyPass
     });
     if (copyOps.empty()) return;
 
-    // Find gpu.launch to get thread block dimensions
-    mlir::gpu::LaunchOp launch;
-    top->walk([&](mlir::gpu::LaunchOp l) { launch = l; });
-    if (!launch) {
-      fprintf(stderr, "[VecCopy] No gpu.launch found, skipping\n");
-      fflush(stderr);
-      return;
-    }
-
     auto getConstIndex = [](mlir::Value v) -> int64_t {
       if (auto cst = v.getDefiningOp<mlir::arith::ConstantIndexOp>())
         return cst.value();
       return -1;
     };
-    int64_t blockDimX = getConstIndex(launch.getBlockSizeX());
-    int64_t blockDimY = getConstIndex(launch.getBlockSizeY());
-    if (blockDimX < 0 || blockDimY < 0) {
-      fprintf(stderr, "[VecCopy] Non-constant block dims, skipping\n");
-      fflush(stderr);
-      return;
-    }
-    int64_t numThreads = blockDimX * blockDimY;
-
-    fprintf(stderr, "[VecCopy] Block dims: %ldx%ld = %ld threads\n",
-            blockDimX, blockDimY, numThreads);
-    fflush(stderr);
 
     // cp.async copies 16 bytes = 8 f16 elements per instruction
     const int64_t vecSize = 8;
     auto &ctx = *top->getContext();
     auto tokenType = mlir::nvgpu::DeviceAsyncTokenType::get(&ctx);
 
-    // Collect Phase C barriers adjacent to copies (to replace with async sync)
-    llvm::SmallVector<mlir::gpu::BarrierOp, 4> barriersToRemove;
-    for (auto copy : copyOps) {
-      auto *next = copy->getNextNode();
-      if (next) {
-        if (auto barrier = mlir::dyn_cast<mlir::gpu::BarrierOp>(next))
-          barriersToRemove.push_back(barrier);
-      }
-    }
-
     llvm::SmallVector<mlir::Value, 4> asyncTokens;
+    llvm::SmallVector<mlir::linalg::CopyOp, 4> replacedCopies;
     mlir::Operation *lastNewOp = nullptr;
     int replaced = 0;
 
     for (mlir::linalg::CopyOp copy : copyOps) {
+      // Resolve enclosing gpu.launch for this specific copy
+      auto launch = copy->getParentOfType<mlir::gpu::LaunchOp>();
+      if (!launch) continue;
+      int64_t blockDimX = getConstIndex(launch.getBlockSizeX());
+      int64_t blockDimY = getConstIndex(launch.getBlockSizeY());
+      if (blockDimX < 0 || blockDimY < 0) continue;
+      int64_t numThreads = blockDimX * blockDimY;
       mlir::Value src = copy.getInputs()[0];
       mlir::Value dst = copy.getOutputs()[0];
 
@@ -723,13 +700,14 @@ struct VectorizeTileCopyPass
             src, mlir::ValueRange{row, col},   // global mem source
             dstElements,
             /*srcElements=*/mlir::Value(),     // no partial copy
-            /*bypassL1=*/mlir::UnitAttr());    // bypass L1 for streaming
+            /*bypassL1=*/mlir::UnitAttr::get(b.getContext())); // CG mode: bypass L1
 
         asyncTokens.push_back(token.getAsyncToken());
         lastNewOp = token.getOperation();
       }
 
       ++replaced;
+      replacedCopies.push_back(copy);
     }
 
     if (replaced == 0) return;
@@ -751,12 +729,22 @@ struct VectorizeTileCopyPass
     // Barrier: all threads must see complete shared memory before MMA reads
     b.create<mlir::gpu::BarrierOp>(loc);
 
+    // Collect Phase C barriers adjacent to successfully replaced copies only
+    llvm::SmallVector<mlir::gpu::BarrierOp, 4> barriersToRemove;
+    for (auto copy : replacedCopies) {
+      auto *next = copy->getNextNode();
+      if (next) {
+        if (auto barrier = mlir::dyn_cast<mlir::gpu::BarrierOp>(next))
+          barriersToRemove.push_back(barrier);
+      }
+    }
+
     // Remove Phase C barriers (now superseded by async wait + new barrier)
     for (auto barrier : barriersToRemove)
       barrier->erase();
 
-    // Erase original linalg.copy ops
-    for (auto copy : copyOps)
+    // Erase only successfully replaced linalg.copy ops
+    for (auto copy : replacedCopies)
       copy->erase();
 
     fprintf(stderr, "[VecCopy] Replaced %d linalg.copy ops with "
