@@ -779,12 +779,29 @@ struct PadSharedMemoryPass
   void runOnOperation() override {
     auto *top = getOperation();
 
+    // Find the single gpu.launch (assert uniqueness for safety)
     mlir::gpu::LaunchOp launch;
-    top->walk([&](mlir::gpu::LaunchOp op) { launch = op; });
+    top->walk([&](mlir::gpu::LaunchOp op) {
+      assert(!launch && "PadSharedMemoryPass: multiple gpu.launch ops");
+      launch = op;
+    });
     if (!launch) return;
 
     auto wgAttrs = launch.getWorkgroupAttributions();
     if (wgAttrs.empty()) return;
+
+    // Guard: only pad when we see exactly 2 rank-2 attrs (smemA + smemB)
+    unsigned rank2Count = 0;
+    for (auto attr : wgAttrs) {
+      if (mlir::cast<mlir::MemRefType>(attr.getType()).getRank() == 2)
+        ++rank2Count;
+    }
+    if (rank2Count != 2) {
+      fprintf(stderr, "[PadSmem] Expected 2 rank-2 attrs, found %u — skipping\n",
+              rank2Count);
+      fflush(stderr);
+      return;
+    }
 
     bool changed = false;
     for (auto attr : wgAttrs) {
