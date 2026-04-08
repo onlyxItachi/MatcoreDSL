@@ -162,7 +162,7 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
         config.warp_tile_n = 32;
         config.k_tile = pickTilingFactor(k, 16);
         config.mma_micro_k = 16;
-        config.use_vectorize_path = true;
+        config.use_vectorize_path = false;
         // Block dims: 64×2×1 = 128 threads (2 warps in X, 2 in Y)
         config.block_threads_x = 64;
         config.block_threads_y = 2;
