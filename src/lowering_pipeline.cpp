@@ -753,6 +753,483 @@ struct VectorizeTileCopyPass
   }
 };
 
+// ═══════════════════════════════════════════════════════════════════════════
+// MW-7 Phase H: Shared Memory Bank Conflict Avoidance (Padding)
+//
+// Adds +1 column padding to shared memory buffers to break bank conflict
+// stride patterns. For memref<64x16xf16, wg>, every 4 rows (32 bytes stride
+// × 4 = 128 = 32 banks cycle) map to the same banks. With padding to
+// memref<64x17xf16, wg>, the stride becomes 34 bytes, breaking the cycle.
+//
+// This pass modifies workgroup attribution types and propagates the type
+// change through all SubViewOp chains. Must run BEFORE Phase E (which
+// creates smemA1/smemB1 based on existing attribution types).
+// ═══════════════════════════════════════════════════════════════════════════
+struct PadSharedMemoryPass
+    : public mlir::PassWrapper<PadSharedMemoryPass, mlir::OperationPass<>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PadSharedMemoryPass)
+
+  llvm::StringRef getArgument() const override {
+    return "matcore-pad-shared-memory";
+  }
+  llvm::StringRef getDescription() const override {
+    return "Pad shared memory to avoid bank conflicts (+1 column)";
+  }
+
+  void runOnOperation() override {
+    auto *top = getOperation();
+
+    mlir::gpu::LaunchOp launch;
+    top->walk([&](mlir::gpu::LaunchOp op) { launch = op; });
+    if (!launch) return;
+
+    auto wgAttrs = launch.getWorkgroupAttributions();
+    if (wgAttrs.empty()) return;
+
+    bool changed = false;
+    for (auto attr : wgAttrs) {
+      auto memType = mlir::cast<mlir::MemRefType>(attr.getType());
+      if (memType.getRank() != 2) continue;
+      auto shape = memType.getShape();
+      int64_t lastDim = shape.back();
+
+      // Compute element size in bytes for alignment
+      unsigned elemBits = memType.getElementTypeBitWidth();
+      unsigned elemBytes = (elemBits + 7) / 8;
+
+      // cp.async requires 16-byte aligned destinations.
+      // Pad by the minimum aligned amount that also breaks bank conflicts.
+      // For f16 (2B): 16/2 = 8 elements alignment unit.
+      unsigned alignElements = 16 / elemBytes;
+      if (alignElements < 1) alignElements = 1;
+
+      // Pad by one alignment unit (e.g., 8 f16 elements = 16 bytes)
+      // This breaks the bank conflict stride while maintaining cp.async alignment.
+      int64_t padAmount = alignElements;
+      int64_t paddedDim = lastDim + padAmount;
+
+      llvm::SmallVector<int64_t, 2> paddedShape{shape[0], paddedDim};
+      auto paddedType = mlir::MemRefType::get(
+          paddedShape, memType.getElementType(),
+          mlir::AffineMap(), memType.getMemorySpace());
+
+      attr.setType(paddedType);
+
+      // Propagate type change through all SubViewOp chains rooted at this attr
+      propagateTypeChange(attr);
+
+      fprintf(stderr, "[PadSmem] %ldx%ld -> %ldx%ld (pad=%ld, %dB-aligned)\n",
+              shape[0], shape[1], paddedShape[0], paddedShape[1],
+              padAmount, alignElements * elemBytes);
+      fflush(stderr);
+      changed = true;
+    }
+
+    if (!changed) {
+      fprintf(stderr, "[PadSmem] No workgroup attrs to pad\n");
+      fflush(stderr);
+    }
+  }
+
+private:
+  void propagateTypeChange(mlir::Value root) {
+    // BFS: find all SubViewOps that transitively depend on root as source,
+    // and update their result types to reflect the new source strides.
+    llvm::SmallVector<mlir::Value, 8> worklist;
+    worklist.push_back(root);
+
+    while (!worklist.empty()) {
+      auto val = worklist.pop_back_val();
+      for (auto &use : val.getUses()) {
+        auto *user = use.getOwner();
+        if (auto sv = mlir::dyn_cast<mlir::memref::SubViewOp>(user)) {
+          auto sourceType =
+              mlir::cast<mlir::MemRefType>(sv.getSource().getType());
+          auto newResultType = mlir::cast<mlir::MemRefType>(
+              mlir::memref::SubViewOp::inferResultType(
+                  sourceType, sv.getStaticOffsets(), sv.getStaticSizes(),
+                  sv.getStaticStrides()));
+          sv.getResult().setType(newResultType);
+          // Continue propagation through this subview's users
+          worklist.push_back(sv.getResult());
+        }
+      }
+    }
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MW-7 Phase E: Double-Buffer K-Loop (Software Pipelining)
+//
+// Transforms the K-loop to use ping-pong shared memory buffers with cp.async
+// overlap. After this pass, each iteration's MMA compute overlaps with the
+// NEXT iteration's memory prefetch, hiding global memory latency.
+//
+// Input pattern  (post-Phase-F):
+//   gpu.launch workgroup(smemA0, smemB0)
+//     scf.for k = 0 to K step 16 iter_args(acc0..3)
+//       srcA = subview globalA[0, k]; srcB = subview globalB[k, 0]
+//       async_copy srcA → smemA0; async_copy srcB → smemB0
+//       create_group; wait(group, 0); barrier
+//       ... MMA ops using smemA0, smemB0 ...
+//       barrier; yield acc0..3
+//
+// Output pattern (double-buffered):
+//   gpu.launch workgroup(smemA0, smemB0, smemA1, smemB1)
+//     // Prologue: prefetch k=0 (no wait)
+//     async_copy globalA[0,0] → smemA0; async_copy globalB[0,0] → smemB0
+//     create_group → prologue_token
+//
+//     scf.for k iter_args(acc0..3, readA, readB, writeA, writeB, groupToken)
+//       // TOP: wait for previous prefetch
+//       wait(groupToken, 0); barrier
+//       // PREFETCH: issue next tile (overlapped with compute below)
+//       k_next = k + step
+//       token = scf.if(k_next < K) {
+//         async_copy globalA[0,k_next] → writeA
+//         async_copy globalB[k_next,0] → writeB
+//         create_group → tok; yield tok
+//       } else { empty_group → dummy; yield dummy }
+//       // COMPUTE: MMA on readA/readB (overlaps with prefetch!)
+//       ... MMA ops using readA, readB ...
+//       yield acc, writeA, writeB, readA, readB, token  // swap buffers
+// ═══════════════════════════════════════════════════════════════════════════
+struct DoubleBufferKLoopPass
+    : public mlir::PassWrapper<DoubleBufferKLoopPass, mlir::OperationPass<>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(DoubleBufferKLoopPass)
+
+  llvm::StringRef getArgument() const override {
+    return "matcore-double-buffer-kloop";
+  }
+  llvm::StringRef getDescription() const override {
+    return "Double-buffer K-loop: ping-pong shared memory with cp.async overlap";
+  }
+
+  void runOnOperation() override {
+    auto *top = getOperation();
+    auto *ctx = top->getContext();
+
+    // ── 1. Find gpu.launch ──────────────────────────────────────────────
+    mlir::gpu::LaunchOp launch;
+    top->walk([&](mlir::gpu::LaunchOp op) { launch = op; });
+    if (!launch) return;
+
+    // ── 2. Get existing workgroup attributions (smemA0, smemB0) ─────────
+    auto wgAttrs = launch.getWorkgroupAttributions();
+    if (wgAttrs.size() < 2) return;
+    auto smemA0 = wgAttrs[0];
+    auto smemB0 = wgAttrs[1];
+    auto smemAType = mlir::cast<mlir::MemRefType>(smemA0.getType());
+    auto smemBType = mlir::cast<mlir::MemRefType>(smemB0.getType());
+    auto loc = launch.getLoc();
+
+    // ── 3. Add new workgroup attributions (smemA1, smemB1) ──────────────
+    auto smemA1 = launch.addWorkgroupAttribution(smemAType, loc);
+    auto smemB1 = launch.addWorkgroupAttribution(smemBType, loc);
+
+    fprintf(stderr, "[DoubleBuffer] Added smemA1(%ldx%ld), smemB1(%ldx%ld) "
+            "workgroup attrs\n",
+            smemAType.getShape()[0], smemAType.getShape()[1],
+            smemBType.getShape()[0], smemBType.getShape()[1]);
+    fflush(stderr);
+
+    // ── 4. Find K-loop (scf.for with exactly 4 accumulator iter_args) ──
+    mlir::scf::ForOp kLoop;
+    launch.getBody().walk([&](mlir::scf::ForOp forOp) {
+      if (forOp.getNumResults() == 4) {
+        kLoop = forOp;
+        return mlir::WalkResult::interrupt();
+      }
+      return mlir::WalkResult::advance();
+    });
+    if (!kLoop) {
+      fprintf(stderr, "[DoubleBuffer] No K-loop with 4 iter_args found\n");
+      fflush(stderr);
+      return;
+    }
+
+    // ── 5. Collect ops in K-loop body ───────────────────────────────────
+    auto *kBody = kLoop.getBody();
+    auto kIV = kLoop.getInductionVar();
+
+    llvm::SmallVector<mlir::memref::SubViewOp, 2> srcSubviews;
+    llvm::SmallVector<mlir::nvgpu::DeviceAsyncCopyOp, 2> asyncCopies;
+    mlir::nvgpu::DeviceAsyncCreateGroupOp createGroupOp;
+    mlir::nvgpu::DeviceAsyncWaitOp waitOp;
+    llvm::SmallVector<mlir::gpu::BarrierOp, 4> barriers;
+
+    for (auto &op : *kBody) {
+      if (auto sv = mlir::dyn_cast<mlir::memref::SubViewOp>(&op)) {
+        for (auto operand : sv->getOperands())
+          if (operand == kIV) { srcSubviews.push_back(sv); break; }
+      }
+      if (auto ac = mlir::dyn_cast<mlir::nvgpu::DeviceAsyncCopyOp>(&op))
+        asyncCopies.push_back(ac);
+      if (auto cg = mlir::dyn_cast<mlir::nvgpu::DeviceAsyncCreateGroupOp>(&op))
+        createGroupOp = cg;
+      if (auto w = mlir::dyn_cast<mlir::nvgpu::DeviceAsyncWaitOp>(&op))
+        waitOp = w;
+      if (auto b = mlir::dyn_cast<mlir::gpu::BarrierOp>(&op))
+        barriers.push_back(b);
+    }
+
+    if (srcSubviews.size() != 2 || asyncCopies.size() != 2 ||
+        !createGroupOp || !waitOp || barriers.size() < 2) {
+      fprintf(stderr, "[DoubleBuffer] Unexpected loop body structure "
+              "(srcSV=%lu, asyncCP=%lu, barriers=%lu), skipping\n",
+              srcSubviews.size(), asyncCopies.size(), barriers.size());
+      fflush(stderr);
+      return;
+    }
+
+    auto postCopyBarrier = barriers[0];
+    auto endBarrier = barriers.back();
+
+    // ── 6. BUILD PROLOGUE (before K-loop, NO wait/barrier) ──────────────
+    // Clone the prefetch sequence (srcSubviews → asyncCopies → createGroup)
+    // with K mapped to the loop's lower bound. No wait or barrier — the
+    // first loop iteration's "wait at top" covers the prologue copies.
+    // Guard: skip if loop is zero-trip (defensive — MW path guarantees K≥384).
+    mlir::IRRewriter rewriter(ctx);
+
+    // Verify loop is non-empty (lb < ub) — required for prologue correctness
+    {
+      auto lbCst = kLoop.getLowerBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
+      auto ubCst = kLoop.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
+      if (lbCst && ubCst && lbCst.value() >= ubCst.value()) {
+        fprintf(stderr, "[DoubleBuffer] Zero-trip K-loop (lb=%ld >= ub=%ld), skipping\n",
+                (long)lbCst.value(), (long)ubCst.value());
+        fflush(stderr);
+        return;
+      }
+    }
+
+    rewriter.setInsertionPoint(kLoop);
+
+    mlir::IRMapping prologueMap;
+    prologueMap.map(kIV, kLoop.getLowerBound());
+
+    auto startIt = mlir::Block::iterator(srcSubviews[0].getOperation());
+    auto endIt = std::next(
+        mlir::Block::iterator(createGroupOp.getOperation()));
+    for (auto it = startIt; it != endIt; ++it) {
+      rewriter.clone(*it, prologueMap);
+    }
+    // Retrieve prologue's create_group token via the IRMapping
+    auto prologueGroupToken =
+        prologueMap.lookupOrDefault(createGroupOp.getAsyncToken());
+
+    fprintf(stderr, "[DoubleBuffer] Prologue: k=lb prefetch issued (no wait)\n");
+    fflush(stderr);
+
+    // ── 7. replaceWithAdditionalYields ──────────────────────────────────
+    // Add 5 new iter_args:
+    //   readA(init=smemA0), readB(init=smemB0),
+    //   writeA(init=smemA1), writeB(init=smemB1),
+    //   groupToken(init=prologueGroupToken)
+    //
+    // replaceInitOperandUsesInLoop=true: all uses of smemA0→readA, smemB0→readB
+    // inside the loop body (compute subviews will read from correct buffer).
+    //
+    // yieldFn: swap read/write buffers; token is a placeholder (replaced later).
+    auto yieldFn = [](mlir::OpBuilder &b, mlir::Location loc,
+                      mlir::ArrayRef<mlir::BlockArgument> newBBArgs)
+        -> mlir::SmallVector<mlir::Value> {
+      // [0]=readA, [1]=readB, [2]=writeA, [3]=writeB, [4]=groupToken
+      // Swap: next readA←writeA, readB←writeB, writeA←readA, writeB←readB
+      // Token: yield back same (placeholder — replaced after scf.if creation)
+      return {newBBArgs[2], newBBArgs[3], newBBArgs[0], newBBArgs[1],
+              newBBArgs[4]};
+    };
+
+    auto result = kLoop.replaceWithAdditionalYields(
+        rewriter,
+        mlir::ValueRange{smemA0, smemB0, smemA1, smemB1, prologueGroupToken},
+        /*replaceInitOperandUsesInLoop=*/true,
+        yieldFn);
+
+    if (mlir::failed(result)) {
+      fprintf(stderr, "[DoubleBuffer] replaceWithAdditionalYields FAILED\n");
+      fflush(stderr);
+      signalPassFailure();
+      return;
+    }
+
+    auto newKLoop = mlir::cast<mlir::scf::ForOp>((*result).getOperation());
+    auto *newBody = newKLoop.getBody();
+    auto newIV = newKLoop.getInductionVar();
+
+    // Block args: [0]=IV, [1..4]=acc0..3, [5..9]=readA,readB,writeA,writeB,groupToken
+    auto readA      = newBody->getArgument(5);
+    auto readB      = newBody->getArgument(6);
+    auto writeA     = newBody->getArgument(7);
+    auto writeB     = newBody->getArgument(8);
+    auto groupToken = newBody->getArgument(9);
+
+    fprintf(stderr, "[DoubleBuffer] replaceWithAdditionalYields OK, "
+            "%d iter_args\n", (int)newKLoop.getNumResults());
+    fflush(stderr);
+
+    // ── 8. Re-collect ops in NEW loop body ──────────────────────────────
+    // After replaceWithAdditionalYields, ops were moved (pointers valid) but
+    // we re-collect to be safe and use the new induction variable.
+    srcSubviews.clear();
+    asyncCopies.clear();
+    createGroupOp = nullptr;
+    waitOp = nullptr;
+    barriers.clear();
+
+    for (auto &op : *newBody) {
+      if (auto sv = mlir::dyn_cast<mlir::memref::SubViewOp>(&op)) {
+        for (auto operand : sv->getOperands())
+          if (operand == newIV) { srcSubviews.push_back(sv); break; }
+      }
+      if (auto ac = mlir::dyn_cast<mlir::nvgpu::DeviceAsyncCopyOp>(&op))
+        asyncCopies.push_back(ac);
+      if (auto cg = mlir::dyn_cast<mlir::nvgpu::DeviceAsyncCreateGroupOp>(&op))
+        createGroupOp = cg;
+      if (auto w = mlir::dyn_cast<mlir::nvgpu::DeviceAsyncWaitOp>(&op))
+        waitOp = w;
+      if (auto b = mlir::dyn_cast<mlir::gpu::BarrierOp>(&op))
+        barriers.push_back(b);
+    }
+
+    if (srcSubviews.size() != 2 || asyncCopies.size() != 2 ||
+        !createGroupOp || !waitOp || barriers.size() < 2) {
+      fprintf(stderr, "[DoubleBuffer] Post-rewrite: unexpected structure\n");
+      fflush(stderr);
+      signalPassFailure();
+      return;
+    }
+    postCopyBarrier = barriers[0];
+    endBarrier = barriers.back();
+
+    // ── 9. Insert wait + barrier at TOP of loop body ────────────────────
+    // This waits for the previous iteration's prefetch (or the prologue
+    // on the first iteration). Placed before any other ops.
+    rewriter.setInsertionPointToStart(newBody);
+    rewriter.create<mlir::nvgpu::DeviceAsyncWaitOp>(
+        loc, groupToken,
+        rewriter.getI32IntegerAttr(0));  // wait_group(0) = wait for ALL
+    rewriter.create<mlir::gpu::BarrierOp>(loc);
+
+    // ── 10. Find first compute op (warp subview using readA/readB) ──────
+    mlir::Operation *firstComputeOp = nullptr;
+    for (auto &op : *newBody) {
+      if (auto sv = mlir::dyn_cast<mlir::memref::SubViewOp>(&op)) {
+        if (sv.getSource() == readA || sv.getSource() == readB) {
+          firstComputeOp = &op;
+          break;
+        }
+      }
+    }
+    if (!firstComputeOp) {
+      fprintf(stderr, "[DoubleBuffer] Cannot find compute section "
+              "(no warp subview of readA/readB)\n");
+      fflush(stderr);
+      signalPassFailure();
+      return;
+    }
+
+    // ── 11. Insert scf.if (conditional prefetch) before compute ─────────
+    // This is placed BEFORE the MMA section so the async copies can overlap
+    // with the MMA compute phase that follows.
+    rewriter.setInsertionPoint(firstComputeOp);
+
+    auto kStep  = newKLoop.getStep();
+    auto kUpper = newKLoop.getUpperBound();
+    auto kNext  = rewriter.create<mlir::arith::AddIOp>(loc, newIV, kStep);
+    auto hasNext = rewriter.create<mlir::arith::CmpIOp>(
+        loc, mlir::arith::CmpIPredicate::slt, kNext, kUpper);
+
+    auto tokenType = mlir::nvgpu::DeviceAsyncTokenType::get(ctx);
+    auto ifOp = rewriter.create<mlir::scf::IfOp>(
+        loc, mlir::TypeRange{tokenType}, hasNext,
+        /*withElseRegion=*/true);
+
+    // ── 11a. THEN block: prefetch next K-tile ───────────────────────────
+    {
+      auto &thenBlock = ifOp.getThenRegion().front();
+      rewriter.setInsertionPointToStart(&thenBlock);
+
+      // Clone source subviews with k → k_next
+      mlir::IRMapping ifMap;
+      ifMap.map(newIV, kNext.getResult());
+      auto pfSrcA = rewriter.clone(*srcSubviews[0].getOperation(), ifMap);
+      auto pfSrcB = rewriter.clone(*srcSubviews[1].getOperation(), ifMap);
+
+      // Extract copy indices from old async copies (defined in loop body,
+      // accessible from nested scf.if)
+      auto aSrcIndices =
+          llvm::SmallVector<mlir::Value>(asyncCopies[0].getSrcIndices());
+      auto aDstIndices =
+          llvm::SmallVector<mlir::Value>(asyncCopies[0].getDstIndices());
+      auto bSrcIndices =
+          llvm::SmallVector<mlir::Value>(asyncCopies[1].getSrcIndices());
+      auto bDstIndices =
+          llvm::SmallVector<mlir::Value>(asyncCopies[1].getDstIndices());
+
+      // New async copies: source = k_next subview, destination = writeA/writeB
+      auto newTokA = rewriter.create<mlir::nvgpu::DeviceAsyncCopyOp>(
+          loc, tokenType,
+          writeA, aDstIndices,
+          pfSrcA->getResult(0), aSrcIndices,
+          asyncCopies[0].getDstElementsAttr(),
+          asyncCopies[0].getSrcElements(),
+          asyncCopies[0].getBypassL1Attr());
+
+      auto newTokB = rewriter.create<mlir::nvgpu::DeviceAsyncCopyOp>(
+          loc, tokenType,
+          writeB, bDstIndices,
+          pfSrcB->getResult(0), bSrcIndices,
+          asyncCopies[1].getDstElementsAttr(),
+          asyncCopies[1].getSrcElements(),
+          asyncCopies[1].getBypassL1Attr());
+
+      auto newGroup = rewriter.create<mlir::nvgpu::DeviceAsyncCreateGroupOp>(
+          loc, tokenType,
+          mlir::ValueRange{newTokA, newTokB});
+
+      rewriter.create<mlir::scf::YieldOp>(
+          loc, mlir::ValueRange{newGroup.getAsyncToken()});
+    }
+
+    // ── 11b. ELSE block: empty group (no pending copies, harmless token) ─
+    {
+      auto &elseBlock = ifOp.getElseRegion().front();
+      rewriter.setInsertionPointToStart(&elseBlock);
+
+      auto dummyGroup = rewriter.create<mlir::nvgpu::DeviceAsyncCreateGroupOp>(
+          loc, tokenType, mlir::ValueRange{});
+
+      rewriter.create<mlir::scf::YieldOp>(
+          loc, mlir::ValueRange{dummyGroup.getAsyncToken()});
+    }
+
+    // ── 12. Replace yield's token placeholder with scf.if result ────────
+    // The yield has: [0..3]=acc, [4..7]=buffer swap, [8]=token placeholder
+    auto *yieldOp = newBody->getTerminator();
+    yieldOp->setOperand(8, ifOp.getResult(0));
+
+    // ── 13. Erase old prefetch ops (reverse dependency order) ───────────
+    // wait → postCopyBarrier → createGroup → asyncCopies → srcSubviews
+    // + endBarrier (replaced by the new wait+barrier at top of next iter)
+    rewriter.eraseOp(waitOp);
+    rewriter.eraseOp(postCopyBarrier);
+    rewriter.eraseOp(createGroupOp);
+    for (auto &ac : asyncCopies) rewriter.eraseOp(ac);
+    for (auto &sv : srcSubviews) rewriter.eraseOp(sv);
+    rewriter.eraseOp(endBarrier);
+
+    fprintf(stderr, "[DoubleBuffer] Phase E: double-buffering applied\n"
+            "  - 4 workgroup attrs (2× ping-pong buffers)\n"
+            "  - 9 iter_args (4 acc + 4 memref + 1 token)\n"
+            "  - wait-at-top for compute/prefetch overlap\n"
+            "  - scf.if conditional last-iteration guard\n");
+    fflush(stderr);
+  }
+};
+
 std::string dtypeName(TensorDType dtype) {
   switch (dtype) {
     case TensorDType::kFloat32:
@@ -1583,6 +2060,18 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
       // Must run after Phase C (barriers in place) and before loop materialization.
       run_stage("nvidia-vectorize-tile-copy", [&](mlir::PassManager &pm) {
         pm.addPass(std::make_unique<VectorizeTileCopyPass>());
+        pm.addPass(mlir::createCanonicalizerPass());
+        pm.addPass(mlir::createCSEPass());
+      });
+
+      // Phase H: Pad shared memory (+1 col) to break bank conflict stride patterns
+      run_stage("nvidia-pad-shared-memory", [&](mlir::PassManager &pm) {
+        pm.addPass(std::make_unique<PadSharedMemoryPass>());
+      });
+
+      // Phase E: Double-buffer the K-loop (ping-pong shared memory + cp.async overlap)
+      run_stage("nvidia-double-buffer-kloop", [&](mlir::PassManager &pm) {
+        pm.addPass(std::make_unique<DoubleBufferKLoopPass>());
         pm.addPass(mlir::createCanonicalizerPass());
         pm.addPass(mlir::createCSEPass());
       });
