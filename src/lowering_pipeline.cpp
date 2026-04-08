@@ -22,20 +22,53 @@
 #include "mlir/Conversion/VectorToGPU/VectorToGPU.h"
 #include "mlir/Dialect/Bufferization/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/GPU/Pipelines/Passes.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
+#include "mlir/Dialect/Vector/Transforms/LoweringPatterns.h"
+#include "mlir/Dialect/Vector/Transforms/VectorRewritePatterns.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Pass/PassInstrumentation.h"
 #include "mlir/Transforms/Passes.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace matcore {
 namespace {
+
+// Lowers vector.multi_reduction (3D) to 1D vector.reduction + extract/insert
+// before LLVM conversion. Required for the multi-warp kernel where the MMA
+// accumulator reduction produces vector.multi_reduction ops that
+// ConvertVectorToLLVM cannot handle after ConvertGpuOpsToNVVMOps has already
+// converted surrounding ops to LLVM types.
+struct LowerVectorMultiReductionPass
+    : public mlir::PassWrapper<LowerVectorMultiReductionPass,
+                               mlir::OperationPass<>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LowerVectorMultiReductionPass)
+
+  llvm::StringRef getArgument() const override {
+    return "matcore-lower-vector-multi-reduction";
+  }
+  llvm::StringRef getDescription() const override {
+    return "Lower vector.multi_reduction to 1D reductions";
+  }
+  void runOnOperation() override {
+    mlir::RewritePatternSet patterns(&getContext());
+    mlir::vector::populateVectorMultiReductionLoweringPatterns(
+        patterns,
+        mlir::vector::VectorMultiReductionLowering::InnerReduction);
+    mlir::vector::populateVectorShapeCastLoweringPatterns(patterns);
+    if (mlir::failed(mlir::applyPatternsAndFoldGreedily(
+            getOperation(), std::move(patterns)))) {
+      signalPassFailure();
+    }
+  }
+};
 
 [[noreturn]] void fail(const std::string &message) {
   throw std::runtime_error("MatCore lowering pipeline: " + message);
@@ -664,7 +697,11 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
     const int stage_index = nextStageIndex();
     const std::string ir_before = captureIrForDiagnostics(module);
     try {
-      ApplyNvidiaMmaTransformToModule(module, signature, mapping);
+      if (UsesMultiWarpMmaSync(mapping)) {
+        ApplyNvidiaMultiWarpTransformToModule(module, signature, mapping);
+      } else {
+        ApplyNvidiaMmaTransformToModule(module, signature, mapping);
+      }
     } catch (const std::exception &exc) {
       std::string normalized = normalizeFailureMessage(exc.what());
       std::vector<CapturedDiagnostic> captured = {{
@@ -683,7 +720,61 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
       AddNvidiaDynamicMacroGridMappingPasses(pm, mapping);
     });
 
-    if (mapping.rewrite_to_mma_sync) {
+    if (UsesMultiWarpMmaSync(mapping)) {
+      // === MULTI-WARP VECTORIZE PATH (V4) ===
+      // Transform already created: blocks → K-loop → smem → warps → sub-tile → vector.contract
+      run_stage("nvidia-post-transform-canonicalize",
+                [&](mlir::PassManager &pm) {
+                  pm.addPass(mlir::createCanonicalizerPass());
+                  pm.addPass(mlir::createCSEPass());
+                });
+      // Map warp-level scf.forall to thread indices within gpu.launch
+      if (obs) {
+        obs->snapshot("nvidia-multiwarp-thread-mapping_pre", module);
+      }
+      {
+        [[maybe_unused]] auto mw_map_trace =
+            create_stage_trace("nvidia-multiwarp-thread-mapping");
+        const int mw_stage_index = nextStageIndex();
+        const std::string mw_ir_before = captureIrForDiagnostics(module);
+        try {
+          ApplyNvidiaMultiWarpThreadMappingToModule(module, mapping);
+        } catch (const std::exception &exc) {
+          std::string normalized = normalizeFailureMessage(exc.what());
+          std::vector<CapturedDiagnostic> captured = {{
+              .pass_name = "nvidia-multiwarp-thread-mapping",
+              .severity = "error",
+              .message = normalized,
+          }};
+          fail_with_report("nvidia-multiwarp-thread-mapping", mw_stage_index,
+                           normalized, "nvidia-multiwarp-thread-mapping",
+                           std::move(captured), mw_ir_before);
+        }
+      }
+      if (obs) {
+        obs->snapshot("nvidia-multiwarp-thread-mapping_post", module);
+      }
+      run_stage("nvidia-post-thread-map-canonicalize",
+                [&](mlir::PassManager &pm) {
+                  pm.addPass(mlir::createCanonicalizerPass());
+                  pm.addPass(mlir::createCSEPass());
+                });
+      run_stage("nvidia-mma-preparation", [&](mlir::PassManager &pm) {
+        AddNvidiaMmaPreparationPasses(pm);
+      });
+      // No RewriteMatmulAsMmaSync — vectorize() already created vector.contract
+      run_stage("nvidia-launch-config", [&](mlir::PassManager &pm) {
+        AddNvidiaLaunchConfigurationPasses(pm);
+      });
+      // Keep loop materialization: legalizes residual linalg.fill/copy from smem promotion
+      run_stage("nvidia-loop-materialization", [&](mlir::PassManager &pm) {
+        AddNvidiaLoopMaterializationPasses(pm);
+      });
+      // VectorToGPU: converts vector.contract → nvgpu.mma.sync
+      run_stage("nvidia-vector-to-gpu", [&](mlir::PassManager &pm) {
+        ConfigureNvidiaVectorToGpuStage(pm);
+      });
+    } else if (mapping.rewrite_to_mma_sync) {
       run_stage("nvidia-post-transform-canonicalize",
                 [&](mlir::PassManager &pm) {
                   pm.addPass(mlir::createCanonicalizerPass());
@@ -783,9 +874,88 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
     run_stage("nvidia-gpu-data-staging", [&](mlir::PassManager &pm) {
       pm.addNestedPass<mlir::func::FuncOp>(CreateGpuDataStagingPass());
     });
-    run_stage("nvidia-nvvm", [&](mlir::PassManager &pm) {
-      ConfigureNvidiaNvvmStage(pm, nvidia_chip, obs);
-    });
+    if (UsesMultiWarpMmaSync(mapping)) {
+      // Split NVVM into sub-stages for multi-warp debugging
+      run_stage("nvvm-phase1-outline", [&](mlir::PassManager &pm) {
+        pm.addPass(mlir::createConvertNVGPUToNVVMPass());
+        pm.addPass(mlir::createGpuKernelOutliningPass());
+      });
+      // Phase 2: Host-side scalar lowering.
+      // Structural passes run at module level (VectorToSCF, SCFToCF, etc.).
+      // ArithToLLVM/IndexToLLVM are scoped to func::FuncOp ONLY to avoid
+      // contaminating the gpu.module kernel with i64↔index casts that
+      // ReconcileUnrealizedCasts can't resolve for complex multi-warp kernels.
+      run_stage("nvvm-phase2-host-scalar", [&](mlir::PassManager &pm) {
+        pm.addPass(mlir::createConvertVectorToSCFPass());
+        pm.addPass(mlir::createConvertSCFToCFPass());
+        pm.addPass(mlir::createConvertNVVMToLLVMPass());
+        pm.addPass(mlir::createConvertMathToLLVMPass());
+        pm.addPass(mlir::memref::createExpandStridedMetadataPass());
+        pm.addPass(mlir::createLowerAffinePass());
+        // Scope to host function only — gpu.module is untouched
+        auto &func_pm = pm.nest<mlir::func::FuncOp>();
+        func_pm.addPass(mlir::createArithToLLVMConversionPass());
+        mlir::ConvertIndexToLLVMPassOptions idx_opts;
+        idx_opts.indexBitwidth = 64;
+        func_pm.addPass(mlir::createConvertIndexToLLVMPass(idx_opts));
+      });
+      run_stage("nvvm-phase3-attach-target", [&](mlir::PassManager &pm) {
+        mlir::GpuNVVMAttachTargetOptions target_opts;
+        target_opts.triple = "nvptx64-nvidia-cuda";
+        target_opts.chip = nvidia_chip.str();
+        target_opts.optLevel = 2;
+        pm.addPass(mlir::createGpuNVVMAttachTarget(target_opts));
+      });
+      run_stage("nvvm-phase4-gpu-module", [&](mlir::PassManager &pm) {
+        auto &gpu_pm = pm.nest<mlir::gpu::GPUModuleOp>();
+        gpu_pm.addPass(mlir::createStripDebugInfoPass());
+        // Lower vector.multi_reduction BEFORE LLVM conversion — the MMA
+        // accumulator produces 3D vector reductions that ConvertVectorToLLVM
+        // can't handle after ConvertGpuOpsToNVVMOps wraps them in LLVM types.
+        gpu_pm.addPass(std::make_unique<LowerVectorMultiReductionPass>());
+        gpu_pm.addPass(mlir::createCanonicalizerPass());
+        mlir::ConvertGpuOpsToNVVMOpsOptions nvvm_conv_opts;
+        nvvm_conv_opts.indexBitwidth = 64;
+        nvvm_conv_opts.useBarePtrCallConv = false;
+        gpu_pm.addPass(mlir::createConvertGpuOpsToNVVMOps(nvvm_conv_opts));
+        // Multi-warp kernels have vector.broadcast/transpose from the vectorize
+        // path that ConvertGpuOpsToNVVMOps doesn't mark as illegal. Convert them.
+        // Also convert remaining arith.constant with multi-dim vector types
+        // (the zero accumulator: dense<0.0> : vector<16x8x16xf16>).
+        gpu_pm.addPass(mlir::createConvertVectorToLLVMPass());
+        gpu_pm.addPass(mlir::createArithToLLVMConversionPass());
+        gpu_pm.addPass(mlir::createCanonicalizerPass());
+        gpu_pm.addPass(mlir::createCSEPass());
+        gpu_pm.addPass(mlir::createReconcileUnrealizedCastsPass());
+      });
+      run_stage("nvvm-phase5-gpu-to-llvm", [&](mlir::PassManager &pm) {
+        pm.addPass(mlir::createGpuToLLVMConversionPass());
+      });
+      // Phase 5b: Same as single-warp — only FinalizeMemRef + CF + Func.
+      // ArithToLLVM/IndexToLLVM already ran in Phase 2 (func-scoped).
+      run_stage("nvvm-phase5b-host-lowering", [&](mlir::PassManager &pm) {
+        pm.addPass(mlir::createFinalizeMemRefToLLVMConversionPass());
+        pm.addPass(mlir::createConvertControlFlowToLLVMPass());
+        pm.addPass(mlir::createConvertFuncToLLVMPass());
+        pm.addPass(mlir::createCanonicalizerPass());
+        pm.addPass(mlir::createCSEPass());
+        pm.addPass(mlir::createReconcileUnrealizedCastsPass());
+      });
+      run_stage("nvvm-phase6-binary", [&](mlir::PassManager &pm) {
+        mlir::GpuModuleToBinaryPassOptions bin_opts;
+        bin_opts.compilationTarget = "fatbin";
+        pm.addPass(mlir::createGpuModuleToBinaryPass(bin_opts));
+      });
+      run_stage("nvvm-phase7-cleanup", [&](mlir::PassManager &pm) {
+        pm.addPass(mlir::createCanonicalizerPass());
+        pm.addPass(mlir::createCSEPass());
+        pm.addPass(mlir::createReconcileUnrealizedCastsPass());
+      });
+    } else {
+      run_stage("nvidia-nvvm", [&](mlir::PassManager &pm) {
+        ConfigureNvidiaNvvmStage(pm, nvidia_chip, obs);
+      });
+    }
     return;
   }
 

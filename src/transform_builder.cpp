@@ -106,6 +106,26 @@ void TransformBuilder::tileLinalgToGpuThreads(
                          /*useBlockMapping=*/false);
 }
 
+void TransformBuilder::tileLinalgToGpuWarps(
+    mlir::ArrayRef<int64_t> tileSizes) {
+  const std::vector<int64_t> captured_sizes(tileSizes.begin(), tileSizes.end());
+  steps_.emplace_back([captured_sizes](mlir::OpBuilder &builder,
+                                       mlir::Location loc,
+                                       mlir::Value handle) -> mlir::Value {
+    llvm::SmallVector<mlir::Attribute, 2> mapping;
+    mapping.push_back(mlir::gpu::GPUWarpMappingAttr::get(
+        builder.getContext(), mlir::gpu::MappingId::DimY));
+    mapping.push_back(mlir::gpu::GPUWarpMappingAttr::get(
+        builder.getContext(), mlir::gpu::MappingId::DimX));
+
+    auto mapping_attr = builder.getArrayAttr(mapping);
+    auto tiled = builder.create<mlir::transform::TileUsingForallOp>(
+        loc, handle, captured_sizes, mlir::transform::TileSizesSpec{},
+        mapping_attr);
+    return tiled.getTiledOp();
+  });
+}
+
 void TransformBuilder::tileLinalgWithFor(mlir::ArrayRef<int64_t> tileSizes) {
   const std::vector<int64_t> captured_sizes(tileSizes.begin(), tileSizes.end());
   steps_.emplace_back([captured_sizes](mlir::OpBuilder &builder,
@@ -248,6 +268,54 @@ mlir::OwningOpRef<mlir::ModuleOp> BuildNvidiaMmaRewriteModule(
   transform_builder.matchOp("gpu.launch");
   transform_builder.matchOp("linalg.matmul");
   transform_builder.rewriteMatmulAsMmaSync();
+  return transform_builder.build();
+}
+
+mlir::OwningOpRef<mlir::ModuleOp> BuildNvidiaMultiWarpTransformModule(
+    mlir::MLIRContext *ctx, mlir::Location loc,
+    const MatmulLoweringSignature &signature,
+    const NvidiaMappingConfig &config) {
+  TransformBuilder transform_builder(ctx, loc);
+  transform_builder.matchOp("func.func");
+  transform_builder.matchOp(nvidiaMatmulOpName(signature));
+
+  // Step 1: Block tiling — partition output across threadblocks
+  transform_builder.tileLinalgToGpuBlocks(
+      {config.block_tile_m, config.block_tile_n, 0});
+
+  // Step 2: K reduction loop
+  transform_builder.tileLinalgWithFor({0, 0, config.k_tile});
+
+  // Step 3: Shared memory promotion for A and B tiles
+  transform_builder.promoteTensorToSharedMemory();
+
+  // Step 4: Warp tiling — split block work across warps (e.g. 2×2 = 4 warps)
+  transform_builder.tileLinalgToGpuWarps(
+      {config.warp_tile_m, config.warp_tile_n, 0});
+
+  // Step 5: Sub-tile to MMA-compatible size (16×8 output per mma.sync)
+  transform_builder.tileLinalgWithFor({16, 8, 0});
+
+  // Step 6: Vectorize the inner 16×8×K matmul → vector.contract
+  if (config.use_vectorize_path) {
+    transform_builder.vectorize();
+  }
+
+  return transform_builder.build();
+}
+
+mlir::OwningOpRef<mlir::ModuleOp> BuildNvidiaMultiWarpThreadMappingModule(
+    mlir::MLIRContext *ctx, mlir::Location loc,
+    const NvidiaMappingConfig &config) {
+  TransformBuilder transform_builder(ctx, loc);
+  transform_builder.matchOp("gpu.launch");
+  // Map warp foralls to thread indices.
+  // block_dims must match the warp topology:
+  //   4 warps (2×2): block_dims = {64, 2, 1} = 128 threads
+  //   2 warps (2×1): block_dims = {64, 1, 1} = 64 threads
+  transform_builder.mapToGpuThreads(
+      {config.block_threads_x, config.block_threads_y,
+       config.block_threads_z});
   return transform_builder.build();
 }
 

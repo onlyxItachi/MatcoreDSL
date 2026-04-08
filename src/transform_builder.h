@@ -25,6 +25,7 @@ class TransformBuilder {
   void tileLinalg(mlir::ArrayRef<int64_t> tileSizes);
   void tileLinalgToGpuBlocks(mlir::ArrayRef<int64_t> tileSizes);
   void tileLinalgToGpuThreads(mlir::ArrayRef<int64_t> numThreads);
+  void tileLinalgToGpuWarps(mlir::ArrayRef<int64_t> tileSizes);
   void tileLinalgWithFor(mlir::ArrayRef<int64_t> tileSizes);
 
   void vectorize();
@@ -61,5 +62,14 @@ mlir::OwningOpRef<mlir::ModuleOp> BuildNvidiaThreadMappingModule(
 
 mlir::OwningOpRef<mlir::ModuleOp> BuildNvidiaMmaRewriteModule(
     mlir::MLIRContext *ctx, mlir::Location loc);
+
+mlir::OwningOpRef<mlir::ModuleOp> BuildNvidiaMultiWarpTransformModule(
+    mlir::MLIRContext *ctx, mlir::Location loc,
+    const MatmulLoweringSignature &signature,
+    const NvidiaMappingConfig &config);
+
+mlir::OwningOpRef<mlir::ModuleOp> BuildNvidiaMultiWarpThreadMappingModule(
+    mlir::MLIRContext *ctx, mlir::Location loc,
+    const NvidiaMappingConfig &config);
 
 }  // namespace matcore
