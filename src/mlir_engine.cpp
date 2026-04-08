@@ -466,19 +466,25 @@ mlir::OwningOpRef<mlir::ModuleOp> buildMatmulModule(
         /*restrict=*/true, /*writable=*/true);
     builder.create<mlir::func::ReturnOp>(loc);
     return module;
-    } // end if (!any_device_resident) — device-resident with aligned dims falls through
+    } // end if (!any_device_resident)
   }
 
-  // For device-resident output, skip host-side zero-fill — the output must be
-  // pre-zeroed on device (via DeviceTensor.zero_()) before each launch.
-  // The linalg.fill operates on the func arg memref, which has a device ptr
-  // when device-resident → host access would segfault.
-  const bool out_device_resident =
-      tensors.size() > 2 && tensors[2].is_device_resident;
-  if (!out_device_resident) {
-    builder.create<mlir::linalg::FillOp>(loc, mlir::ValueRange{zero},
-                                         mlir::ValueRange{entry_block->getArgument(2)});
-  }
+  // Output zero-initialization is performed at RUNTIME (C++ memset) rather
+  // than in the MLIR IR.  Generating linalg.fill(0, output_memref) at the
+  // function level creates host-side memref.alloc/store/copy + cf.br loops
+  // after ConvertLinalgToLoopsPass.  These ops poison the NVVM pipeline when
+  // mixed with GpuDataStaging's gpu.alloc/memcpy/launch_func ops, because
+  // GpuToLLVMConversionPass partially converts function types while the
+  // memref/cf ops remain unconverted → irreconcilable casts.
+  //
+  // Instead, compileAndRun() / MatcorePlan::execute() zeroes the output
+  // buffer BEFORE invoking the JIT function.  The linalg.matmul semantics
+  // become C += A*B (accumulate), and since C is pre-zeroed, the result is
+  // C = A*B.  Device-resident outputs are zeroed by the user via .zero_().
+  //
+  // NOTE: the padded path (above) uses tensor-level IR that goes through
+  // bufferization and does NOT have this issue.
+
   if (signature.quantized_i8) {
     const std::int32_t lhs_zero_point =
         tensors[0].quantization.enabled ? tensors[0].quantization.zero_point

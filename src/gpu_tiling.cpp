@@ -657,9 +657,35 @@ NvidiaTileConfig SelectNvidiaTileConfig(
       k != mlir::ShapedType::kDynamic && m >= 16 && n >= 8 && k >= 16 &&
       (m % 16) == 0 && (n % 8) == 0 && (k % 16) == 0 &&
       IsTensorCoreMmaSyncType(signature);
-  // GpuDataStagingPass now handles host↔device memory transfers safely.
   config.rewrite_to_mma_sync = statically_compatible_mma;
   if (config.rewrite_to_mma_sync) {
+    // --- Multi-warp path (V4): 4 warps cooperating per block ---
+    constexpr int64_t kMultiWarpBlockTile = 64;
+    constexpr int64_t kMultiWarpMinGrid = 24;
+    const bool multi_warp_eligible =
+        m >= kMultiWarpBlockTile && n >= kMultiWarpBlockTile &&
+        (m % kMultiWarpBlockTile) == 0 && (n % kMultiWarpBlockTile) == 0;
+
+    if (multi_warp_eligible) {
+      auto grid = (m / kMultiWarpBlockTile) * (n / kMultiWarpBlockTile);
+      if (grid >= kMultiWarpMinGrid) {
+        config.block_tile_m = kMultiWarpBlockTile;
+        config.block_tile_n = kMultiWarpBlockTile;
+        config.num_warps = 4;
+        config.warp_tile_m = 32;
+        config.warp_tile_n = 32;
+        config.k_tile = pickTilingFactor(k, 16);
+        config.mma_micro_k = 16;
+        config.use_vectorize_path = true;
+        config.block_threads_x = 64;
+        config.block_threads_y = 2;
+        config.thread_tile_m = 16;
+        config.thread_tile_n = 8;
+        return config;
+      }
+    }
+
+    // --- Single-warp fallback (V3) ---
     constexpr int64_t kMinGridBlocks = 100;
     struct TileCandidate { int64_t m_pref, n_pref; };
     constexpr TileCandidate candidates[] = {{64, 64}, {32, 32}};

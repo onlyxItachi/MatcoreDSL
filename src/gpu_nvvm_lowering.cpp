@@ -221,6 +221,43 @@ void VerifyNoResidualNvidiaMatmulOnModule(mlir::ModuleOp module) {
   }
 }
 
+void ApplyNvidiaMultiWarpTransformToModule(
+    mlir::ModuleOp module, const MatmulLoweringSignature &signature,
+    const NvidiaMappingConfig &config) {
+  mlir::DialectRegistry registry;
+  RegisterNvidiaTransformDialects(registry);
+  module.getContext()->appendDialectRegistry(registry);
+  module.getContext()->loadDialect<mlir::transform::TransformDialect>();
+
+  auto transform_module = BuildNvidiaMultiWarpTransformModule(
+      module.getContext(), module.getLoc(), signature, config);
+  applyNamedSequenceToModule(module, *transform_module,
+                             "NVIDIA multi-warp transform sequence");
+}
+
+void ApplyNvidiaMultiWarpThreadMappingToModule(
+    mlir::ModuleOp module, const NvidiaMappingConfig &config) {
+  mlir::DialectRegistry registry;
+  RegisterNvidiaTransformDialects(registry);
+  module.getContext()->appendDialectRegistry(registry);
+  module.getContext()->loadDialect<mlir::transform::TransformDialect>();
+
+  bool has_launch = false;
+  module.walk([&](mlir::Operation *op) {
+    if (!has_launch && llvm::isa<mlir::gpu::LaunchOp>(op)) {
+      has_launch = true;
+    }
+  });
+  if (!has_launch) {
+    return;
+  }
+
+  auto transform_module = BuildNvidiaMultiWarpThreadMappingModule(
+      module.getContext(), module.getLoc(), config);
+  applyNamedSequenceToModule(module, *transform_module,
+                             "NVIDIA multi-warp thread mapping sequence");
+}
+
 void ConfigureNvidiaGenericGpuStage(mlir::PassManager &pm) {
   addLinalgToGpuLaunchPasses(pm);
   addGpuCommonModulePasses(pm, /*index_bitwidth=*/64);
@@ -292,6 +329,21 @@ void ConfigureNvidiaNvvmStage(mlir::PassManager &pm, llvm::StringRef cubin_chip,
   // MLIR-to-LLVM-IR translation in the ExecutionEngine (together with gpu.binary).
   pm.addPass(mlir::createGpuToLLVMConversionPass());
 
+  // Phase 5b: Immediately finalize remaining host ops → LLVM.
+  // GpuToLLVMConversionPass (Phase 5) partially converts function types via its
+  // LLVMTypeConverter.  If we defer memref/cf/func lowering to after binary
+  // serialisation (Phase 6), the mixed type state creates unrealized_conversion_casts
+  // that ReconcileUnrealizedCasts cannot resolve (the host-level linalg.fill loop
+  // produces memref.alloc + cf.br that reference LLVM-typed values from Phase 5).
+  // By running these passes immediately after Phase 5, all host ops are converted
+  // within a consistent type-conversion context.
+  pm.addPass(mlir::createFinalizeMemRefToLLVMConversionPass());
+  pm.addPass(mlir::createConvertControlFlowToLLVMPass());
+  pm.addPass(mlir::createConvertFuncToLLVMPass());
+  pm.addPass(mlir::createCanonicalizerPass());
+  pm.addPass(mlir::createCSEPass());
+  pm.addPass(mlir::createReconcileUnrealizedCastsPass());
+
   // Phase 6: Serialise gpu.module → gpu.binary (fatbin).
   // The gpu.binary + gpu.launch_func pair is translated to LLVM IR
   // by ExecutionEngine's GPUDialectLLVMIRTranslationInterface.
@@ -299,9 +351,7 @@ void ConfigureNvidiaNvvmStage(mlir::PassManager &pm, llvm::StringRef cubin_chip,
   bin_opts.compilationTarget = "fatbin";
   pm.addPass(mlir::createGpuModuleToBinaryPass(bin_opts));
 
-  // Phase 7: Final host lowering — func + memref → LLVM.
-  pm.addPass(mlir::createConvertFuncToLLVMPass());
-  pm.addPass(mlir::createFinalizeMemRefToLLVMConversionPass());
+  // Phase 7: Final cleanup after binary serialisation.
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(mlir::createCSEPass());
   pm.addPass(mlir::createReconcileUnrealizedCastsPass());

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -68,6 +69,39 @@ namespace matcore {
 namespace {
 
 namespace fs = std::filesystem;
+
+/// Return the byte size of a single element for the given dtype.
+static std::size_t dtypeElementBytes(TensorDType dtype) {
+  switch (dtype) {
+    case TensorDType::kFloat32: return 4;
+    case TensorDType::kInt32:   return 4;
+    case TensorDType::kFloat16: return 2;
+    case TensorDType::kBFloat16: return 2;
+    case TensorDType::kInt8:    return 1;
+    case TensorDType::kFloat8E4M3FN: return 1;
+  }
+  return 4; // fallback
+}
+
+/// Zero the output tensor(s) before invoking the JIT function.
+/// linalg.matmul semantics are C += A*B, so the output must be zeroed
+/// to get C = A*B.  We do this on the host side (memset) rather than
+/// generating linalg.fill in the MLIR IR, because the host-level fill
+/// creates memref/cf ops that break the NVVM pipeline for multi-warp.
+/// Device-resident outputs are zeroed by the user via DeviceTensor.zero_().
+static void zeroOutputTensors(const std::vector<RuntimeTensorView> &tensors) {
+  // Convention: for matmul, tensor[2] is the output (C).
+  // For other ops this may differ, but matmul is the only accumulating op.
+  if (tensors.size() < 3) return;
+  const auto &out = tensors[2];
+  if (out.is_device_resident) return;  // user's responsibility
+  if (!out.data) return;
+
+  std::size_t num_elements = 1;
+  for (auto dim : out.shape) num_elements *= static_cast<std::size_t>(dim);
+  std::size_t byte_size = num_elements * dtypeElementBytes(out.dtype);
+  std::memset(out.data, 0, byte_size);
+}
 
 [[noreturn]] void fail(const std::string &message) {
   throw std::runtime_error("MatCore JIT runner: " + message);
@@ -642,6 +676,9 @@ void compileAndRun(const KernelIR &kernel,
           *obs, TraceEventKind::kPassStageStart, TraceEventKind::kPassStageEnd,
           "execute");
     }
+    // Zero the output tensor before kernel invocation.
+    // linalg.matmul is C += A*B; pre-zeroing gives C = A*B.
+    zeroOutputTensors(tensors);
     if (llvm::Error error = invokeCompiledKernel(*compiled, tensors)) {
       setGpuRuntimeObservabilityContext(nullptr);
       const std::string message = llvm::toString(std::move(error));

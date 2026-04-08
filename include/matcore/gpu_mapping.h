@@ -24,12 +24,19 @@ struct NvidiaMappingConfig {
   std::int64_t k_tile = 16;
   std::int64_t mma_micro_k = 0;  // Inner K-tile for mma.sync (0 = no inner tiling)
   bool rewrite_to_mma_sync = false;
+
+  // Multi-warp configuration (V4)
+  std::int64_t num_warps = 1;       // 1 = single-warp (V3), 4 = multi-warp (V4)
+  std::int64_t warp_tile_m = 0;     // Per-warp M tile (0 = not multi-warp)
+  std::int64_t warp_tile_n = 0;     // Per-warp N tile
+  bool use_vectorize_path = false;  // true = vectorize + VectorToGPU
 };
 
 NvidiaMappingConfig SelectNvidiaMappingConfig(
     mlir::linalg::LinalgOp op, const MatmulLoweringSignature &signature);
 
 bool UsesSingleWarpMmaSync(const NvidiaMappingConfig &config);
+bool UsesMultiWarpMmaSync(const NvidiaMappingConfig &config);
 
 std::string BuildNvidiaTransformMappingSequence(
     const MatmulLoweringSignature &signature,

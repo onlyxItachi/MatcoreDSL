@@ -141,12 +141,39 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
       k != mlir::ShapedType::kDynamic && m >= 16 && n >= 8 && k >= 16 &&
       (m % 16) == 0 && (n % 8) == 0 && (k % 16) == 0 &&
       isTensorCoreMmaSyncType(signature);
-  // GpuDataStagingPass now handles host↔device memory transfers safely.
   config.rewrite_to_mma_sync = statically_compatible_mma;
   if (config.rewrite_to_mma_sync) {
-    // Occupancy-aware adaptive tiling: choose the largest block tile
-    // that keeps enough grid blocks for SM occupancy. With 1 warp per
-    // block, we need many blocks to hide memory latency.
+    // --- Multi-warp path (V4): 4 warps cooperating per block ---
+    // Gate: dimensions must be exact multiples of 64 (block tile) to avoid
+    // edge-tile complications with scf.forall static trip counts.
+    constexpr int64_t kMultiWarpBlockTile = 64;
+    constexpr int64_t kMultiWarpMinGrid = 24;  // At least 1 block per SM
+    const bool multi_warp_eligible =
+        m >= kMultiWarpBlockTile && n >= kMultiWarpBlockTile &&
+        (m % kMultiWarpBlockTile) == 0 && (n % kMultiWarpBlockTile) == 0;
+
+    if (multi_warp_eligible) {
+      auto grid = (m / kMultiWarpBlockTile) * (n / kMultiWarpBlockTile);
+      if (grid >= kMultiWarpMinGrid) {
+        config.block_tile_m = kMultiWarpBlockTile;
+        config.block_tile_n = kMultiWarpBlockTile;
+        config.num_warps = 4;                // 2×2 warp layout
+        config.warp_tile_m = 32;             // Each warp: 32×32
+        config.warp_tile_n = 32;
+        config.k_tile = pickTilingFactor(k, 16);
+        config.mma_micro_k = 16;
+        config.use_vectorize_path = true;
+        // Block dims: 64×2×1 = 128 threads (2 warps in X, 2 in Y)
+        config.block_threads_x = 64;
+        config.block_threads_y = 2;
+        config.block_threads_z = 1;
+        config.thread_tile_m = 16;
+        config.thread_tile_n = 8;
+        return config;
+      }
+    }
+
+    // --- Single-warp fallback (V3): occupancy-aware adaptive tiling ---
     constexpr int64_t kMinGridBlocks = 100;
 
     struct TileCandidate { int64_t m_pref, n_pref; };
@@ -172,8 +199,6 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
     config.block_threads_y = 1;
     config.block_threads_x = 32;
     config.block_threads_z = 1;
-    // Only use k_tile=32 when block tiles are large enough for sub-tiling.
-    // For 16×8 blocks, inner K-tiling adds loop overhead with no reuse benefit.
     const bool needs_subtiling =
         config.block_tile_m > 16 || config.block_tile_n > 8;
     config.k_tile = needs_subtiling ? pickTilingFactor(k, 32) : 16;
@@ -193,7 +218,11 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
 }
 
 bool UsesSingleWarpMmaSync(const NvidiaMappingConfig &config) {
-  return config.rewrite_to_mma_sync;
+  return config.rewrite_to_mma_sync && config.num_warps <= 1;
+}
+
+bool UsesMultiWarpMmaSync(const NvidiaMappingConfig &config) {
+  return config.rewrite_to_mma_sync && config.num_warps > 1;
 }
 
 std::string BuildNvidiaTransformMappingSequence(

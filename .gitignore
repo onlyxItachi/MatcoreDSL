@@ -15,3 +15,5 @@ __pycache__/
 *.cubin
 *.fatbin
 *.ptx
+.matcore_debug/
+.matcore_ir_dump/
