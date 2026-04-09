@@ -1076,7 +1076,7 @@ struct DoubleBufferKLoopPass
         barriers.push_back(b);
     }
 
-    if (srcSubviews.size() != 2 || asyncCopies.size() != 2 ||
+    if (srcSubviews.size() < 2 || asyncCopies.size() < 2 ||
         !createGroupOp || !waitOp || barriers.size() < 2) {
       fprintf(stderr, "[DoubleBuffer] Unexpected loop body structure "
               "(srcSV=%lu, asyncCP=%lu, barriers=%lu), skipping\n",
@@ -1084,6 +1084,11 @@ struct DoubleBufferKLoopPass
       fflush(stderr);
       return;
     }
+
+    fprintf(stderr, "[DoubleBuffer] Loop body: %lu srcSubviews, %lu asyncCopies, "
+            "%lu barriers\n", srcSubviews.size(), asyncCopies.size(),
+            barriers.size());
+    fflush(stderr);
 
     auto postCopyBarrier = barriers[0];
     auto endBarrier = barriers.back();
@@ -1199,9 +1204,11 @@ struct DoubleBufferKLoopPass
         barriers.push_back(b);
     }
 
-    if (srcSubviews.size() != 2 || asyncCopies.size() != 2 ||
+    if (srcSubviews.size() < 2 || asyncCopies.size() < 2 ||
         !createGroupOp || !waitOp || barriers.size() < 2) {
-      fprintf(stderr, "[DoubleBuffer] Post-rewrite: unexpected structure\n");
+      fprintf(stderr, "[DoubleBuffer] Post-rewrite: unexpected structure "
+              "(srcSV=%lu, asyncCP=%lu, barriers=%lu)\n",
+              srcSubviews.size(), asyncCopies.size(), barriers.size());
       fflush(stderr);
       signalPassFailure();
       return;
@@ -1253,50 +1260,37 @@ struct DoubleBufferKLoopPass
         /*withElseRegion=*/true);
 
     // ── 11a. THEN block: prefetch next K-tile ───────────────────────────
+    // Clone the entire prefetch sequence (srcSubviews → address math →
+    // asyncCopies → createGroup) with k → k_next and read→write buffers.
+    // This handles any number of async copies per tile (1, 2, etc.).
     {
       auto &thenBlock = ifOp.getThenRegion().front();
       rewriter.setInsertionPointToStart(&thenBlock);
 
-      // Clone source subviews with k → k_next
       mlir::IRMapping ifMap;
       ifMap.map(newIV, kNext.getResult());
-      auto pfSrcA = rewriter.clone(*srcSubviews[0].getOperation(), ifMap);
-      auto pfSrcB = rewriter.clone(*srcSubviews[1].getOperation(), ifMap);
+      ifMap.map(readA, writeA);
+      ifMap.map(readB, writeB);
 
-      // Extract copy indices from old async copies (defined in loop body,
-      // accessible from nested scf.if)
-      auto aSrcIndices =
-          llvm::SmallVector<mlir::Value>(asyncCopies[0].getSrcIndices());
-      auto aDstIndices =
-          llvm::SmallVector<mlir::Value>(asyncCopies[0].getDstIndices());
-      auto bSrcIndices =
-          llvm::SmallVector<mlir::Value>(asyncCopies[1].getSrcIndices());
-      auto bDstIndices =
-          llvm::SmallVector<mlir::Value>(asyncCopies[1].getDstIndices());
+      auto startIt = mlir::Block::iterator(srcSubviews[0].getOperation());
+      auto endIt = std::next(
+          mlir::Block::iterator(createGroupOp.getOperation()));
+      mlir::Value newGroupToken;
+      for (auto it = startIt; it != endIt; ++it) {
+        auto *cloned = rewriter.clone(*it, ifMap);
+        if (auto cg = mlir::dyn_cast<mlir::nvgpu::DeviceAsyncCreateGroupOp>(cloned))
+          newGroupToken = cg.getAsyncToken();
+      }
 
-      // New async copies: source = k_next subview, destination = writeA/writeB
-      auto newTokA = rewriter.create<mlir::nvgpu::DeviceAsyncCopyOp>(
-          loc, tokenType,
-          writeA, aDstIndices,
-          pfSrcA->getResult(0), aSrcIndices,
-          asyncCopies[0].getDstElementsAttr(),
-          asyncCopies[0].getSrcElements(),
-          asyncCopies[0].getBypassL1Attr());
-
-      auto newTokB = rewriter.create<mlir::nvgpu::DeviceAsyncCopyOp>(
-          loc, tokenType,
-          writeB, bDstIndices,
-          pfSrcB->getResult(0), bSrcIndices,
-          asyncCopies[1].getDstElementsAttr(),
-          asyncCopies[1].getSrcElements(),
-          asyncCopies[1].getBypassL1Attr());
-
-      auto newGroup = rewriter.create<mlir::nvgpu::DeviceAsyncCreateGroupOp>(
-          loc, tokenType,
-          mlir::ValueRange{newTokA, newTokB});
+      if (!newGroupToken) {
+        fprintf(stderr, "[DoubleBuffer] THEN block: no create_group in cloned ops\n");
+        fflush(stderr);
+        signalPassFailure();
+        return;
+      }
 
       rewriter.create<mlir::scf::YieldOp>(
-          loc, mlir::ValueRange{newGroup.getAsyncToken()});
+          loc, mlir::ValueRange{newGroupToken});
     }
 
     // ── 11b. ELSE block: empty group (no pending copies, harmless token) ─
@@ -1328,9 +1322,12 @@ struct DoubleBufferKLoopPass
 
     fprintf(stderr, "[DoubleBuffer] Phase E: double-buffering applied\n"
             "  - 4 workgroup attrs (2× ping-pong buffers)\n"
-            "  - 9 iter_args (4 acc + 4 memref + 1 token)\n"
+            "  - %d iter_args (%d acc + 4 memref + 1 token)\n"
+            "  - %lu async copies per K-step\n"
             "  - wait-at-top for compute/prefetch overlap\n"
-            "  - scf.if conditional last-iteration guard\n");
+            "  - scf.if conditional last-iteration guard\n",
+            (int)newKLoop.getNumResults(), (int)numAccIters,
+            asyncCopies.size());
     fflush(stderr);
   }
 };
