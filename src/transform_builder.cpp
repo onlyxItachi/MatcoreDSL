@@ -293,8 +293,9 @@ mlir::OwningOpRef<mlir::ModuleOp> BuildNvidiaMultiWarpTransformModule(
   transform_builder.tileLinalgToGpuWarps(
       {config.warp_tile_m, config.warp_tile_n, 0});
 
-  // Step 5: Sub-tile to MMA-compatible size (16×8 output per mma.sync)
-  transform_builder.tileLinalgWithFor({16, 8, 0});
+  // Step 5: Sub-tile to MMA-compatible size (16×8×16 for mma.sync.m16n8k16)
+  // k_tile>16 requires K sub-tiling to match MMA micro-K dimension.
+  transform_builder.tileLinalgWithFor({16, 8, config.mma_micro_k});
 
   // Step 6: Vectorize the inner 16×8×K matmul → vector.contract
   if (config.use_vectorize_path) {

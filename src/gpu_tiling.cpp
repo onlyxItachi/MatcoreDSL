@@ -674,7 +674,7 @@ NvidiaTileConfig SelectNvidiaTileConfig(
         config.num_warps = 16;
         config.warp_tile_m = 32;
         config.warp_tile_n = 32;
-        config.k_tile = pickTilingFactor(k, 16);        config.mma_micro_k = 16;
+        config.k_tile = pickTilingFactor(k, 32);        config.mma_micro_k = 16;
         config.use_vectorize_path = true;
         config.block_threads_x = 128;
         config.block_threads_y = 4;
