@@ -311,8 +311,8 @@ mlir::OwningOpRef<mlir::ModuleOp> BuildNvidiaMultiWarpThreadMappingModule(
   transform_builder.matchOp("gpu.launch");
   // Map warp foralls to thread indices.
   // block_dims must match the warp topology:
-  //   4 warps (2×2): block_dims = {64, 2, 1} = 128 threads
-  //   2 warps (2×1): block_dims = {64, 1, 1} = 64 threads
+  //   16 warps (4×4): block_dims = {128, 4, 1} = 512 threads
+  //    4 warps (2×2): block_dims = {64, 2, 1} = 128 threads
   transform_builder.mapToGpuThreads(
       {config.block_threads_x, config.block_threads_y,
        config.block_threads_z});

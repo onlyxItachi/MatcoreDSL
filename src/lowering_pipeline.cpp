@@ -615,8 +615,11 @@ struct VectorizeTileCopyPass
       return -1;
     };
 
-    // cp.async copies 16 bytes = 8 f16 elements per instruction
-    const int64_t vecSize = 8;
+    // cp.async copies 16 bytes (8 f16) or 8 bytes (4 f16) per instruction.
+    // Prefer 16B (.cg, L1 bypass) but fall back to 8B (.ca) when 16B
+    // doesn't divide evenly into the number of threads.
+    const int64_t preferredVecSize = 8;  // 8 f16 = 16 bytes
+    const int64_t fallbackVecSize = 4;   // 4 f16 = 8 bytes
     auto &ctx = *top->getContext();
     auto tokenType = mlir::nvgpu::DeviceAsyncTokenType::get(&ctx);
 
@@ -645,7 +648,6 @@ struct VectorizeTileCopyPass
         continue;
 
       int64_t rows = shape[0], cols = shape[1];
-      if (cols % vecSize != 0) continue;
 
       // Verify inner stride is 1 (contiguous elements for cp.async)
       int64_t offset;
@@ -653,6 +655,13 @@ struct VectorizeTileCopyPass
       if (mlir::failed(mlir::getStridesAndOffset(srcType, srcStrides, offset)))
         continue;
       if (srcStrides.back() != 1) continue;
+
+      // Try preferred 16B vec, fall back to 8B if it doesn't divide evenly
+      int64_t vecSize = preferredVecSize;
+      if (cols % vecSize != 0 || (rows * (cols / vecSize)) % numThreads != 0) {
+        vecSize = fallbackVecSize;
+      }
+      if (cols % vecSize != 0) continue;
 
       int64_t vecsPerRow = cols / vecSize;
       int64_t totalVecs = rows * vecsPerRow;
@@ -692,15 +701,18 @@ struct VectorizeTileCopyPass
         auto colVec = b.create<mlir::arith::RemUIOp>(loc, vecIdx, vecsPerRowVal);
         auto col = b.create<mlir::arith::MulIOp>(loc, colVec, vecSizeVal);
 
-        // nvgpu.device_async_copy: src[row,col] → dst[row,col], 8 elements
-        // Hardware: CP.ASYNC.CG.SHARED.GLOBAL [smem], [global], 16
+        // nvgpu.device_async_copy: src[row,col] → dst[row,col]
+        // 16B: CP.ASYNC.CG.SHARED.GLOBAL (L1 bypass)
+        //  8B: CP.ASYNC.CA.SHARED.GLOBAL (cache all)
+        bool useBypassL1 = (vecSize == 8);  // CG mode only for 16-byte copies
         auto token = b.create<mlir::nvgpu::DeviceAsyncCopyOp>(
             loc, tokenType,
             dst, mlir::ValueRange{row, col},   // shared mem destination
             src, mlir::ValueRange{row, col},   // global mem source
             dstElements,
             /*srcElements=*/mlir::Value(),     // no partial copy
-            /*bypassL1=*/mlir::UnitAttr::get(b.getContext())); // CG mode: bypass L1
+            /*bypassL1=*/useBypassL1 ? mlir::UnitAttr::get(b.getContext())
+                                     : mlir::UnitAttr());
 
         asyncTokens.push_back(token.getAsyncToken());
         lastNewOp = token.getOperation();
@@ -950,20 +962,39 @@ struct DoubleBufferKLoopPass
             smemBType.getShape()[0], smemBType.getShape()[1]);
     fflush(stderr);
 
-    // ── 4. Find K-loop (scf.for with exactly 4 accumulator iter_args) ──
+    // ── 4. Find K-loop: outermost scf.for containing async copies ──
+    // After AccHoist, the K-loop carries accumulator iter_args. The count
+    // depends on configuration (8 for 4-warp, up to 32 for 16-warp).
+    // We identify the K-loop as the outermost loop containing async copy ops.
     mlir::scf::ForOp kLoop;
     launch.getBody().walk([&](mlir::scf::ForOp forOp) {
-      if (forOp.getNumResults() == 4) {
-        kLoop = forOp;
-        return mlir::WalkResult::interrupt();
+      bool hasAsyncCopy = false;
+      forOp.getBody()->walk([&](mlir::nvgpu::DeviceAsyncCopyOp) {
+        hasAsyncCopy = true;
+      });
+      if (hasAsyncCopy && forOp.getNumResults() > 0) {
+        // Prefer outermost (largest trip count) loop with async copies
+        if (!kLoop) {
+          kLoop = forOp;
+        } else {
+          auto curUb = kLoop.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
+          auto newUb = forOp.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
+          if (curUb && newUb && newUb.value() > curUb.value())
+            kLoop = forOp;
+          else if (!curUb && newUb)
+            kLoop = forOp;
+        }
       }
       return mlir::WalkResult::advance();
     });
     if (!kLoop) {
-      fprintf(stderr, "[DoubleBuffer] No K-loop with 4 iter_args found\n");
+      fprintf(stderr, "[DoubleBuffer] No K-loop with async copies found\n");
       fflush(stderr);
       return;
     }
+    fprintf(stderr, "[DoubleBuffer] Found K-loop with %u iter_args\n",
+            kLoop.getNumResults());
+    fflush(stderr);
 
     // ── 5. Collect ops in K-loop body ───────────────────────────────────
     auto *kBody = kLoop.getBody();
