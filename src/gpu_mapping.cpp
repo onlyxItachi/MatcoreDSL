@@ -143,29 +143,58 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
       isTensorCoreMmaSyncType(signature);
   config.rewrite_to_mma_sync = statically_compatible_mma;
   if (config.rewrite_to_mma_sync) {
-    // --- Multi-warp path (V4): 16 warps cooperating per block ---
-    // Gate: dimensions must be exact multiples of 128 (block tile) to avoid
-    // edge-tile complications with scf.forall static trip counts.
-    constexpr int64_t kMultiWarpBlockTile = 128;
-    constexpr int64_t kMultiWarpMinGrid = 4;  // Min 4 blocks for SM saturation
-    const bool multi_warp_eligible =
-        m >= kMultiWarpBlockTile && n >= kMultiWarpBlockTile &&
-        (m % kMultiWarpBlockTile) == 0 && (n % kMultiWarpBlockTile) == 0;
+    // --- Multi-warp path (V4): adaptive tile selection ---
+    // Two MW configs available:
+    //   128×128 / 16 warps (4×4): highest AI (64 FLOP/byte), 512 threads
+    //    64×64  /  4 warps (2×2): lower AI (32 FLOP/byte), 128 threads
+    // Use 128×128 when grid fills SMs (≥ kSmCount); otherwise fall back to
+    // 64×64 which generates 4× more blocks for better SM utilization.
+    constexpr int64_t kSmCount = 24;  // RTX 4060 Laptop (AD107, sm_89)
 
-    if (multi_warp_eligible) {
-      auto grid = (m / kMultiWarpBlockTile) * (n / kMultiWarpBlockTile);
-      if (grid >= kMultiWarpMinGrid) {
-        config.block_tile_m = kMultiWarpBlockTile;
-        config.block_tile_n = kMultiWarpBlockTile;
+    // Try 128×128 / 16-warp first (highest arithmetic intensity)
+    constexpr int64_t kMW128Tile = 128;
+    const bool eligible_128 =
+        m >= kMW128Tile && n >= kMW128Tile &&
+        (m % kMW128Tile) == 0 && (n % kMW128Tile) == 0;
+    if (eligible_128) {
+      auto grid = (m / kMW128Tile) * (n / kMW128Tile);
+      if (grid >= kSmCount) {
+        config.block_tile_m = kMW128Tile;
+        config.block_tile_n = kMW128Tile;
         config.num_warps = 16;               // 4×4 warp layout
         config.warp_tile_m = 32;             // Each warp: 32×32
         config.warp_tile_n = 32;
         config.k_tile = pickTilingFactor(k, 32);
         config.mma_micro_k = 16;
         config.use_vectorize_path = false;
-        // Block dims: 128×4×1 = 512 threads (4 warps in X × 4 in Y)
-        config.block_threads_x = 128;
+        config.block_threads_x = 128;        // 128×4×1 = 512 threads
         config.block_threads_y = 4;
+        config.block_threads_z = 1;
+        config.thread_tile_m = 16;
+        config.thread_tile_n = 8;
+        return config;
+      }
+    }
+
+    // Fall back to 64×64 / 4-warp for better SM utilization on small grids
+    constexpr int64_t kMW64Tile = 64;
+    constexpr int64_t kMW64MinGrid = 4;
+    const bool eligible_64 =
+        m >= kMW64Tile && n >= kMW64Tile &&
+        (m % kMW64Tile) == 0 && (n % kMW64Tile) == 0;
+    if (eligible_64) {
+      auto grid = (m / kMW64Tile) * (n / kMW64Tile);
+      if (grid >= kMW64MinGrid) {
+        config.block_tile_m = kMW64Tile;
+        config.block_tile_n = kMW64Tile;
+        config.num_warps = 4;                // 2×2 warp layout
+        config.warp_tile_m = 32;             // Each warp: 32×32
+        config.warp_tile_n = 32;
+        config.k_tile = pickTilingFactor(k, 32);
+        config.mma_micro_k = 16;
+        config.use_vectorize_path = false;
+        config.block_threads_x = 64;         // 64×2×1 = 128 threads
+        config.block_threads_y = 2;
         config.block_threads_z = 1;
         config.thread_tile_m = 16;
         config.thread_tile_n = 8;

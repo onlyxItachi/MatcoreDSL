@@ -122,6 +122,12 @@ struct SubTileUnrollPass
         auto step = forOp.getStep().getDefiningOp<mlir::arith::ConstantIndexOp>();
         if (!lb || !ub || !step || step.value() == 0)
           return mlir::WalkResult::advance();
+        // Skip the K-loop: it contains linalg.copy ops for A/B tile loads.
+        // Only unroll sub-tile loops (m_sub, n_sub, k_sub) which have MMA ops.
+        bool hasCopy = false;
+        forOp->walk([&](mlir::linalg::CopyOp) { hasCopy = true; });
+        if (hasCopy)
+          return mlir::WalkResult::advance();
         int64_t trip = (ub.value() - lb.value()) / step.value();
         if (trip >= 2 && trip <= 4) {
           auto result = mlir::loopUnrollByFactor(forOp, trip);
