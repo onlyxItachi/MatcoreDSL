@@ -110,40 +110,35 @@ struct SubTileUnrollPass
   }
   void runOnOperation() override {
     mlir::Operation *op = getOperation();
-    llvm::SmallVector<mlir::scf::ForOp, 8> loopsToUnroll;
-    // Collect small-trip-count loops (sub-tile: 2 or 4 iterations).
-    int loopCount = 0;
-    op->walk([&](mlir::scf::ForOp forOp) {
-      loopCount++;
-      auto lb = forOp.getLowerBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
-      auto ub = forOp.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
-      auto step = forOp.getStep().getDefiningOp<mlir::arith::ConstantIndexOp>();
-      fprintf(stderr, "[SubTileUnroll] Loop %d: lb=%s ub=%s step=%s\n",
-              loopCount,
-              lb ? std::to_string(lb.value()).c_str() : "dynamic",
-              ub ? std::to_string(ub.value()).c_str() : "dynamic",
-              step ? std::to_string(step.value()).c_str() : "dynamic");
-      fflush(stderr);
-      if (!lb || !ub || !step || step.value() == 0)
-        return;
-      int64_t trip = (ub.value() - lb.value()) / step.value();
-      if (trip >= 2 && trip <= 4) {
-        loopsToUnroll.push_back(forOp);
-      }
-    });
-    // Unroll innermost first (reverse walk order gives outer-first, so reverse).
-    fprintf(stderr, "[SubTileUnroll] Unrolling %lu loops\n",
-            (unsigned long)loopsToUnroll.size());
-    fflush(stderr);
-    for (auto it = loopsToUnroll.rbegin(); it != loopsToUnroll.rend(); ++it) {
-      int64_t trip =
-          (*it).getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>().value() /
-          (*it).getStep().getDefiningOp<mlir::arith::ConstantIndexOp>().value();
-      auto result = mlir::loopUnrollByFactor(*it, trip);
-      fprintf(stderr, "[SubTileUnroll]   Unroll factor %ld: %s\n",
-              trip, mlir::succeeded(result) ? "OK" : "FAILED");
-      fflush(stderr);
+    // Fixpoint re-walk: unroll one loop per iteration to avoid stale ForOp
+    // pointers after inner loop unrolling invalidates outer loop ops.
+    int totalUnrolled = 0;
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      op->walk([&](mlir::scf::ForOp forOp) -> mlir::WalkResult {
+        auto lb = forOp.getLowerBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
+        auto ub = forOp.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
+        auto step = forOp.getStep().getDefiningOp<mlir::arith::ConstantIndexOp>();
+        if (!lb || !ub || !step || step.value() == 0)
+          return mlir::WalkResult::advance();
+        int64_t trip = (ub.value() - lb.value()) / step.value();
+        if (trip >= 2 && trip <= 4) {
+          auto result = mlir::loopUnrollByFactor(forOp, trip);
+          fprintf(stderr, "[SubTileUnroll] Unroll factor %ld: %s\n",
+                  trip, mlir::succeeded(result) ? "OK" : "FAILED");
+          fflush(stderr);
+          if (mlir::succeeded(result)) {
+            totalUnrolled++;
+            changed = true;
+            return mlir::WalkResult::interrupt();
+          }
+        }
+        return mlir::WalkResult::advance();
+      });
     }
+    fprintf(stderr, "[SubTileUnroll] Total loops unrolled: %d\n", totalUnrolled);
+    fflush(stderr);
   }
 };
 
@@ -444,26 +439,62 @@ struct AccumulatorHoistPass
             (unsigned long)cChainOps.size());
     fflush(stderr);
 
-    // Create zero-initialized accumulators.
+    // ── GROUP MMAs by store target (same C output = same accumulator chain) ──
+    // With k_sub>1 (after sub-tile unrolling), MMAs at same (m,n) position but
+    // different k offsets must chain: mma_k1.C = mma_k0.result.
+    llvm::SmallVector<int, 16> groupOf(oldMmas.size(), -1);
+    int numGroups = 0;
+    for (size_t i = 0; i < oldMmas.size(); i++) {
+      if (groupOf[i] >= 0) continue;
+      groupOf[i] = numGroups;
+      auto &patsI = mmaStorePatterns[i];
+      for (size_t j = i + 1; j < oldMmas.size(); j++) {
+        if (groupOf[j] >= 0) continue;
+        auto &patsJ = mmaStorePatterns[j];
+        if (patsI[0].store.getMemRef() == patsJ[0].store.getMemRef()) {
+          auto indicesI = patsI[0].store.getIndices();
+          auto indicesJ = patsJ[0].store.getIndices();
+          bool match = (indicesI.size() == indicesJ.size());
+          for (size_t k = 0; match && k < indicesI.size(); k++)
+            match = (indicesI[k] == indicesJ[k]);
+          if (match)
+            groupOf[j] = numGroups;
+        }
+      }
+      numGroups++;
+    }
+
+    llvm::SmallVector<llvm::SmallVector<size_t, 4>, 8> mmaGroups(numGroups);
+    for (size_t i = 0; i < oldMmas.size(); i++)
+      mmaGroups[groupOf[i]].push_back(i);
+
+    fprintf(stderr, "[AccHoist] Grouped %lu MMAs into %d accumulator chains\n",
+            (unsigned long)oldMmas.size(), numGroups);
+    fflush(stderr);
+
+    // Create zero-initialized accumulators (one per GROUP, not per MMA).
     mlir::IRRewriter rewriter(kLoop.getContext());
     rewriter.setInsertionPoint(kLoop);
     llvm::SmallVector<mlir::Value, 8> zeroInits;
-    for (mlir::nvgpu::MmaSyncOp mma : oldMmas) {
-      auto vecTy = llvm::dyn_cast<mlir::VectorType>(mma.getResult().getType());
+    for (int g = 0; g < numGroups; g++) {
+      size_t firstMma = mmaGroups[g][0];
+      auto vecTy = llvm::dyn_cast<mlir::VectorType>(
+          oldMmas[firstMma].getResult().getType());
       if (!vecTy)
         return;
       auto zeroAttr = rewriter.getZeroAttr(vecTy);
       zeroInits.push_back(
-          rewriter.create<mlir::arith::ConstantOp>(mma.getLoc(), vecTy, zeroAttr));
+          rewriter.create<mlir::arith::ConstantOp>(
+              oldMmas[firstMma].getLoc(), vecTy, zeroAttr));
     }
 
-    // Build new init args: old iter_args + zero accumulators.
+    // Build new init args: old iter_args + zero accumulators (numGroups).
     llvm::SmallVector<mlir::Value, 16> newInitArgs(kLoop.getInitArgs());
     newInitArgs.append(zeroInits.begin(), zeroInits.end());
     const unsigned oldIterCount = kLoop.getNumRegionIterArgs();
 
     // Capture cloned MMA ops during body building.
-    llvm::SmallVector<mlir::nvgpu::MmaSyncOp, 8> newMmas;
+    llvm::SmallVector<mlir::nvgpu::MmaSyncOp, 16> newMmas;
     auto newFor = rewriter.create<mlir::scf::ForOp>(
         kLoop.getLoc(), kLoop.getLowerBound(), kLoop.getUpperBound(),
         kLoop.getStep(), newInitArgs,
@@ -486,32 +517,48 @@ struct AccumulatorHoistPass
               newMmas.push_back(mma);
           }
 
-          // Rewire MMA operand 2 (C input) → iter_arg accumulator.
-          for (auto [idx, mma] : llvm::enumerate(newMmas)) {
-            mma->setOperand(2, iterArgs[oldIterCount + idx]);
+          // Rewire MMA operand 2 (C input) with accumulator chaining.
+          // First MMA in group -> group's iter_arg (zero-init on first K-iter).
+          // Subsequent MMAs -> predecessor's result (chain accumulation).
+          for (int g = 0; g < numGroups; g++) {
+            for (size_t pos = 0; pos < mmaGroups[g].size(); pos++) {
+              size_t mmaIdx = mmaGroups[g][pos];
+              if (mmaIdx >= newMmas.size()) continue;
+              if (pos == 0) {
+                newMmas[mmaIdx]->setOperand(
+                    2, iterArgs[oldIterCount + g]);
+              } else {
+                size_t prevIdx = mmaGroups[g][pos - 1];
+                newMmas[mmaIdx]->setOperand(
+                    2, newMmas[prevIdx].getResult());
+              }
+            }
           }
 
-          // Build yield: old yield values + MMA results.
+          // Build yield: old yield values + LAST MMA result per group.
           llvm::SmallVector<mlir::Value, 16> yieldVals;
           auto oldYield =
               llvm::cast<mlir::scf::YieldOp>(oldBody->getTerminator());
           for (mlir::Value v : oldYield.getOperands())
             yieldVals.push_back(bodyMapping.lookup(v));
-          for (auto mma : newMmas)
-            yieldVals.push_back(mma.getResult());
+          for (int g = 0; g < numGroups; g++) {
+            size_t lastIdx = mmaGroups[g].back();
+            yieldVals.push_back(newMmas[lastIdx].getResult());
+          }
           b.create<mlir::scf::YieldOp>(loc, yieldVals);
         });
 
     if (newMmas.size() != oldMmas.size())
       return; // Safety: mismatch means something went wrong
 
-    // Create post-loop stores: extract from final accumulators → global C.
+    // Post-loop stores from LAST MMA in each group (fully accumulated result).
     rewriter.setInsertionPointAfter(newFor);
     mlir::IRMapping postLoopMapping;
-    for (auto [mmaIdx, storePatterns] : llvm::enumerate(mmaStorePatterns)) {
+    for (int g = 0; g < numGroups; g++) {
+      size_t lastMmaIdx = mmaGroups[g].back();
       mlir::Value finalAcc =
-          newFor.getResult(kLoop.getNumResults() + mmaIdx);
-      for (MmaStorePattern &pat : storePatterns) {
+          newFor.getResult(kLoop.getNumResults() + g);
+      for (MmaStorePattern &pat : mmaStorePatterns[lastMmaIdx]) {
         auto pos = pat.extract.getStaticPosition();
         mlir::Value extracted = rewriter.create<mlir::vector::ExtractOp>(
             pat.store.getLoc(), finalAcc, pos);
@@ -528,7 +575,7 @@ struct AccumulatorHoistPass
           indices.push_back(newIdx);
         }
         rewriter.create<mlir::memref::StoreOp>(pat.store.getLoc(), extracted,
-                                               memref, indices);
+                                                memref, indices);
       }
     }
 
@@ -539,9 +586,11 @@ struct AccumulatorHoistPass
       oldRes.replaceAllUsesWith(newRes);
     }
     rewriter.eraseOp(kLoop);
-    fprintf(stderr, "[AccHoist] SUCCESS: hoisted %lu MMA accumulators as iter_args\n",
-            (unsigned long)oldMmas.size());
+    fprintf(stderr, "[AccHoist] SUCCESS: hoisted %d accumulator groups "
+            "(%lu total MMAs) as iter_args\n",
+            numGroups, (unsigned long)oldMmas.size());
     fflush(stderr);
+
   }
 };
 
@@ -1107,12 +1156,14 @@ struct DoubleBufferKLoopPass
     auto *newBody = newKLoop.getBody();
     auto newIV = newKLoop.getInductionVar();
 
-    // Block args: [0]=IV, [1..4]=acc0..3, [5..9]=readA,readB,writeA,writeB,groupToken
-    auto readA      = newBody->getArgument(5);
-    auto readB      = newBody->getArgument(6);
-    auto writeA     = newBody->getArgument(7);
-    auto writeB     = newBody->getArgument(8);
-    auto groupToken = newBody->getArgument(9);
+    // Block args: [0]=IV, [1..N]=acc0..acc(N-1), [N+1..N+5]=readA,readB,writeA,writeB,groupToken
+    unsigned numAccIters = newKLoop.getNumRegionIterArgs() - 5;
+    unsigned base = 1 + numAccIters;
+    auto readA      = newBody->getArgument(base + 0);
+    auto readB      = newBody->getArgument(base + 1);
+    auto writeA     = newBody->getArgument(base + 2);
+    auto writeB     = newBody->getArgument(base + 3);
+    auto groupToken = newBody->getArgument(base + 4);
 
     fprintf(stderr, "[DoubleBuffer] replaceWithAdditionalYields OK, "
             "%d iter_args\n", (int)newKLoop.getNumResults());
@@ -1255,9 +1306,9 @@ struct DoubleBufferKLoopPass
     }
 
     // ── 12. Replace yield's token placeholder with scf.if result ────────
-    // The yield has: [0..3]=acc, [4..7]=buffer swap, [8]=token placeholder
+    // The yield has: [0..N-1]=acc, [N..N+3]=buffer swap, [N+4]=token placeholder
     auto *yieldOp = newBody->getTerminator();
-    yieldOp->setOperand(8, ifOp.getResult(0));
+    yieldOp->setOperand(numAccIters + 4, ifOp.getResult(0));
 
     // ── 13. Erase old prefetch ops (reverse dependency order) ───────────
     // wait → postCopyBarrier → createGroup → asyncCopies → srcSubviews
@@ -2063,6 +2114,11 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
         fflush(stderr);
       }
       run_stage("nvidia-accumulator-hoist", [&](mlir::PassManager &pm) {
+        // CSE first: after MMA rewrite + k_sub unrolling, stores at same
+        // (m,n) position use structurally identical but separate SSA values.
+        // CSE merges them so AccHoist can group by SSA equality.
+        pm.addPass(mlir::createCanonicalizerPass());
+        pm.addPass(mlir::createCSEPass());
         pm.addPass(std::make_unique<AccumulatorHoistPass>());
         pm.addPass(mlir::createCanonicalizerPass());
         pm.addPass(mlir::createCSEPass());

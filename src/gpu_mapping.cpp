@@ -160,7 +160,7 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
         config.num_warps = 16;               // 4×4 warp layout
         config.warp_tile_m = 32;             // Each warp: 32×32
         config.warp_tile_n = 32;
-        config.k_tile = pickTilingFactor(k, 16);
+        config.k_tile = pickTilingFactor(k, 32);
         config.mma_micro_k = 16;
         config.use_vectorize_path = false;
         // Block dims: 128×4×1 = 512 threads (4 warps in X × 4 in Y)
