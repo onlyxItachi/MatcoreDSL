@@ -659,9 +659,9 @@ NvidiaTileConfig SelectNvidiaTileConfig(
       IsTensorCoreMmaSyncType(signature);
   config.rewrite_to_mma_sync = statically_compatible_mma;
   if (config.rewrite_to_mma_sync) {
-    // --- Multi-warp path (V4): 4 warps cooperating per block ---
-    constexpr int64_t kMultiWarpBlockTile = 64;
-    constexpr int64_t kMultiWarpMinGrid = 24;
+    // --- Multi-warp path (V4): 16 warps cooperating per block ---
+    constexpr int64_t kMultiWarpBlockTile = 128;
+    constexpr int64_t kMultiWarpMinGrid = 4;
     const bool multi_warp_eligible =
         m >= kMultiWarpBlockTile && n >= kMultiWarpBlockTile &&
         (m % kMultiWarpBlockTile) == 0 && (n % kMultiWarpBlockTile) == 0;
@@ -671,14 +671,13 @@ NvidiaTileConfig SelectNvidiaTileConfig(
       if (grid >= kMultiWarpMinGrid) {
         config.block_tile_m = kMultiWarpBlockTile;
         config.block_tile_n = kMultiWarpBlockTile;
-        config.num_warps = 4;
+        config.num_warps = 16;
         config.warp_tile_m = 32;
         config.warp_tile_n = 32;
-        config.k_tile = pickTilingFactor(k, 16);
-        config.mma_micro_k = 16;
+        config.k_tile = pickTilingFactor(k, 16);        config.mma_micro_k = 16;
         config.use_vectorize_path = true;
-        config.block_threads_x = 64;
-        config.block_threads_y = 2;
+        config.block_threads_x = 128;
+        config.block_threads_y = 4;
         config.thread_tile_m = 16;
         config.thread_tile_n = 8;
         return config;

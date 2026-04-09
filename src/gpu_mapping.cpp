@@ -143,11 +143,11 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
       isTensorCoreMmaSyncType(signature);
   config.rewrite_to_mma_sync = statically_compatible_mma;
   if (config.rewrite_to_mma_sync) {
-    // --- Multi-warp path (V4): 4 warps cooperating per block ---
-    // Gate: dimensions must be exact multiples of 64 (block tile) to avoid
+    // --- Multi-warp path (V4): 16 warps cooperating per block ---
+    // Gate: dimensions must be exact multiples of 128 (block tile) to avoid
     // edge-tile complications with scf.forall static trip counts.
-    constexpr int64_t kMultiWarpBlockTile = 64;
-    constexpr int64_t kMultiWarpMinGrid = 24;  // At least 1 block per SM
+    constexpr int64_t kMultiWarpBlockTile = 128;
+    constexpr int64_t kMultiWarpMinGrid = 4;  // Min 4 blocks for SM saturation
     const bool multi_warp_eligible =
         m >= kMultiWarpBlockTile && n >= kMultiWarpBlockTile &&
         (m % kMultiWarpBlockTile) == 0 && (n % kMultiWarpBlockTile) == 0;
@@ -157,15 +157,15 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
       if (grid >= kMultiWarpMinGrid) {
         config.block_tile_m = kMultiWarpBlockTile;
         config.block_tile_n = kMultiWarpBlockTile;
-        config.num_warps = 4;                // 2×2 warp layout
+        config.num_warps = 16;               // 4×4 warp layout
         config.warp_tile_m = 32;             // Each warp: 32×32
         config.warp_tile_n = 32;
         config.k_tile = pickTilingFactor(k, 16);
         config.mma_micro_k = 16;
         config.use_vectorize_path = false;
-        // Block dims: 64×2×1 = 128 threads (2 warps in X, 2 in Y)
-        config.block_threads_x = 64;
-        config.block_threads_y = 2;
+        // Block dims: 128×4×1 = 512 threads (4 warps in X × 4 in Y)
+        config.block_threads_x = 128;
+        config.block_threads_y = 4;
         config.block_threads_z = 1;
         config.thread_tile_m = 16;
         config.thread_tile_n = 8;
