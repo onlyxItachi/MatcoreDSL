@@ -1329,6 +1329,174 @@ struct DoubleBufferKLoopPass
   }
 };
 
+// ═══════════════════════════════════════════════════════════════════════════
+// LdMatrixRewritePass — Replace scalar shared memory loads + vector.insert
+// chains with warp-cooperative nvgpu.ldmatrix operations.
+//
+// Before: 64 × LDS.U16 (scalar) + 600+ address math ops
+// After:  ~12 × LDSM (ldmatrix.sync.aligned) + ~20 address math ops
+//
+// Pattern matched (per MMA operand):
+//   A fragment: 8 memref.load → vector.splat → 8 vector.insert → vector<4x2xf16>
+//     → replaced by nvgpu.ldmatrix(x4, transpose=false)
+//   B fragment: 4 memref.load → vector.splat → 4 vector.insert → vector<2x2xf16>
+//     → replaced by nvgpu.ldmatrix(x2, transpose=true)
+//
+// Alignment guarantee (verified for padded smem layout):
+//   smemA stride=40 → row=80 bytes (5×16B), col offset 0 or 8 (0 or 16B)
+//   smemB stride=136 → row=272 bytes (17×16B), col offset always 0
+//   All per-thread ldmatrix addresses are 16-byte aligned.
+//
+// Must run AFTER DoubleBufferKLoopPass + CSE (scalar loads have final
+// subview references). Subsequent CSE+canonicalize cleans dead code.
+// ═══════════════════════════════════════════════════════════════════════════
+struct LdMatrixRewritePass
+    : public mlir::PassWrapper<LdMatrixRewritePass, mlir::OperationPass<>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LdMatrixRewritePass)
+
+  llvm::StringRef getArgument() const override {
+    return "matcore-ldmatrix-rewrite";
+  }
+  llvm::StringRef getDescription() const override {
+    return "Replace scalar smem loads with nvgpu.ldmatrix for MMA operands";
+  }
+
+  void getDependentDialects(mlir::DialectRegistry &registry) const override {
+    registry.insert<mlir::nvgpu::NVGPUDialect>();
+    registry.insert<mlir::arith::ArithDialect>();
+    registry.insert<mlir::gpu::GPUDialect>();
+  }
+
+  void runOnOperation() override {
+    auto *rootOp = getOperation();
+    mlir::DenseMap<mlir::Value, mlir::Value> cache;
+    unsigned numReplaced = 0;
+
+    rootOp->walk([&](mlir::nvgpu::MmaSyncOp mmaOp) {
+      if (auto newA = getOrCreateLdMatrix(mmaOp.getMatrixA(), /*isA=*/true,
+                                          cache, mmaOp)) {
+        mmaOp.getMatrixAMutable().set(newA);
+        ++numReplaced;
+      }
+      if (auto newB = getOrCreateLdMatrix(mmaOp.getMatrixB(), /*isA=*/false,
+                                          cache, mmaOp)) {
+        mmaOp.getMatrixBMutable().set(newB);
+        ++numReplaced;
+      }
+    });
+
+    if (numReplaced > 0)
+      llvm::errs() << "[LdMatrixRewrite] Replaced " << numReplaced
+                    << " MMA operand(s) with ldmatrix\n";
+  }
+
+private:
+  // Find gpu.thread_id x in the enclosing gpu.launch
+  mlir::Value findThreadIdX(mlir::Operation *op) {
+    auto launch = op->getParentOfType<mlir::gpu::LaunchOp>();
+    if (!launch) return nullptr;
+    mlir::Value result = nullptr;
+    launch.getBody().walk([&](mlir::gpu::ThreadIdOp tidOp) {
+      if (tidOp.getDimension() == mlir::gpu::Dimension::x) {
+        result = tidOp.getResult();
+        return mlir::WalkResult::interrupt();
+      }
+      return mlir::WalkResult::advance();
+    });
+    return result;
+  }
+
+  // Trace a vector value back through vector.insert chain to the vector.splat.
+  // Returns the SplatOp if found, nullptr otherwise.
+  mlir::vector::SplatOp traceSplat(mlir::Value vec) {
+    mlir::Operation *cur = vec.getDefiningOp();
+    while (cur) {
+      auto insertOp = mlir::dyn_cast_or_null<mlir::vector::InsertOp>(cur);
+      if (!insertOp) return nullptr;
+      auto dest = insertOp.getDest();
+      if (auto splat = dest.getDefiningOp<mlir::vector::SplatOp>())
+        return splat;
+      cur = dest.getDefiningOp();
+    }
+    return nullptr;
+  }
+
+  // Get the source shared memory subview from a scalar load feeding the splat
+  mlir::memref::LoadOp getWorkgroupLoad(mlir::vector::SplatOp splatOp) {
+    auto loadOp =
+        splatOp.getInput().getDefiningOp<mlir::memref::LoadOp>();
+    if (!loadOp) return nullptr;
+    auto memrefType = loadOp.getMemRefType();
+    auto gpuAS = mlir::dyn_cast<mlir::gpu::AddressSpaceAttr>(
+        memrefType.getMemorySpace());
+    if (!gpuAS || gpuAS.getValue() != mlir::gpu::AddressSpace::Workgroup)
+      return nullptr;
+    return loadOp;
+  }
+
+  mlir::Value getOrCreateLdMatrix(mlir::Value operand, bool isA,
+                                  mlir::DenseMap<mlir::Value, mlir::Value> &cache,
+                                  mlir::nvgpu::MmaSyncOp mmaOp) {
+    auto it = cache.find(operand);
+    if (it != cache.end())
+      return it->second;
+
+    // Trace insert chain → splat → load
+    auto splatOp = traceSplat(operand);
+    if (!splatOp) return nullptr;
+
+    auto loadOp = getWorkgroupLoad(splatOp);
+    if (!loadOp) return nullptr;
+
+    mlir::Value threadIdX = findThreadIdX(mmaOp);
+    if (!threadIdX) return nullptr;
+
+    mlir::OpBuilder builder(splatOp);
+    auto loc = splatOp.getLoc();
+
+    // Create lane_id = thread_id_x % 32 (CSE will merge with existing)
+    auto c32 = builder.create<mlir::arith::ConstantIndexOp>(loc, 32);
+    mlir::Value laneId =
+        builder.create<mlir::arith::RemUIOp>(loc, threadIdX, c32);
+
+    // row = lane_id % 16 (shared by both A and B)
+    auto c16 = builder.create<mlir::arith::ConstantIndexOp>(loc, 16);
+    mlir::Value row =
+        builder.create<mlir::arith::RemUIOp>(loc, laneId, c16);
+
+    mlir::Value srcMemref = loadOp.getMemRef();
+    mlir::Value result;
+
+    if (isA) {
+      // A fragment: ldmatrix.x4, transpose=false
+      // Address: [lane_id % 16, (lane_id / 16) * 8]
+      // Each thread loads 16 bytes (8 f16) from one row of the 16×16 tile
+      auto c8 = builder.create<mlir::arith::ConstantIndexOp>(loc, 8);
+      mlir::Value halfWarp =
+          builder.create<mlir::arith::DivUIOp>(loc, laneId, c16);
+      mlir::Value col =
+          builder.create<mlir::arith::MulIOp>(loc, halfWarp, c8);
+      auto resType = mlir::VectorType::get({4, 2}, builder.getF16Type());
+      result = builder.create<mlir::nvgpu::LdMatrixOp>(
+          loc, resType, srcMemref, mlir::ValueRange{row, col},
+          /*transpose=*/false, /*numTiles=*/static_cast<uint32_t>(4));
+    } else {
+      // B fragment: ldmatrix.x2, transpose=true
+      // Address: [lane_id % 16, 0]
+      // Transpose needed: B is stored [K][N] row-major, MMA needs
+      // K-indexed register layout
+      auto c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+      auto resType = mlir::VectorType::get({2, 2}, builder.getF16Type());
+      result = builder.create<mlir::nvgpu::LdMatrixOp>(
+          loc, resType, srcMemref, mlir::ValueRange{row, c0},
+          /*transpose=*/true, /*numTiles=*/static_cast<uint32_t>(2));
+    }
+
+    cache[operand] = result;
+    return result;
+  }
+};
+
 std::string dtypeName(TensorDType dtype) {
   switch (dtype) {
     case TensorDType::kFloat32:
@@ -2176,6 +2344,13 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
       // Phase E: Double-buffer the K-loop (ping-pong shared memory + cp.async overlap)
       run_stage("nvidia-double-buffer-kloop", [&](mlir::PassManager &pm) {
         pm.addPass(std::make_unique<DoubleBufferKLoopPass>());
+        pm.addPass(mlir::createCanonicalizerPass());
+        pm.addPass(mlir::createCSEPass());
+      });
+
+      // Phase L1: Replace scalar smem loads with warp-cooperative ldmatrix
+      run_stage("nvidia-ldmatrix-rewrite", [&](mlir::PassManager &pm) {
+        pm.addPass(std::make_unique<LdMatrixRewritePass>());
         pm.addPass(mlir::createCanonicalizerPass());
         pm.addPass(mlir::createCSEPass());
       });
