@@ -30,6 +30,10 @@ struct NvidiaMappingConfig {
   std::int64_t warp_tile_m = 0;     // Per-warp M tile (0 = not multi-warp)
   std::int64_t warp_tile_n = 0;     // Per-warp N tile
   bool use_vectorize_path = false;  // true = vectorize + VectorToGPU
+
+  // Phase J: Hardware-aware occupancy filler
+  std::int64_t split_k_factor = 1;  // 1 = disabled, >1 = partition K across gridDim.z
+  std::int64_t sm_count = 24;       // SM count for target GPU (sm_89 RTX 4060 = 24)
 };
 
 NvidiaMappingConfig SelectNvidiaMappingConfig(

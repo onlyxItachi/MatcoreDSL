@@ -108,6 +108,54 @@ mlir::Value blockIdForMapping(mlir::gpu::LaunchOp launch,
   }
 }
 
+/// Compute split_k_factor for under-filled grids.
+/// Partitions K across gridDim.z so more blocks can run in parallel.
+/// Returns 1 (no split) if the grid already saturates SMs.
+void computeSplitKFactor(NvidiaMappingConfig &config,
+                         int64_t m, int64_t n, int64_t k,
+                         int64_t sm_count) {
+  int64_t grid_mn = ceilDiv(m, config.block_tile_m) *
+                    ceilDiv(n, config.block_tile_n);
+  int64_t k_tiles = k / config.k_tile;
+
+  // Only split if grid doesn't fill SMs and K has enough tiles
+  if (grid_mn >= sm_count || k_tiles < 4) {
+    config.split_k_factor = 1;
+    return;
+  }
+
+  // Target: 1 block per SM minimum (diminishing returns beyond that
+  // because smem limits us to ~2 blocks/SM for current configs)
+  int64_t desired = ceilDiv(sm_count, grid_mn);
+
+  // Prefer ≥3 K-tiles per slice for good double-buffer overlap
+  int64_t max_split_profitable = k_tiles / 3;
+  int64_t split_k = std::min(desired, max_split_profitable);
+
+  // Relax to ≥2 K-tiles per slice if ≥3 doesn't yield a useful split
+  if (split_k < 2) {
+    int64_t max_split_correct = k_tiles / 2;
+    split_k = std::min(desired, max_split_correct);
+  }
+
+  // Ensure split_k divides k_tiles evenly (avoid remainder slices)
+  while (split_k > 1 && (k_tiles % split_k) != 0)
+    split_k--;
+
+  config.split_k_factor = (split_k >= 2) ? split_k : 1;
+
+  if (config.split_k_factor > 1) {
+    int64_t total_blocks = grid_mn * config.split_k_factor;
+    int64_t tiles_per_slice = k_tiles / config.split_k_factor;
+    fprintf(stderr,
+            "[SplitK] grid_mn=%lld, k_tiles=%lld → split_k=%lld "
+            "(total_blocks=%lld, %lld K-tiles/slice)\n",
+            (long long)grid_mn, (long long)k_tiles,
+            (long long)config.split_k_factor,
+            (long long)total_blocks, (long long)tiles_per_slice);
+  }
+}
+
 }  // namespace
 
 NvidiaMappingConfig SelectNvidiaMappingConfig(
@@ -172,6 +220,8 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
         config.block_threads_z = 1;
         config.thread_tile_m = 16;
         config.thread_tile_n = 8;
+        config.sm_count = kSmCount;
+        computeSplitKFactor(config, m, n, k, kSmCount);
         return config;
       }
     }
@@ -198,6 +248,8 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
         config.block_threads_z = 1;
         config.thread_tile_m = 16;
         config.thread_tile_n = 8;
+        config.sm_count = kSmCount;
+        computeSplitKFactor(config, m, n, k, kSmCount);
         return config;
       }
     }
