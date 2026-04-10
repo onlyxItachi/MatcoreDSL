@@ -93,6 +93,12 @@ struct LowerResidualVectorOpsPass
   throw std::runtime_error("MatCore lowering pipeline: " + message);
 }
 
+static mlir::Value buildCeilDivIndex(mlir::OpBuilder &builder,
+                                     mlir::Location loc, mlir::Value lhs,
+                                     mlir::Value rhs) {
+  return builder.create<mlir::arith::CeilDivUIOp>(loc, lhs, rhs);
+}
+
 // ============================================================================
 // Phase A (MW-7): Sub-tile loop unrolling.
 // After MMA rewrite, the K-loop body contains nested M/N sub-tile loops.
@@ -146,6 +152,168 @@ struct SubTileUnrollPass
     fprintf(stderr, "[SubTileUnroll] Total loops unrolled: %d\n", totalUnrolled);
     fflush(stderr);
   }
+};
+
+// ============================================================================
+// Phase K1: TagKLoopPass — tag the K-reduction loop with a marker attribute.
+// Runs after transform application, before DynamicMacroGridMappingPass.
+// The attribute survives cloning (forall→launch) and is used by AccHoist,
+// DoubleBuffer, and SplitK passes to reliably identify the K-loop.
+// ============================================================================
+struct TagKLoopPass
+    : public mlir::PassWrapper<TagKLoopPass, mlir::OperationPass<>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TagKLoopPass)
+
+  explicit TagKLoopPass(int64_t k_tile) : k_tile_(k_tile) {}
+
+  llvm::StringRef getArgument() const override {
+    return "matcore-tag-k-loop";
+  }
+  llvm::StringRef getDescription() const override {
+    return "Tag the K-reduction loop with matcore.k_loop attribute";
+  }
+  void runOnOperation() override {
+    mlir::Operation *top = getOperation();
+    int tagged = 0;
+
+    // Strategy: find outermost scf.for that contains linalg.matmul (or
+    // nvgpu.mma.sync after MMA rewrite) and has step matching k_tile.
+    // "Outermost" = no ancestor scf.for also contains matmul/MMA ops.
+    llvm::SmallVector<mlir::scf::ForOp, 4> candidates;
+    top->walk([&](mlir::scf::ForOp forOp) {
+      // Check step matches k_tile
+      auto stepCst = forOp.getStep().getDefiningOp<mlir::arith::ConstantIndexOp>();
+      if (!stepCst || stepCst.value() != k_tile_)
+        return;
+
+      // Check contains matmul or MMA ops (K-loop signature)
+      bool hasMatmul = false;
+      forOp.getBody()->walk([&](mlir::Operation *op) {
+        if (llvm::isa<mlir::linalg::MatmulOp>(op) ||
+            llvm::isa<mlir::nvgpu::MmaSyncOp>(op))
+          hasMatmul = true;
+      });
+      if (!hasMatmul)
+        return;
+
+      // Check this is outermost: no ancestor scf.for with same properties
+      bool hasMatchingAncestor = false;
+      mlir::Operation *parent = forOp->getParentOp();
+      while (parent) {
+        if (auto parentFor = llvm::dyn_cast<mlir::scf::ForOp>(parent)) {
+          bool parentHasMatmul = false;
+          parentFor.getBody()->walk([&](mlir::Operation *op) {
+            if (llvm::isa<mlir::linalg::MatmulOp>(op) ||
+                llvm::isa<mlir::nvgpu::MmaSyncOp>(op))
+              parentHasMatmul = true;
+          });
+          auto pStep = parentFor.getStep()
+                           .getDefiningOp<mlir::arith::ConstantIndexOp>();
+          if (parentHasMatmul && pStep && pStep.value() == k_tile_) {
+            hasMatchingAncestor = true;
+            break;
+          }
+        }
+        parent = parent->getParentOp();
+      }
+      if (!hasMatchingAncestor)
+        candidates.push_back(forOp);
+    });
+
+    for (auto forOp : candidates) {
+      forOp->setAttr("matcore.k_loop",
+                      mlir::UnitAttr::get(forOp->getContext()));
+      tagged++;
+    }
+    fprintf(stderr, "[TagKLoop] Tagged %d K-loop(s) (k_tile=%lld)\n",
+            tagged, (long long)k_tile_);
+    fflush(stderr);
+  }
+
+  int64_t k_tile_;
+};
+
+// ============================================================================
+// SplitKPartitionPass — partition K-loop by blockIdx.z.
+// Must run BEFORE DoubleBuffer so the prologue/epilogue see correct bounds.
+// Each block in gridDim.z processes K/split_k elements of the K dimension.
+// ============================================================================
+struct SplitKPartitionPass
+    : public mlir::PassWrapper<SplitKPartitionPass, mlir::OperationPass<>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SplitKPartitionPass)
+
+  explicit SplitKPartitionPass(int64_t split_k) : split_k_factor(split_k) {}
+
+  llvm::StringRef getArgument() const override {
+    return "matcore-splitk-partition";
+  }
+  llvm::StringRef getDescription() const override {
+    return "Partition K-loop bounds by blockIdx.z for split-K";
+  }
+  void runOnOperation() override {
+    if (split_k_factor <= 1)
+      return;
+
+    mlir::Operation *top = getOperation();
+
+    // Find the GEMM launch (first gpu.launch)
+    mlir::gpu::LaunchOp gemmLaunch;
+    top->walk([&](mlir::gpu::LaunchOp launch) {
+      if (!gemmLaunch)
+        gemmLaunch = launch;
+      return mlir::WalkResult::interrupt();
+    });
+    if (!gemmLaunch)
+      return;
+
+    // Find tagged K-loop inside launch
+    mlir::scf::ForOp kLoop;
+    gemmLaunch.getBody().walk([&](mlir::scf::ForOp forOp) {
+      if (forOp->hasAttr("matcore.k_loop")) {
+        kLoop = forOp;
+        return mlir::WalkResult::interrupt();
+      }
+      return mlir::WalkResult::advance();
+    });
+    if (!kLoop) {
+      fprintf(stderr, "[SplitKPartition] No matcore.k_loop found, skipping\n");
+      fflush(stderr);
+      return;
+    }
+
+    mlir::OpBuilder kb(kLoop);
+    mlir::Location loc = kLoop.getLoc();
+
+    // Original K-loop: for k = 0 to K step k_tile
+    // New bounds:  k_start = blockIdx.z * chunk
+    //              k_end   = (blockIdx.z + 1) * chunk
+    //   where chunk = K / split_k_factor
+    mlir::Value origUB = kLoop.getUpperBound();
+    mlir::Value splitKVal =
+        kb.create<mlir::arith::ConstantIndexOp>(loc, split_k_factor);
+    mlir::Value chunk =
+        kb.create<mlir::arith::DivUIOp>(loc, origUB, splitKVal);
+
+    mlir::Value blockIdxZ = gemmLaunch.getBlockIds().z;
+    mlir::Value kStart =
+        kb.create<mlir::arith::MulIOp>(loc, blockIdxZ, chunk);
+
+    mlir::Value oneK =
+        kb.create<mlir::arith::ConstantIndexOp>(loc, 1);
+    mlir::Value bzPlusOne =
+        kb.create<mlir::arith::AddIOp>(loc, blockIdxZ, oneK);
+    mlir::Value kEnd =
+        kb.create<mlir::arith::MulIOp>(loc, bzPlusOne, chunk);
+
+    kLoop.setLowerBound(kStart);
+    kLoop.setUpperBound(kEnd);
+
+    fprintf(stderr, "[SplitKPartition] K-loop partitioned by blockIdx.z "
+            "(split_k=%lld)\n", (long long)split_k_factor);
+    fflush(stderr);
+  }
+
+  int64_t split_k_factor;
 };
 
 // ============================================================================
@@ -221,67 +389,37 @@ struct AccumulatorHoistPass
 
   void runOnOperation() override {
     mlir::Operation *top = getOperation();
-    // Find the K-loop: the outermost scf.for containing nvgpu.mma.sync ops.
+    // Find the K-loop: prefer matcore.k_loop attribute (set by TagKLoopPass),
+    // fall back to heuristic for legacy non-split paths.
     mlir::scf::ForOp kLoop;
-    int forCount = 0;
-    llvm::SmallVector<mlir::scf::ForOp, 4> allLoops;
     top->walk([&](mlir::scf::ForOp forOp) {
-      forCount++;
-      allLoops.push_back(forOp);
-    });
-    // Print all loops for debugging
-    for (int i = 0; i < (int)allLoops.size(); i++) {
-      auto f = allLoops[i];
-      auto lb = f.getLowerBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
-      auto ub = f.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
-      auto st = f.getStep().getDefiningOp<mlir::arith::ConstantIndexOp>();
-      int mmaCount = 0;
-      f.getBody()->walk([&](mlir::nvgpu::MmaSyncOp) { mmaCount++; });
-      fprintf(stderr, "[AccHoist] Loop[%d]: lb=%ld ub=%ld step=%ld mmas=%d\n",
-              i, lb ? (long)lb.value() : -1,
-              ub ? (long)ub.value() : -1,
-              st ? (long)st.value() : -1, mmaCount);
-    }
-    fflush(stderr);
-    
-    // Select K-loop: the OUTERMOST loop containing MMA ops
-    // (largest trip count / largest upper bound among loops with MMA)
-    for (auto &f : allLoops) {
-      bool hasMma = false;
-      f.getBody()->walk([&](mlir::nvgpu::MmaSyncOp) { hasMma = true; });
-      if (!hasMma) continue;
-      if (!kLoop) {
-        kLoop = f;
-        continue;
+      if (forOp->hasAttr("matcore.k_loop")) {
+        kLoop = forOp;
+        return mlir::WalkResult::interrupt();
       }
-      // Prefer the loop with larger upper bound (K-loop has ub=N, sub-tile has ub=32)
-      auto curUb = kLoop.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
-      auto newUb = f.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
-      if (curUb && newUb && newUb.value() > curUb.value())
-        kLoop = f;
-      else if (!curUb && newUb)
-        kLoop = f; // prefer dynamic upper bound (K-loop for variable-size)
+      return mlir::WalkResult::advance();
+    });
+    if (!kLoop) {
+      // Heuristic fallback: outermost loop with MMA ops (legacy V3 path)
+      llvm::SmallVector<mlir::scf::ForOp, 4> allLoops;
+      top->walk([&](mlir::scf::ForOp forOp) { allLoops.push_back(forOp); });
+      for (auto &f : allLoops) {
+        bool hasMma = false;
+        f.getBody()->walk([&](mlir::nvgpu::MmaSyncOp) { hasMma = true; });
+        if (!hasMma) continue;
+        if (!kLoop) { kLoop = f; continue; }
+        auto curUb = kLoop.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
+        auto newUb = f.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
+        if (curUb && newUb && newUb.value() > curUb.value())
+          kLoop = f;
+        else if (!curUb && !newUb) {} // both dynamic — keep first
+        else if (curUb && !newUb)
+          kLoop = f; // prefer dynamic upper bound (split-K K-loop)
+      }
     }
-    fprintf(stderr, "[AccHoist] Found %d scf.for loops, K-loop=%s\n",
-            forCount, kLoop ? "YES" : "NO");
-    if (kLoop) {
-      // Print K-loop bounds info
-      auto lbCst = kLoop.getLowerBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
-      auto ubCst = kLoop.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
-      auto stepCst = kLoop.getStep().getDefiningOp<mlir::arith::ConstantIndexOp>();
-      fprintf(stderr, "[AccHoist] K-loop: lb=%ld ub=%ld step=%ld\n",
-              lbCst ? (long)lbCst.value() : -1,
-              ubCst ? (long)ubCst.value() : -1,
-              stepCst ? (long)stepCst.value() : -1);
-      // Count ALL ops in K-loop body
-      int totalOps = 0;
-      for (auto &op : *kLoop.getBody()) totalOps++;
-      fprintf(stderr, "[AccHoist] K-loop body has %d direct ops\n", totalOps);
-      // Count ALL MMA ops (including nested)
-      int totalMma = 0;
-      kLoop.getBody()->walk([&](mlir::nvgpu::MmaSyncOp) { totalMma++; });
-      fprintf(stderr, "[AccHoist] K-loop has %d total MMA ops (incl nested)\n", totalMma);
-    }
+    fprintf(stderr, "[AccHoist] K-loop=%s (attr=%s)\n",
+            kLoop ? "YES" : "NO",
+            kLoop && kLoop->hasAttr("matcore.k_loop") ? "tagged" : "heuristic");
     fflush(stderr);
     if (!kLoop)
       return;
@@ -580,10 +718,18 @@ struct AccumulatorHoistPass
             return;
           indices.push_back(newIdx);
         }
-        rewriter.create<mlir::memref::StoreOp>(pat.store.getLoc(), extracted,
-                                                memref, indices);
+        auto storeOp = rewriter.create<mlir::memref::StoreOp>(
+            pat.store.getLoc(), extracted, memref, indices);
+        // Tag for SplitKEpiloguePass to find epilogue stores reliably
+        storeOp->setAttr("matcore.epilogue_store",
+                         mlir::UnitAttr::get(storeOp->getContext()));
       }
     }
+
+    // Propagate K-loop tag to the new loop
+    if (kLoop->hasAttr("matcore.k_loop"))
+      newFor->setAttr("matcore.k_loop",
+                      mlir::UnitAttr::get(newFor->getContext()));
 
     // Replace old loop results and erase.
     for (auto [oldRes, newRes] :
@@ -1020,28 +1166,38 @@ struct DoubleBufferKLoopPass
     // ── 4. Find K-loop: outermost scf.for containing async copies ──
     // After AccHoist, the K-loop carries accumulator iter_args. The count
     // depends on configuration (8 for 4-warp, up to 32 for 16-warp).
-    // We identify the K-loop as the outermost loop containing async copy ops.
+    // Prefer matcore.k_loop attribute (set by TagKLoopPass); fall back to
+    // async-copy heuristic for legacy paths.
     mlir::scf::ForOp kLoop;
     launch.getBody().walk([&](mlir::scf::ForOp forOp) {
-      bool hasAsyncCopy = false;
-      forOp.getBody()->walk([&](mlir::nvgpu::DeviceAsyncCopyOp) {
-        hasAsyncCopy = true;
-      });
-      if (hasAsyncCopy && forOp.getNumResults() > 0) {
-        // Prefer outermost (largest trip count) loop with async copies
-        if (!kLoop) {
-          kLoop = forOp;
-        } else {
-          auto curUb = kLoop.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
-          auto newUb = forOp.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
-          if (curUb && newUb && newUb.value() > curUb.value())
-            kLoop = forOp;
-          else if (!curUb && newUb)
-            kLoop = forOp;
-        }
+      if (forOp->hasAttr("matcore.k_loop")) {
+        kLoop = forOp;
+        return mlir::WalkResult::interrupt();
       }
       return mlir::WalkResult::advance();
     });
+    if (!kLoop) {
+      // Heuristic fallback: outermost loop with async copies
+      launch.getBody().walk([&](mlir::scf::ForOp forOp) {
+        bool hasAsyncCopy = false;
+        forOp.getBody()->walk([&](mlir::nvgpu::DeviceAsyncCopyOp) {
+          hasAsyncCopy = true;
+        });
+        if (hasAsyncCopy && forOp.getNumResults() > 0) {
+          if (!kLoop) {
+            kLoop = forOp;
+          } else {
+            auto curUb = kLoop.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
+            auto newUb = forOp.getUpperBound().getDefiningOp<mlir::arith::ConstantIndexOp>();
+            if (curUb && newUb && newUb.value() > curUb.value())
+              kLoop = forOp;
+            else if (curUb && !newUb)
+              kLoop = forOp; // prefer dynamic upper bound (split-K)
+          }
+        }
+        return mlir::WalkResult::advance();
+      });
+    }
     if (!kLoop) {
       fprintf(stderr, "[DoubleBuffer] No K-loop with async copies found\n");
       fflush(stderr);
@@ -1166,6 +1322,11 @@ struct DoubleBufferKLoopPass
     auto newKLoop = mlir::cast<mlir::scf::ForOp>((*result).getOperation());
     auto *newBody = newKLoop.getBody();
     auto newIV = newKLoop.getInductionVar();
+
+    // Propagate K-loop tag for SplitKEpiloguePass
+    if (kLoop->hasAttr("matcore.k_loop"))
+      newKLoop->setAttr("matcore.k_loop",
+                         mlir::UnitAttr::get(newKLoop->getContext()));
 
     // Block args: [0]=IV, [1..N]=acc0..acc(N-1), [N+1..N+5]=readA,readB,writeA,writeB,groupToken
     unsigned numAccIters = newKLoop.getNumRegionIterArgs() - 5;
@@ -1498,6 +1659,381 @@ private:
     cache[operand] = result;
     return result;
   }
+};
+
+// ============================================================================
+// Phase K: SplitKEpiloguePass — rewrite epilogue stores for Split-K.
+// When split_k > 1, each K-partition block computes a partial result.
+// This pass:
+//   1. Allocates a workspace memref<split_k × M × N × f32> via gpu.alloc
+//   2. Rewrites tagged epilogue stores: C[m,n] (f16) → workspace[bz, m, n] (f32)
+//   3. Generates a reduction kernel summing workspace slices → C[m,n] (f16)
+//   4. Deallocates workspace
+// Runs AFTER all MW optimization passes and vector-to-gpu, BEFORE staging.
+// ============================================================================
+struct SplitKEpiloguePass
+    : public mlir::PassWrapper<SplitKEpiloguePass, mlir::OperationPass<>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SplitKEpiloguePass)
+
+  explicit SplitKEpiloguePass(const NvidiaMappingConfig &config)
+      : split_k_factor(config.split_k_factor),
+        block_tile_m(config.block_tile_m),
+        block_tile_n(config.block_tile_n) {}
+
+  llvm::StringRef getArgument() const override {
+    return "matcore-splitk-epilogue";
+  }
+  llvm::StringRef getDescription() const override {
+    return "Rewrite epilogue stores for Split-K workspace + reduction";
+  }
+
+  void getDependentDialects(mlir::DialectRegistry &registry) const override {
+    registry.insert<mlir::gpu::GPUDialect, mlir::arith::ArithDialect,
+                    mlir::memref::MemRefDialect, mlir::scf::SCFDialect>();
+  }
+
+  void runOnOperation() override {
+    if (split_k_factor <= 1)
+      return;
+
+    mlir::Operation *top = getOperation();
+
+    // Find the GEMM launch (first gpu.launch)
+    mlir::gpu::LaunchOp gemmLaunch;
+    top->walk([&](mlir::gpu::LaunchOp launch) {
+      if (!gemmLaunch)
+        gemmLaunch = launch;
+      return mlir::WalkResult::interrupt();
+    });
+    if (!gemmLaunch) {
+      fprintf(stderr, "[SplitKEpilogue] No gpu.launch found, skipping\n");
+      fflush(stderr);
+      return;
+    }
+
+    // Find tagged epilogue stores inside the GEMM launch
+    llvm::SmallVector<mlir::memref::StoreOp, 32> epilogueStores;
+    gemmLaunch.getBody().walk([&](mlir::memref::StoreOp store) {
+      if (store->hasAttr("matcore.epilogue_store"))
+        epilogueStores.push_back(store);
+    });
+    if (epilogueStores.empty()) {
+      fprintf(stderr, "[SplitKEpilogue] No tagged epilogue stores, skipping\n");
+      fflush(stderr);
+      return;
+    }
+    fprintf(stderr, "[SplitKEpilogue] Found %lu tagged epilogue stores\n",
+            (unsigned long)epilogueStores.size());
+    fflush(stderr);
+
+    // Determine C memref from first epilogue store
+    mlir::Value cMemref = epilogueStores[0].getMemRef();
+    auto cType = llvm::dyn_cast<mlir::MemRefType>(cMemref.getType());
+    if (!cType || cType.getRank() != 2) {
+      fprintf(stderr, "[SplitKEpilogue] C memref is not rank-2, aborting\n");
+      fflush(stderr);
+      return;
+    }
+
+    // Find the func.func to get M, N dimensions and insert workspace ops
+    mlir::func::FuncOp func;
+    top->walk([&](mlir::func::FuncOp f) { func = f; });
+    if (!func)
+      return;
+
+    mlir::OpBuilder funcBuilder(func.getBody().front().getTerminator());
+    mlir::Location loc = func.getLoc();
+
+    // Get M, N from the function argument C (last arg = output tensor).
+    // We use the func arg directly — NOT tracing from inside gpu.launch,
+    // because epilogue store memrefs are launch-body block arguments.
+    unsigned numArgs = func.getNumArguments();
+    mlir::Value cArg = func.getArgument(numArgs - 1); // C is the last arg
+    auto cArgType = llvm::dyn_cast<mlir::MemRefType>(cArg.getType());
+    if (!cArgType || cArgType.getRank() != 2) {
+      fprintf(stderr, "[SplitKEpilogue] Last func arg is not rank-2 memref\n");
+      fflush(stderr);
+      return;
+    }
+
+    // M and N are compile-time known (static memref shapes)
+    int64_t staticM = cArgType.getDimSize(0);
+    int64_t staticN = cArgType.getDimSize(1);
+    if (staticM == mlir::ShapedType::kDynamic ||
+        staticN == mlir::ShapedType::kDynamic) {
+      fprintf(stderr,
+              "[SplitKEpilogue] Dynamic C dims not supported, skipping\n");
+      fflush(stderr);
+      return;
+    }
+
+    mlir::OpBuilder preBuilder(&func.getBody().front().front());
+    mlir::Value dimM = preBuilder.create<mlir::arith::ConstantIndexOp>(
+        loc, staticM);
+    mlir::Value dimN = preBuilder.create<mlir::arith::ConstantIndexOp>(
+        loc, staticN);
+
+    // Allocate workspace with STATIC shape using ASYNC ops.
+    // GpuToLLVMConversionPass only converts gpu.alloc with async tokens
+    // (non-async, non-shared allocs are silently skipped by the pattern).
+    auto f32Type = mlir::Float32Type::get(func.getContext());
+    auto workspaceType = mlir::MemRefType::get(
+        {split_k_factor, staticM, staticN}, f32Type);
+    auto tokenType = mlir::gpu::AsyncTokenType::get(func.getContext());
+
+    // Create initial async token
+    auto initialWait = preBuilder.create<mlir::gpu::WaitOp>(
+        loc, tokenType, mlir::ValueRange{});
+    mlir::Value currentToken = initialWait.getAsyncToken();
+
+    auto workspaceAlloc = preBuilder.create<mlir::gpu::AllocOp>(
+        loc, workspaceType, /*asyncToken=*/tokenType,
+        /*asyncDeps=*/mlir::ValueRange{currentToken},
+        /*dynSizes=*/mlir::ValueRange(),
+        /*symbolOperands=*/mlir::ValueRange(),
+        /*hostShared=*/false);
+    mlir::Value workspace = workspaceAlloc.getMemref();
+    currentToken = workspaceAlloc.getAsyncToken();
+
+    // Zero the workspace (async)
+    mlir::Value zeroF32 = preBuilder.create<mlir::arith::ConstantOp>(
+        loc, f32Type, preBuilder.getFloatAttr(f32Type, 0.0));
+    auto memsetOp = preBuilder.create<mlir::gpu::MemsetOp>(
+        loc, /*asyncToken=*/tokenType,
+        /*asyncDeps=*/mlir::ValueRange{currentToken}, workspace, zeroF32);
+    currentToken = memsetOp.getAsyncToken();
+
+    // Synchronize: wait for alloc+memset to complete before kernel launch
+    preBuilder.create<mlir::gpu::WaitOp>(loc, mlir::Type(),
+                                          mlir::ValueRange{currentToken});
+
+    // NOTE: K-loop partitioning is done by SplitKPartitionPass (runs before
+    // DoubleBuffer) so the prologue/epilogue see correct per-block K bounds.
+
+    // Rewrite epilogue stores: C[m,n] (f16) → workspace[blockIdx.z, m, n] (f32)
+    //
+    // AccHoist creates stores like: memref.store %val, %subview[lane_r, lane_c]
+    // where %subview = memref.subview %C[group_m_off, group_n_off][16,8][1,1].
+    // The store indices are subview-relative.  We must resolve through the
+    // subview chain to get absolute C coordinates, otherwise all 8 MMA groups
+    // overwrite the same workspace positions (the lane-relative indices are
+    // identical across groups; only the subview offsets differ).
+    mlir::Value blockIdxZ = gemmLaunch.getBlockIds().z;
+    for (auto store : epilogueStores) {
+      mlir::OpBuilder sb(store);
+      mlir::Value val = store.getValueToStore();
+
+      // Extend f16 → f32
+      mlir::Value valF32 = sb.create<mlir::arith::ExtFOp>(
+          store.getLoc(), f32Type, val);
+
+      // Resolve absolute indices by walking the memref def chain.
+      // After canonicalization, subview chains may be folded into
+      // reinterpret_cast ops. We handle both SubViewOp (per-dim offsets)
+      // and ReinterpretCastOp (single linear offset decomposed via N).
+      llvm::SmallVector<mlir::Value> absIndices(store.getIndices().begin(),
+                                                 store.getIndices().end());
+      mlir::Value curMemref = store.getMemRef();
+
+      // Walk SubViewOp chain (original path)
+      while (auto svOp =
+                 curMemref.getDefiningOp<mlir::memref::SubViewOp>()) {
+        auto mixedOffsets = svOp.getMixedOffsets();
+        for (unsigned i = 0; i < absIndices.size() && i < mixedOffsets.size();
+             ++i) {
+          mlir::Value offset;
+          if (auto attr = llvm::dyn_cast<mlir::Attribute>(mixedOffsets[i])) {
+            int64_t sv = llvm::cast<mlir::IntegerAttr>(attr).getInt();
+            if (sv != 0)
+              offset = sb.create<mlir::arith::ConstantIndexOp>(
+                  store.getLoc(), sv);
+          } else {
+            offset = llvm::cast<mlir::Value>(mixedOffsets[i]);
+          }
+          if (offset)
+            absIndices[i] = sb.create<mlir::arith::AddIOp>(
+                store.getLoc(), absIndices[i], offset);
+        }
+        curMemref = svOp.getSource();
+      }
+
+      // Handle ReinterpretCastOp: canonicalization folds subview chains into
+      // reinterpret_cast with a single linear offset and original C strides.
+      // Decompose: row_off = linear_off / N, col_off = linear_off % N.
+      if (auto rcOp =
+              curMemref.getDefiningOp<mlir::memref::ReinterpretCastOp>()) {
+        auto mixedOffsets = rcOp.getMixedOffsets();
+        // Use the row stride from the reinterpret_cast itself (more robust)
+        auto mixedStrides = rcOp.getMixedStrides();
+        int64_t rowStride = -1;
+        if (mixedStrides.size() >= 1) {
+          if (auto attr = llvm::dyn_cast<mlir::Attribute>(mixedStrides[0]))
+            rowStride = llvm::cast<mlir::IntegerAttr>(attr).getInt();
+        }
+        if (mixedOffsets.size() == 1 && absIndices.size() == 2) {
+          mlir::Value linearOff;
+          if (auto attr = llvm::dyn_cast<mlir::Attribute>(mixedOffsets[0])) {
+            int64_t sv = llvm::cast<mlir::IntegerAttr>(attr).getInt();
+            if (sv != 0)
+              linearOff = sb.create<mlir::arith::ConstantIndexOp>(
+                  store.getLoc(), sv);
+          } else {
+            linearOff = llvm::cast<mlir::Value>(mixedOffsets[0]);
+          }
+          if (linearOff) {
+            // Use row stride from reinterpret_cast for decomposition
+            int64_t divisor = (rowStride > 0) ? rowStride : staticN;
+            mlir::Value nVal = sb.create<mlir::arith::ConstantIndexOp>(
+                store.getLoc(), divisor);
+            mlir::Value rowOff = sb.create<mlir::arith::DivUIOp>(
+                store.getLoc(), linearOff, nVal);
+            mlir::Value colOff = sb.create<mlir::arith::RemUIOp>(
+                store.getLoc(), linearOff, nVal);
+            absIndices[0] = sb.create<mlir::arith::AddIOp>(
+                store.getLoc(), absIndices[0], rowOff);
+            absIndices[1] = sb.create<mlir::arith::AddIOp>(
+                store.getLoc(), absIndices[1], colOff);
+          }
+        }
+      }
+
+      // Warn if chain walk stopped at an unrecognized view-like op
+      if (!llvm::isa<mlir::BlockArgument>(curMemref) &&
+          !curMemref.getDefiningOp<mlir::memref::SubViewOp>() &&
+          !curMemref.getDefiningOp<mlir::memref::ReinterpretCastOp>()) {
+        if (auto *defOp = curMemref.getDefiningOp())
+          fprintf(stderr, "[SplitKEpilogue] WARNING: chain walk stopped at "
+                  "unrecognized op '%s'\n",
+                  defOp->getName().getStringRef().str().c_str());
+      }
+
+      // Build workspace indices: [blockIdx.z, abs_m, abs_n]
+      llvm::SmallVector<mlir::Value, 3> wsIndices;
+      wsIndices.push_back(blockIdxZ);
+      for (auto idx : absIndices)
+        wsIndices.push_back(idx);
+
+      sb.create<mlir::memref::StoreOp>(store.getLoc(), valF32,
+                                        workspace, wsIndices);
+      store.erase();
+    }
+
+    // Generate reduction kernel: sum workspace slices → C
+    // Insert AFTER the GEMM launch. Sequential launches on same stream are
+    // implicitly ordered — no explicit sync needed between separate kernels.
+    mlir::OpBuilder afterGemm(gemmLaunch->getNextNode());
+    loc = gemmLaunch.getLoc();
+
+    // Reduction kernel: 1D grid, 256 threads per block
+    int64_t reduceThreads = 256;
+    int64_t totalElemsConst = staticM * staticN;
+    int64_t gridDimRedConst =
+        (totalElemsConst + reduceThreads - 1) / reduceThreads;
+    mlir::Value totalElems =
+        afterGemm.create<mlir::arith::ConstantIndexOp>(loc, totalElemsConst);
+    mlir::Value gridDimRed =
+        afterGemm.create<mlir::arith::ConstantIndexOp>(loc, gridDimRedConst);
+    mlir::Value one = afterGemm.create<mlir::arith::ConstantIndexOp>(loc, 1);
+    mlir::Value blockDimRed =
+        afterGemm.create<mlir::arith::ConstantIndexOp>(loc, reduceThreads);
+
+    auto reduceLaunch = afterGemm.create<mlir::gpu::LaunchOp>(
+        loc, gridDimRed, one, one, blockDimRed, one, one);
+
+    // Reduction kernel body
+    mlir::Block &reduceBody = reduceLaunch.getBody().front();
+    mlir::OpBuilder rb = mlir::OpBuilder::atBlockEnd(&reduceBody);
+
+    // global_tid = blockIdx.x * blockDim + threadIdx.x
+    mlir::Value blockIdx = reduceLaunch.getBlockIds().x;
+    mlir::Value threadIdx = reduceLaunch.getThreadIds().x;
+    mlir::Value blockDimVal =
+        rb.create<mlir::arith::ConstantIndexOp>(loc, reduceThreads);
+    mlir::Value globalTid =
+        rb.create<mlir::arith::MulIOp>(loc, blockIdx, blockDimVal);
+    globalTid =
+        rb.create<mlir::arith::AddIOp>(loc, globalTid, threadIdx);
+
+    // Bounds check: if (global_tid < M * N)
+    mlir::Value inBounds = rb.create<mlir::arith::CmpIOp>(
+        loc, mlir::arith::CmpIPredicate::ult, globalTid, totalElems);
+
+    auto ifOp = rb.create<mlir::scf::IfOp>(loc, inBounds, /*withElse=*/false);
+    rb = mlir::OpBuilder::atBlockBegin(&ifOp.getThenRegion().front());
+
+    // row = global_tid / N, col = global_tid % N
+    mlir::Value row = rb.create<mlir::arith::DivUIOp>(loc, globalTid, dimN);
+    mlir::Value col = rb.create<mlir::arith::RemUIOp>(loc, globalTid, dimN);
+
+    // Sum workspace[z, row, col] for z in 0..split_k
+    mlir::Value zeroIdx =
+        rb.create<mlir::arith::ConstantIndexOp>(loc, 0);
+    mlir::Value splitKLoop =
+        rb.create<mlir::arith::ConstantIndexOp>(loc, split_k_factor);
+    mlir::Value oneIdx =
+        rb.create<mlir::arith::ConstantIndexOp>(loc, 1);
+    mlir::Value initSum = rb.create<mlir::arith::ConstantOp>(
+        loc, f32Type, rb.getFloatAttr(f32Type, 0.0));
+
+    // scf.for z = 0 to split_k step 1: accumulate f32
+    auto sumLoop = rb.create<mlir::scf::ForOp>(
+        loc, zeroIdx, splitKLoop, oneIdx, mlir::ValueRange({initSum}),
+        [&](mlir::OpBuilder &lb, mlir::Location lloc, mlir::Value zIv,
+            mlir::ValueRange iterArgs) {
+          mlir::Value acc = iterArgs[0];
+          mlir::Value elem = lb.create<mlir::memref::LoadOp>(
+              lloc, workspace, mlir::ValueRange({zIv, row, col}));
+          mlir::Value newAcc =
+              lb.create<mlir::arith::AddFOp>(lloc, acc, elem);
+          lb.create<mlir::scf::YieldOp>(lloc, mlir::ValueRange({newAcc}));
+        });
+
+    // Truncate f32 → f16 and store to C
+    mlir::Value finalSum = sumLoop.getResult(0);
+    auto f16Type = mlir::Float16Type::get(func.getContext());
+    mlir::Value truncated =
+        rb.create<mlir::arith::TruncFOp>(loc, f16Type, finalSum);
+    rb.create<mlir::memref::StoreOp>(loc, truncated, cArg,
+                                      mlir::ValueRange({row, col}));
+
+    // Add terminator to reduction launch
+    rb = mlir::OpBuilder::atBlockEnd(&reduceBody);
+    rb.create<mlir::gpu::TerminatorOp>(loc);
+
+    // Deallocate workspace after reduction (async, matching alloc pattern)
+    mlir::OpBuilder deallocBuilder(reduceLaunch->getNextNode());
+    auto deallocTokenType = mlir::gpu::AsyncTokenType::get(func.getContext());
+    auto deallocWait = deallocBuilder.create<mlir::gpu::WaitOp>(
+        loc, deallocTokenType, mlir::ValueRange{});
+    mlir::Value deallocToken = deallocWait.getAsyncToken();
+    auto deallocOp = deallocBuilder.create<mlir::gpu::DeallocOp>(
+        loc, /*asyncToken=*/deallocTokenType,
+        /*asyncDeps=*/mlir::ValueRange{deallocToken}, workspace);
+    deallocBuilder.create<mlir::gpu::WaitOp>(
+        loc, mlir::Type(), mlir::ValueRange{deallocOp.getAsyncToken()});
+
+    // Remove any memref.copy from the old C buffer to the output argument.
+    // The original non-split-K path copies the C alloc to cArg after the
+    // GEMM launch.  With split-K the reduction kernel writes directly to
+    // cArg, so the stale copy would overwrite correct results with zeros.
+    llvm::SmallVector<mlir::memref::CopyOp> copiesToRemove;
+    func.walk([&](mlir::memref::CopyOp copyOp) {
+      if (copyOp.getTarget() == cArg)
+        copiesToRemove.push_back(copyOp);
+    });
+    for (auto copy : copiesToRemove)
+      copy.erase();
+
+    fprintf(stderr, "[SplitKEpilogue] Inserted workspace alloc + reduction "
+            "kernel (split_k=%lld, threads=%lld), removed %lu stale copies\n",
+            (long long)split_k_factor, (long long)reduceThreads,
+            (unsigned long)copiesToRemove.size());
+    fflush(stderr);
+  }
+
+  int64_t split_k_factor;
+  int64_t block_tile_m;
+  int64_t block_tile_n;
 };
 
 std::string dtypeName(TensorDType dtype) {
@@ -2142,6 +2678,15 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
     if (obs) {
       obs->snapshot("nvidia-apply-transform_post", module);
     }
+
+    // Tag the K-loop before DynamicMacroGridMappingPass clones body
+    // (StringAttrs survive Operation::clone)
+    if (mapping.split_k_factor > 1 || true) { // always tag for AccHoist/DoubleBuffer
+      run_stage("nvidia-tag-k-loop", [&](mlir::PassManager &pm) {
+        pm.addPass(std::make_unique<TagKLoopPass>(mapping.k_tile));
+      });
+    }
+
     run_stage("nvidia-dynamic-macro-topology", [&](mlir::PassManager &pm) {
       AddNvidiaDynamicMacroGridMappingPasses(pm, mapping);
     });
@@ -2272,18 +2817,6 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
 
       // === MW-7 Phase B: Accumulator hoisting ===
       // Hoist MMA C accumulators from global memory to K-loop iter_args.
-      // DEBUG: dump IR before Phase B to understand C store structure
-      {
-        std::string irStr;
-        llvm::raw_string_ostream rso(irStr);
-        module.print(rso);
-        rso.flush();
-        FILE *f = fopen("/tmp/mw_pre_phaseB.mlir", "w");
-        if (f) { fprintf(f, "%s", irStr.c_str()); fclose(f); }
-        fprintf(stderr, "[MW-7] IR dumped to /tmp/mw_pre_phaseB.mlir (%lu bytes)\n",
-                (unsigned long)irStr.size());
-        fflush(stderr);
-      }
       run_stage("nvidia-accumulator-hoist", [&](mlir::PassManager &pm) {
         // CSE first: after MMA rewrite + k_sub unrolling, stores at same
         // (m,n) position use structurally identical but separate SSA values.
@@ -2294,35 +2827,6 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
         pm.addPass(mlir::createCanonicalizerPass());
         pm.addPass(mlir::createCSEPass());
       });
-
-      // DEBUG: dump IR after Phase B
-      {
-        fprintf(stderr, "[MW-7] Entering post-Phase-B diagnostic...\n");
-        fflush(stderr);
-        
-        // Try to verify first (might crash if IR is corrupted)
-        fprintf(stderr, "[MW-7] Attempting IR verification...\n");
-        fflush(stderr);
-        if (mlir::failed(module.verify())) {
-          fprintf(stderr, "[MW-7] ERROR: IR verification FAILED after Phase B!\n");
-          fflush(stderr);
-        } else {
-          fprintf(stderr, "[MW-7] IR verification PASSED after Phase B\n");
-          fflush(stderr);
-        }
-        
-        fprintf(stderr, "[MW-7] Attempting IR dump...\n");
-        fflush(stderr);
-        std::string irStr;
-        llvm::raw_string_ostream rso(irStr);
-        module.print(rso);
-        rso.flush();
-        FILE *f = fopen("/tmp/mw_post_phaseB.mlir", "w");
-        if (f) { fprintf(f, "%s", irStr.c_str()); fclose(f); }
-        fprintf(stderr, "[MW-7] Post-Phase-B IR dumped (%lu bytes)\n",
-                (unsigned long)irStr.size());
-        fflush(stderr);
-      }
 
       // === MW-7 Phase C: Shared memory barriers ===
       // Ensure all warps finish writing smem A/B before any warp reads.
@@ -2343,6 +2847,10 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
       run_stage("nvidia-pad-shared-memory", [&](mlir::PassManager &pm) {
         pm.addPass(std::make_unique<PadSharedMemoryPass>());
       });
+
+      // NOTE: K-loop partitioning for split-K is done by
+      // DynamicMacroGridMappingPass (gpu_mapping.cpp:447) during grid setup,
+      // BEFORE DoubleBuffer runs, so prologue/epilogue see correct bounds.
 
       // Phase E: Double-buffer the K-loop (ping-pong shared memory + cp.async overlap)
       run_stage("nvidia-double-buffer-kloop", [&](mlir::PassManager &pm) {
@@ -2487,6 +2995,14 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
                          std::move(captured), verify_ir_before);
       }
     }
+
+    // Split-K epilogue: rewrite C stores to workspace + generate reduction kernel
+    if (mapping.split_k_factor > 1) {
+      run_stage("nvidia-splitk-epilogue", [&](mlir::PassManager &pm) {
+        pm.addPass(std::make_unique<SplitKEpiloguePass>(mapping));
+      });
+    }
+
     run_stage("nvidia-gpu-data-staging", [&](mlir::PassManager &pm) {
       pm.addNestedPass<mlir::func::FuncOp>(CreateGpuDataStagingPass());
     });
