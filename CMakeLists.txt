@@ -53,6 +53,8 @@ set(MATCORE_NATIVE_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/diagnostics.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/executor.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/fp8_wgmma.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/fusion_analysis.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/fusion_emitter.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_amd_lowering.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_data_staging.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_mapping.cpp"

@@ -86,6 +86,139 @@ enum class ElementwiseKind {
   kAbs,
   kSqrt,
   kExp,
+  kLog,
+  kTanh,
+  kSoftmax,
+  kMin,
+  kMax,
+};
+
+enum class KernelIRVersion {
+  kLinearV1,  // Current linear IR
+  kGraphV2,   // New graph IR for fusion
+};
+
+enum class OpKind {
+  kMatMul,
+  kElementwise,
+  kTranspose,
+  kCast,
+  kReduce,
+  kSoftmax,
+  kStore,
+};
+
+enum class ReductionKind {
+  kSum,
+  kMax,
+  kMin,
+};
+
+enum class ReductionAxisKind {
+  kAxis0,
+  kAxis1,
+  kLast,
+};
+
+enum class ValueKind {
+  kInput,
+  kOutput,
+  kIntermediate,
+};
+
+enum class StorageHint {
+  kAuto,       // Compiler decides
+  kRegister,   // Prefer registers
+  kSharedMem,  // Prefer shared memory
+  kVRAM,       // Force VRAM
+};
+
+enum class EscapeKind {
+  kNoEscape,      // Intermediate, can stay in registers/smem
+  kEscapeToVRAM,  // Must be written to VRAM (output or multi-use)
+};
+
+struct TensorDesc {
+  std::string symbol;
+  TensorDType dtype = TensorDType::kFloat32;
+  std::vector<std::int64_t> shape;     // -1 means dynamic
+  std::vector<std::int64_t> strides;   // optional; empty for logical values
+  ValueKind value_kind = ValueKind::kIntermediate;
+  StorageHint storage_hint = StorageHint::kAuto;
+  EscapeKind escape = EscapeKind::kNoEscape;
+  bool is_parameter = false;
+  bool is_output = false;
+  bool is_device_resident = false;
+  std::optional<std::uint32_t> producer;
+  std::vector<std::uint32_t> consumers;
+};
+
+struct OperandRef {
+  std::uint32_t value_id = 0;
+  bool transpose_last2 = false;
+};
+
+struct MatMulAttrs {
+  OperandRef lhs;
+  OperandRef rhs;
+  TensorDType accumulate_dtype = TensorDType::kFloat32;
+  bool allow_split_k = true;
+};
+
+struct ElementwiseAttrs {
+  ElementwiseKind kind = ElementwiseKind::kAdd;
+  std::vector<std::uint32_t> inputs;
+  std::vector<double> scalar_immediates;
+  bool allow_inplace = true;
+};
+
+struct TransposeAttrs {
+  std::uint32_t input = 0;
+};
+
+struct CastAttrs {
+  std::uint32_t input = 0;
+  TensorDType target_dtype = TensorDType::kFloat32;
+};
+
+struct ReduceAttrs {
+  ReductionKind kind = ReductionKind::kSum;
+  std::uint32_t input = 0;
+  ReductionAxisKind axis = ReductionAxisKind::kLast;
+  bool keepdim = false;
+};
+
+struct SoftmaxAttrs {
+  std::uint32_t input = 0;
+  int axis = -1;
+  bool stable = true;
+  bool causal = false;
+};
+
+struct StoreAttrs {
+  std::uint32_t input = 0;
+  std::uint32_t output_tensor = 0;
+};
+
+using NodeAttrs = std::variant<MatMulAttrs, ElementwiseAttrs, TransposeAttrs,
+                               CastAttrs, ReduceAttrs, SoftmaxAttrs, StoreAttrs>;
+
+struct KernelNode {
+  std::uint32_t id = 0;
+  OpKind kind = OpKind::kMatMul;
+  std::string debug_name;
+  std::vector<std::uint32_t> inputs;
+  std::vector<std::uint32_t> outputs;
+  NodeAttrs attrs;
+  bool side_effect_free = true;
+};
+
+struct KernelGraphIR {
+  std::vector<TensorDesc> values;
+  std::vector<KernelNode> nodes;
+  std::vector<std::uint32_t> input_values;
+  std::vector<std::uint32_t> output_values;
+  std::vector<std::uint32_t> topo_order;
 };
 
 // Elementwise operation: apply unary/binary op to tiles
@@ -107,10 +240,17 @@ using KernelOp = std::variant<LoadOp, MatMulOp, StoreOp, AssignOp, TransposeOp,
                               ElementwiseOp, CastOp>;
 
 struct KernelIR {
+  KernelIRVersion version = KernelIRVersion::kLinearV1;
   std::string kernel_name;
+
+  // V1 fields (kept for compatibility)
   std::vector<std::string> params;
   std::vector<LoopRange> loops;
   std::vector<KernelOp> ops;
+
+  // V2 graph form (optional — used when version == kGraphV2)
+  std::optional<KernelGraphIR> graph;
+
   QuantizationParams global_quantization;
 };
 

@@ -66,6 +66,9 @@ extern "C" MATCORE_JIT_RUNTIME_EXPORT void _mlir_free(void *ptr) {
 
 namespace matcore {
 
+thread_local CompilationStats g_last_compilation_stats;
+thread_local bool g_has_last_compilation_stats = false;
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -89,18 +92,31 @@ static std::size_t dtypeElementBytes(TensorDType dtype) {
 /// generating linalg.fill in the MLIR IR, because the host-level fill
 /// creates memref/cf ops that break the NVVM pipeline for multi-warp.
 /// Device-resident outputs are zeroed by the user via DeviceTensor.zero_().
-static void zeroOutputTensors(const std::vector<RuntimeTensorView> &tensors) {
-  // Convention: for matmul, tensor[2] is the output (C).
-  // For other ops this may differ, but matmul is the only accumulating op.
-  if (tensors.size() < 3) return;
-  const auto &out = tensors[2];
-  if (out.is_device_resident) return;  // user's responsibility
-  if (!out.data) return;
+static void zeroOutputTensors(const std::vector<RuntimeTensorView> &tensors,
+                              const LoweredModule &lowered) {
+  if (tensors.empty()) return;
 
-  std::size_t num_elements = 1;
-  for (auto dim : out.shape) num_elements *= static_cast<std::size_t>(dim);
-  std::size_t byte_size = num_elements * dtypeElementBytes(out.dtype);
-  std::memset(out.data, 0, byte_size);
+  auto zero_tensor = [&](const RuntimeTensorView &out) {
+    if (out.is_device_resident) return;  // user's responsibility
+    if (!out.data) return;
+
+    std::size_t num_elements = 1;
+    for (auto dim : out.shape) num_elements *= static_cast<std::size_t>(dim);
+    std::size_t byte_size = num_elements * dtypeElementBytes(out.dtype);
+    std::memset(out.data, 0, byte_size);
+  };
+
+  if (!lowered.output_tensor_indices.empty()) {
+    for (std::size_t idx : lowered.output_tensor_indices) {
+      if (idx < tensors.size()) {
+        zero_tensor(tensors[idx]);
+      }
+    }
+    return;
+  }
+
+  // Legacy fallback.
+  zero_tensor(tensors.back());
 }
 
 [[noreturn]] void fail(const std::string &message) {
@@ -456,13 +472,33 @@ std::shared_ptr<CachedExecution> tryLoadDiskCachedExecution(
   auto compiled = std::make_shared<CachedExecution>();
   compiled->backend = ExecutionBackend::kSharedLibrary;
   compiled->shared_library_handle = handle;
-  compiled->ciface_entrypoint =
-      reinterpret_cast<void (*)(void *, void *, void *)>(symbol);
+  compiled->ciface_entrypoint = reinterpret_cast<void *>(symbol);
   compiled->lowered.entry_point = entry_point;
   compiled->lowered.target_profile = compile_target;
   compiled->lowered.execution_requirements = execution_requirements;
   compiled->lowered.route_description = "disk-cached shared object";
   compiled->lowered.executable = true;
+
+  // Restore tensor metadata from cache
+  try {
+    auto metadata_path = artifacts.artifact_dir / "metadata.json";
+    if (fileExists(metadata_path)) {
+      std::ifstream meta_in(metadata_path);
+      std::string meta_str((std::istreambuf_iterator<char>(meta_in)),
+                           std::istreambuf_iterator<char>());
+      auto parsed = llvm::json::parse(meta_str);
+      if (parsed) {
+        if (auto *obj = parsed->getAsObject()) {
+          if (auto tc = obj->getInteger("tensor_count"))
+            compiled->lowered.tensor_count = static_cast<std::size_t>(*tc);
+          if (auto noz = obj->getBoolean("needs_output_zeroing"))
+            compiled->lowered.needs_output_zeroing = *noz;
+        }
+      }
+    }
+  } catch (...) {
+  }
+
   return compiled;
 }
 
@@ -492,6 +528,8 @@ void persistExecutionToDiskCache(const CachedExecution &compiled,
         {"target", CanonicalTargetString(compile_target)},
         {"entry_point", compiled.lowered.entry_point},
         {"route_description", compiled.lowered.route_description},
+        {"tensor_count", static_cast<int64_t>(compiled.lowered.tensor_count)},
+        {"needs_output_zeroing", compiled.lowered.needs_output_zeroing},
     };
     std::ofstream meta_out(metadata_path);
     if (meta_out.is_open()) {
@@ -668,6 +706,12 @@ void compileAndRun(const KernelIR &kernel,
     } else {
       compiled = getOrCreateExecution(kernel, target_profile, tensors, runtime, obs);
     }
+    g_last_compilation_stats.actual_reg_count = compiled->lowered.actual_reg_count;
+    g_last_compilation_stats.reg_budget_exceeded =
+        compiled->lowered.reg_budget_exceeded;
+    g_last_compilation_stats.route = compiled->lowered.route_description;
+    g_last_compilation_stats.available = true;
+    g_has_last_compilation_stats = true;
     auto t1 = std::chrono::high_resolution_clock::now();
     setGpuRuntimeObservabilityContext(obs);
     std::unique_ptr<ObservabilityContext::TraceScope> execute_scope;
@@ -676,9 +720,9 @@ void compileAndRun(const KernelIR &kernel,
           *obs, TraceEventKind::kPassStageStart, TraceEventKind::kPassStageEnd,
           "execute");
     }
-    // Zero the output tensor before kernel invocation.
-    // linalg.matmul is C += A*B; pre-zeroing gives C = A*B.
-    zeroOutputTensors(tensors);
+    if (compiled->lowered.needs_output_zeroing) {
+      zeroOutputTensors(tensors, compiled->lowered);
+    }
     if (llvm::Error error = invokeCompiledKernel(*compiled, tensors)) {
       setGpuRuntimeObservabilityContext(nullptr);
       const std::string message = llvm::toString(std::move(error));
@@ -707,6 +751,13 @@ void compileAndRun(const KernelIR &kernel,
     }
   }
   run();
+}
+
+CompilationStats getLastCompilationStats() {
+  if (!g_has_last_compilation_stats) {
+    return {};
+  }
+  return g_last_compilation_stats;
 }
 
 // -------------------------------------------------------------------------
@@ -808,8 +859,16 @@ MatcorePlan::create(const KernelIR &kernel,
     meta.shape = t.shape;
     meta.strides = t.strides;
     meta.is_device_resident = t.is_device_resident;
-    // Output tensor is the last one (index 2 for matmul)
-    meta.is_output = (i == plan->execution_->lowered.out_tensor_index);
+    if (!plan->execution_->lowered.output_tensor_indices.empty()) {
+      for (std::size_t output_idx : plan->execution_->lowered.output_tensor_indices) {
+        if (i == output_idx) {
+          meta.is_output = true;
+          break;
+        }
+      }
+    } else {
+      meta.is_output = (i == plan->execution_->lowered.out_tensor_index);
+    }
     plan->frozen_meta_.push_back(std::move(meta));
     if (t.is_device_resident) {
       plan->has_device_tensors_ = true;
@@ -941,7 +1000,9 @@ void MatcorePlan::execute(const std::vector<RuntimeTensorView> &tensors) {
   if (graph_mode_ && !graph_captured_) {
     // Phase 1: Warm-up invocation — caches module/function, skips unload.
     matcore_set_graph_warmup(true);
-    zeroOutputs(tensors);
+    if (execution_->lowered.needs_output_zeroing) {
+      zeroOutputs(tensors);
+    }
     setGpuRuntimeObservabilityContext(nullptr);
     if (llvm::Error error = invokeCompiledKernel(*execution_, tensors)) {
       matcore_set_graph_warmup(false);
@@ -954,7 +1015,9 @@ void MatcorePlan::execute(const std::vector<RuntimeTensorView> &tensors) {
     matcore_set_capture_stream_override(graph_stream_);
     matcore_graph_begin_capture(graph_stream_);
 
-    zeroOutputsOnStream(tensors, graph_stream_);
+    if (execution_->lowered.needs_output_zeroing) {
+      zeroOutputsOnStream(tensors, graph_stream_);
+    }
 
     if (llvm::Error error = invokeCompiledKernel(*execution_, tensors)) {
       matcore_set_capture_stream_override(nullptr);
@@ -979,7 +1042,9 @@ void MatcorePlan::execute(const std::vector<RuntimeTensorView> &tensors) {
   }
 
   // ---- Normal (non-graph) execution ----
-  zeroOutputs(tensors);
+  if (execution_->lowered.needs_output_zeroing) {
+    zeroOutputs(tensors);
+  }
   setGpuRuntimeObservabilityContext(nullptr);
   if (llvm::Error error = invokeCompiledKernel(*execution_, tensors)) {
     const std::string message = llvm::toString(std::move(error));

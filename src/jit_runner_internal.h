@@ -24,7 +24,7 @@ struct CachedExecution {
   LoweredModule lowered;
   std::unique_ptr<mlir::ExecutionEngine> engine;
   void *shared_library_handle = nullptr;
-  void (*ciface_entrypoint)(void *, void *, void *) = nullptr;
+  void *ciface_entrypoint = nullptr;
 };
 
 }  // namespace matcore

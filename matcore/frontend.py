@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
+import functools
 import hashlib
 import importlib
 import inspect
@@ -559,16 +561,44 @@ class MatCoreASTVisitor(ast.NodeVisitor):
                 "rhs": _expr_to_source(args[1]),
             }
 
-        if self._is_marker(fn, "relu"):
-            if len(args) != 1 or kwargs:
-                raise RuntimeError("mc.relu(x) expects exactly 1 positional argument.")
-            return {
-                "op": "elementwise",
-                "output": None,
-                "kind": "relu",
-                "lhs": _expr_to_source(args[0]),
-                "rhs": None,
-            }
+        for unary_kind in (
+            "relu",
+            "exp",
+            "log",
+            "sqrt",
+            "tanh",
+            "sigmoid",
+            "gelu",
+            "neg",
+            "abs",
+            "softmax",
+        ):
+            if self._is_marker(fn, unary_kind):
+                if len(args) != 1 or kwargs:
+                    raise RuntimeError(
+                        f"mc.{unary_kind}(x) expects exactly 1 positional argument."
+                    )
+                return {
+                    "op": "elementwise",
+                    "output": None,
+                    "kind": unary_kind,
+                    "lhs": _expr_to_source(args[0]),
+                    "rhs": None,
+                }
+
+        for binary_kind in ("sub", "mul", "div", "min", "max"):
+            if self._is_marker(fn, binary_kind):
+                if len(args) != 2 or kwargs:
+                    raise RuntimeError(
+                        f"mc.{binary_kind}(x, y) expects exactly 2 positional arguments."
+                    )
+                return {
+                    "op": "elementwise",
+                    "output": None,
+                    "kind": binary_kind,
+                    "lhs": _expr_to_source(args[0]),
+                    "rhs": _expr_to_source(args[1]),
+                }
 
         if self._is_marker(fn, "cast"):
             if len(args) < 1 or len(args) > 2:
@@ -664,6 +694,62 @@ def add(*_: Any, **__: Any) -> Any:
 
 def relu(*_: Any, **__: Any) -> Any:
     _marker_error("relu")
+
+
+def exp(*_: Any, **__: Any) -> Any:
+    _marker_error("exp")
+
+
+def log(*_: Any, **__: Any) -> Any:
+    _marker_error("log")
+
+
+def sqrt(*_: Any, **__: Any) -> Any:
+    _marker_error("sqrt")
+
+
+def tanh_op(*_: Any, **__: Any) -> Any:
+    _marker_error("tanh")
+
+
+def sigmoid(*_: Any, **__: Any) -> Any:
+    _marker_error("sigmoid")
+
+
+def gelu(*_: Any, **__: Any) -> Any:
+    _marker_error("gelu")
+
+
+def sub(*_: Any, **__: Any) -> Any:
+    _marker_error("sub")
+
+
+def mul(*_: Any, **__: Any) -> Any:
+    _marker_error("mul")
+
+
+def div(*_: Any, **__: Any) -> Any:
+    _marker_error("div")
+
+
+def neg(*_: Any, **__: Any) -> Any:
+    _marker_error("neg")
+
+
+def abs_op(*_: Any, **__: Any) -> Any:
+    _marker_error("abs")
+
+
+def softmax(*_: Any, **__: Any) -> Any:
+    _marker_error("softmax")
+
+
+def min_op(*_: Any, **__: Any) -> Any:
+    _marker_error("min")
+
+
+def max_op(*_: Any, **__: Any) -> Any:
+    _marker_error("max")
 
 
 def cast(*_: Any, **__: Any) -> Any:
@@ -1129,6 +1215,372 @@ def execute_plan(plan: Any, *tensors: Any) -> None:
     native.execute_plan(plan, *tensors)
 
 
+@dataclasses.dataclass
+class TraceValue:
+    """Describes a tensor value in the trace graph."""
+
+    id: int
+    symbol: str
+    dtype: str
+    shape: tuple
+    kind: str = "intermediate"
+    storage_hint: str = "auto"
+    producer: int = -1
+    consumers: list = dataclasses.field(default_factory=list)
+
+
+@dataclasses.dataclass
+class TraceNode:
+    """A single operation in the trace graph."""
+
+    id: int
+    op: str
+    inputs: list
+    outputs: list
+    attrs: dict = dataclasses.field(default_factory=dict)
+
+
+def _numpy_dtype_to_str(dtype: Any) -> str:
+    """Convert numpy dtype to MatcoreDSL dtype string."""
+    mapping = {
+        np.float32: "float32",
+        np.float16: "float16",
+        np.int32: "int32",
+        np.int8: "int8",
+    }
+    for np_dt, name in mapping.items():
+        if dtype == np_dt or dtype == np.dtype(np_dt):
+            return name
+    return str(dtype)
+
+
+class FusionTraceBuilder:
+    """Builds a trace graph by recording operations symbolically."""
+
+    def __init__(self):
+        self._values: list[TraceValue] = []
+        self._nodes: list[TraceNode] = []
+        self._next_value_id = 0
+        self._next_node_id = 0
+
+    def _new_value(
+        self,
+        symbol: str,
+        dtype: str,
+        shape: tuple,
+        kind: str = "intermediate",
+        producer: int = -1,
+    ) -> int:
+        vid = self._next_value_id
+        self._next_value_id += 1
+        self._values.append(
+            TraceValue(
+                id=vid,
+                symbol=symbol,
+                dtype=dtype,
+                shape=shape,
+                kind=kind,
+                producer=producer,
+            )
+        )
+        return vid
+
+    def _new_node(
+        self,
+        op: str,
+        input_ids: list,
+        output_ids: list,
+        attrs: dict | None = None,
+    ) -> int:
+        nid = self._next_node_id
+        self._next_node_id += 1
+        node = TraceNode(id=nid, op=op, inputs=list(input_ids), outputs=list(output_ids), attrs=attrs or {})
+        self._nodes.append(node)
+        for vid in input_ids:
+            self._values[vid].consumers.append(nid)
+        for vid in output_ids:
+            self._values[vid].producer = nid
+        return nid
+
+    def add_input(self, symbol: str, tensor: Any) -> "TracerTensor":
+        """Register an input tensor and return a TracerTensor."""
+        dtype = _numpy_dtype_to_str(tensor.dtype)
+        shape = tuple(tensor.shape)
+        vid = self._new_value(symbol, dtype, shape, kind="input")
+        return TracerTensor(vid, self, dtype=dtype, shape=shape)
+
+    def add_matmul(
+        self,
+        lhs: "TracerTensor",
+        rhs: "TracerTensor",
+        rhs_transposed: bool = False,
+    ) -> "TracerTensor":
+        """Record a matmul operation."""
+        lhs_shape = lhs.shape
+        rhs_shape = rhs.shape
+        out_shape = (lhs_shape[0], rhs_shape[1])
+        out_dtype = lhs.dtype
+        out_vid = self._new_value(f"mm_{self._next_node_id}", out_dtype, out_shape)
+        self._new_node(
+            "matmul",
+            [lhs.value_id, rhs.value_id],
+            [out_vid],
+            {"transpose_rhs": rhs_transposed},
+        )
+        return TracerTensor(out_vid, self, dtype=out_dtype, shape=out_shape)
+
+    def add_elementwise_unary(self, op: str, x: "TracerTensor") -> "TracerTensor":
+        """Record a unary elementwise op (exp, relu, log, etc.)."""
+        out_vid = self._new_value(f"{op}_{self._next_node_id}", x.dtype, x.shape)
+        self._new_node(op, [x.value_id], [out_vid])
+        return TracerTensor(out_vid, self, dtype=x.dtype, shape=x.shape)
+
+    def add_elementwise_binary(self, op: str, a: "TracerTensor", b: "TracerTensor") -> "TracerTensor":
+        """Record a binary elementwise op (add, mul, sub, div, min, max)."""
+        out_vid = self._new_value(f"{op}_{self._next_node_id}", a.dtype, a.shape)
+        self._new_node(op, [a.value_id, b.value_id], [out_vid])
+        return TracerTensor(out_vid, self, dtype=a.dtype, shape=a.shape)
+
+    def add_softmax(self, x: "TracerTensor", axis: int = -1) -> "TracerTensor":
+        """Record a softmax operation."""
+        out_vid = self._new_value(f"softmax_{self._next_node_id}", x.dtype, x.shape)
+        self._new_node("softmax", [x.value_id], [out_vid], {"axis": axis})
+        return TracerTensor(out_vid, self, dtype=x.dtype, shape=x.shape)
+
+    def finish(self, outputs: Any) -> dict:
+        """Finalize the trace and return a serializable graph dict."""
+        if not isinstance(outputs, (list, tuple)):
+            outputs = [outputs]
+
+        input_ids = [v.id for v in self._values if v.kind == "input"]
+        output_ids = []
+        for output in outputs:
+            if isinstance(output, TracerTensor):
+                self._values[output.value_id].kind = "output"
+                output_ids.append(output.value_id)
+            else:
+                raise ValueError(f"@mc.fused must return TracerTensor(s), got {type(output)}")
+
+        topo = []
+        visited = set()
+
+        def visit(nid: int) -> None:
+            if nid in visited:
+                return
+            visited.add(nid)
+            node = self._nodes[nid]
+            for inp_vid in node.inputs:
+                prod = self._values[inp_vid].producer
+                if prod >= 0:
+                    visit(prod)
+            topo.append(nid)
+
+        for oid in output_ids:
+            prod = self._values[oid].producer
+            if prod >= 0:
+                visit(prod)
+
+        return {
+            "version": "graph_v2",
+            "values": [
+                {
+                    "id": v.id,
+                    "symbol": v.symbol,
+                    "dtype": v.dtype,
+                    "shape": list(v.shape),
+                    "kind": v.kind,
+                    "storage_hint": v.storage_hint,
+                    "producer": v.producer,
+                    "consumers": v.consumers,
+                }
+                for v in self._values
+            ],
+            "nodes": [
+                {
+                    "id": n.id,
+                    "op": n.op,
+                    "inputs": n.inputs,
+                    "outputs": n.outputs,
+                    "attrs": n.attrs,
+                }
+                for n in self._nodes
+            ],
+            "input_values": input_ids,
+            "output_values": output_ids,
+            "topo_order": topo,
+        }
+
+
+class TracerTensor:
+    """A symbolic tensor that records operations in a FusionTraceBuilder."""
+
+    def __init__(
+        self,
+        value_id: int,
+        builder: FusionTraceBuilder,
+        dtype: str = "float32",
+        shape: tuple = (),
+    ):
+        self.value_id = value_id
+        self._builder = builder
+        self.dtype = dtype
+        self.shape = shape
+        self._transposed = False
+
+    @property
+    def T(self) -> "TracerTensor":
+        """Return a transposed view (lazy, for matmul fusion)."""
+        t = TracerTensor(
+            self.value_id,
+            self._builder,
+            dtype=self.dtype,
+            shape=(self.shape[1], self.shape[0]),
+        )
+        t._transposed = not self._transposed
+        return t
+
+    def __matmul__(self, other: Any) -> "TracerTensor":
+        if not isinstance(other, TracerTensor):
+            raise TypeError(f"Cannot matmul TracerTensor with {type(other)}")
+        rhs_transposed = other._transposed
+        return self._builder.add_matmul(self, other, rhs_transposed=rhs_transposed)
+
+    def __add__(self, other: Any) -> "TracerTensor":
+        other = self._ensure_tracer(other)
+        return self._builder.add_elementwise_binary("add", self, other)
+
+    def __radd__(self, other: Any) -> "TracerTensor":
+        other = self._ensure_tracer(other)
+        return self._builder.add_elementwise_binary("add", other, self)
+
+    def __sub__(self, other: Any) -> "TracerTensor":
+        other = self._ensure_tracer(other)
+        return self._builder.add_elementwise_binary("sub", self, other)
+
+    def __rsub__(self, other: Any) -> "TracerTensor":
+        other = self._ensure_tracer(other)
+        return self._builder.add_elementwise_binary("sub", other, self)
+
+    def __mul__(self, other: Any) -> "TracerTensor":
+        other = self._ensure_tracer(other)
+        return self._builder.add_elementwise_binary("mul", self, other)
+
+    def __rmul__(self, other: Any) -> "TracerTensor":
+        other = self._ensure_tracer(other)
+        return self._builder.add_elementwise_binary("mul", other, self)
+
+    def __truediv__(self, other: Any) -> "TracerTensor":
+        other = self._ensure_tracer(other)
+        return self._builder.add_elementwise_binary("div", self, other)
+
+    def __neg__(self) -> "TracerTensor":
+        return self._builder.add_elementwise_unary("neg", self)
+
+    def __abs__(self) -> "TracerTensor":
+        return self._builder.add_elementwise_unary("abs", self)
+
+    def _ensure_tracer(self, other: Any) -> "TracerTensor":
+        if isinstance(other, TracerTensor):
+            return other
+        raise TypeError(
+            f"Cannot operate TracerTensor with {type(other)}; "
+            "scalar broadcasting not yet supported in tracer"
+        )
+
+
+def _graph_dtype_to_numpy(dtype_name: str) -> Any:
+    mapping = {
+        "float32": np.float32,
+        "float16": np.float16,
+        "int32": np.int32,
+        "int8": np.int8,
+    }
+    if dtype_name == "bfloat16":
+        try:
+            return np.dtype("bfloat16")
+        except TypeError:
+            return np.float32
+    if dtype_name in mapping:
+        return mapping[dtype_name]
+    raise ValueError(f"Unsupported fused graph output dtype '{dtype_name}'.")
+
+
+def fused(fn: Any) -> Any:
+    """Decorator that traces a function and executes the fused graph."""
+
+    @functools.wraps(fn)
+    def wrapper(
+        *args: Any,
+        target: str = "nvidia-dgpu:sm_89",
+        out: Any = None,
+        debug: bool = False,
+        **kwargs: Any,
+    ) -> Any:
+        builder = FusionTraceBuilder()
+
+        sig = inspect.signature(fn)
+        param_names = list(sig.parameters.keys())
+        tracer_args = []
+        for i, arg in enumerate(args):
+            name = param_names[i] if i < len(param_names) else f"arg{i}"
+            if isinstance(arg, np.ndarray):
+                tracer_args.append(builder.add_input(name, arg))
+            else:
+                raise TypeError(f"@mc.fused expects numpy arrays, got {type(arg)}")
+
+        trace_result = fn(*tracer_args, **kwargs)
+        graph = builder.finish(trace_result)
+
+        if debug:
+            print("=== Fusion Trace Graph ===")
+            print(json.dumps(graph, indent=2))
+
+        output_values = list(graph.get("output_values", []))
+        if len(output_values) != 1:
+            raise ValueError("@mc.fused currently supports exactly one graph output.")
+
+        output_id = int(output_values[0])
+        output_desc = next((v for v in graph.get("values", []) if int(v.get("id", -1)) == output_id), None)
+        if output_desc is None:
+            raise ValueError("Fused graph output descriptor is missing.")
+
+        output_shape = tuple(int(dim) for dim in output_desc.get("shape", []))
+        output_dtype_name = str(output_desc.get("dtype", "float32"))
+        output_dtype = _graph_dtype_to_numpy(output_dtype_name)
+
+        output_tensor = out
+        if output_tensor is None:
+            output_tensor = np.empty(output_shape, dtype=output_dtype)
+        else:
+            output_arr = np.asarray(output_tensor)
+            if tuple(int(dim) for dim in output_arr.shape) != output_shape:
+                raise ValueError(
+                    f"Output shape mismatch for @mc.fused: expected {output_shape}, got {tuple(output_arr.shape)}."
+                )
+            if _normalize_dtype_name(str(output_arr.dtype)) != _normalize_dtype_name(output_dtype_name):
+                raise ValueError(
+                    "Output dtype mismatch for @mc.fused: "
+                    f"expected {output_dtype_name}, got {output_arr.dtype}."
+                )
+            output_tensor = output_arr
+
+        kernel_ir_dict = {
+            "kernel_name": f"{fn.__name__}_fused",
+            "version": "graph_v2",
+            **graph,
+            "graph": graph,
+        }
+
+        normalized_target = _normalize_target(target)
+        native = _get_native_module()
+        native.compile_and_run(kernel_ir_dict, normalized_target, *args, output_tensor)
+        return output_tensor
+
+    wrapper._is_fused = True
+    wrapper._original_fn = fn
+    return wrapper
+
+
 class MatCoreNamespace:
     supported_targets = SUPPORTED_TARGETS
     supported_input_dtypes = SUPPORTED_INPUT_DTYPES
@@ -1136,6 +1588,7 @@ class MatCoreNamespace:
     launch = staticmethod(launch)
     create_plan = staticmethod(create_plan)
     execute_plan = staticmethod(execute_plan)
+    fused = staticmethod(fused)
     to_device = staticmethod(to_device)
     DeviceTensor = DeviceTensor
     asdtype = staticmethod(asdtype)
@@ -1145,6 +1598,20 @@ class MatCoreNamespace:
     transpose = staticmethod(transpose)
     add = staticmethod(add)
     relu = staticmethod(relu)
+    exp = staticmethod(exp)
+    log = staticmethod(log)
+    sqrt = staticmethod(sqrt)
+    tanh = staticmethod(tanh_op)
+    sigmoid = staticmethod(sigmoid)
+    gelu = staticmethod(gelu)
+    sub = staticmethod(sub)
+    mul = staticmethod(mul)
+    div = staticmethod(div)
+    neg = staticmethod(neg)
+    abs = staticmethod(abs_op)
+    softmax = staticmethod(softmax)
+    min = staticmethod(min_op)
+    max = staticmethod(max_op)
     cast = staticmethod(cast)
     graph = staticmethod(_graph_context_manager)
     config = staticmethod(configure)
@@ -1152,4 +1619,212 @@ class MatCoreNamespace:
     reset_config = staticmethod(reset_config)
 
 
+def _elementwise_gpu_unary(op_name: str, x: Any, out: Any = None, target: str = "nvidia-dgpu:sm_89") -> Any:
+    """Run a single unary elementwise op on GPU."""
+    if out is None:
+        out = np.empty_like(x)
+    kernel_ir = {
+        "kernel_name": f"elementwise_{op_name}",
+        "params": ["x", "out"],
+        "loops": [],
+        "ops": [{"op": "elementwise", "kind": op_name, "lhs": "x", "output": "out"}],
+    }
+    normalized_target = _normalize_target(target)
+    native = _get_native_module()
+    native.compile_and_run(kernel_ir, normalized_target, x, out)
+    return out
+
+
+def _elementwise_gpu_binary(
+    op_name: str,
+    a: Any,
+    b: Any,
+    out: Any = None,
+    target: str = "nvidia-dgpu:sm_89",
+) -> Any:
+    """Run a single binary elementwise op on GPU."""
+    if out is None:
+        out = np.empty_like(a)
+    kernel_ir = {
+        "kernel_name": f"elementwise_{op_name}",
+        "params": ["a", "b", "out"],
+        "loops": [],
+        "ops": [{"op": "elementwise", "kind": op_name, "lhs": "a", "rhs": "b", "output": "out"}],
+    }
+    normalized_target = _normalize_target(target)
+    native = _get_native_module()
+    native.compile_and_run(kernel_ir, normalized_target, a, b, out)
+    return out
+
+
+def exp_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("exp", x, out, **kw)
+
+
+def log_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("log", x, out, **kw)
+
+
+def sqrt_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("sqrt", x, out, **kw)
+
+
+def tanh_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("tanh", x, out, **kw)
+
+
+def sigmoid_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("sigmoid", x, out, **kw)
+
+
+def gelu_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("gelu", x, out, **kw)
+
+
+def relu_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("relu", x, out, **kw)
+
+
+def neg_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("neg", x, out, **kw)
+
+
+def abs_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("abs", x, out, **kw)
+
+
+def softmax_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("softmax", x, out, **kw)
+
+
+def add_gpu(a: Any, b: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_binary("add", a, b, out, **kw)
+
+
+def sub_gpu(a: Any, b: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_binary("sub", a, b, out, **kw)
+
+
+def mul_gpu(a: Any, b: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_binary("mul", a, b, out, **kw)
+
+
+def div_gpu(a: Any, b: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_binary("div", a, b, out, **kw)
+
+
+def min_gpu(a: Any, b: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_binary("min", a, b, out, **kw)
+
+
+def max_gpu(a: Any, b: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_binary("max", a, b, out, **kw)
+
+
+MatCoreNamespace.exp_gpu = staticmethod(exp_gpu)
+MatCoreNamespace.log_gpu = staticmethod(log_gpu)
+MatCoreNamespace.sqrt_gpu = staticmethod(sqrt_gpu)
+MatCoreNamespace.tanh_gpu = staticmethod(tanh_gpu)
+MatCoreNamespace.sigmoid_gpu = staticmethod(sigmoid_gpu)
+MatCoreNamespace.gelu_gpu = staticmethod(gelu_gpu)
+MatCoreNamespace.relu_gpu = staticmethod(relu_gpu)
+MatCoreNamespace.neg_gpu = staticmethod(neg_gpu)
+MatCoreNamespace.abs_gpu = staticmethod(abs_gpu)
+MatCoreNamespace.softmax_gpu = staticmethod(softmax_gpu)
+MatCoreNamespace.add_gpu = staticmethod(add_gpu)
+MatCoreNamespace.sub_gpu = staticmethod(sub_gpu)
+MatCoreNamespace.mul_gpu = staticmethod(mul_gpu)
+MatCoreNamespace.div_gpu = staticmethod(div_gpu)
+MatCoreNamespace.min_gpu = staticmethod(min_gpu)
+MatCoreNamespace.max_gpu = staticmethod(max_gpu)
+
+MatCoreNamespace.exp = staticmethod(exp_gpu)
+MatCoreNamespace.log = staticmethod(log_gpu)
+MatCoreNamespace.sqrt = staticmethod(sqrt_gpu)
+MatCoreNamespace.tanh = staticmethod(tanh_gpu)
+MatCoreNamespace.sigmoid = staticmethod(sigmoid_gpu)
+MatCoreNamespace.gelu = staticmethod(gelu_gpu)
+MatCoreNamespace.relu = staticmethod(relu_gpu)
+MatCoreNamespace.neg = staticmethod(neg_gpu)
+MatCoreNamespace.abs = staticmethod(abs_gpu)
+MatCoreNamespace.softmax = staticmethod(softmax_gpu)
+MatCoreNamespace.add = staticmethod(add_gpu)
+MatCoreNamespace.sub = staticmethod(sub_gpu)
+MatCoreNamespace.mul = staticmethod(mul_gpu)
+MatCoreNamespace.div = staticmethod(div_gpu)
+MatCoreNamespace.min = staticmethod(min_gpu)
+MatCoreNamespace.max = staticmethod(max_gpu)
+
+_parent_module = sys.modules.get(__package__)
+if _parent_module is not None:
+    for _name in (
+        "exp_gpu",
+        "log_gpu",
+        "sqrt_gpu",
+        "tanh_gpu",
+        "sigmoid_gpu",
+        "gelu_gpu",
+        "relu_gpu",
+        "neg_gpu",
+        "abs_gpu",
+        "softmax_gpu",
+        "add_gpu",
+        "sub_gpu",
+        "mul_gpu",
+        "div_gpu",
+        "min_gpu",
+        "max_gpu",
+    ):
+        setattr(_parent_module, _name, globals()[_name])
+
 mc = MatCoreNamespace()
+
+
+def _tracer_aware_unary(op_name: str, gpu_func: Any) -> Any:
+    """Return a function that works both on real tensors and TracerTensors."""
+
+    def f(x: Any, **kwargs: Any) -> Any:
+        if isinstance(x, TracerTensor):
+            return x._builder.add_elementwise_unary(op_name, x)
+        return gpu_func(x, **kwargs)
+
+    f.__name__ = op_name
+    return f
+
+
+def _tracer_aware_binary(op_name: str, gpu_func: Any) -> Any:
+    """Return a function that works both on real tensors and TracerTensors."""
+
+    def f(a: Any, b: Any, **kwargs: Any) -> Any:
+        if isinstance(a, TracerTensor) or isinstance(b, TracerTensor):
+            if not isinstance(a, TracerTensor) or not isinstance(b, TracerTensor):
+                raise TypeError(f"Cannot mix TracerTensor and real tensor in {op_name}")
+            return a._builder.add_elementwise_binary(op_name, a, b)
+        return gpu_func(a, b, **kwargs)
+
+    f.__name__ = op_name
+    return f
+
+
+def _tracer_aware_softmax(gpu_func: Any) -> Any:
+    def f(x: Any, axis: int = -1, **kwargs: Any) -> Any:
+        if isinstance(x, TracerTensor):
+            return x._builder.add_softmax(x, axis=axis)
+        return gpu_func(x, **kwargs)
+
+    f.__name__ = "softmax"
+    return f
+
+
+mc.exp = _tracer_aware_unary("exp", exp_gpu)
+mc.log = _tracer_aware_unary("log", log_gpu)
+mc.sqrt = _tracer_aware_unary("sqrt", sqrt_gpu)
+mc.tanh = _tracer_aware_unary("tanh", tanh_gpu)
+mc.sigmoid = _tracer_aware_unary("sigmoid", sigmoid_gpu)
+mc.gelu = _tracer_aware_unary("gelu", gelu_gpu)
+mc.relu = _tracer_aware_unary("relu", relu_gpu)
+mc.neg = _tracer_aware_unary("neg", neg_gpu)
+mc.abs = _tracer_aware_unary("abs", abs_gpu)
+mc.softmax = _tracer_aware_softmax(softmax_gpu)
+mc.min = _tracer_aware_binary("min", min_gpu)
+mc.max = _tracer_aware_binary("max", max_gpu)
