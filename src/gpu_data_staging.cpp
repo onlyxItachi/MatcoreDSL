@@ -111,6 +111,11 @@ llvm::DenseSet<mlir::Value> buildAliasSet(mlir::gpu::LaunchOp launch,
       } else if (auto view = llvm::dyn_cast<mlir::memref::ViewOp>(op)) {
         source = view.getSource();
         result = view.getResult();
+      } else if (auto esm = llvm::dyn_cast<mlir::memref::ExtractStridedMetadataOp>(op)) {
+        // extract_strided_metadata returns (base_buffer, offset, sizes..., strides...).
+        // The base_buffer (result #0) aliases the source memref.
+        source = esm.getSource();
+        result = esm.getBaseBuffer();
       } else {
         return;
       }
