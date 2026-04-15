@@ -2840,6 +2840,19 @@ void runFusionLoweringPipeline(mlir::ModuleOp module,
     NvidiaMappingConfig mapping =
         selectNvidiaMappingForModule(module, signature);
 
+    // Disable split-K for fusion patterns: the fusion pipeline doesn't have
+    // the SplitKEpiloguePass (workspace alloc + reduction kernel). Without it,
+    // split-K partitions race-write partial results to the output buffer,
+    // corrupting the result. Force split_k=1 so the full K range is computed
+    // in a single pass per block.
+    if (mapping.split_k_factor > 1) {
+      fprintf(stderr,
+              "[FusionMMA] Disabling split_k=%lld for fusion pattern "
+              "(no reduction kernel in fusion pipeline)\n",
+              (long long)mapping.split_k_factor);
+      mapping.split_k_factor = 1;
+    }
+
     // 2. Apply tiling transform.
     if (UsesMultiWarpMmaSync(mapping)) {
       ApplyNvidiaMultiWarpTransformToModule(module, signature, mapping);
@@ -2865,12 +2878,100 @@ void runFusionLoweringPipeline(mlir::ModuleOp module,
 
     // 6. MMA rewrite or thread mapping, depending on dtype support.
     if (mapping.rewrite_to_mma_sync) {
-      // FP16 path: rewrite to nvgpu.mma.sync (tensor cores).
-      run_stage("fusion-mma-preparation", [&](mlir::PassManager &pm) {
-        AddNvidiaMmaPreparationPasses(pm);
-      });
-      ApplyNvidiaMmaRewriteToModule(module);
-      VerifyNoResidualNvidiaMatmulOnModule(module);
+      if (UsesMultiWarpMmaSync(mapping)) {
+        // === MULTI-WARP MMA PATH ===
+        // Must match the standalone multi-warp pipeline exactly.
+        // Multi-warp thread mapping
+        ApplyNvidiaMultiWarpThreadMappingToModule(module, mapping);
+        run_stage("fusion-mw-post-thread-map", [&](mlir::PassManager &pm) {
+          pm.addPass(mlir::createCanonicalizerPass());
+          pm.addPass(mlir::createCSEPass());
+        });
+        // Sub-tile unroll
+        run_stage("fusion-mw-sub-tile-unroll", [&](mlir::PassManager &pm) {
+          pm.addPass(std::make_unique<SubTileUnrollPass>());
+          pm.addPass(mlir::createCanonicalizerPass());
+          pm.addPass(mlir::createCSEPass());
+        });
+        // Address math simplification
+        run_stage("fusion-mw-address-math", [&](mlir::PassManager &pm) {
+          pm.addPass(mlir::createCanonicalizerPass());
+          pm.addPass(mlir::createCSEPass());
+        });
+        // MMA preparation + rewrite
+        run_stage("fusion-mma-preparation", [&](mlir::PassManager &pm) {
+          AddNvidiaMmaPreparationPasses(pm);
+        });
+        // Collect pre-MMA thread IDs for lane fix
+        llvm::SmallPtrSet<mlir::Operation *, 16> pre_mma_thread_ids;
+        module->walk([&](mlir::gpu::ThreadIdOp op) {
+          pre_mma_thread_ids.insert(op.getOperation());
+        });
+        ApplyNvidiaMmaRewriteToModule(module);
+        // Fix MMA lane IDs for multi-warp: thread_id_x % 32
+        if (mapping.block_threads_x > 32) {
+          llvm::SmallVector<mlir::gpu::ThreadIdOp, 8> mma_thread_ids;
+          module->walk([&](mlir::gpu::ThreadIdOp op) {
+            if (!pre_mma_thread_ids.contains(op.getOperation()) &&
+                op.getDimension() == mlir::gpu::Dimension::x) {
+              mma_thread_ids.push_back(op);
+            }
+          });
+          for (auto op : mma_thread_ids) {
+            mlir::OpBuilder builder(op->getContext());
+            builder.setInsertionPointAfter(op);
+            auto loc = op.getLoc();
+            auto c32 = builder.create<mlir::arith::ConstantIndexOp>(loc, 32);
+            auto lane =
+                builder.create<mlir::arith::RemUIOp>(loc, op.getResult(), c32);
+            llvm::SmallPtrSet<mlir::Operation *, 1> except;
+            except.insert(lane.getOperation());
+            op.getResult().replaceAllUsesExcept(lane.getResult(), except);
+          }
+        }
+        VerifyNoResidualNvidiaMatmulOnModule(module);
+        // Accumulator hoisting
+        run_stage("fusion-mw-accumulator-hoist", [&](mlir::PassManager &pm) {
+          pm.addPass(mlir::createCanonicalizerPass());
+          pm.addPass(mlir::createCSEPass());
+          pm.addPass(std::make_unique<AccumulatorHoistPass>());
+          pm.addPass(mlir::createCanonicalizerPass());
+          pm.addPass(mlir::createCSEPass());
+        });
+        // Shared memory barriers
+        run_stage("fusion-mw-smem-barriers", [&](mlir::PassManager &pm) {
+          pm.addPass(std::make_unique<InsertSmemBarriersPass>());
+        });
+        // Vectorize tile copies
+        run_stage("fusion-mw-vectorize-tile-copy", [&](mlir::PassManager &pm) {
+          pm.addPass(std::make_unique<VectorizeTileCopyPass>());
+          pm.addPass(mlir::createCanonicalizerPass());
+          pm.addPass(mlir::createCSEPass());
+        });
+        // Pad shared memory
+        run_stage("fusion-mw-pad-smem", [&](mlir::PassManager &pm) {
+          pm.addPass(std::make_unique<PadSharedMemoryPass>());
+        });
+        // Double-buffer K-loop
+        run_stage("fusion-mw-double-buffer", [&](mlir::PassManager &pm) {
+          pm.addPass(std::make_unique<DoubleBufferKLoopPass>());
+          pm.addPass(mlir::createCanonicalizerPass());
+          pm.addPass(mlir::createCSEPass());
+        });
+        // LdMatrix rewrite
+        run_stage("fusion-mw-ldmatrix", [&](mlir::PassManager &pm) {
+          pm.addPass(std::make_unique<LdMatrixRewritePass>());
+          pm.addPass(mlir::createCanonicalizerPass());
+          pm.addPass(mlir::createCSEPass());
+        });
+      } else {
+        // Single-warp MMA path
+        run_stage("fusion-mma-preparation", [&](mlir::PassManager &pm) {
+          AddNvidiaMmaPreparationPasses(pm);
+        });
+        ApplyNvidiaMmaRewriteToModule(module);
+        VerifyNoResidualNvidiaMatmulOnModule(module);
+      }
     } else {
       // F32 path: thread mapping (tiled, coalesced, but no tensor cores).
       ApplyNvidiaThreadMappingToModule(module, mapping);
