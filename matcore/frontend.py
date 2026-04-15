@@ -1520,13 +1520,29 @@ def fused(fn: Any) -> Any:
 
         sig = inspect.signature(fn)
         param_names = list(sig.parameters.keys())
+
+        # Detect DeviceTensor vs numpy inputs (reject mixed).
+        has_device = any(isinstance(a, DeviceTensor) for a in args)
+        has_host = any(isinstance(a, np.ndarray) for a in args)
+        if has_device and has_host:
+            raise TypeError(
+                "@mc.fused does not support mixed host/device tensors. "
+                "Use mc.to_device() on all tensors or none."
+            )
+
         tracer_args = []
         for i, arg in enumerate(args):
             name = param_names[i] if i < len(param_names) else f"arg{i}"
-            if isinstance(arg, np.ndarray):
+            if isinstance(arg, DeviceTensor):
+                from .device_tensor import _numpy_dtype
+                dummy = np.empty(arg.shape, dtype=_numpy_dtype(arg.dtype))
+                tracer_args.append(builder.add_input(name, dummy))
+            elif isinstance(arg, np.ndarray):
                 tracer_args.append(builder.add_input(name, arg))
             else:
-                raise TypeError(f"@mc.fused expects numpy arrays, got {type(arg)}")
+                raise TypeError(
+                    f"@mc.fused expects numpy arrays or DeviceTensors, got {type(arg)}"
+                )
 
         trace_result = fn(*tracer_args, **kwargs)
         graph = builder.finish(trace_result)
@@ -1548,21 +1564,44 @@ def fused(fn: Any) -> Any:
         output_dtype_name = str(output_desc.get("dtype", "float32"))
         output_dtype = _graph_dtype_to_numpy(output_dtype_name)
 
-        output_tensor = out
-        if output_tensor is None:
-            output_tensor = np.empty(output_shape, dtype=output_dtype)
+        if has_device:
+            native = _get_native_module()
+            num_elements = 1
+            for d in output_shape:
+                num_elements *= d
+            element_size = int(np.dtype(output_dtype).itemsize)
+            size_bytes = num_elements * element_size
+            handle = native.matcore_device_alloc(size_bytes)
+
+            # Compute C-contiguous element strides.
+            strides: list[int] = []
+            acc = 1
+            for d in reversed(output_shape):
+                strides.append(acc)
+                acc *= d
+            strides = list(reversed(strides))
+
+            output_tensor = DeviceTensor(
+                handle, output_shape, output_dtype_name, tuple(strides), size_bytes,
+            )
+            # Zero the output buffer (matmul accumulation needs zeros).
+            output_tensor.zero_()
         else:
-            output_arr = np.asarray(output_tensor)
-            if tuple(int(dim) for dim in output_arr.shape) != output_shape:
-                raise ValueError(
-                    f"Output shape mismatch for @mc.fused: expected {output_shape}, got {tuple(output_arr.shape)}."
-                )
-            if _normalize_dtype_name(str(output_arr.dtype)) != _normalize_dtype_name(output_dtype_name):
-                raise ValueError(
-                    "Output dtype mismatch for @mc.fused: "
-                    f"expected {output_dtype_name}, got {output_arr.dtype}."
-                )
-            output_tensor = output_arr
+            output_tensor = out
+            if output_tensor is None:
+                output_tensor = np.empty(output_shape, dtype=output_dtype)
+            else:
+                output_arr = np.asarray(output_tensor)
+                if tuple(int(dim) for dim in output_arr.shape) != output_shape:
+                    raise ValueError(
+                        f"Output shape mismatch for @mc.fused: expected {output_shape}, got {tuple(output_arr.shape)}."
+                    )
+                if _normalize_dtype_name(str(output_arr.dtype)) != _normalize_dtype_name(output_dtype_name):
+                    raise ValueError(
+                        "Output dtype mismatch for @mc.fused: "
+                        f"expected {output_dtype_name}, got {output_arr.dtype}."
+                    )
+                output_tensor = output_arr
 
         kernel_ir_dict = {
             "kernel_name": f"{fn.__name__}_fused",

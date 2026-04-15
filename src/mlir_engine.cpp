@@ -1040,7 +1040,13 @@ LoweredModule MlirEngine::BuildAndLower(
     lowered.route_description = "NVIDIA fused GPU kernel";
     lowered.executable = true;
     lowered.tensor_count = tensors.size();
-    lowered.needs_output_zeroing = false;
+    // Family A/B use linalg.matmul which accumulates (C += A*B) — output must
+    // be zeroed so the accumulation produces correct results.
+    const bool has_matmul =
+        (fusion_plan.pattern == FusionPatternKind::kMatmulElementwise ||
+         fusion_plan.pattern == FusionPatternKind::kElementwiseMatmul ||
+         fusion_plan.pattern == FusionPatternKind::kMatmulElementwiseMatmul);
+    lowered.needs_output_zeroing = has_matmul;
     lowered.arguments.clear();
     lowered.arguments.reserve(tensors.size());
     for (std::size_t i = 0; i < tensors.size(); ++i) {

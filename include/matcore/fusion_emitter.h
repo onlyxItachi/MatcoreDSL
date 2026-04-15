@@ -7,6 +7,7 @@
 #include "matcore/mlir_engine.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/OwningOpRef.h"
+#include "mlir/Pass/Pass.h"
 
 namespace matcore {
 
@@ -33,5 +34,9 @@ class FusionMlirEmitter {
       const std::vector<RuntimeTensorView> &tensors,
       const RequestedTargetProfile &target, mlir::MLIRContext &context);
 };
+
+/// Creates a pass that inserts gpu.launch epilogue ops for fused elementwise
+/// operations (relu/gelu/exp) after MMA matmul.
+std::unique_ptr<mlir::Pass> CreateFusionEpiloguePass();
 
 }  // namespace matcore

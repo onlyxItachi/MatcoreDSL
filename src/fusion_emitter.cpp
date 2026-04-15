@@ -9,10 +9,12 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/Pass/Pass.h"
 
 namespace matcore {
 namespace {
@@ -151,7 +153,8 @@ mlir::OwningOpRef<mlir::ModuleOp> FusionMlirEmitter::emitFamilyA(
   (void)tensors;
   context.loadDialect<mlir::func::FuncDialect, mlir::memref::MemRefDialect,
                       mlir::arith::ArithDialect, mlir::scf::SCFDialect,
-                      mlir::gpu::GPUDialect, mlir::math::MathDialect>();
+                      mlir::gpu::GPUDialect, mlir::math::MathDialect,
+                      mlir::linalg::LinalgDialect>();
 
   if (!kernel.graph.has_value()) {
     throw std::runtime_error("FusionMlirEmitter: missing graph for fused kernel");
@@ -199,7 +202,6 @@ mlir::OwningOpRef<mlir::ModuleOp> FusionMlirEmitter::emitFamilyA(
   auto loc = builder.getUnknownLoc();
   builder.setInsertionPointToStart(&module->getRegion(0).front());
 
-  auto f32 = builder.getF32Type();
   auto lhs_elem = getElementType(lhs_desc.dtype, builder);
   auto rhs_elem = getElementType(rhs_desc.dtype, builder);
 
@@ -227,137 +229,47 @@ mlir::OwningOpRef<mlir::ModuleOp> FusionMlirEmitter::emitFamilyA(
   auto rhs_arg = entry->getArgument(1);
   auto out_arg = entry->getArgument(2);
 
-  const int Br = plan.tile.br > 0 ? plan.tile.br : 16;
-  const int Kstep = plan.tile.k_step > 0 ? plan.tile.k_step : 1;
-  const int block_dim = plan.tile.threads_per_block > 0 ? plan.tile.threads_per_block : 256;
-  (void)Kstep;
-
-  const int grid_m = static_cast<int>((M + Br - 1) / Br);
-  const int grid_n = static_cast<int>((N + Br - 1) / Br);
-
-  auto c_grid_m = builder.create<mlir::arith::ConstantIndexOp>(loc, grid_m);
-  auto c_grid_n = builder.create<mlir::arith::ConstantIndexOp>(loc, grid_n);
-  auto c_one = builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
-  auto c_block = builder.create<mlir::arith::ConstantIndexOp>(loc, block_dim);
-
-  auto launch = builder.create<mlir::gpu::LaunchOp>(
-      loc, c_grid_m, c_grid_n, c_one, c_block, c_one, c_one);
-  builder.setInsertionPointToStart(&launch.getBody().front());
-
-  auto tid = launch.getThreadIds().x;
-  auto bid_m = launch.getBlockIds().x;
-  auto bid_n = launch.getBlockIds().y;
-
-  auto c_Br = builder.create<mlir::arith::ConstantIndexOp>(loc, Br);
-  auto c_M = builder.create<mlir::arith::ConstantIndexOp>(loc, M);
-  auto c_N = builder.create<mlir::arith::ConstantIndexOp>(loc, N);
-  auto c_K = builder.create<mlir::arith::ConstantIndexOp>(loc, K);
-  auto c_zero = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
-  auto c_block_dim = builder.create<mlir::arith::ConstantIndexOp>(loc, block_dim);
-  auto c_total_elems =
-      builder.create<mlir::arith::ConstantIndexOp>(loc, Br * Br);
-
-  auto row_base = builder.create<mlir::arith::MulIOp>(loc, bid_m, c_Br);
-  auto col_base = builder.create<mlir::arith::MulIOp>(loc, bid_n, c_Br);
-
-  auto elem_loop =
-      builder.create<mlir::scf::ForOp>(loc, tid, c_total_elems, c_block_dim);
-  {
-    mlir::OpBuilder::InsertionGuard guard(builder);
-    builder.setInsertionPointToStart(elem_loop.getBody());
-    auto elem_idx = elem_loop.getInductionVar();
-
-    auto local_row = builder.create<mlir::arith::DivUIOp>(loc, elem_idx, c_Br);
-    auto local_col = builder.create<mlir::arith::RemUIOp>(loc, elem_idx, c_Br);
-    auto global_row = builder.create<mlir::arith::AddIOp>(loc, row_base, local_row);
-    auto global_col = builder.create<mlir::arith::AddIOp>(loc, col_base, local_col);
-
-    auto row_valid = builder.create<mlir::arith::CmpIOp>(
-        loc, mlir::arith::CmpIPredicate::ult, global_row, c_M);
-    auto col_valid = builder.create<mlir::arith::CmpIOp>(
-        loc, mlir::arith::CmpIPredicate::ult, global_col, c_N);
-    auto valid = builder.create<mlir::arith::AndIOp>(loc, row_valid, col_valid);
-
-    auto if_valid = builder.create<mlir::scf::IfOp>(loc, valid, false);
-    {
-      mlir::OpBuilder::InsertionGuard guard2(builder);
-      builder.setInsertionPointToStart(&if_valid.getThenRegion().front());
-
-      auto zero_f32 = builder.create<mlir::arith::ConstantOp>(
-          loc, builder.getF32FloatAttr(0.0f));
-      auto k_loop = builder.create<mlir::scf::ForOp>(
-          loc, c_zero, c_K, c_one, mlir::ValueRange{zero_f32.getResult()});
-      {
-        mlir::OpBuilder::InsertionGuard guard3(builder);
-        builder.setInsertionPointToStart(k_loop.getBody());
-        auto k = k_loop.getInductionVar();
-        auto acc = k_loop.getRegionIterArgs()[0];
-
-        mlir::Value a_row = global_row;
-        mlir::Value a_col = k;
-        if (mm_attrs.lhs.transpose_last2) {
-          a_row = k;
-          a_col = global_row;
-        }
-        mlir::Value b_row = k;
-        mlir::Value b_col = global_col;
-        if (mm_attrs.rhs.transpose_last2) {
-          b_row = global_col;
-          b_col = k;
-        }
-
-        auto a_val = builder.create<mlir::memref::LoadOp>(
-            loc, lhs_arg, mlir::ValueRange{a_row, a_col});
-        auto b_val = builder.create<mlir::memref::LoadOp>(
-            loc, rhs_arg, mlir::ValueRange{b_row, b_col});
-
-        mlir::Value a_f32 = a_val;
-        mlir::Value b_f32 = b_val;
-        if (lhs_elem.isa<mlir::FloatType>() && lhs_elem != f32) {
-          a_f32 = builder.create<mlir::arith::ExtFOp>(loc, f32, a_val);
-        } else if (lhs_elem.isa<mlir::IntegerType>()) {
-          a_f32 = builder.create<mlir::arith::SIToFPOp>(loc, f32, a_val);
-        }
-        if (rhs_elem.isa<mlir::FloatType>() && rhs_elem != f32) {
-          b_f32 = builder.create<mlir::arith::ExtFOp>(loc, f32, b_val);
-        } else if (rhs_elem.isa<mlir::IntegerType>()) {
-          b_f32 = builder.create<mlir::arith::SIToFPOp>(loc, f32, b_val);
-        }
-
-        auto prod = builder.create<mlir::arith::MulFOp>(loc, a_f32, b_f32);
-        auto new_acc = builder.create<mlir::arith::AddFOp>(loc, acc, prod);
-        builder.create<mlir::scf::YieldOp>(loc, mlir::ValueRange{new_acc.getResult()});
-      }
-
-      mlir::Value result = k_loop.getResult(0);
-      for (auto epi_node_id : epilogue_node_ids) {
-        const auto &epi_node = graph.nodes.at(epi_node_id);
-        if (epi_node.kind != OpKind::kElementwise) {
-          continue;
-        }
-        const auto &ew_attrs = std::get<ElementwiseAttrs>(epi_node.attrs);
-        if (ew_attrs.inputs.size() > 1) {
-          throw std::runtime_error(
-              "FusionMlirEmitter: Family A binary epilogues are not yet implemented");
-        }
-        result = emitElementwiseOnValue(builder, loc, ew_attrs.kind, result, f32);
-      }
-
-      mlir::Value store_val = result;
-      if (out_elem.isa<mlir::FloatType>() && out_elem != f32) {
-        store_val = builder.create<mlir::arith::TruncFOp>(loc, out_elem, result);
-      } else if (out_elem.isa<mlir::IntegerType>()) {
-        store_val = builder.create<mlir::arith::FPToSIOp>(loc, out_elem, result);
-      }
-      builder.create<mlir::memref::StoreOp>(
-          loc, store_val, out_arg, mlir::ValueRange{global_row, global_col});
-    }
+  // Transposes not supported with MMA path (tests use non-transposed).
+  if (mm_attrs.lhs.transpose_last2 || mm_attrs.rhs.transpose_last2) {
+    throw std::runtime_error(
+        "FusionMlirEmitter: Family A MMA path does not support transposed inputs yet");
   }
 
-  builder.setInsertionPointAfter(elem_loop);
-  builder.create<mlir::gpu::TerminatorOp>(loc);
-  builder.setInsertionPointAfter(launch);
+  // Emit linalg.matmul on memrefs — the MMA transform pipeline in the
+  // lowering stage will tile this and rewrite it to nvgpu.mma.sync.
+  // Output is pre-zeroed by the runtime (C += A*B with C=0 → C = A*B).
+  builder.create<mlir::linalg::MatmulOp>(
+      loc,
+      mlir::ValueRange{lhs_arg, rhs_arg},
+      mlir::ValueRange{out_arg});
   builder.create<mlir::func::ReturnOp>(loc);
+
+  // Store epilogue info as module attributes for FusionEpiloguePass.
+  llvm::SmallVector<mlir::Attribute> epilogue_kinds;
+  for (auto epi_node_id : epilogue_node_ids) {
+    const auto &epi_node = graph.nodes.at(epi_node_id);
+    if (epi_node.kind != OpKind::kElementwise) {
+      continue;
+    }
+    const auto &ew_attrs = std::get<ElementwiseAttrs>(epi_node.attrs);
+    if (ew_attrs.inputs.size() > 1) {
+      throw std::runtime_error(
+          "FusionMlirEmitter: Family A binary epilogues are not yet implemented");
+    }
+    epilogue_kinds.push_back(
+        builder.getI32IntegerAttr(static_cast<int>(ew_attrs.kind)));
+  }
+  if (!epilogue_kinds.empty()) {
+    module->setAttr("matcore.fusion_epilogue_kinds",
+                    builder.getArrayAttr(epilogue_kinds));
+  }
+
+  // Dtype attrs — required by decodeMatmulSignatureFromModule() to enable
+  // MMA rewrite (rewrite_to_mma_sync). Without these, defaults to f32 and
+  // tensor core path may not activate.
+  module->setAttr("matcore.lhs_dtype", mlir::TypeAttr::get(lhs_elem));
+  module->setAttr("matcore.rhs_dtype", mlir::TypeAttr::get(rhs_elem));
+  module->setAttr("matcore.out_dtype", mlir::TypeAttr::get(out_elem));
 
   module->setAttr("matcore.kernel_type",
                   mlir::StringAttr::get(&context, "fused_family_a"));
@@ -1111,6 +1023,126 @@ mlir::OwningOpRef<mlir::ModuleOp> FusionMlirEmitter::emitFamilyC(
                   builder.getBoolAttr(plan.use_online_softmax));
 
   return module;
+}
+
+// ============================================================================
+// FusionEpiloguePass — Injects a second gpu.launch for elementwise epilogue
+// after MMA matmul. Reads matcore.fusion_epilogue_kinds from module attrs.
+// ============================================================================
+namespace {
+
+struct FusionEpiloguePass
+    : public mlir::PassWrapper<FusionEpiloguePass,
+                               mlir::OperationPass<mlir::ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(FusionEpiloguePass)
+
+  llvm::StringRef getArgument() const override {
+    return "matcore-fusion-epilogue";
+  }
+  llvm::StringRef getDescription() const override {
+    return "Insert gpu.launch for fusion epilogue (relu/gelu/exp) after MMA matmul";
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    auto epilogue_attr =
+        module->getAttrOfType<mlir::ArrayAttr>("matcore.fusion_epilogue_kinds");
+    if (!epilogue_attr || epilogue_attr.empty()) {
+      return;  // No epilogue needed
+    }
+
+    auto m_attr =
+        module->getAttrOfType<mlir::IntegerAttr>("matcore.matmul_m");
+    auto n_attr =
+        module->getAttrOfType<mlir::IntegerAttr>("matcore.matmul_n");
+    if (!m_attr || !n_attr) {
+      signalPassFailure();
+      return;
+    }
+    const int64_t M = m_attr.getInt();
+    const int64_t N = n_attr.getInt();
+    const int64_t total_elems = M * N;
+    const int64_t block_size = 256;
+    const int64_t grid_size = (total_elems + block_size - 1) / block_size;
+
+    // Find the entry function
+    mlir::func::FuncOp func;
+    module.walk([&](mlir::func::FuncOp f) { func = f; });
+    if (!func) {
+      signalPassFailure();
+      return;
+    }
+
+    // Output is the 3rd function argument (C memref)
+    auto out_arg = func.getArgument(2);
+
+    // Find the return op — insert epilogue launches before it
+    mlir::func::ReturnOp return_op;
+    func.walk([&](mlir::func::ReturnOp r) { return_op = r; });
+    if (!return_op) {
+      signalPassFailure();
+      return;
+    }
+
+    mlir::OpBuilder builder(return_op);
+    auto loc = builder.getUnknownLoc();
+
+    for (auto kind_attr : epilogue_attr) {
+      int kind = kind_attr.cast<mlir::IntegerAttr>().getInt();
+
+      auto c_grid = builder.create<mlir::arith::ConstantIndexOp>(loc, grid_size);
+      auto c_one = builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
+      auto c_block = builder.create<mlir::arith::ConstantIndexOp>(loc, block_size);
+
+      auto launch = builder.create<mlir::gpu::LaunchOp>(
+          loc, c_grid, c_one, c_one, c_block, c_one, c_one);
+
+      // Build the epilogue kernel body
+      {
+        mlir::OpBuilder::InsertionGuard guard(builder);
+        builder.setInsertionPointToStart(&launch.getBody().front());
+
+        auto tid = launch.getThreadIds().x;
+        auto bid = launch.getBlockIds().x;
+        auto c_bd = builder.create<mlir::arith::ConstantIndexOp>(loc, block_size);
+        auto c_total = builder.create<mlir::arith::ConstantIndexOp>(loc, total_elems);
+        auto c_N_val = builder.create<mlir::arith::ConstantIndexOp>(loc, N);
+
+        auto idx = builder.create<mlir::arith::AddIOp>(
+            loc, builder.create<mlir::arith::MulIOp>(loc, bid, c_bd), tid);
+
+        auto in_bounds = builder.create<mlir::arith::CmpIOp>(
+            loc, mlir::arith::CmpIPredicate::ult, idx, c_total);
+
+        auto if_op = builder.create<mlir::scf::IfOp>(loc, in_bounds, /*withElse=*/false);
+        {
+          mlir::OpBuilder::InsertionGuard guard2(builder);
+          builder.setInsertionPointToStart(&if_op.getThenRegion().front());
+
+          auto row = builder.create<mlir::arith::DivUIOp>(loc, idx, c_N_val);
+          auto col = builder.create<mlir::arith::RemUIOp>(loc, idx, c_N_val);
+          auto val = builder.create<mlir::memref::LoadOp>(
+              loc, out_arg, mlir::ValueRange{row, col});
+
+          mlir::Value result = emitElementwiseOnValue(
+              builder, loc, static_cast<ElementwiseKind>(kind),
+              val, builder.getF32Type());
+
+          builder.create<mlir::memref::StoreOp>(
+              loc, result, out_arg, mlir::ValueRange{row, col});
+        }
+
+        builder.setInsertionPointAfter(if_op);
+        builder.create<mlir::gpu::TerminatorOp>(loc);
+      }
+    }
+  }
+};
+
+}  // namespace
+
+std::unique_ptr<mlir::Pass> CreateFusionEpiloguePass() {
+  return std::make_unique<FusionEpiloguePass>();
 }
 
 }  // namespace matcore

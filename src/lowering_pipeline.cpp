@@ -6,6 +6,7 @@
 #include "matcore/cpu_lowering.h"
 #include "matcore/diagnostics.h"
 #include "matcore/fusion_analysis.h"
+#include "matcore/fusion_emitter.h"
 #include "matcore/gpu_mapping.h"
 #include "matcore/gpu_nvvm_lowering.h"
 #include "matcore/gpu_tiling.h"
@@ -2819,6 +2820,162 @@ void runFusionLoweringPipeline(mlir::ModuleOp module,
     module->setAttr("matcore.max_regs", builder.getI32IntegerAttr(*max_regs));
   }
   const std::string nvvm_cmd_options = buildMaxRegisterCommandOptions(max_regs);
+
+  // Check if this is a family_a or family_b MMA kernel (has linalg.matmul).
+  auto fusion_pattern_attr =
+      module->getAttrOfType<mlir::StringAttr>("matcore.fusion_pattern");
+  const bool is_mma_family =
+      fusion_pattern_attr &&
+      (fusion_pattern_attr.getValue() == "family_a");
+
+  if (is_mma_family) {
+    // === MMA FUSION PATH ===
+    // The emitter produced linalg.matmul on memrefs. We reuse the standard
+    // MMA transform pipeline to tile and rewrite to tensor cores, then
+    // run the FusionEpiloguePass for elementwise ops, then data-staging.
+
+    // 1. Decode signature + select mapping (same as standard matmul path).
+    const MatmulLoweringSignature signature =
+        decodeMatmulSignatureFromModule(module);
+    NvidiaMappingConfig mapping =
+        selectNvidiaMappingForModule(module, signature);
+
+    // 2. Apply tiling transform.
+    if (UsesMultiWarpMmaSync(mapping)) {
+      ApplyNvidiaMultiWarpTransformToModule(module, signature, mapping);
+    } else {
+      ApplyNvidiaMmaTransformToModule(module, signature, mapping);
+    }
+
+    // 3. Tag K-loop (needed by AccHoist/DoubleBuffer).
+    run_stage("fusion-mma-tag-k-loop", [&](mlir::PassManager &pm) {
+      pm.addPass(std::make_unique<TagKLoopPass>(mapping.k_tile));
+    });
+
+    // 4. Map to GPU grid.
+    run_stage("fusion-mma-grid-mapping", [&](mlir::PassManager &pm) {
+      AddNvidiaDynamicMacroGridMappingPasses(pm, mapping);
+    });
+
+    // 5. Canonicalize + CSE after transform.
+    run_stage("fusion-mma-post-transform", [&](mlir::PassManager &pm) {
+      pm.addPass(mlir::createCanonicalizerPass());
+      pm.addPass(mlir::createCSEPass());
+    });
+
+    // 6. MMA rewrite or thread mapping, depending on dtype support.
+    if (mapping.rewrite_to_mma_sync) {
+      // FP16 path: rewrite to nvgpu.mma.sync (tensor cores).
+      run_stage("fusion-mma-preparation", [&](mlir::PassManager &pm) {
+        AddNvidiaMmaPreparationPasses(pm);
+      });
+      ApplyNvidiaMmaRewriteToModule(module);
+      VerifyNoResidualNvidiaMatmulOnModule(module);
+    } else {
+      // F32 path: thread mapping (tiled, coalesced, but no tensor cores).
+      ApplyNvidiaThreadMappingToModule(module, mapping);
+      run_stage("fusion-thread-post-map", [&](mlir::PassManager &pm) {
+        pm.addPass(mlir::createCanonicalizerPass());
+        pm.addPass(mlir::createCSEPass());
+      });
+    }
+
+    // 7. Launch configuration + loop materialization + vector→gpu.
+    run_stage("fusion-mma-launch-config", [&](mlir::PassManager &pm) {
+      AddNvidiaLaunchConfigurationPasses(pm);
+    });
+    run_stage("fusion-mma-loop-materialization", [&](mlir::PassManager &pm) {
+      AddNvidiaLoopMaterializationPasses(pm);
+    });
+    run_stage("fusion-mma-vector-to-gpu", [&](mlir::PassManager &pm) {
+      ConfigureNvidiaVectorToGpuStage(pm);
+    });
+
+    // 7. Loop materialization (linalg→loops, scf→cf, etc.).
+
+    // 8. Fusion epilogue: second gpu.launch for relu/gelu/exp if needed.
+    run_stage("fusion-epilogue", [&](mlir::PassManager &pm) {
+      pm.addPass(CreateFusionEpiloguePass());
+    });
+
+    // 9. Data staging for ALL gpu.launch ops (matmul + epilogue).
+    run_stage("fusion-mma-data-staging", [&](mlir::PassManager &pm) {
+      pm.addNestedPass<mlir::func::FuncOp>(CreateGpuDataStagingPass());
+      pm.addPass(mlir::createCanonicalizerPass());
+      pm.addPass(mlir::createCSEPass());
+    });
+
+    // 10. Full NVVM lowering (with NVGPU→NVVM for tensor core ops).
+    run_stage("fusion-mma-nvvm-outline", [&](mlir::PassManager &pm) {
+      pm.addPass(mlir::createConvertNVGPUToNVVMPass());
+      pm.addPass(mlir::createGpuKernelOutliningPass());
+    });
+    run_stage("fusion-mma-nvvm-host-scalar", [&](mlir::PassManager &pm) {
+      pm.addPass(mlir::createConvertVectorToSCFPass());
+      pm.addPass(mlir::createConvertSCFToCFPass());
+      pm.addPass(mlir::createConvertNVVMToLLVMPass());
+      pm.addPass(mlir::memref::createExpandStridedMetadataPass());
+      pm.addPass(mlir::createLowerAffinePass());
+      // Scope math/arith/index → LLVM to host func only.
+      // GPU module has its own math → NVVM lowering via createConvertGpuOpsToNVVMOps.
+      auto &func_pm = pm.nest<mlir::func::FuncOp>();
+      func_pm.addPass(mlir::createConvertMathToLLVMPass());
+      func_pm.addPass(mlir::createArithToLLVMConversionPass());
+      mlir::ConvertIndexToLLVMPassOptions idx_opts;
+      idx_opts.indexBitwidth = 64;
+      func_pm.addPass(mlir::createConvertIndexToLLVMPass(idx_opts));
+    });
+    run_stage("fusion-mma-nvvm-attach-target", [&](mlir::PassManager &pm) {
+      mlir::GpuNVVMAttachTargetOptions target_opts;
+      target_opts.triple = "nvptx64-nvidia-cuda";
+      target_opts.chip = nvidia_chip.str();
+      target_opts.optLevel = 2;
+      std::vector<std::string> link_libs;
+      if (!libdevice_path.empty()) {
+        link_libs.push_back(libdevice_path);
+        target_opts.linkLibs = link_libs;
+      }
+      pm.addPass(mlir::createGpuNVVMAttachTarget(target_opts));
+    });
+    run_stage("fusion-mma-nvvm-gpu-module", [&](mlir::PassManager &pm) {
+      auto &gpu_pm = pm.nest<mlir::gpu::GPUModuleOp>();
+      gpu_pm.addPass(mlir::createStripDebugInfoPass());
+      mlir::ConvertGpuOpsToNVVMOpsOptions nvvm_conv_opts;
+      nvvm_conv_opts.indexBitwidth = 64;
+      nvvm_conv_opts.useBarePtrCallConv = false;
+      gpu_pm.addPass(mlir::createConvertGpuOpsToNVVMOps(nvvm_conv_opts));
+      gpu_pm.addPass(mlir::createCanonicalizerPass());
+      gpu_pm.addPass(mlir::createCSEPass());
+      gpu_pm.addPass(mlir::createReconcileUnrealizedCastsPass());
+    });
+    run_stage("fusion-mma-nvvm-gpu-to-llvm", [&](mlir::PassManager &pm) {
+      pm.addPass(mlir::createGpuToLLVMConversionPass());
+    });
+    run_stage("fusion-mma-nvvm-host-finalize", [&](mlir::PassManager &pm) {
+      pm.addPass(mlir::createFinalizeMemRefToLLVMConversionPass());
+      pm.addPass(mlir::createConvertControlFlowToLLVMPass());
+      pm.addPass(mlir::createConvertFuncToLLVMPass());
+      pm.addPass(mlir::createCanonicalizerPass());
+      pm.addPass(mlir::createCSEPass());
+      pm.addPass(mlir::createReconcileUnrealizedCastsPass());
+    });
+    annotateFusionRegisterUsageFromPtx(module, nvvm_cmd_options, obs);
+    run_stage("fusion-mma-nvvm-binary", [&](mlir::PassManager &pm) {
+      mlir::GpuModuleToBinaryPassOptions bin_opts;
+      bin_opts.compilationTarget = "fatbin";
+      bin_opts.cmdOptions = nvvm_cmd_options;
+      pm.addPass(mlir::createGpuModuleToBinaryPass(bin_opts));
+    });
+    run_stage("fusion-mma-nvvm-cleanup", [&](mlir::PassManager &pm) {
+      pm.addPass(mlir::createCanonicalizerPass());
+      pm.addPass(mlir::createCSEPass());
+      pm.addPass(mlir::createReconcileUnrealizedCastsPass());
+    });
+    return;
+  }
+
+  // === ORIGINAL FUSION PATH (family_c and fallback) ===
+  // The emitter produced explicit gpu.launch with scalar ops.
   run_stage("fusion-gpu-data-staging", [&](mlir::PassManager &pm) {
     pm.addNestedPass<mlir::func::FuncOp>(CreateGpuDataStagingPass());
     pm.addPass(mlir::createCanonicalizerPass());
