@@ -243,6 +243,307 @@ matcore::TensorDType parseRuntimeTensorDType(const std::string &dtype_name) {
   throw std::runtime_error("Unsupported runtime tensor dtype '" + dtype_name + "'.");
 }
 
+matcore::TensorDType parseTensorDType(const std::string &s) {
+  if (s == "float32") {
+    return matcore::TensorDType::kFloat32;
+  }
+  if (s == "float16") {
+    return matcore::TensorDType::kFloat16;
+  }
+  if (s == "int32") {
+    return matcore::TensorDType::kInt32;
+  }
+  if (s == "int8") {
+    return matcore::TensorDType::kInt8;
+  }
+  throw std::runtime_error("Unknown dtype: " + s);
+}
+
+matcore::ValueKind parseValueKind(const std::string &s) {
+  if (s == "input") {
+    return matcore::ValueKind::kInput;
+  }
+  if (s == "output") {
+    return matcore::ValueKind::kOutput;
+  }
+  if (s == "intermediate") {
+    return matcore::ValueKind::kIntermediate;
+  }
+  throw std::runtime_error("Unknown value kind: " + s);
+}
+
+matcore::StorageHint parseStorageHint(const std::string &s) {
+  if (s == "auto") {
+    return matcore::StorageHint::kAuto;
+  }
+  if (s == "register") {
+    return matcore::StorageHint::kRegister;
+  }
+  if (s == "shared") {
+    return matcore::StorageHint::kSharedMem;
+  }
+  if (s == "vram") {
+    return matcore::StorageHint::kVRAM;
+  }
+  return matcore::StorageHint::kAuto;
+}
+
+matcore::OpKind parseOpKind(const std::string &s) {
+  if (s == "matmul") {
+    return matcore::OpKind::kMatMul;
+  }
+  if (s == "softmax") {
+    return matcore::OpKind::kSoftmax;
+  }
+  if (s == "store") {
+    return matcore::OpKind::kStore;
+  }
+  if (s == "transpose") {
+    return matcore::OpKind::kTranspose;
+  }
+  if (s == "cast") {
+    return matcore::OpKind::kCast;
+  }
+  if (s == "reduce" || s == "sum" || s == "max_reduce" || s == "min_reduce") {
+    return matcore::OpKind::kReduce;
+  }
+  return matcore::OpKind::kElementwise;
+}
+
+matcore::ElementwiseKind parseElementwiseKindFromOp(const std::string &s) {
+  if (s == "add") {
+    return matcore::ElementwiseKind::kAdd;
+  }
+  if (s == "sub") {
+    return matcore::ElementwiseKind::kSub;
+  }
+  if (s == "mul") {
+    return matcore::ElementwiseKind::kMul;
+  }
+  if (s == "div") {
+    return matcore::ElementwiseKind::kDiv;
+  }
+  if (s == "exp") {
+    return matcore::ElementwiseKind::kExp;
+  }
+  if (s == "log") {
+    return matcore::ElementwiseKind::kLog;
+  }
+  if (s == "sqrt") {
+    return matcore::ElementwiseKind::kSqrt;
+  }
+  if (s == "tanh") {
+    return matcore::ElementwiseKind::kTanh;
+  }
+  if (s == "sigmoid") {
+    return matcore::ElementwiseKind::kSigmoid;
+  }
+  if (s == "gelu") {
+    return matcore::ElementwiseKind::kGELU;
+  }
+  if (s == "relu") {
+    return matcore::ElementwiseKind::kReLU;
+  }
+  if (s == "neg") {
+    return matcore::ElementwiseKind::kNeg;
+  }
+  if (s == "abs") {
+    return matcore::ElementwiseKind::kAbs;
+  }
+  if (s == "min") {
+    return matcore::ElementwiseKind::kMin;
+  }
+  if (s == "max") {
+    return matcore::ElementwiseKind::kMax;
+  }
+  throw std::runtime_error("Unknown elementwise op: " + s);
+}
+
+matcore::NodeAttrs parseNodeAttrs(matcore::OpKind kind, const std::string &op_str,
+                                  const nb::dict &attrs_dict,
+                                  const std::vector<uint32_t> &inputs,
+                                  const std::vector<uint32_t> &outputs) {
+  switch (kind) {
+  case matcore::OpKind::kMatMul: {
+    matcore::MatMulAttrs ma;
+    ma.lhs = {inputs.size() > 0 ? inputs[0] : 0u, false};
+    ma.rhs = {inputs.size() > 1 ? inputs[1] : 0u, false};
+    if (attrs_dict.contains("transpose_rhs") &&
+        nb::cast<bool>(attrs_dict["transpose_rhs"])) {
+      ma.rhs.transpose_last2 = true;
+    }
+    if (attrs_dict.contains("transpose_lhs") &&
+        nb::cast<bool>(attrs_dict["transpose_lhs"])) {
+      ma.lhs.transpose_last2 = true;
+    }
+    return ma;
+  }
+  case matcore::OpKind::kElementwise: {
+    matcore::ElementwiseAttrs ea;
+    ea.kind = parseElementwiseKindFromOp(op_str);
+    ea.inputs = inputs;
+    return ea;
+  }
+  case matcore::OpKind::kSoftmax: {
+    matcore::SoftmaxAttrs sa;
+    sa.input = inputs.size() > 0 ? inputs[0] : 0u;
+    if (attrs_dict.contains("axis")) {
+      sa.axis = nb::cast<int>(attrs_dict["axis"]);
+    }
+    return sa;
+  }
+  case matcore::OpKind::kReduce: {
+    matcore::ReduceAttrs ra;
+    ra.input = inputs.size() > 0 ? inputs[0] : 0u;
+    if (op_str == "sum") {
+      ra.kind = matcore::ReductionKind::kSum;
+    } else if (op_str == "max_reduce") {
+      ra.kind = matcore::ReductionKind::kMax;
+    } else if (op_str == "min_reduce") {
+      ra.kind = matcore::ReductionKind::kMin;
+    }
+    if (attrs_dict.contains("axis")) {
+      int ax = nb::cast<int>(attrs_dict["axis"]);
+      if (ax == 0) {
+        ra.axis = matcore::ReductionAxisKind::kAxis0;
+      } else if (ax == 1) {
+        ra.axis = matcore::ReductionAxisKind::kAxis1;
+      } else {
+        ra.axis = matcore::ReductionAxisKind::kLast;
+      }
+    }
+    return ra;
+  }
+  case matcore::OpKind::kTranspose: {
+    matcore::TransposeAttrs ta;
+    ta.input = inputs.size() > 0 ? inputs[0] : 0u;
+    return ta;
+  }
+  case matcore::OpKind::kCast: {
+    matcore::CastAttrs ca;
+    ca.input = inputs.size() > 0 ? inputs[0] : 0u;
+    if (attrs_dict.contains("target_dtype")) {
+      ca.target_dtype =
+          parseTensorDType(nb::cast<std::string>(attrs_dict["target_dtype"]));
+    }
+    return ca;
+  }
+  case matcore::OpKind::kStore: {
+    matcore::StoreAttrs sa;
+    sa.input = inputs.size() > 0 ? inputs[0] : 0u;
+    sa.output_tensor = outputs.size() > 0 ? outputs[0] : 0u;
+    return sa;
+  }
+  }
+  matcore::ElementwiseAttrs ea;
+  ea.kind = matcore::ElementwiseKind::kAdd;
+  return ea;
+}
+
+matcore::KernelGraphIR parseKernelGraphIR(const nb::dict &graph_dict) {
+  matcore::KernelGraphIR graph;
+
+  auto values_list = nb::cast<nb::list>(graph_dict["values"]);
+  for (auto val_obj : values_list) {
+    auto val_dict = nb::cast<nb::dict>(val_obj);
+    matcore::TensorDesc td;
+    td.symbol = nb::cast<std::string>(val_dict["symbol"]);
+    td.dtype = parseTensorDType(nb::cast<std::string>(val_dict["dtype"]));
+
+    auto shape_list = nb::cast<nb::list>(val_dict["shape"]);
+    for (auto s : shape_list) {
+      td.shape.push_back(nb::cast<int64_t>(s));
+    }
+
+    td.value_kind = parseValueKind(nb::cast<std::string>(val_dict["kind"]));
+
+    if (val_dict.contains("storage_hint")) {
+      td.storage_hint =
+          parseStorageHint(nb::cast<std::string>(val_dict["storage_hint"]));
+    }
+    if (val_dict.contains("strides")) {
+      auto strides_list = nb::cast<nb::list>(val_dict["strides"]);
+      for (auto s : strides_list) {
+        td.strides.push_back(nb::cast<int64_t>(s));
+      }
+    }
+    if (val_dict.contains("escape")) {
+      const std::string esc = nb::cast<std::string>(val_dict["escape"]);
+      td.escape = esc == "vram" ? matcore::EscapeKind::kEscapeToVRAM
+                                 : matcore::EscapeKind::kNoEscape;
+    }
+    if (val_dict.contains("is_device_resident")) {
+      td.is_device_resident = nb::cast<bool>(val_dict["is_device_resident"]);
+    }
+
+    td.is_parameter = (td.value_kind == matcore::ValueKind::kInput);
+    td.is_output = (td.value_kind == matcore::ValueKind::kOutput);
+
+    if (val_dict.contains("producer")) {
+      int prod = nb::cast<int>(val_dict["producer"]);
+      if (prod >= 0) {
+        td.producer = static_cast<uint32_t>(prod);
+      }
+    }
+    if (val_dict.contains("consumers")) {
+      auto cons_list = nb::cast<nb::list>(val_dict["consumers"]);
+      for (auto c : cons_list) {
+        td.consumers.push_back(nb::cast<uint32_t>(c));
+      }
+    }
+
+    graph.values.push_back(std::move(td));
+  }
+
+  auto nodes_list = nb::cast<nb::list>(graph_dict["nodes"]);
+  for (auto node_obj : nodes_list) {
+    auto node_dict = nb::cast<nb::dict>(node_obj);
+    matcore::KernelNode kn;
+    kn.id = nb::cast<uint32_t>(node_dict["id"]);
+
+    std::string op_str = toLower(nb::cast<std::string>(node_dict["op"]));
+    kn.kind = parseOpKind(op_str);
+    kn.debug_name = op_str;
+
+    auto inputs_list = nb::cast<nb::list>(node_dict["inputs"]);
+    for (auto i : inputs_list) {
+      kn.inputs.push_back(nb::cast<uint32_t>(i));
+    }
+
+    auto outputs_list = nb::cast<nb::list>(node_dict["outputs"]);
+    for (auto o : outputs_list) {
+      kn.outputs.push_back(nb::cast<uint32_t>(o));
+    }
+
+    nb::dict attrs_dict = nb::dict();
+    if (node_dict.contains("attrs")) {
+      attrs_dict = nb::cast<nb::dict>(node_dict["attrs"]);
+    }
+
+    kn.attrs = parseNodeAttrs(kn.kind, op_str, attrs_dict, kn.inputs, kn.outputs);
+    graph.nodes.push_back(std::move(kn));
+  }
+
+  auto input_ids = nb::cast<nb::list>(graph_dict["input_values"]);
+  for (auto i : input_ids) {
+    graph.input_values.push_back(nb::cast<uint32_t>(i));
+  }
+
+  auto output_ids = nb::cast<nb::list>(graph_dict["output_values"]);
+  for (auto o : output_ids) {
+    graph.output_values.push_back(nb::cast<uint32_t>(o));
+  }
+
+  if (graph_dict.contains("topo_order")) {
+    auto topo = nb::cast<nb::list>(graph_dict["topo_order"]);
+    for (auto t : topo) {
+      graph.topo_order.push_back(nb::cast<uint32_t>(t));
+    }
+  }
+
+  return graph;
+}
+
 matcore::QuantizationParams parseQuantizationConfig(const nb::dict &obj,
                                                     bool default_enabled) {
   matcore::QuantizationParams quant;
@@ -547,18 +848,47 @@ matcore::ElementwiseKind parseElementwiseKind(const nb::dict &op_obj) {
   if (raw_kind == "exp") {
     return matcore::ElementwiseKind::kExp;
   }
+  if (raw_kind == "log") {
+    return matcore::ElementwiseKind::kLog;
+  }
+  if (raw_kind == "tanh") {
+    return matcore::ElementwiseKind::kTanh;
+  }
+  if (raw_kind == "softmax") {
+    return matcore::ElementwiseKind::kSoftmax;
+  }
+  if (raw_kind == "min") {
+    return matcore::ElementwiseKind::kMin;
+  }
+  if (raw_kind == "max") {
+    return matcore::ElementwiseKind::kMax;
+  }
 
   throw std::runtime_error("Unsupported elementwise kind '" + raw_kind + "'.");
 }
 
 bool isUnaryElementwise(matcore::ElementwiseKind kind) {
-  return kind == matcore::ElementwiseKind::kReLU ||
-         kind == matcore::ElementwiseKind::kGELU ||
-         kind == matcore::ElementwiseKind::kSigmoid ||
-         kind == matcore::ElementwiseKind::kNeg ||
-         kind == matcore::ElementwiseKind::kAbs ||
-         kind == matcore::ElementwiseKind::kSqrt ||
-         kind == matcore::ElementwiseKind::kExp;
+  switch (kind) {
+  case matcore::ElementwiseKind::kReLU:
+  case matcore::ElementwiseKind::kGELU:
+  case matcore::ElementwiseKind::kSigmoid:
+  case matcore::ElementwiseKind::kNeg:
+  case matcore::ElementwiseKind::kAbs:
+  case matcore::ElementwiseKind::kSqrt:
+  case matcore::ElementwiseKind::kExp:
+  case matcore::ElementwiseKind::kLog:
+  case matcore::ElementwiseKind::kTanh:
+  case matcore::ElementwiseKind::kSoftmax:
+    return true;
+  case matcore::ElementwiseKind::kAdd:
+  case matcore::ElementwiseKind::kSub:
+  case matcore::ElementwiseKind::kMul:
+  case matcore::ElementwiseKind::kDiv:
+  case matcore::ElementwiseKind::kMin:
+  case matcore::ElementwiseKind::kMax:
+    return false;
+  }
+  return false;
 }
 
 std::optional<std::string> parseOptionalString(const nb::dict &obj,
@@ -705,6 +1035,23 @@ matcore::KernelOp parseOp(const nb::dict &op_obj) {
 
 matcore::KernelIR parseKernelIR(const nb::dict &kernel_obj) {
   matcore::KernelIR kernel;
+  if (kernel_obj.contains("version")) {
+    auto version_str = nb::cast<std::string>(kernel_obj["version"]);
+    if (version_str == "graph_v2") {
+      kernel.version = matcore::KernelIRVersion::kGraphV2;
+      kernel.graph = parseKernelGraphIR(kernel_obj);
+      if (hasKey(kernel_obj, "kernel_name")) {
+        kernel.kernel_name = toString(kernel_obj["kernel_name"]);
+      } else if (hasKey(kernel_obj, "name")) {
+        kernel.kernel_name = toString(kernel_obj["name"]);
+      } else {
+        kernel.kernel_name = "graph_v2_kernel";
+      }
+      kernel.global_quantization = parseKernelGlobalQuantization(kernel_obj);
+      return kernel;
+    }
+  }
+
   if (hasKey(kernel_obj, "kernel_name")) {
     kernel.kernel_name = toString(kernel_obj["kernel_name"]);
   } else {
@@ -884,6 +1231,21 @@ NB_MODULE(_matcore_native, m) {
           triggerCompilation(invocation, obs.get());
         },
         "Compile and run a kernel IR with zero-copy tensor views.");
+
+  m.def("get_compilation_stats",
+        []() {
+          const matcore::CompilationStats stats = matcore::getLastCompilationStats();
+          nb::dict info;
+          if (!stats.available) {
+            return info;
+          }
+          info[nb::str("actual_reg_count")] = nb::int_(stats.actual_reg_count);
+          info[nb::str("reg_budget_exceeded")] =
+              nb::bool_(stats.reg_budget_exceeded);
+          info[nb::str("route")] = nb::str(stats.route.c_str());
+          return info;
+        },
+        "Return stats from the most recent compile_and_run invocation.");
 
   // DeviceBufferHandle type exposed to Python as opaque handle.
   nb::class_<matcore::DeviceBufferHandle>(m, "DeviceBufferHandle")

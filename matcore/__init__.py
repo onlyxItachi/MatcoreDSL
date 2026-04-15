@@ -8,6 +8,7 @@ from .frontend import (
     asdtype,
     create_plan,
     execute_plan,
+    fused,
     kernel,
     launch,
     load,
@@ -15,6 +16,7 @@ from .frontend import (
     relu,
     cast,
     matmul,
+    softmax,
     mc,
     store,
     transpose,
@@ -34,12 +36,26 @@ MatCoreNamespace.cache_info = staticmethod(cache_info)
 MatCoreNamespace.cache_clear = staticmethod(cache_clear)
 MatCoreNamespace.cache_summary = staticmethod(cache_summary)
 
+exp = mc.exp
+log = mc.log
+sqrt = mc.sqrt
+tanh = mc.tanh
+sigmoid = mc.sigmoid
+gelu = mc.gelu
+relu = mc.relu
+neg = mc.neg
+abs = mc.abs
+softmax = mc.softmax
+min = mc.min
+max = mc.max
+
 __all__ = [
     "mc",
     "kernel",
     "launch",
     "create_plan",
     "execute_plan",
+    "fused",
     "to_device",
     "DeviceTensor",
     "asdtype",
@@ -49,6 +65,7 @@ __all__ = [
     "cast",
     "store",
     "matmul",
+    "softmax",
     "transpose",
     "graph",
     "FusionGraph",

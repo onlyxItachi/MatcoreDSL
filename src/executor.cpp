@@ -11,6 +11,14 @@
 namespace matcore {
 namespace {
 
+struct GenericStridedMemRef2D {
+  void *basePtr = nullptr;
+  void *data = nullptr;
+  int64_t offset = 0;
+  int64_t sizes[2] = {0, 0};
+  int64_t strides[2] = {0, 0};
+};
+
 [[noreturn]] void fail(const std::string &message) {
   throw std::runtime_error("MatCore JIT runner: " + message);
 }
@@ -57,7 +65,9 @@ llvm::Error invokeWithTypedDescriptors(const CachedExecution &compiled,
       return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                      "cached shared library entrypoint missing");
     }
-    compiled.ciface_entrypoint(&lhs_desc, &rhs_desc, &out_desc);
+    auto fn = reinterpret_cast<void (*)(void *, void *, void *)>(
+        compiled.ciface_entrypoint);
+    fn(&lhs_desc, &rhs_desc, &out_desc);
     return llvm::Error::success();
   }
 
@@ -135,13 +145,208 @@ llvm::Error invokeWithRhsType(const CachedExecution &compiled,
                                  "unsupported rhs dtype");
 }
 
+template <typename InElementT, typename OutElementT>
+llvm::Error invokeUnaryTyped(const CachedExecution &compiled,
+                             const std::string &entry_point,
+                             const RuntimeTensorView &in,
+                             const RuntimeTensorView &out) {
+  auto in_desc = makeMemRef2DDescriptor<InElementT>(in);
+  auto out_desc = makeMemRef2DDescriptor<OutElementT>(out);
+
+  const std::string adapter_name = std::string("_mlir_ciface_") + entry_point;
+  void *in_arg = &in_desc;
+  void *out_arg = &out_desc;
+  std::vector<void *> packed_args = {&in_arg, &out_arg};
+  if (compiled.backend == ExecutionBackend::kSharedLibrary) {
+    if (compiled.ciface_entrypoint == nullptr) {
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "cached shared library entrypoint missing");
+    }
+    auto fn = reinterpret_cast<void (*)(void *, void *)>(compiled.ciface_entrypoint);
+    fn(&in_desc, &out_desc);
+    return llvm::Error::success();
+  }
+
+  if (compiled.engine == nullptr) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "execution engine is not initialized");
+  }
+
+  llvm::Error packed_error = compiled.engine->invokePacked(adapter_name, packed_args);
+  if (!packed_error) {
+    return llvm::Error::success();
+  }
+  std::string packed_message = llvm::toString(std::move(packed_error));
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "packed invoke failed: %s",
+                                 packed_message.c_str());
+}
+
+template <typename InElementT>
+llvm::Error invokeUnaryWithOutputType(const CachedExecution &compiled,
+                                      const std::string &entry_point,
+                                      const RuntimeTensorView &in,
+                                      const RuntimeTensorView &out) {
+  switch (out.dtype) {
+    case TensorDType::kFloat32:
+      return invokeUnaryTyped<InElementT, float>(compiled, entry_point, in, out);
+    case TensorDType::kFloat16:
+    case TensorDType::kBFloat16:
+      return invokeUnaryTyped<InElementT, std::uint16_t>(compiled, entry_point, in,
+                                                         out);
+    case TensorDType::kInt8:
+      return invokeUnaryTyped<InElementT, std::int8_t>(compiled, entry_point, in,
+                                                       out);
+    case TensorDType::kInt32:
+      return invokeUnaryTyped<InElementT, std::int32_t>(compiled, entry_point, in,
+                                                        out);
+    case TensorDType::kFloat8E4M3FN:
+      return invokeUnaryTyped<InElementT, std::uint8_t>(compiled, entry_point, in,
+                                                        out);
+  }
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "unsupported output dtype");
+}
+
+llvm::Error invokeUnary(const CachedExecution &compiled,
+                        const RuntimeTensorView &in,
+                        const RuntimeTensorView &out) {
+  switch (in.dtype) {
+    case TensorDType::kFloat32:
+      return invokeUnaryWithOutputType<float>(compiled, compiled.lowered.entry_point,
+                                              in, out);
+    case TensorDType::kFloat16:
+    case TensorDType::kBFloat16:
+      return invokeUnaryWithOutputType<std::uint16_t>(
+          compiled, compiled.lowered.entry_point, in, out);
+    case TensorDType::kInt8:
+      return invokeUnaryWithOutputType<std::int8_t>(compiled,
+                                                    compiled.lowered.entry_point, in,
+                                                    out);
+    case TensorDType::kInt32:
+      return invokeUnaryWithOutputType<std::int32_t>(
+          compiled, compiled.lowered.entry_point, in, out);
+    case TensorDType::kFloat8E4M3FN:
+      return invokeUnaryWithOutputType<std::uint8_t>(
+          compiled, compiled.lowered.entry_point, in, out);
+  }
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "unsupported input dtype");
+}
+
+GenericStridedMemRef2D
+makeGenericMemRef2DDescriptor(const RuntimeTensorView &tensor) {
+  if (tensor.data == nullptr) {
+    fail("tensor '" + tensor.symbol + "' has null data pointer");
+  }
+  if (tensor.shape.size() != 2 || tensor.strides.size() != 2) {
+    fail("tensor '" + tensor.symbol + "' must be rank-2 for JIT invocation");
+  }
+  GenericStridedMemRef2D descriptor;
+  descriptor.basePtr = tensor.data;
+  descriptor.data = tensor.data;
+  descriptor.offset = 0;
+  descriptor.sizes[0] = tensor.shape[0];
+  descriptor.sizes[1] = tensor.shape[1];
+  descriptor.strides[0] = tensor.strides[0];
+  descriptor.strides[1] = tensor.strides[1];
+  return descriptor;
+}
+
+llvm::Error invokeNTensorPacked(const CachedExecution &compiled,
+                                const std::vector<RuntimeTensorView> &tensors,
+                                std::size_t tensor_count) {
+  if (tensor_count == 0 || tensors.size() < tensor_count) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "N-tensor invocation requires at least tensor_count runtime tensors");
+  }
+
+  std::vector<GenericStridedMemRef2D> descriptors(tensor_count);
+  std::vector<void *> arg_ptrs(tensor_count);
+  std::vector<void *> packed_args(tensor_count);
+  for (std::size_t i = 0; i < tensor_count; ++i) {
+    descriptors[i] = makeGenericMemRef2DDescriptor(tensors[i]);
+    arg_ptrs[i] = &descriptors[i];
+    packed_args[i] = &arg_ptrs[i];
+  }
+
+  if (compiled.backend == ExecutionBackend::kSharedLibrary) {
+    if (compiled.ciface_entrypoint == nullptr) {
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "cached shared library entrypoint missing");
+    }
+    switch (tensor_count) {
+      case 4: {
+        auto fn = reinterpret_cast<void (*)(void *, void *, void *, void *)>(
+            compiled.ciface_entrypoint);
+        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3]);
+        return llvm::Error::success();
+      }
+      case 5: {
+        auto fn = reinterpret_cast<void (*)(void *, void *, void *, void *, void *)>(
+            compiled.ciface_entrypoint);
+        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
+           &descriptors[4]);
+        return llvm::Error::success();
+      }
+      case 6: {
+        auto fn = reinterpret_cast<void (*)(
+            void *, void *, void *, void *, void *, void *)>(
+            compiled.ciface_entrypoint);
+        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
+           &descriptors[4], &descriptors[5]);
+        return llvm::Error::success();
+      }
+      default:
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "shared-library N-tensor invocation currently supports up to 6 tensors");
+    }
+  }
+
+  if (compiled.engine == nullptr) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "execution engine is not initialized");
+  }
+
+  const std::string adapter_name =
+      std::string("_mlir_ciface_") + compiled.lowered.entry_point;
+  llvm::Error packed_error = compiled.engine->invokePacked(adapter_name, packed_args);
+  if (!packed_error) {
+    return llvm::Error::success();
+  }
+  std::string packed_message = llvm::toString(std::move(packed_error));
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "packed invoke failed: %s",
+                                 packed_message.c_str());
+}
+
 }  // namespace
 
 llvm::Error invokeCompiledKernel(const CachedExecution &compiled,
                                  const std::vector<RuntimeTensorView> &tensors) {
+  if (compiled.lowered.tensor_count == 2) {
+    if (tensors.size() < 2) {
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "unary invocation requires 2 tensors");
+    }
+    return invokeUnary(compiled, tensors[0], tensors[1]);
+  }
+
+  if (compiled.lowered.tensor_count >= 4) {
+    return invokeNTensorPacked(compiled, tensors, compiled.lowered.tensor_count);
+  }
+
+  if (compiled.lowered.tensor_count != 3) {
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "unsupported lowered tensor_count for invocation");
+  }
+
   if (tensors.size() < 3) {
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "matmul invocation requires 3 tensors");
+                                   "binary/matmul invocation requires 3 tensors");
   }
   if (compiled.lowered.lhs_tensor_index >= tensors.size() ||
       compiled.lowered.rhs_tensor_index >= tensors.size() ||

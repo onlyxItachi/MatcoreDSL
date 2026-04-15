@@ -1,5 +1,6 @@
 #include "matcore/mlir_engine.h"
 
+#include <cmath>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -14,6 +15,7 @@
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -25,6 +27,8 @@
 #include "mlir/IR/Builders.h"
 
 #include "fp8_wgmma.h"
+#include "matcore/fusion_analysis.h"
+#include "matcore/fusion_emitter.h"
 #include "matcore/lowering_pipeline.h"
 #include "matcore/observability.h"
 
@@ -187,7 +191,6 @@ void validateKernel(const KernelIR &kernel,
                     const std::vector<RuntimeTensorView> &tensors) {
   for (const KernelOp &op : kernel.ops) {
     if (std::holds_alternative<TransposeOp>(op) ||
-        std::holds_alternative<ElementwiseOp>(op) ||
         std::holds_alternative<CastOp>(op)) {
       fail("operation '" + opTypeName(op) +
            "' is not yet supported in MLIR lowering (Phase 3 pending)");
@@ -235,6 +238,439 @@ void validateKernel(const KernelIR &kernel,
   if (!(saw_load && saw_matmul && saw_store)) {
     fail("kernel ops must include load -> matmul -> store pattern");
   }
+}
+
+static bool isElementwiseKernel(const KernelIR &kernel) {
+  bool has_elementwise = false;
+  for (const auto &op : kernel.ops) {
+    if (std::holds_alternative<MatMulOp>(op)) return false;
+    if (std::holds_alternative<ElementwiseOp>(op)) has_elementwise = true;
+  }
+  return has_elementwise;
+}
+
+static bool isUnaryOp(ElementwiseKind kind) {
+  switch (kind) {
+    case ElementwiseKind::kExp:
+    case ElementwiseKind::kLog:
+    case ElementwiseKind::kSqrt:
+    case ElementwiseKind::kTanh:
+    case ElementwiseKind::kSigmoid:
+    case ElementwiseKind::kGELU:
+    case ElementwiseKind::kReLU:
+    case ElementwiseKind::kNeg:
+    case ElementwiseKind::kAbs:
+    case ElementwiseKind::kSoftmax:
+      return true;
+    default:
+      return false;
+  }
+}
+
+void validateElementwiseKernel(const KernelIR &kernel,
+                               const std::vector<RuntimeTensorView> &tensors) {
+  const ElementwiseOp *elem_op = nullptr;
+  for (const auto &op : kernel.ops) {
+    if (auto *e = std::get_if<ElementwiseOp>(&op)) {
+      elem_op = e;
+      break;
+    }
+  }
+  if (!elem_op) fail("elementwise kernel has no elementwise op");
+
+  const bool unary = isUnaryOp(elem_op->kind);
+  const std::size_t expected = unary ? 2 : 3;
+  if (tensors.size() < expected) {
+    fail("elementwise kernel requires " + std::to_string(expected) +
+         " tensors, got " + std::to_string(tensors.size()));
+  }
+
+  for (std::size_t i = 0; i < expected; ++i) {
+    const auto &tensor = tensors[i];
+    if (tensor.data == nullptr) fail("tensor '" + tensor.symbol + "' has null data");
+    if (!tensor.c_contiguous) fail("tensor '" + tensor.symbol + "' must be C-contiguous");
+    if (tensor.shape.size() != 2) fail("tensor '" + tensor.symbol + "' must be rank-2");
+  }
+
+  const auto &in0 = tensors[0];
+  const auto &out = tensors[expected - 1];
+  if (in0.shape[0] != out.shape[0] || in0.shape[1] != out.shape[1]) {
+    fail("input/output shape mismatch for elementwise op");
+  }
+  if (!unary) {
+    const auto &in1 = tensors[1];
+    if (in0.shape[0] != in1.shape[0] || in0.shape[1] != in1.shape[1]) {
+      fail("binary elementwise inputs must have matching shapes");
+    }
+  }
+}
+
+mlir::Value emitElementwiseOp(mlir::OpBuilder &builder, mlir::Location loc,
+                              ElementwiseKind kind, mlir::Value lhsVal,
+                              mlir::Value rhsVal, mlir::Type f32) {
+  using namespace mlir;
+  switch (kind) {
+    case ElementwiseKind::kExp:
+      return builder.create<math::ExpOp>(loc, lhsVal);
+    case ElementwiseKind::kLog:
+      return builder.create<math::LogOp>(loc, lhsVal);
+    case ElementwiseKind::kSqrt:
+      return builder.create<math::SqrtOp>(loc, lhsVal);
+    case ElementwiseKind::kTanh:
+      return builder.create<math::TanhOp>(loc, lhsVal);
+    case ElementwiseKind::kAbs:
+      return builder.create<math::AbsFOp>(loc, lhsVal);
+    case ElementwiseKind::kNeg:
+      return builder.create<arith::NegFOp>(loc, lhsVal);
+    case ElementwiseKind::kReLU: {
+      auto zero =
+          builder.create<arith::ConstantOp>(loc, builder.getFloatAttr(f32, 0.0));
+      return builder.create<arith::MaximumFOp>(loc, lhsVal, zero);
+    }
+    case ElementwiseKind::kSigmoid: {
+      auto neg = builder.create<arith::NegFOp>(loc, lhsVal);
+      auto exp_neg = builder.create<math::ExpOp>(loc, neg);
+      auto one =
+          builder.create<arith::ConstantOp>(loc, builder.getFloatAttr(f32, 1.0));
+      auto denom = builder.create<arith::AddFOp>(loc, one, exp_neg);
+      return builder.create<arith::DivFOp>(loc, one, denom);
+    }
+    case ElementwiseKind::kGELU: {
+      auto half =
+          builder.create<arith::ConstantOp>(loc, builder.getFloatAttr(f32, 0.5));
+      auto coeff = builder.create<arith::ConstantOp>(
+          loc, builder.getFloatAttr(f32, 0.044715));
+      auto sqrt2pi = builder.create<arith::ConstantOp>(
+          loc, builder.getFloatAttr(f32, 0.7978845608));
+      auto one =
+          builder.create<arith::ConstantOp>(loc, builder.getFloatAttr(f32, 1.0));
+      auto x2 = builder.create<arith::MulFOp>(loc, lhsVal, lhsVal);
+      auto x3 = builder.create<arith::MulFOp>(loc, x2, lhsVal);
+      auto cx3 = builder.create<arith::MulFOp>(loc, coeff, x3);
+      auto inner = builder.create<arith::AddFOp>(loc, lhsVal, cx3);
+      auto scaled = builder.create<arith::MulFOp>(loc, sqrt2pi, inner);
+      auto tanh_val = builder.create<math::TanhOp>(loc, scaled);
+      auto one_plus = builder.create<arith::AddFOp>(loc, one, tanh_val);
+      auto half_x = builder.create<arith::MulFOp>(loc, half, lhsVal);
+      return builder.create<arith::MulFOp>(loc, half_x, one_plus);
+    }
+    case ElementwiseKind::kAdd:
+      return builder.create<arith::AddFOp>(loc, lhsVal, rhsVal);
+    case ElementwiseKind::kSub:
+      return builder.create<arith::SubFOp>(loc, lhsVal, rhsVal);
+    case ElementwiseKind::kMul:
+      return builder.create<arith::MulFOp>(loc, lhsVal, rhsVal);
+    case ElementwiseKind::kDiv:
+      return builder.create<arith::DivFOp>(loc, lhsVal, rhsVal);
+    case ElementwiseKind::kMin:
+      return builder.create<arith::MinimumFOp>(loc, lhsVal, rhsVal);
+    case ElementwiseKind::kMax:
+      return builder.create<arith::MaximumFOp>(loc, lhsVal, rhsVal);
+    case ElementwiseKind::kSoftmax:
+      fail("softmax must not be dispatched through emitElementwiseOp");
+  }
+  fail("unknown elementwise kind");
+}
+
+mlir::OwningOpRef<mlir::ModuleOp> buildElementwiseModule(
+    const KernelIR &kernel, const std::vector<RuntimeTensorView> &tensors,
+    const RequestedTargetProfile &target_profile, mlir::MLIRContext &context) {
+  const ElementwiseOp *elem_op = nullptr;
+  for (const auto &op : kernel.ops) {
+    if (auto *e = std::get_if<ElementwiseOp>(&op)) {
+      elem_op = e;
+      break;
+    }
+  }
+  if (!elem_op) {
+    fail("elementwise kernel has no elementwise op");
+  }
+
+  const bool unary = isUnaryOp(elem_op->kind);
+  const auto &input0 = tensors[0];
+  const auto &output = tensors[unary ? 1 : 2];
+  const std::int64_t M = input0.shape[0];
+  const std::int64_t N = input0.shape[1];
+  const std::int64_t total = M * N;
+  constexpr std::int64_t block_size = 256;
+  const std::int64_t grid_size = (total + block_size - 1) / block_size;
+
+  mlir::OpBuilder builder(&context);
+  auto module = mlir::ModuleOp::create(builder.getUnknownLoc());
+  builder.setInsertionPointToStart(&module->getRegion(0).front());
+  auto loc = builder.getUnknownLoc();
+
+  auto in_elem = getElementType(input0.dtype, builder);
+  auto out_elem = getElementType(output.dtype, builder);
+  auto in0_type = mlir::MemRefType::get({M, N}, in_elem);
+  auto out_type = mlir::MemRefType::get({M, N}, out_elem);
+
+  llvm::SmallVector<mlir::Type> arg_types;
+  arg_types.push_back(in0_type);
+  if (!unary) {
+    auto in1_elem = getElementType(tensors[1].dtype, builder);
+    arg_types.push_back(
+        mlir::MemRefType::get({tensors[1].shape[0], tensors[1].shape[1]}, in1_elem));
+  }
+  arg_types.push_back(out_type);
+
+  const std::string entry_name =
+      kernel.kernel_name.empty() ? "matcore_kernel" : kernel.kernel_name;
+  auto func = builder.create<mlir::func::FuncOp>(
+      loc, entry_name, builder.getFunctionType(arg_types, {}));
+  func->setAttr("llvm.emit_c_interface", builder.getUnitAttr());
+  auto *entry = func.addEntryBlock();
+  builder.setInsertionPointToStart(entry);
+
+  auto c_total = builder.create<mlir::arith::ConstantIndexOp>(loc, total);
+  auto c_grid = builder.create<mlir::arith::ConstantIndexOp>(loc, grid_size);
+  auto c_block = builder.create<mlir::arith::ConstantIndexOp>(loc, block_size);
+  auto c_one = builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
+  auto c_N = builder.create<mlir::arith::ConstantIndexOp>(loc, N);
+
+  auto launch = builder.create<mlir::gpu::LaunchOp>(loc, c_grid, c_one, c_one, c_block,
+                                                     c_one, c_one);
+  builder.setInsertionPointToStart(&launch.getBody().front());
+
+  auto tid = launch.getThreadIds().x;
+  auto bid = launch.getBlockIds().x;
+  auto block_offset = builder.create<mlir::arith::MulIOp>(loc, bid, c_block);
+  auto global_id = builder.create<mlir::arith::AddIOp>(loc, block_offset, tid);
+  auto stride = builder.create<mlir::arith::MulIOp>(loc, c_grid, c_block);
+  auto loop = builder.create<mlir::scf::ForOp>(loc, global_id, c_total, stride);
+  builder.setInsertionPointToStart(loop.getBody());
+  auto idx = loop.getInductionVar();
+
+  auto row = builder.create<mlir::arith::DivUIOp>(loc, idx, c_N);
+  auto col = builder.create<mlir::arith::RemUIOp>(loc, idx, c_N);
+  auto val = builder.create<mlir::memref::LoadOp>(loc, entry->getArgument(0),
+                                                  mlir::ValueRange{row, col});
+
+  auto f32 = builder.getF32Type();
+  mlir::Value compute_lhs = val;
+  if (in_elem != f32) {
+    if (in_elem.isInteger(8) || in_elem.isInteger(32)) {
+      compute_lhs = builder.create<mlir::arith::SIToFPOp>(loc, f32, val);
+    } else {
+      compute_lhs = builder.create<mlir::arith::ExtFOp>(loc, f32, val);
+    }
+  }
+
+  mlir::Value compute_rhs = compute_lhs;
+  if (!unary) {
+    auto val2 = builder.create<mlir::memref::LoadOp>(loc, entry->getArgument(1),
+                                                     mlir::ValueRange{row, col});
+    compute_rhs = val2;
+    auto in1_elem = getElementType(tensors[1].dtype, builder);
+    if (in1_elem != f32) {
+      if (in1_elem.isInteger(8) || in1_elem.isInteger(32)) {
+        compute_rhs = builder.create<mlir::arith::SIToFPOp>(loc, f32, val2);
+      } else {
+        compute_rhs = builder.create<mlir::arith::ExtFOp>(loc, f32, val2);
+      }
+    }
+  }
+
+  mlir::Value result =
+      emitElementwiseOp(builder, loc, elem_op->kind, compute_lhs, compute_rhs, f32);
+  mlir::Value store_val = result;
+  if (out_elem != f32) {
+    if (out_elem.isInteger(8) || out_elem.isInteger(32)) {
+      store_val = builder.create<mlir::arith::FPToSIOp>(loc, out_elem, result);
+    } else {
+      store_val = builder.create<mlir::arith::TruncFOp>(loc, out_elem, result);
+    }
+  }
+
+  const int out_idx = unary ? 1 : 2;
+  builder.create<mlir::memref::StoreOp>(loc, store_val, entry->getArgument(out_idx),
+                                        mlir::ValueRange{row, col});
+  // ForOp without iter_args auto-creates an empty scf.yield — do NOT add another
+
+  builder.setInsertionPointAfter(loop);
+  builder.create<mlir::gpu::TerminatorOp>(loc);
+  builder.setInsertionPointAfter(launch);
+  builder.create<mlir::func::ReturnOp>(loc);
+
+  module->setAttr("matcore.kernel_type",
+                  mlir::StringAttr::get(&context, "elementwise"));
+  module->setAttr("matcore.requested_target",
+                  mlir::StringAttr::get(&context, target_profile.canonical));
+  return module;
+}
+
+mlir::OwningOpRef<mlir::ModuleOp> buildSoftmaxModule(
+    const KernelIR &kernel, const std::vector<RuntimeTensorView> &tensors,
+    const RequestedTargetProfile &target_profile, mlir::MLIRContext &context) {
+  const auto &input0 = tensors[0];
+  const auto &output = tensors[1];
+  const std::int64_t M = input0.shape[0];
+  const std::int64_t N = input0.shape[1];
+  if (N < 1) fail("softmax requires N >= 1 (row width must be positive)");
+  if (input0.dtype == TensorDType::kInt8 || input0.dtype == TensorDType::kInt32)
+    fail("softmax requires floating-point input (got integer dtype)");
+  constexpr std::int64_t block_size = 256;
+
+  mlir::OpBuilder builder(&context);
+  auto module = mlir::ModuleOp::create(builder.getUnknownLoc());
+  builder.setInsertionPointToStart(&module->getRegion(0).front());
+  auto loc = builder.getUnknownLoc();
+
+  auto in_elem = getElementType(input0.dtype, builder);
+  auto out_elem = getElementType(output.dtype, builder);
+  auto in_type = mlir::MemRefType::get({M, N}, in_elem);
+  auto out_type = mlir::MemRefType::get({M, N}, out_elem);
+
+  const std::string entry_name =
+      kernel.kernel_name.empty() ? "matcore_kernel" : kernel.kernel_name;
+  auto func = builder.create<mlir::func::FuncOp>(
+      loc, entry_name, builder.getFunctionType({in_type, out_type}, {}));
+  func->setAttr("llvm.emit_c_interface", builder.getUnitAttr());
+  auto *entry = func.addEntryBlock();
+  builder.setInsertionPointToStart(entry);
+
+  auto f32 = builder.getF32Type();
+  auto c_M = builder.create<mlir::arith::ConstantIndexOp>(loc, M);
+  auto c_one = builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
+  auto c_block = builder.create<mlir::arith::ConstantIndexOp>(loc, block_size);
+
+  auto launch =
+      builder.create<mlir::gpu::LaunchOp>(loc, c_M, c_one, c_one, c_block, c_one, c_one);
+  builder.setInsertionPointToStart(&launch.getBody().front());
+
+  auto row = launch.getBlockIds().x;
+  auto tid = launch.getThreadIds().x;
+  auto smem_as = mlir::gpu::AddressSpaceAttr::get(
+      &context, mlir::gpu::AddressSpace::Workgroup);
+  auto smem_type = mlir::MemRefType::get({block_size}, f32,
+                                         mlir::MemRefLayoutAttrInterface(), smem_as);
+  auto smem = launch.addWorkgroupAttribution(smem_type, loc);
+
+  auto c_N = builder.create<mlir::arith::ConstantIndexOp>(loc, N);
+  auto c_block_inner = builder.create<mlir::arith::ConstantIndexOp>(loc, block_size);
+  auto c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+  auto neg_inf = builder.create<mlir::arith::ConstantOp>(
+      loc, builder.getFloatAttr(f32, -3.402823e+38));
+  auto zero_f32 =
+      builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(f32, 0.0));
+
+  auto max_loop = builder.create<mlir::scf::ForOp>(
+      loc, tid, c_N, c_block_inner, mlir::ValueRange{neg_inf.getResult()});
+  {
+    mlir::OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(max_loop.getBody());
+    auto j = max_loop.getInductionVar();
+    auto acc = max_loop.getRegionIterArgs()[0];
+    auto val = builder.create<mlir::memref::LoadOp>(loc, entry->getArgument(0),
+                                                    mlir::ValueRange{row, j});
+    mlir::Value val_f32 = val;
+    if (in_elem != f32) {
+      val_f32 = builder.create<mlir::arith::ExtFOp>(loc, f32, val);
+    }
+    auto new_max = builder.create<mlir::arith::MaximumFOp>(loc, acc, val_f32);
+    builder.create<mlir::scf::YieldOp>(loc, mlir::ValueRange{new_max.getResult()});
+  }
+  auto local_max = max_loop.getResult(0);
+  builder.create<mlir::memref::StoreOp>(loc, local_max, smem, mlir::ValueRange{tid});
+  builder.create<mlir::gpu::BarrierOp>(loc);
+
+  for (std::int64_t s = block_size / 2; s >= 1; s >>= 1) {
+    auto c_s = builder.create<mlir::arith::ConstantIndexOp>(loc, s);
+    auto cmp = builder.create<mlir::arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::ult,
+                                                   tid, c_s);
+    auto if_op = builder.create<mlir::scf::IfOp>(loc, cmp, false);
+    {
+      mlir::OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPointToStart(&if_op.getThenRegion().front());
+      auto v1 = builder.create<mlir::memref::LoadOp>(loc, smem, mlir::ValueRange{tid});
+      auto offset = builder.create<mlir::arith::AddIOp>(loc, tid, c_s);
+      auto v2 =
+          builder.create<mlir::memref::LoadOp>(loc, smem, mlir::ValueRange{offset});
+      auto max_v = builder.create<mlir::arith::MaximumFOp>(loc, v1, v2);
+      builder.create<mlir::memref::StoreOp>(loc, max_v.getResult(), smem,
+                                            mlir::ValueRange{tid});
+    }
+    builder.create<mlir::gpu::BarrierOp>(loc);
+  }
+
+  auto row_max = builder.create<mlir::memref::LoadOp>(loc, smem, mlir::ValueRange{c0});
+  builder.create<mlir::gpu::BarrierOp>(loc);
+
+  auto sum_loop = builder.create<mlir::scf::ForOp>(
+      loc, tid, c_N, c_block_inner, mlir::ValueRange{zero_f32.getResult()});
+  {
+    mlir::OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(sum_loop.getBody());
+    auto j = sum_loop.getInductionVar();
+    auto acc = sum_loop.getRegionIterArgs()[0];
+    auto val = builder.create<mlir::memref::LoadOp>(loc, entry->getArgument(0),
+                                                    mlir::ValueRange{row, j});
+    mlir::Value val_f32 = val;
+    if (in_elem != f32) {
+      val_f32 = builder.create<mlir::arith::ExtFOp>(loc, f32, val);
+    }
+    auto shifted = builder.create<mlir::arith::SubFOp>(loc, val_f32, row_max);
+    auto exp_val = builder.create<mlir::math::ExpOp>(loc, shifted);
+    auto new_sum = builder.create<mlir::arith::AddFOp>(loc, acc, exp_val);
+    builder.create<mlir::scf::YieldOp>(loc, mlir::ValueRange{new_sum.getResult()});
+  }
+  auto local_sum = sum_loop.getResult(0);
+  builder.create<mlir::memref::StoreOp>(loc, local_sum, smem, mlir::ValueRange{tid});
+  builder.create<mlir::gpu::BarrierOp>(loc);
+
+  for (std::int64_t s = block_size / 2; s >= 1; s >>= 1) {
+    auto c_s = builder.create<mlir::arith::ConstantIndexOp>(loc, s);
+    auto cmp = builder.create<mlir::arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::ult,
+                                                   tid, c_s);
+    auto if_op = builder.create<mlir::scf::IfOp>(loc, cmp, false);
+    {
+      mlir::OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPointToStart(&if_op.getThenRegion().front());
+      auto v1 = builder.create<mlir::memref::LoadOp>(loc, smem, mlir::ValueRange{tid});
+      auto offset = builder.create<mlir::arith::AddIOp>(loc, tid, c_s);
+      auto v2 =
+          builder.create<mlir::memref::LoadOp>(loc, smem, mlir::ValueRange{offset});
+      auto sum_v = builder.create<mlir::arith::AddFOp>(loc, v1, v2);
+      builder.create<mlir::memref::StoreOp>(loc, sum_v.getResult(), smem,
+                                            mlir::ValueRange{tid});
+    }
+    builder.create<mlir::gpu::BarrierOp>(loc);
+  }
+
+  auto row_sum = builder.create<mlir::memref::LoadOp>(loc, smem, mlir::ValueRange{c0});
+  builder.create<mlir::gpu::BarrierOp>(loc);
+
+  auto norm_loop = builder.create<mlir::scf::ForOp>(loc, tid, c_N, c_block_inner);
+  {
+    mlir::OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(norm_loop.getBody());
+    auto j = norm_loop.getInductionVar();
+    auto val = builder.create<mlir::memref::LoadOp>(loc, entry->getArgument(0),
+                                                    mlir::ValueRange{row, j});
+    mlir::Value val_f32 = val;
+    if (in_elem != f32) {
+      val_f32 = builder.create<mlir::arith::ExtFOp>(loc, f32, val);
+    }
+    auto shifted = builder.create<mlir::arith::SubFOp>(loc, val_f32, row_max);
+    auto exp_val = builder.create<mlir::math::ExpOp>(loc, shifted);
+    auto normed = builder.create<mlir::arith::DivFOp>(loc, exp_val, row_sum);
+    mlir::Value store_val = normed;
+    if (out_elem != f32) {
+      store_val = builder.create<mlir::arith::TruncFOp>(loc, out_elem, normed);
+    }
+    builder.create<mlir::memref::StoreOp>(loc, store_val, entry->getArgument(1),
+                                          mlir::ValueRange{row, j});
+  }
+
+  builder.create<mlir::gpu::TerminatorOp>(loc);
+  builder.setInsertionPointAfter(launch);
+  builder.create<mlir::func::ReturnOp>(loc);
+
+  module->setAttr("matcore.kernel_type",
+                  mlir::StringAttr::get(&context, "elementwise"));
+  module->setAttr("matcore.requested_target",
+                  mlir::StringAttr::get(&context, target_profile.canonical));
+  return module;
 }
 
 MatmulShape extractMatmulShape(const std::vector<RuntimeTensorView> &tensors) {
@@ -525,11 +961,193 @@ LoweredModule MlirEngine::BuildAndLower(
                       mlir::bufferization::BufferizationDialect,
                       mlir::cf::ControlFlowDialect, mlir::func::FuncDialect,
                       mlir::gpu::GPUDialect, mlir::linalg::LinalgDialect,
+                      mlir::math::MathDialect,
                       mlir::memref::MemRefDialect, mlir::nvgpu::NVGPUDialect,
                       mlir::NVVM::NVVMDialect, mlir::ROCDL::ROCDLDialect,
                       mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
                       mlir::vector::VectorDialect,
                       mlir::x86vector::X86VectorDialect, mlir::LLVM::LLVMDialect>();
+
+  if (kernel.version == KernelIRVersion::kGraphV2 && kernel.graph.has_value()) {
+    const FusionAnalysisResult analysis =
+        FusionAnalyzer::Analyze(*kernel.graph, target_profile);
+    if (analysis.accepted_plans.empty()) {
+      fail("graph_v2 kernel produced no accepted fusion plan");
+    }
+
+    const FusedKernelPlan &fusion_plan = analysis.accepted_plans.front();
+    mlir::OwningOpRef<mlir::ModuleOp> module =
+        FusionMlirEmitter::Emit(kernel, fusion_plan, tensors, target_profile,
+                                context);
+    module->getOperation()->setAttr(
+        "matcore.requested_target",
+        mlir::StringAttr::get(&context, target_profile.canonical));
+    if (normalizeTarget(target_profile.kind) == TargetKind::kNvidiaDGPU) {
+      const std::string nvidia_chip = requestedNvidiaChip(target_profile);
+      module->getOperation()->setAttr("matcore.nvidia_chip",
+                                      mlir::StringAttr::get(&context, nvidia_chip));
+    }
+
+    {
+      mlir::func::FuncOp func_op;
+      module->walk([&](mlir::func::FuncOp f) { func_op = f; });
+      if (func_op) {
+        for (std::size_t i = 0; i < tensors.size() && i < func_op.getNumArguments();
+             ++i) {
+          if (tensors[i].is_device_resident) {
+            func_op.setArgAttr(static_cast<unsigned>(i), "matcore.device_resident",
+                               mlir::UnitAttr::get(&context));
+          }
+        }
+      }
+    }
+
+    const LoweringPlan plan = selectLoweringPlan(target_profile.kind);
+    const std::string nvidia_chip = requestedNvidiaChip(target_profile);
+    const std::string amd_chip = requestedAmdChip(target_profile);
+    matcore::runLoweringPipeline(*module, plan, MatmulLoweringSignature{},
+                                 nvidia_chip, amd_chip, obs);
+
+    const int actual_reg_count = [&]() {
+      if (auto actual_attr =
+              module->getOperation()->getAttrOfType<mlir::IntegerAttr>(
+                  "matcore.actual_reg_count")) {
+        return static_cast<int>(actual_attr.getInt());
+      }
+      if (auto requested_attr =
+              module->getOperation()->getAttrOfType<mlir::IntegerAttr>(
+                  "matcore.max_regs")) {
+        return static_cast<int>(requested_attr.getInt());
+      }
+      return 0;
+    }();
+    const bool reg_budget_exceeded = [&]() {
+      if (auto exceeded_attr =
+              module->getOperation()->getAttrOfType<mlir::BoolAttr>(
+                  "matcore.reg_budget_exceeded")) {
+        return exceeded_attr.getValue();
+      }
+      return actual_reg_count > FusionAnalyzer::kRegHardCap;
+    }();
+
+    LoweredModule lowered;
+    lowered.module = std::move(module);
+    const std::string base_name =
+        kernel.kernel_name.empty() ? "matcore_kernel" : kernel.kernel_name;
+    lowered.entry_point = "fused_" + base_name;
+    lowered.target_profile = target_profile;
+    lowered.execution_requirements = BuildExecutionRequirements(target_profile);
+    lowered.route_description = "NVIDIA fused GPU kernel";
+    lowered.executable = true;
+    lowered.tensor_count = tensors.size();
+    lowered.needs_output_zeroing = false;
+    lowered.arguments.clear();
+    lowered.arguments.reserve(tensors.size());
+    for (std::size_t i = 0; i < tensors.size(); ++i) {
+      const bool is_output = (i + 1 == tensors.size());
+      lowered.arguments.push_back(
+          {tensors[i].symbol.empty() ? ("arg" + std::to_string(i)) : tensors[i].symbol,
+           tensors[i].dtype, 2, !is_output, is_output});
+    }
+    if (!tensors.empty()) {
+      lowered.out_tensor_index = tensors.size() - 1;
+      lowered.output_tensor_indices = {lowered.out_tensor_index};
+    }
+    lowered.actual_reg_count = actual_reg_count;
+    lowered.reg_budget_exceeded = reg_budget_exceeded;
+    return lowered;
+  }
+
+  if (isElementwiseKernel(kernel)) {
+    validateElementwiseKernel(kernel, tensors);
+
+    const ElementwiseOp *elem_op = nullptr;
+    for (const auto &op : kernel.ops) {
+      if (auto *ewOp = std::get_if<ElementwiseOp>(&op)) {
+        elem_op = ewOp;
+        break;
+      }
+    }
+    if (!elem_op) {
+      fail("elementwise kernel has no elementwise op");
+    }
+    const bool unary = isUnaryOp(elem_op->kind);
+
+    mlir::OwningOpRef<mlir::ModuleOp> module;
+    if (elem_op->kind == ElementwiseKind::kSoftmax) {
+      module = buildSoftmaxModule(kernel, tensors, target_profile, context);
+    } else {
+      module = buildElementwiseModule(kernel, tensors, target_profile, context);
+    }
+    module->getOperation()->setAttr(
+        "matcore.requested_target",
+        mlir::StringAttr::get(&context, target_profile.canonical));
+    if (normalizeTarget(target_profile.kind) == TargetKind::kNvidiaDGPU) {
+      const std::string nvidia_chip = requestedNvidiaChip(target_profile);
+      module->getOperation()->setAttr("matcore.nvidia_chip",
+                                      mlir::StringAttr::get(&context, nvidia_chip));
+    }
+
+    {
+      mlir::func::FuncOp func_op;
+      module->walk([&](mlir::func::FuncOp f) { func_op = f; });
+      if (func_op) {
+        const std::size_t arg_count = unary ? 2 : 3;
+        for (std::size_t i = 0;
+             i < arg_count && i < tensors.size() && i < func_op.getNumArguments();
+             ++i) {
+          if (tensors[i].is_device_resident) {
+            func_op.setArgAttr(static_cast<unsigned>(i), "matcore.device_resident",
+                               mlir::UnitAttr::get(&context));
+          }
+        }
+      }
+    }
+
+    const LoweringPlan plan = selectLoweringPlan(target_profile.kind);
+    const std::string nvidia_chip = requestedNvidiaChip(target_profile);
+    const std::string amd_chip = requestedAmdChip(target_profile);
+    matcore::runLoweringPipeline(*module, plan, MatmulLoweringSignature{},
+                                 nvidia_chip, amd_chip, obs);
+
+    LoweredModule lowered;
+    lowered.module = std::move(module);
+    lowered.entry_point =
+        kernel.kernel_name.empty() ? "matcore_kernel" : kernel.kernel_name;
+    lowered.target_profile = target_profile;
+    lowered.execution_requirements = BuildExecutionRequirements(target_profile);
+    lowered.route_description = "NVIDIA elementwise GPU kernel";
+    lowered.executable = true;
+    lowered.tensor_count = unary ? 2 : 3;
+    lowered.needs_output_zeroing = false;
+    if (elem_op->kind == ElementwiseKind::kSoftmax) {
+      const TensorDType in_dtype = tensors[0].dtype;
+      const TensorDType out_dtype = tensors[1].dtype;
+      lowered.arguments = {
+          {"x", in_dtype, 2, true, false},
+          {"out", out_dtype, 2, false, true},
+      };
+      lowered.output_tensor_indices = {1};
+    } else if (unary) {
+      const TensorDType in_dtype = tensors[0].dtype;
+      const TensorDType out_dtype = tensors[1].dtype;
+      lowered.arguments = {
+          {"x", in_dtype, 2, true, false},
+          {"out", out_dtype, 2, false, true},
+      };
+      lowered.output_tensor_indices = {1};
+    } else {
+      const TensorDType in_dtype = tensors[0].dtype;
+      const TensorDType out_dtype = tensors[2].dtype;
+      lowered.arguments = {
+          {"a", in_dtype, 2, true, false},
+          {"b", in_dtype, 2, true, false},
+          {"out", out_dtype, 2, false, true},
+      };
+      lowered.output_tensor_indices = {2};
+    }
+    return lowered;
+  }
 
   validateKernel(kernel, target_profile, tensors);
   const LoweringPlan plan = selectLoweringPlan(target_profile.kind);
@@ -585,6 +1203,15 @@ LoweredModule MlirEngine::BuildAndLower(
   lowered.execution_requirements = BuildExecutionRequirements(target_profile);
   lowered.route_description = plan.route_description;
   lowered.executable = plan.executable;
+  const TensorDType lhs_dtype = tensors[0].dtype;
+  const TensorDType rhs_dtype = tensors[1].dtype;
+  const TensorDType out_dtype = tensors[2].dtype;
+  lowered.arguments = {
+      {"lhs", lhs_dtype, 2, true, false},
+      {"rhs", rhs_dtype, 2, true, false},
+      {"out", out_dtype, 2, false, true},
+  };
+  lowered.output_tensor_indices = {2};
   return lowered;
 }
 

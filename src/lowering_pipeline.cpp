@@ -5,15 +5,19 @@
 #include "gpu_data_staging.h"
 #include "matcore/cpu_lowering.h"
 #include "matcore/diagnostics.h"
+#include "matcore/fusion_analysis.h"
 #include "matcore/gpu_mapping.h"
 #include "matcore/gpu_nvvm_lowering.h"
 #include "matcore/gpu_tiling.h"
 #include "matcore/observability.h"
 #include "matcore/target_registry.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -91,6 +95,110 @@ struct LowerResidualVectorOpsPass
 
 [[noreturn]] void fail(const std::string &message) {
   throw std::runtime_error("MatCore lowering pipeline: " + message);
+}
+
+std::optional<int> getFusionRegisterCap(mlir::ModuleOp module) {
+  auto max_regs_attr = module->getAttrOfType<mlir::IntegerAttr>("matcore.max_regs");
+  if (!max_regs_attr) {
+    return std::nullopt;
+  }
+  const int requested = static_cast<int>(max_regs_attr.getInt());
+  if (requested <= 0) {
+    return std::nullopt;
+  }
+  return std::min(requested, FusionAnalyzer::kRegHardCap);
+}
+
+std::string buildMaxRegisterCommandOptions(std::optional<int> max_regs) {
+  if (!max_regs) {
+    return {};
+  }
+  return "--maxrregcount=" + std::to_string(*max_regs);
+}
+
+std::optional<int> parsePtxMaxRegisterCount(llvm::StringRef ptx) {
+  constexpr llvm::StringLiteral marker = ".maxnreg";
+  size_t offset = ptx.find(marker);
+  if (offset == llvm::StringRef::npos) {
+    return std::nullopt;
+  }
+
+  offset += marker.size();
+  while (offset < ptx.size() &&
+         std::isspace(static_cast<unsigned char>(ptx[offset]))) {
+    ++offset;
+  }
+
+  size_t start = offset;
+  while (offset < ptx.size() &&
+         std::isdigit(static_cast<unsigned char>(ptx[offset]))) {
+    ++offset;
+  }
+  if (start == offset) {
+    return std::nullopt;
+  }
+
+  return std::stoi(ptx.substr(start, offset - start).str());
+}
+
+std::optional<std::string> extractPtxAssembly(mlir::ModuleOp module) {
+  std::optional<std::string> ptx;
+  module.walk([&](mlir::gpu::BinaryOp binary_op) {
+    for (mlir::Attribute object_attr : binary_op.getObjects()) {
+      auto object = llvm::dyn_cast<mlir::gpu::ObjectAttr>(object_attr);
+      if (!object ||
+          object.getFormat() != mlir::gpu::CompilationTarget::Assembly) {
+        continue;
+      }
+      ptx = object.getObject().getValue().str();
+      return;
+    }
+  });
+  return ptx;
+}
+
+void annotateFusionRegisterUsageFromPtx(mlir::ModuleOp module,
+                                        llvm::StringRef cmd_options,
+                                        ObservabilityContext *obs) {
+  auto cloned = mlir::OwningOpRef<mlir::ModuleOp>(
+      llvm::cast<mlir::ModuleOp>(module->clone()));
+  auto *ctx = module.getContext();
+  mlir::PassManager pm(ctx);
+  if (obs) {
+    attachObservability(pm, obs, "fusion-nvvm-ptx-probe");
+  }
+
+  std::string diagnostics;
+  mlir::ScopedDiagnosticHandler diag_handler(ctx, [&](mlir::Diagnostic &diag) {
+    llvm::raw_string_ostream stream(diagnostics);
+    diag.print(stream);
+    stream << '\n';
+    stream.flush();
+    return mlir::success();
+  });
+
+  mlir::GpuModuleToBinaryPassOptions ptx_opts;
+  ptx_opts.compilationTarget = "assembly";
+  ptx_opts.cmdOptions = cmd_options.str();
+  pm.addPass(mlir::createGpuModuleToBinaryPass(ptx_opts));
+  if (mlir::failed(pm.run(*cloned))) {
+    (void)diagnostics;
+    return;
+  }
+
+  const auto ptx = extractPtxAssembly(*cloned);
+  const auto actual_reg_count =
+      ptx ? parsePtxMaxRegisterCount(*ptx) : std::nullopt;
+  if (!actual_reg_count) {
+    return;
+  }
+
+  mlir::Builder builder(ctx);
+  module->setAttr("matcore.actual_reg_count",
+                  builder.getI32IntegerAttr(*actual_reg_count));
+  module->setAttr(
+      "matcore.reg_budget_exceeded",
+      builder.getBoolAttr(*actual_reg_count > FusionAnalyzer::kRegHardCap));
 }
 
 static mlir::Value buildCeilDivIndex(mlir::OpBuilder &builder,
@@ -2540,11 +2648,279 @@ void configureLoweringPipeline(mlir::PassManager &pm, const LoweringPlan &plan,
   }
 }
 
+void runElementwiseLoweringPipeline(mlir::ModuleOp module,
+                                    const RequestedTargetProfile &target_profile,
+                                    llvm::StringRef nvidia_chip,
+                                    ObservabilityContext *obs) {
+  (void)target_profile;
+  auto *ctx = module.getContext();
+
+  auto run_stage = [&](const char *name, auto &&configure) {
+    mlir::PassManager pm(ctx);
+    if (obs) {
+      attachObservability(pm, obs, name);
+    }
+    configure(pm);
+    std::string diagnostics;
+    mlir::ScopedDiagnosticHandler diag_handler(ctx, [&](mlir::Diagnostic &diag) {
+      llvm::raw_string_ostream stream(diagnostics);
+      diag.print(stream);
+      stream << '\n';
+      stream.flush();
+      return mlir::success();
+    });
+    if (mlir::failed(pm.run(module))) {
+      fail(std::string("elementwise lowering stage '") + name +
+           "' failed: " + diagnostics);
+    }
+  };
+
+  std::string libdevice_path;
+  for (const auto &candidate : {
+           "/usr/local/cuda/nvvm/libdevice/libdevice.10.bc",
+           "/usr/local/cuda-13.2/nvvm/libdevice/libdevice.10.bc",
+           "/usr/lib/cuda/nvvm/libdevice/libdevice.10.bc",
+       }) {
+    if (std::filesystem::exists(candidate)) {
+      libdevice_path = candidate;
+      break;
+    }
+  }
+
+  // Phase 1: GPU data staging
+  run_stage("elem-gpu-data-staging", [&](mlir::PassManager &pm) {
+    pm.addNestedPass<mlir::func::FuncOp>(CreateGpuDataStagingPass());
+    pm.addPass(mlir::createCanonicalizerPass());
+    pm.addPass(mlir::createCSEPass());
+  });
+
+  // Phase 2: Kernel outlining
+  run_stage("elem-nvvm-outline", [&](mlir::PassManager &pm) {
+    pm.addPass(mlir::createGpuKernelOutliningPass());
+  });
+
+  // Phase 3: Host-side scalar lowering (func-scoped conversions only)
+  run_stage("elem-nvvm-host-scalar", [&](mlir::PassManager &pm) {
+    pm.addPass(mlir::createConvertSCFToCFPass());
+    pm.addPass(mlir::memref::createExpandStridedMetadataPass());
+    pm.addPass(mlir::createLowerAffinePass());
+    auto &func_pm = pm.nest<mlir::func::FuncOp>();
+    func_pm.addPass(mlir::createArithToLLVMConversionPass());
+    mlir::ConvertIndexToLLVMPassOptions idx_opts;
+    idx_opts.indexBitwidth = 64;
+    func_pm.addPass(mlir::createConvertIndexToLLVMPass(idx_opts));
+  });
+
+  // Phase 4: Attach NVVM target (with libdevice if available)
+  run_stage("elem-nvvm-attach-target", [&](mlir::PassManager &pm) {
+    mlir::GpuNVVMAttachTargetOptions target_opts;
+    target_opts.triple = "nvptx64-nvidia-cuda";
+    target_opts.chip = nvidia_chip.str();
+    target_opts.optLevel = 2;
+    std::vector<std::string> link_libs;
+    if (!libdevice_path.empty()) {
+      link_libs.push_back(libdevice_path);
+      target_opts.linkLibs = link_libs;
+    }
+    pm.addPass(mlir::createGpuNVVMAttachTarget(target_opts));
+  });
+
+  // Phase 5: GPU module internal lowering (includes math->NVVM patterns)
+  run_stage("elem-nvvm-gpu-module-lower", [&](mlir::PassManager &pm) {
+    auto &gpu_pm = pm.nest<mlir::gpu::GPUModuleOp>();
+    gpu_pm.addPass(mlir::createStripDebugInfoPass());
+    gpu_pm.addPass(mlir::createConvertSCFToCFPass());
+    mlir::ConvertGpuOpsToNVVMOpsOptions nvvm_conv_opts;
+    nvvm_conv_opts.indexBitwidth = 64;
+    nvvm_conv_opts.useBarePtrCallConv = false;
+    gpu_pm.addPass(mlir::createConvertGpuOpsToNVVMOps(nvvm_conv_opts));
+    gpu_pm.addPass(mlir::createCanonicalizerPass());
+    gpu_pm.addPass(mlir::createCSEPass());
+    gpu_pm.addPass(mlir::createReconcileUnrealizedCastsPass());
+  });
+
+  // Phase 6: GPU -> LLVM runtime calls
+  run_stage("elem-nvvm-gpu-to-llvm", [&](mlir::PassManager &pm) {
+    pm.addPass(mlir::createGpuToLLVMConversionPass());
+  });
+
+  // Phase 7: Host finalize
+  run_stage("elem-nvvm-host-finalize", [&](mlir::PassManager &pm) {
+    pm.addPass(mlir::createFinalizeMemRefToLLVMConversionPass());
+    pm.addPass(mlir::createConvertControlFlowToLLVMPass());
+    pm.addPass(mlir::createConvertFuncToLLVMPass());
+    pm.addPass(mlir::createCanonicalizerPass());
+    pm.addPass(mlir::createCSEPass());
+    pm.addPass(mlir::createReconcileUnrealizedCastsPass());
+  });
+
+  // Phase 8: Serialize gpu.binary
+  run_stage("elem-nvvm-binary", [&](mlir::PassManager &pm) {
+    mlir::GpuModuleToBinaryPassOptions bin_opts;
+    bin_opts.compilationTarget = "fatbin";
+    pm.addPass(mlir::createGpuModuleToBinaryPass(bin_opts));
+  });
+
+  // Phase 9: Cleanup
+  run_stage("elem-nvvm-cleanup", [&](mlir::PassManager &pm) {
+    pm.addPass(mlir::createCanonicalizerPass());
+    pm.addPass(mlir::createCSEPass());
+    pm.addPass(mlir::createReconcileUnrealizedCastsPass());
+  });
+}
+
+void runFusionLoweringPipeline(mlir::ModuleOp module,
+                               const RequestedTargetProfile &target_profile,
+                               llvm::StringRef nvidia_chip,
+                               ObservabilityContext *obs) {
+  auto kernel_type_attr =
+      module->getAttrOfType<mlir::StringAttr>("matcore.kernel_type");
+  if (!kernel_type_attr || !kernel_type_attr.getValue().starts_with("fused_")) {
+    fail("fusion lowering currently expects matcore.kernel_type to start with fused_");
+  }
+
+  auto *ctx = module.getContext();
+  auto run_stage = [&](const char *name, auto &&configure) {
+    mlir::PassManager pm(ctx);
+    if (obs) {
+      attachObservability(pm, obs, name);
+    }
+    configure(pm);
+    std::string diagnostics;
+    mlir::ScopedDiagnosticHandler diag_handler(ctx, [&](mlir::Diagnostic &diag) {
+      llvm::raw_string_ostream stream(diagnostics);
+      diag.print(stream);
+      stream << '\n';
+      stream.flush();
+      return mlir::success();
+    });
+    if (mlir::failed(pm.run(module))) {
+      fail(std::string("fusion lowering stage '") + name + "' failed: " +
+           diagnostics);
+    }
+  };
+
+  std::string libdevice_path;
+  for (const auto &candidate : {
+           "/usr/local/cuda/nvvm/libdevice/libdevice.10.bc",
+           "/usr/local/cuda-13.2/nvvm/libdevice/libdevice.10.bc",
+           "/usr/lib/cuda/nvvm/libdevice/libdevice.10.bc",
+       }) {
+    if (std::filesystem::exists(candidate)) {
+      libdevice_path = candidate;
+      break;
+    }
+  }
+
+  (void)target_profile;
+  const std::optional<int> max_regs = getFusionRegisterCap(module);
+  if (max_regs) {
+    mlir::Builder builder(ctx);
+    module->setAttr("matcore.max_regs", builder.getI32IntegerAttr(*max_regs));
+  }
+  const std::string nvvm_cmd_options = buildMaxRegisterCommandOptions(max_regs);
+  run_stage("fusion-gpu-data-staging", [&](mlir::PassManager &pm) {
+    pm.addNestedPass<mlir::func::FuncOp>(CreateGpuDataStagingPass());
+    pm.addPass(mlir::createCanonicalizerPass());
+    pm.addPass(mlir::createCSEPass());
+  });
+  run_stage("fusion-nvvm-outline", [&](mlir::PassManager &pm) {
+    pm.addPass(mlir::createGpuKernelOutliningPass());
+  });
+  run_stage("fusion-nvvm-host-scalar", [&](mlir::PassManager &pm) {
+    pm.addPass(mlir::createConvertSCFToCFPass());
+    pm.addPass(mlir::memref::createExpandStridedMetadataPass());
+    pm.addPass(mlir::createLowerAffinePass());
+    auto &func_pm = pm.nest<mlir::func::FuncOp>();
+    func_pm.addPass(mlir::createArithToLLVMConversionPass());
+    mlir::ConvertIndexToLLVMPassOptions idx_opts;
+    idx_opts.indexBitwidth = 64;
+    func_pm.addPass(mlir::createConvertIndexToLLVMPass(idx_opts));
+  });
+  run_stage("fusion-nvvm-attach-target", [&](mlir::PassManager &pm) {
+    mlir::GpuNVVMAttachTargetOptions target_opts;
+    target_opts.triple = "nvptx64-nvidia-cuda";
+    target_opts.chip = nvidia_chip.str();
+    target_opts.optLevel = 2;
+    std::vector<std::string> link_libs;
+    if (!libdevice_path.empty()) {
+      link_libs.push_back(libdevice_path);
+      target_opts.linkLibs = link_libs;
+    }
+    pm.addPass(mlir::createGpuNVVMAttachTarget(target_opts));
+  });
+  run_stage("fusion-nvvm-gpu-module-lower", [&](mlir::PassManager &pm) {
+    auto &gpu_pm = pm.nest<mlir::gpu::GPUModuleOp>();
+    gpu_pm.addPass(mlir::createStripDebugInfoPass());
+    gpu_pm.addPass(mlir::createConvertSCFToCFPass());
+    mlir::ConvertGpuOpsToNVVMOpsOptions nvvm_conv_opts;
+    nvvm_conv_opts.indexBitwidth = 64;
+    nvvm_conv_opts.useBarePtrCallConv = false;
+    gpu_pm.addPass(mlir::createConvertGpuOpsToNVVMOps(nvvm_conv_opts));
+    gpu_pm.addPass(mlir::createCanonicalizerPass());
+    gpu_pm.addPass(mlir::createCSEPass());
+    gpu_pm.addPass(mlir::createReconcileUnrealizedCastsPass());
+  });
+  run_stage("fusion-nvvm-gpu-to-llvm", [&](mlir::PassManager &pm) {
+    pm.addPass(mlir::createGpuToLLVMConversionPass());
+  });
+  run_stage("fusion-nvvm-host-finalize", [&](mlir::PassManager &pm) {
+    pm.addPass(mlir::createFinalizeMemRefToLLVMConversionPass());
+    pm.addPass(mlir::createConvertControlFlowToLLVMPass());
+    pm.addPass(mlir::createConvertFuncToLLVMPass());
+    pm.addPass(mlir::createCanonicalizerPass());
+    pm.addPass(mlir::createCSEPass());
+    pm.addPass(mlir::createReconcileUnrealizedCastsPass());
+  });
+  annotateFusionRegisterUsageFromPtx(module, nvvm_cmd_options, obs);
+  run_stage("fusion-nvvm-binary", [&](mlir::PassManager &pm) {
+    mlir::GpuModuleToBinaryPassOptions bin_opts;
+    bin_opts.compilationTarget = "fatbin";
+    bin_opts.cmdOptions = nvvm_cmd_options;
+    pm.addPass(mlir::createGpuModuleToBinaryPass(bin_opts));
+  });
+  run_stage("fusion-nvvm-cleanup", [&](mlir::PassManager &pm) {
+    pm.addPass(mlir::createCanonicalizerPass());
+    pm.addPass(mlir::createCSEPass());
+    pm.addPass(mlir::createReconcileUnrealizedCastsPass());
+  });
+}
+
 void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
                          const MatmulLoweringSignature &signature,
                          llvm::StringRef nvidia_chip,
                          llvm::StringRef amd_chip,
                          ObservabilityContext *obs) {
+  if (auto kernel_type_attr =
+          module->getAttrOfType<mlir::StringAttr>("matcore.kernel_type");
+      kernel_type_attr && kernel_type_attr.getValue() == "elementwise") {
+    if (plan.route != LoweringRoute::kNvidiaNvptx) {
+      fail("elementwise GPU lowering currently requires nvidia-dgpu target route");
+    }
+    RequestedTargetProfile target_profile;
+    if (auto requested_target =
+            module->getAttrOfType<mlir::StringAttr>("matcore.requested_target")) {
+      target_profile = ParseRequestedTargetProfile(requested_target.getValue().str());
+    }
+    runElementwiseLoweringPipeline(module, target_profile, nvidia_chip, obs);
+    return;
+  }
+  if (auto kernel_type_attr =
+          module->getAttrOfType<mlir::StringAttr>("matcore.kernel_type");
+      kernel_type_attr && kernel_type_attr.getValue().starts_with("fused_")) {
+    if (plan.route != LoweringRoute::kNvidiaNvptx) {
+      fail("fusion GPU lowering currently requires nvidia-dgpu target route");
+    }
+    RequestedTargetProfile target_profile;
+    if (auto requested_target =
+            module->getAttrOfType<mlir::StringAttr>("matcore.requested_target")) {
+      target_profile =
+          ParseRequestedTargetProfile(requested_target.getValue().str());
+    }
+    runFusionLoweringPipeline(module, target_profile, nvidia_chip, obs);
+    return;
+  }
+
   runFp8WgmmaPreflight(module, plan, signature, obs);
   const std::string resolved_amd_chip =
       amd_chip.empty() ? requestedAmdChip(module) : amd_chip.str();
