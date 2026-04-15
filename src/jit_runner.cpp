@@ -516,8 +516,9 @@ void persistExecutionToDiskCache(const CachedExecution &compiled,
   removeArtifactIfExists(artifacts.object_path);
   compiled.engine->dumpToObjectFile(artifacts.object_path.string());
   if (!fileExists(artifacts.object_path)) {
-    fail("object dump for cache artifact '" + artifacts.object_path.string() +
-         "' did not produce a file");
+    // Object dump failed (e.g., GPU-only codegen without host object support).
+    // The in-memory JIT engine is still valid — just skip disk caching.
+    return;
   }
   linkObjectFileToSharedLibrary(artifacts, compile_target);
   removeArtifactIfExists(artifacts.object_path);

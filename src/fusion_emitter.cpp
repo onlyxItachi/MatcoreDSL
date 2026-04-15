@@ -37,14 +37,21 @@ mlir::Type getElementType(TensorDType dtype, mlir::OpBuilder &builder) {
   throw std::runtime_error("FusionMlirEmitter: unsupported tensor dtype");
 }
 
+// Helper: create a float constant matching the element type of val.
+static mlir::Value makeFloatConst(mlir::OpBuilder &builder, mlir::Location loc,
+                                  mlir::Type elemType, double v) {
+  return builder.create<mlir::arith::ConstantOp>(
+      loc, builder.getFloatAttr(elemType, v));
+}
+
 mlir::Value emitElementwiseOnValue(mlir::OpBuilder &builder, mlir::Location loc,
                                    ElementwiseKind kind, mlir::Value val,
                                    mlir::Type f32) {
   (void)f32;
+  auto elemType = val.getType();
   switch (kind) {
     case ElementwiseKind::kReLU: {
-      auto zero = builder.create<mlir::arith::ConstantOp>(
-          loc, builder.getF32FloatAttr(0.0f));
+      auto zero = makeFloatConst(builder, loc, elemType, 0.0);
       return builder.create<mlir::arith::MaximumFOp>(loc, val, zero).getResult();
     }
     case ElementwiseKind::kExp:
@@ -60,38 +67,33 @@ mlir::Value emitElementwiseOnValue(mlir::OpBuilder &builder, mlir::Location loc,
     case ElementwiseKind::kAbs:
       return builder.create<mlir::math::AbsFOp>(loc, val).getResult();
     case ElementwiseKind::kSigmoid: {
-      auto one = builder.create<mlir::arith::ConstantOp>(
-          loc, builder.getF32FloatAttr(1.0f));
+      auto one = makeFloatConst(builder, loc, elemType, 1.0);
       auto neg = builder.create<mlir::arith::NegFOp>(loc, val);
       auto exp_neg = builder.create<mlir::math::ExpOp>(loc, neg.getResult());
       auto denom = builder.create<mlir::arith::AddFOp>(
-          loc, one.getResult(), exp_neg.getResult());
+          loc, one, exp_neg.getResult());
       return builder
-          .create<mlir::arith::DivFOp>(loc, one.getResult(), denom.getResult())
+          .create<mlir::arith::DivFOp>(loc, one, denom.getResult())
           .getResult();
     }
     case ElementwiseKind::kGELU: {
-      auto half = builder.create<mlir::arith::ConstantOp>(
-          loc, builder.getF32FloatAttr(0.5f));
-      auto one = builder.create<mlir::arith::ConstantOp>(
-          loc, builder.getF32FloatAttr(1.0f));
-      auto coeff = builder.create<mlir::arith::ConstantOp>(
-          loc, builder.getF32FloatAttr(0.044715f));
-      auto sqrt2pi = builder.create<mlir::arith::ConstantOp>(
-          loc, builder.getF32FloatAttr(0.7978845608f));
+      auto half    = makeFloatConst(builder, loc, elemType, 0.5);
+      auto one     = makeFloatConst(builder, loc, elemType, 1.0);
+      auto coeff   = makeFloatConst(builder, loc, elemType, 0.044715);
+      auto sqrt2pi = makeFloatConst(builder, loc, elemType, 0.7978845608);
       auto x2 = builder.create<mlir::arith::MulFOp>(loc, val, val);
       auto x3 = builder.create<mlir::arith::MulFOp>(loc, x2.getResult(), val);
-      auto cx3 = builder.create<mlir::arith::MulFOp>(loc, coeff.getResult(),
+      auto cx3 = builder.create<mlir::arith::MulFOp>(loc, coeff,
                                                      x3.getResult());
       auto inner = builder.create<mlir::arith::AddFOp>(loc, val, cx3.getResult());
-      auto scaled = builder.create<mlir::arith::MulFOp>(loc, sqrt2pi.getResult(),
+      auto scaled = builder.create<mlir::arith::MulFOp>(loc, sqrt2pi,
                                                         inner.getResult());
       auto tanh_val =
           builder.create<mlir::math::TanhOp>(loc, scaled.getResult());
       auto one_plus = builder.create<mlir::arith::AddFOp>(
-          loc, one.getResult(), tanh_val.getResult());
+          loc, one, tanh_val.getResult());
       auto half_x =
-          builder.create<mlir::arith::MulFOp>(loc, half.getResult(), val);
+          builder.create<mlir::arith::MulFOp>(loc, half, val);
       return builder
           .create<mlir::arith::MulFOp>(loc, half_x.getResult(),
                                        one_plus.getResult())

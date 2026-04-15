@@ -196,15 +196,17 @@ struct GpuDataStagingPass
       launches.push_back(launch);
     });
 
+    int launch_idx = 0;
     for (auto launch : launches) {
-      if (mlir::failed(stageDataForLaunch(launch))) {
+      if (mlir::failed(stageDataForLaunch(launch, launch_idx))) {
         signalPassFailure();
         return;
       }
+      launch_idx++;
     }
   }
 
-  mlir::LogicalResult stageDataForLaunch(mlir::gpu::LaunchOp launch) {
+  mlir::LogicalResult stageDataForLaunch(mlir::gpu::LaunchOp launch, int launch_idx) {
     llvm::SetVector<mlir::Value> captured = collectCapturedMemrefs(launch);
     if (captured.empty())
       return mlir::success();
@@ -244,7 +246,9 @@ struct GpuDataStagingPass
 
     for (mlir::Value host_memref : host_captured) {
       auto memref_type = llvm::cast<mlir::MemRefType>(host_memref.getType());
-
+      bool is_written = isWrittenInsideLaunch(launch, host_memref);
+      
+      // Debug: print memref info
       // gpu.alloc async [token] → (memref, token)
       auto alloc = pre_builder.create<mlir::gpu::AllocOp>(
           loc,
@@ -290,10 +294,15 @@ struct GpuDataStagingPass
       }
     });
 
-    // Phase 3: After the launch — copy written memrefs D→H, then dealloc all.
-    // Again use async form for gpu-to-llvm compatibility.
+    // Phase 3: After the launch — synchronize, then copy written memrefs D→H,
+    // then dealloc all.
+    // First: barrier to ensure the kernel completes before D→H copies begin.
+    // The launch runs on the default/null stream; we must synchronize it before
+    // starting D→H copies on a new async stream.
     mlir::OpBuilder post_builder(launch->getBlock(),
                                  std::next(launch->getIterator()));
+    post_builder.create<mlir::gpu::WaitOp>(
+        loc, mlir::Type(), mlir::ValueRange{});
 
     auto post_wait = post_builder.create<mlir::gpu::WaitOp>(
         loc, token_type, mlir::ValueRange{});
