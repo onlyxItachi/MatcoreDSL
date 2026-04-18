@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -562,7 +563,7 @@ mlir::OwningOpRef<mlir::ModuleOp> buildSoftmaxModule(
   auto c_block_inner = builder.create<mlir::arith::ConstantIndexOp>(loc, block_size);
   auto c0 = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
   auto neg_inf = builder.create<mlir::arith::ConstantOp>(
-      loc, builder.getFloatAttr(f32, -3.402823e+38));
+      loc, builder.getFloatAttr(f32, -std::numeric_limits<float>::infinity()));
   auto zero_f32 =
       builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(f32, 0.0));
 

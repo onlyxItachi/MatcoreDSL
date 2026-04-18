@@ -22,7 +22,7 @@ def test_attention_small():
 
     result = attention(Q, K, V)
 
-    scores = Q @ K.T
+    scores = Q @ K.T / np.sqrt(D)
     probs = np.exp(scores - scores.max(axis=-1, keepdims=True))
     probs = probs / probs.sum(axis=-1, keepdims=True)
     expected = probs @ V
