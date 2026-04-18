@@ -1,6 +1,7 @@
 #include "matcore/fusion_emitter.h"
 
 #include <cstdint>
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -108,9 +109,17 @@ mlir::Value emitElementwiseOnValue(mlir::OpBuilder &builder, mlir::Location loc,
                                        one_plus.getResult())
           .getResult();
     }
-    default:
-      return val;
+    case ElementwiseKind::kSoftmax:
+      throw std::runtime_error(
+          "FusionMlirEmitter::emitElementwiseOnValue: softmax must not be "
+          "dispatched through emitElementwiseOnValue");
+    case ElementwiseKind::kMax:
+      throw std::runtime_error(
+          "FusionMlirEmitter::emitElementwiseOnValue: binary kMax requires two "
+          "operands and must be handled by the caller");
   }
+  throw std::runtime_error(
+      "FusionMlirEmitter::emitElementwiseOnValue: unknown ElementwiseKind");
 }
 
 mlir::Value castToF32(mlir::OpBuilder &builder, mlir::Location loc,
@@ -772,6 +781,9 @@ mlir::OwningOpRef<mlir::ModuleOp> FusionMlirEmitter::emitFamilyC(
       loc, builder.getF32FloatAttr(0.0f));
   auto neg_inf = builder.create<mlir::arith::ConstantOp>(
       loc, builder.getF32FloatAttr(-std::numeric_limits<float>::infinity()));
+  auto scale_f32 = builder.create<mlir::arith::ConstantOp>(
+      loc, builder.getF32FloatAttr(
+               static_cast<float>(1.0 / std::sqrt(static_cast<double>(Dh)))));
 
   auto row_base = builder.create<mlir::arith::MulIOp>(loc, bid_m, c_Br);
   auto col_base = builder.create<mlir::arith::MulIOp>(loc, bid_d, c_Dtile);
@@ -866,7 +878,9 @@ mlir::OwningOpRef<mlir::ModuleOp> FusionMlirEmitter::emitFamilyC(
           {
             mlir::OpBuilder::InsertionGuard guard5(builder);
             builder.setInsertionPointToStart(&if_key_valid.getThenRegion().front());
-            auto score = emitScoreDot(global_row, key_row);
+            auto raw_score = emitScoreDot(global_row, key_row);
+            auto score = builder.create<mlir::arith::MulFOp>(
+                loc, raw_score, scale_f32.getResult());
             auto new_max =
                 builder.create<mlir::arith::MaximumFOp>(loc, current_max, score);
             builder.create<mlir::scf::YieldOp>(
@@ -927,7 +941,9 @@ mlir::OwningOpRef<mlir::ModuleOp> FusionMlirEmitter::emitFamilyC(
           {
             mlir::OpBuilder::InsertionGuard guard5(builder);
             builder.setInsertionPointToStart(&if_key_valid.getThenRegion().front());
-            auto score = emitScoreDot(global_row, key_row);
+            auto raw_score = emitScoreDot(global_row, key_row);
+            auto score = builder.create<mlir::arith::MulFOp>(
+                loc, raw_score, scale_f32.getResult());
             auto shifted = builder.create<mlir::arith::SubFOp>(loc, score, m_new);
             auto weight = builder.create<mlir::math::ExpOp>(loc, shifted);
 

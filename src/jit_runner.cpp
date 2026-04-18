@@ -938,8 +938,7 @@ bool MatcorePlan::validateTensors(const std::vector<RuntimeTensorView> &tensors,
 
 void MatcorePlan::zeroOutputs(const std::vector<RuntimeTensorView> &tensors) {
   for (size_t i = 0; i < tensors.size(); ++i) {
-    if (frozen_meta_[i].is_output && tensors[i].is_device_resident &&
-        tensors[i].data != nullptr) {
+    if (frozen_meta_[i].is_output && tensors[i].data != nullptr) {
       uint64_t size_bytes = 1;
       for (auto dim : frozen_meta_[i].shape) size_bytes *= dim;
       switch (frozen_meta_[i].dtype) {
@@ -950,7 +949,11 @@ void MatcorePlan::zeroOutputs(const std::vector<RuntimeTensorView> &tensors) {
         case TensorDType::kInt8:
         case TensorDType::kFloat8E4M3FN: break;
       }
-      matcore_device_zero_raw(tensors[i].data, size_bytes);
+      if (tensors[i].is_device_resident) {
+        matcore_device_zero_raw(tensors[i].data, size_bytes);
+      } else {
+        std::memset(tensors[i].data, 0, size_bytes);
+      }
     }
   }
 }
@@ -958,8 +961,7 @@ void MatcorePlan::zeroOutputs(const std::vector<RuntimeTensorView> &tensors) {
 void MatcorePlan::zeroOutputsOnStream(
     const std::vector<RuntimeTensorView> &tensors, void *stream) {
   for (size_t i = 0; i < tensors.size(); ++i) {
-    if (frozen_meta_[i].is_output && tensors[i].is_device_resident &&
-        tensors[i].data != nullptr) {
+    if (frozen_meta_[i].is_output && tensors[i].data != nullptr) {
       uint64_t size_bytes = 1;
       for (auto dim : frozen_meta_[i].shape) size_bytes *= dim;
       switch (frozen_meta_[i].dtype) {
@@ -970,7 +972,11 @@ void MatcorePlan::zeroOutputsOnStream(
         case TensorDType::kInt8:
         case TensorDType::kFloat8E4M3FN: break;
       }
-      matcore_device_zero_raw_on_stream(tensors[i].data, size_bytes, stream);
+      if (tensors[i].is_device_resident) {
+        matcore_device_zero_raw_on_stream(tensors[i].data, size_bytes, stream);
+      } else {
+        std::memset(tensors[i].data, 0, size_bytes);
+      }
     }
   }
 }

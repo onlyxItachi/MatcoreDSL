@@ -400,19 +400,26 @@ struct SplitKPartitionPass
     mlir::Value origUB = kLoop.getUpperBound();
     mlir::Value splitKVal =
         kb.create<mlir::arith::ConstantIndexOp>(loc, split_k_factor);
+    mlir::Value oneK =
+        kb.create<mlir::arith::ConstantIndexOp>(loc, 1);
+    mlir::Value splitMinusOne =
+        kb.create<mlir::arith::SubIOp>(loc, splitKVal, oneK);
+    mlir::Value ubPlus =
+        kb.create<mlir::arith::AddIOp>(loc, origUB, splitMinusOne);
     mlir::Value chunk =
-        kb.create<mlir::arith::DivUIOp>(loc, origUB, splitKVal);
+        kb.create<mlir::arith::DivUIOp>(loc, ubPlus, splitKVal);
 
     mlir::Value blockIdxZ = gemmLaunch.getBlockIds().z;
     mlir::Value kStart =
         kb.create<mlir::arith::MulIOp>(loc, blockIdxZ, chunk);
+    kStart = kb.create<mlir::arith::MinUIOp>(loc, kStart, origUB);
 
-    mlir::Value oneK =
-        kb.create<mlir::arith::ConstantIndexOp>(loc, 1);
     mlir::Value bzPlusOne =
         kb.create<mlir::arith::AddIOp>(loc, blockIdxZ, oneK);
-    mlir::Value kEnd =
+    mlir::Value kEndRaw =
         kb.create<mlir::arith::MulIOp>(loc, bzPlusOne, chunk);
+    mlir::Value kEnd =
+        kb.create<mlir::arith::MinUIOp>(loc, kEndRaw, origUB);
 
     kLoop.setLowerBound(kStart);
     kLoop.setUpperBound(kEnd);
@@ -1168,6 +1175,9 @@ struct PadSharedMemoryPass
       fprintf(stderr, "[PadSmem] No workgroup attrs to pad\n");
       fflush(stderr);
     }
+    if (changed) {
+      top->setAttr("matcore.smem_padded", mlir::UnitAttr::get(top->getContext()));
+    }
   }
 
 private:
@@ -1642,6 +1652,11 @@ struct LdMatrixRewritePass
 
   void runOnOperation() override {
     auto *rootOp = getOperation();
+    if (!rootOp->hasAttr("matcore.smem_padded")) {
+      llvm::errs() << "[LdMatrixRewrite] PadSharedMemoryPass has not run "
+                   << "(missing matcore.smem_padded attr); skipping\n";
+      return;
+    }
     mlir::DenseMap<mlir::Value, mlir::Value> cache;
     unsigned numReplaced = 0;
 

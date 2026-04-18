@@ -99,6 +99,9 @@ struct CudaDriverApi {
   using CuMemAllocFn = CUresult (*)(CUdeviceptr *, size_t);
   using CuMemFreeFn = CUresult (*)(CUdeviceptr);
   using CuMemcpyFn = CUresult (*)(CUdeviceptr, CUdeviceptr, size_t);
+  using CuMemcpyHtoDFn = CUresult (*)(CUdeviceptr, const void *, size_t);
+  using CuMemcpyDtoHFn = CUresult (*)(void *, CUdeviceptr, size_t);
+  using CuCtxSynchronizeFn = CUresult (*)();
   using CuMemcpyAsyncFn =
       CUresult (*)(CUdeviceptr, CUdeviceptr, size_t, CUstream);
   using CuMemsetD32AsyncFn =
@@ -160,6 +163,10 @@ struct CudaDriverApi {
     api.cuMemAlloc = loadSymbol<CuMemAllocFn>(handle, "cuMemAlloc_v2");
     api.cuMemFree = loadSymbol<CuMemFreeFn>(handle, "cuMemFree_v2");
     api.cuMemcpy = loadSymbol<CuMemcpyFn>(handle, "cuMemcpy");
+    api.cuMemcpyHtoD = loadSymbol<CuMemcpyHtoDFn>(handle, "cuMemcpyHtoD_v2");
+    api.cuMemcpyDtoH = loadSymbol<CuMemcpyDtoHFn>(handle, "cuMemcpyDtoH_v2");
+    api.cuCtxSynchronize =
+        loadSymbol<CuCtxSynchronizeFn>(handle, "cuCtxSynchronize");
     api.cuMemcpyAsync =
         loadSymbol<CuMemcpyAsyncFn>(handle, "cuMemcpyAsync");
     api.cuMemsetD32Async =
@@ -212,6 +219,9 @@ struct CudaDriverApi {
   CuMemAllocFn cuMemAlloc = nullptr;
   CuMemFreeFn cuMemFree = nullptr;
   CuMemcpyFn cuMemcpy = nullptr;
+  CuMemcpyHtoDFn cuMemcpyHtoD = nullptr;
+  CuMemcpyDtoHFn cuMemcpyDtoH = nullptr;
+  CuCtxSynchronizeFn cuCtxSynchronize = nullptr;
   CuMemcpyAsyncFn cuMemcpyAsync = nullptr;
   CuMemsetD32AsyncFn cuMemsetD32Async = nullptr;
   CuMemsetD16AsyncFn cuMemsetD16Async = nullptr;
@@ -789,6 +799,10 @@ public:
       ptr = it->second.ptr;
       live_allocations_.erase(it);
     }
+    {
+      ScopedContext ctx;
+      checkCuda(CudaDriverApi::instance().cuCtxSynchronize(), "cuCtxSynchronize");
+    }
     GpuMemoryPool::instance().release(reinterpret_cast<void *>(ptr), nullptr);
   }
 
@@ -802,10 +816,9 @@ public:
       fail("matcore_device_upload: host_src is null");
     }
     ScopedContext ctx;
-    checkCuda(CudaDriverApi::instance().cuMemcpy(
-                  static_cast<CUdeviceptr>(dst.ptr),
-                  reinterpret_cast<CUdeviceptr>(host_src), size_bytes),
-              "cuMemcpy(H→D)");
+    checkCuda(CudaDriverApi::instance().cuMemcpyHtoD(
+                  static_cast<CUdeviceptr>(dst.ptr), host_src, size_bytes),
+              "cuMemcpyHtoD(H→D)");
   }
 
   void download(void *host_dst, DeviceBufferHandle src, uint64_t size_bytes) {
@@ -818,10 +831,9 @@ public:
       fail("matcore_device_download: host_dst is null");
     }
     ScopedContext ctx;
-    checkCuda(CudaDriverApi::instance().cuMemcpy(
-                  reinterpret_cast<CUdeviceptr>(host_dst),
-                  static_cast<CUdeviceptr>(src.ptr), size_bytes),
-              "cuMemcpy(D→H)");
+    checkCuda(CudaDriverApi::instance().cuMemcpyDtoH(
+                  host_dst, static_cast<CUdeviceptr>(src.ptr), size_bytes),
+              "cuMemcpyDtoH(D→H)");
   }
 
   bool isValid(DeviceBufferHandle handle) {

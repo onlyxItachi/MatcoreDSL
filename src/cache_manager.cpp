@@ -5,11 +5,13 @@
 #include <filesystem>
 #include <stdexcept>
 #include <string>
+#include <variant>
 
 #include <dlfcn.h>
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/MD5.h"
 #include "matcore/gpu_runtime_symbols.h"
+#include "matcore/kernel_ir.h"
 
 namespace matcore {
 namespace {
@@ -81,6 +83,142 @@ fs::path cacheRootPath() {
   return fs::current_path() / ".matcore_cache";
 }
 
+void appendKernelStructure(std::string &key, const KernelIR &kernel) {
+  if (kernel.version == KernelIRVersion::kGraphV2 && kernel.graph.has_value()) {
+    const KernelGraphIR &g = *kernel.graph;
+    key += "|gv2";
+    key += "|nv=" + std::to_string(g.values.size());
+    for (const TensorDesc &v : g.values) {
+      key += ";v:";
+      key += v.symbol;
+      key += ":";
+      key += std::to_string(static_cast<int>(v.dtype));
+      key += ":";
+      key += std::to_string(static_cast<int>(v.value_kind));
+      key += ":";
+      key += std::to_string(static_cast<int>(v.storage_hint));
+      key += ":";
+      key += std::to_string(static_cast<int>(v.escape));
+      key += ":s=";
+      for (auto d : v.shape) {
+        key += std::to_string(d);
+        key += ",";
+      }
+      key += ":t=";
+      for (auto d : v.strides) {
+        key += std::to_string(d);
+        key += ",";
+      }
+      if (v.is_parameter) key += ":p";
+      if (v.is_output) key += ":o";
+      if (v.is_device_resident) key += ":dev";
+    }
+    key += "|iv=";
+    for (auto id : g.input_values) {
+      key += std::to_string(id);
+      key += ",";
+    }
+    key += "|ov=";
+    for (auto id : g.output_values) {
+      key += std::to_string(id);
+      key += ",";
+    }
+    key += "|topo=";
+    for (auto id : g.topo_order) {
+      key += std::to_string(id);
+      key += ",";
+    }
+    key += "|nn=" + std::to_string(g.nodes.size());
+    for (const KernelNode &n : g.nodes) {
+      key += ";n:";
+      key += std::to_string(n.id);
+      key += ":";
+      key += std::to_string(static_cast<int>(n.kind));
+      key += ":in=";
+      for (auto id : n.inputs) {
+        key += std::to_string(id);
+        key += ",";
+      }
+      key += ":out=";
+      for (auto id : n.outputs) {
+        key += std::to_string(id);
+        key += ",";
+      }
+      key += ":sef=";
+      key += (n.side_effect_free ? "1" : "0");
+      key += ":attr=";
+      key += std::to_string(n.attrs.index());
+      key += ":";
+      std::visit(
+          [&key](const auto &a) {
+            using T = std::decay_t<decltype(a)>;
+            if constexpr (std::is_same_v<T, MatMulAttrs>) {
+              key += "mm:";
+              key += std::to_string(a.lhs.value_id) + "/" +
+                     (a.lhs.transpose_last2 ? "1" : "0") + ",";
+              key += std::to_string(a.rhs.value_id) + "/" +
+                     (a.rhs.transpose_last2 ? "1" : "0") + ",";
+              key += std::to_string(static_cast<int>(a.accumulate_dtype));
+              key += ",";
+              key += (a.allow_split_k ? "1" : "0");
+            } else if constexpr (std::is_same_v<T, ElementwiseAttrs>) {
+              key += "ew:";
+              key += std::to_string(static_cast<int>(a.kind));
+              key += ",in=";
+              for (auto id : a.inputs) {
+                key += std::to_string(id);
+                key += "/";
+              }
+              key += ",im=";
+              for (auto s : a.scalar_immediates) {
+                key += std::to_string(s);
+                key += "/";
+              }
+              key += (a.allow_inplace ? "1" : "0");
+            } else if constexpr (std::is_same_v<T, TransposeAttrs>) {
+              key += "tp:";
+              key += std::to_string(a.input);
+            } else if constexpr (std::is_same_v<T, CastAttrs>) {
+              key += "cast:";
+              key += std::to_string(a.input);
+              key += ",";
+              key += std::to_string(static_cast<int>(a.target_dtype));
+            } else if constexpr (std::is_same_v<T, ReduceAttrs>) {
+              key += "red:";
+              key += std::to_string(static_cast<int>(a.kind));
+              key += ",";
+              key += std::to_string(a.input);
+              key += ",";
+              key += std::to_string(static_cast<int>(a.axis));
+              key += ",";
+              key += (a.keepdim ? "1" : "0");
+            } else if constexpr (std::is_same_v<T, SoftmaxAttrs>) {
+              key += "sm:";
+              key += std::to_string(a.input);
+              key += ",";
+              key += std::to_string(a.axis);
+              key += ",";
+              key += (a.stable ? "1" : "0");
+              key += ",";
+              key += (a.causal ? "1" : "0");
+            } else if constexpr (std::is_same_v<T, StoreAttrs>) {
+              key += "st:";
+              key += std::to_string(a.input);
+              key += ",";
+              key += std::to_string(a.output_tensor);
+            }
+          },
+          n.attrs);
+    }
+  } else {
+    key += "|ops=" + std::to_string(kernel.ops.size());
+    for (const KernelOp &op : kernel.ops) {
+      key += ";op";
+      key += std::to_string(op.index());
+    }
+  }
+}
+
 }  // namespace
 
 std::string buildExecutionCacheKey(
@@ -93,7 +231,7 @@ std::string buildExecutionCacheKey(
     key += "|";
     key += std::string(*x86_cache_tag);
   }
-  key += "|ops=" + std::to_string(kernel.ops.size());
+  appendKernelStructure(key, kernel);
   if (kernel.global_quantization.enabled) {
     key += "|gq=" + std::to_string(kernel.global_quantization.scale);
     key += ":";
