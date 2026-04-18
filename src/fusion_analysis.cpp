@@ -6,6 +6,7 @@
 #include <numeric>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <unordered_set>
 
 namespace matcore {
@@ -44,7 +45,9 @@ std::size_t dtypeSize(TensorDType dtype) {
     case TensorDType::kInt32:
       return 4;
   }
-  return 4;
+  throw std::runtime_error(
+      "dtypeSize: unhandled TensorDType (value=" +
+      std::to_string(static_cast<int>(dtype)) + ")");
 }
 
 std::string patternKindToString(FusionPatternKind pattern) {
@@ -373,6 +376,16 @@ std::vector<std::vector<uint32_t>> FusionAnalyzer::discoverCandidates(
       current_id = next_id;
     }
 
+    {
+      int mm = 0, sm = 0;
+      for (auto id : region) {
+        auto kind = nodeById(graph, id).kind;
+        if (kind == OpKind::kMatMul) ++mm;
+        else if (kind == OpKind::kSoftmax) ++sm;
+      }
+      if (sm > 0 && mm != 2) continue;
+    }
+
     maybe_add(std::move(region));
   }
 
@@ -419,6 +432,10 @@ FusionPatternKind FusionAnalyzer::classifyRegion(
   }
   if (matmul_count == 2 && softmax_count > 0) {
     return FusionPatternKind::kMatmulSoftmaxMatmul;
+  }
+  if (softmax_count > 0) {
+    // softmax not supported outside Family C (matmul-softmax-matmul)
+    return FusionPatternKind::kNone;
   }
   if (matmul_count > 0) {
     return FusionPatternKind::kGenericTileChain;
