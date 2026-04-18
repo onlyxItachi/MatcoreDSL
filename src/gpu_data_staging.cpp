@@ -274,7 +274,7 @@ struct GpuDataStagingPass
       all_device_memrefs.push_back(device_memref);
 
       // Track outputs for D→H copy after the launch.
-      if (isWrittenInsideLaunch(launch, host_memref)) {
+      if (is_written) {
         output_pairs.emplace_back(host_memref, device_memref);
       }
     }

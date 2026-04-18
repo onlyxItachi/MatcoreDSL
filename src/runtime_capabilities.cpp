@@ -384,33 +384,36 @@ RuntimeCapabilities DetectRuntimeCapabilities() {
   return runtime;
 }
 
+static std::mutex g_nvidia_mu;
+static std::mutex g_rocm_mu;
+
 void probeNvidiaIfNeeded(RuntimeCapabilities &runtime) {
-  if (!runtime.nvidia_probed) {
-    if (!acquireGpuBackendClaim(TargetKind::kNvidiaDGPU, nullptr)) {
-      runtime.nvidia = NvidiaRuntimeCapabilities{};
-      runtime.nvidia_probed = true;
-      return;
-    }
-    runtime.nvidia = detectNvidiaRuntime();
+  std::lock_guard<std::mutex> lock(g_nvidia_mu);
+  if (runtime.nvidia_probed) return;
+  if (!acquireGpuBackendClaim(TargetKind::kNvidiaDGPU, nullptr)) {
+    runtime.nvidia = NvidiaRuntimeCapabilities{};
     runtime.nvidia_probed = true;
+    return;
   }
+  runtime.nvidia = detectNvidiaRuntime();
+  runtime.nvidia_probed = true;
 }
 
 void probeRocmIfNeeded(RuntimeCapabilities &runtime) {
-  if (!runtime.rocm_probed) {
-    if (!acquireGpuBackendClaim(TargetKind::kAmdIGPU, nullptr)) {
-      runtime.rocm_library_available = false;
-      runtime.rocm_device_present = false;
-      runtime.rocm_runtime_available = false;
-      runtime.rocm_probed = true;
-      return;
-    }
-    const RocmRuntimeCapabilities rocm = detectRocmRuntime();
-    runtime.rocm_library_available = rocm.library_available;
-    runtime.rocm_device_present = rocm.device_present;
-    runtime.rocm_runtime_available = rocm.library_available && rocm.device_present;
+  std::lock_guard<std::mutex> lock(g_rocm_mu);
+  if (runtime.rocm_probed) return;
+  if (!acquireGpuBackendClaim(TargetKind::kAmdIGPU, nullptr)) {
+    runtime.rocm_library_available = false;
+    runtime.rocm_device_present = false;
+    runtime.rocm_runtime_available = false;
     runtime.rocm_probed = true;
+    return;
   }
+  const RocmRuntimeCapabilities rocm = detectRocmRuntime();
+  runtime.rocm_library_available = rocm.library_available;
+  runtime.rocm_device_present = rocm.device_present;
+  runtime.rocm_runtime_available = rocm.library_available && rocm.device_present;
+  runtime.rocm_probed = true;
 }
 
 bool SupportsX86Feature(const RuntimeCapabilities &runtime,

@@ -334,10 +334,21 @@ std::vector<std::string> buildSharedLibraryRPaths(
   return rpaths;
 }
 
+static std::string resolveLinker() {
+  if (const char *env = std::getenv("MATCORE_CXX")) {
+    if (*env != '\0') return env;
+  }
+  for (const char *candidate : {"clang++", "c++", "g++"}) {
+    auto found = llvm::sys::findProgramByName(candidate);
+    if (found) return *found;
+  }
+  return "/usr/bin/clang++";  // fallback
+}
+
 void linkObjectFileToSharedLibrary(const DiskCacheArtifacts &artifacts,
                                    const RequestedTargetProfile &target_profile) {
   std::vector<std::string> owned_args = {
-      "/usr/bin/clang++",
+      resolveLinker(),
       "-shared",
       "-fPIC",
       "-o",
@@ -456,7 +467,16 @@ std::shared_ptr<CachedExecution> tryLoadDiskCachedExecution(
 
   void *handle = dlopen(artifacts.shared_object_path.c_str(), RTLD_NOW | RTLD_LOCAL);
   if (handle == nullptr) {
-    removeDiskCacheArtifacts(artifacts);
+    const char *err = dlerror();
+    const std::string err_str = err ? err : "";
+    const bool corrupt =
+        err_str.find("invalid ELF") != std::string::npos ||
+        err_str.find("not an ELF") != std::string::npos ||
+        err_str.find("wrong ELF class") != std::string::npos ||
+        err_str.find("file too short") != std::string::npos;
+    if (corrupt) {
+      removeDiskCacheArtifacts(artifacts);
+    }
     return nullptr;
   }
 

@@ -277,6 +277,24 @@ llvm::Error invokeNTensorPacked(const CachedExecution &compiled,
                                      "cached shared library entrypoint missing");
     }
     switch (tensor_count) {
+      case 1: {
+        auto fn = reinterpret_cast<void (*)(void *)>(
+            compiled.ciface_entrypoint);
+        fn(&descriptors[0]);
+        return llvm::Error::success();
+      }
+      case 2: {
+        auto fn = reinterpret_cast<void (*)(void *, void *)>(
+            compiled.ciface_entrypoint);
+        fn(&descriptors[0], &descriptors[1]);
+        return llvm::Error::success();
+      }
+      case 3: {
+        auto fn = reinterpret_cast<void (*)(void *, void *, void *)>(
+            compiled.ciface_entrypoint);
+        fn(&descriptors[0], &descriptors[1], &descriptors[2]);
+        return llvm::Error::success();
+      }
       case 4: {
         auto fn = reinterpret_cast<void (*)(void *, void *, void *, void *)>(
             compiled.ciface_entrypoint);
@@ -298,10 +316,107 @@ llvm::Error invokeNTensorPacked(const CachedExecution &compiled,
            &descriptors[4], &descriptors[5]);
         return llvm::Error::success();
       }
+      case 7: {
+        auto fn = reinterpret_cast<void (*)(
+            void *, void *, void *, void *, void *, void *, void *)>(
+            compiled.ciface_entrypoint);
+        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
+           &descriptors[4], &descriptors[5], &descriptors[6]);
+        return llvm::Error::success();
+      }
+      case 8: {
+        auto fn = reinterpret_cast<void (*)(
+            void *, void *, void *, void *, void *, void *, void *, void *)>(
+            compiled.ciface_entrypoint);
+        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
+           &descriptors[4], &descriptors[5], &descriptors[6], &descriptors[7]);
+        return llvm::Error::success();
+      }
+      case 9: {
+        auto fn = reinterpret_cast<void (*)(
+            void *, void *, void *, void *, void *, void *, void *, void *,
+            void *)>(compiled.ciface_entrypoint);
+        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
+           &descriptors[4], &descriptors[5], &descriptors[6], &descriptors[7],
+           &descriptors[8]);
+        return llvm::Error::success();
+      }
+      case 10: {
+        auto fn = reinterpret_cast<void (*)(
+            void *, void *, void *, void *, void *, void *, void *, void *,
+            void *, void *)>(compiled.ciface_entrypoint);
+        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
+           &descriptors[4], &descriptors[5], &descriptors[6], &descriptors[7],
+           &descriptors[8], &descriptors[9]);
+        return llvm::Error::success();
+      }
+      case 11: {
+        auto fn = reinterpret_cast<void (*)(
+            void *, void *, void *, void *, void *, void *, void *, void *,
+            void *, void *, void *)>(compiled.ciface_entrypoint);
+        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
+           &descriptors[4], &descriptors[5], &descriptors[6], &descriptors[7],
+           &descriptors[8], &descriptors[9], &descriptors[10]);
+        return llvm::Error::success();
+      }
+      case 12: {
+        auto fn = reinterpret_cast<void (*)(
+            void *, void *, void *, void *, void *, void *, void *, void *,
+            void *, void *, void *, void *)>(compiled.ciface_entrypoint);
+        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
+           &descriptors[4], &descriptors[5], &descriptors[6], &descriptors[7],
+           &descriptors[8], &descriptors[9], &descriptors[10], &descriptors[11]);
+        return llvm::Error::success();
+      }
+      case 13: {
+        auto fn = reinterpret_cast<void (*)(
+            void *, void *, void *, void *, void *, void *, void *, void *,
+            void *, void *, void *, void *, void *)>(
+            compiled.ciface_entrypoint);
+        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
+           &descriptors[4], &descriptors[5], &descriptors[6], &descriptors[7],
+           &descriptors[8], &descriptors[9], &descriptors[10], &descriptors[11],
+           &descriptors[12]);
+        return llvm::Error::success();
+      }
+      case 14: {
+        auto fn = reinterpret_cast<void (*)(
+            void *, void *, void *, void *, void *, void *, void *, void *,
+            void *, void *, void *, void *, void *, void *)>(
+            compiled.ciface_entrypoint);
+        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
+           &descriptors[4], &descriptors[5], &descriptors[6], &descriptors[7],
+           &descriptors[8], &descriptors[9], &descriptors[10], &descriptors[11],
+           &descriptors[12], &descriptors[13]);
+        return llvm::Error::success();
+      }
+      case 15: {
+        auto fn = reinterpret_cast<void (*)(
+            void *, void *, void *, void *, void *, void *, void *, void *,
+            void *, void *, void *, void *, void *, void *, void *)>(
+            compiled.ciface_entrypoint);
+        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
+           &descriptors[4], &descriptors[5], &descriptors[6], &descriptors[7],
+           &descriptors[8], &descriptors[9], &descriptors[10], &descriptors[11],
+           &descriptors[12], &descriptors[13], &descriptors[14]);
+        return llvm::Error::success();
+      }
+      case 16: {
+        auto fn = reinterpret_cast<void (*)(
+            void *, void *, void *, void *, void *, void *, void *, void *,
+            void *, void *, void *, void *, void *, void *, void *, void *)>(
+            compiled.ciface_entrypoint);
+        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
+           &descriptors[4], &descriptors[5], &descriptors[6], &descriptors[7],
+           &descriptors[8], &descriptors[9], &descriptors[10], &descriptors[11],
+           &descriptors[12], &descriptors[13], &descriptors[14],
+           &descriptors[15]);
+        return llvm::Error::success();
+      }
       default:
         return llvm::createStringError(
             llvm::inconvertibleErrorCode(),
-            "shared-library N-tensor invocation currently supports up to 6 tensors");
+            "shared-library N-tensor invocation currently supports up to 16 tensors");
     }
   }
 

@@ -621,7 +621,17 @@ ParsedTensor parseTensorArgument(const nb::object &tensor, std::size_t index) {
     }
     parsed.data_ptr = static_cast<std::uintptr_t>(handle.ptr);
     parsed.is_device_resident = true;
-    parsed.dtype_name = nb::cast<std::string>(tensor.attr("dtype"));
+    std::string raw_dtype = nb::cast<std::string>(tensor.attr("dtype"));
+    parsed.dtype_name = normalizeDTypeName(std::move(raw_dtype));
+    if (parsed.dtype_name != "float32" && parsed.dtype_name != "float16" &&
+        parsed.dtype_name != "bfloat16" && parsed.dtype_name != "int8" &&
+        parsed.dtype_name != "int32" &&
+        parsed.dtype_name != "float8_e4m3fn") {
+      throw std::runtime_error("Tensor argument " + std::to_string(index) +
+                               " uses unsupported dtype '" + parsed.dtype_name +
+                               "'. Supported dtypes: float32, float16, bfloat16, "
+                               "int8, int32, float8_e4m3fn.");
+    }
     parsed.shape = parseInt64Sequence(tensor.attr("shape"), "shape");
     parsed.element_strides = parseInt64Sequence(tensor.attr("strides"), "strides");
     parsed.c_contiguous = true;  // DeviceTensor enforces contiguous in to_device()

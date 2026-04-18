@@ -1110,9 +1110,14 @@ struct PadSharedMemoryPass
 
     // Find the single gpu.launch (assert uniqueness for safety)
     mlir::gpu::LaunchOp launch;
-    top->walk([&](mlir::gpu::LaunchOp op) {
-      assert(!launch && "PadSharedMemoryPass: multiple gpu.launch ops");
+    top->walk([&](mlir::gpu::LaunchOp op) -> mlir::WalkResult {
+      if (launch) {
+        llvm::errs() << "[PadSmem] Multiple gpu.launch ops found — skipping\n";
+        launch = {};
+        return mlir::WalkResult::interrupt();
+      }
       launch = op;
+      return mlir::WalkResult::advance();
     });
     if (!launch) return;
 
@@ -1260,7 +1265,10 @@ struct DoubleBufferKLoopPass
 
     // ── 1. Find gpu.launch ──────────────────────────────────────────────
     mlir::gpu::LaunchOp launch;
-    top->walk([&](mlir::gpu::LaunchOp op) { launch = op; });
+    top->walk([&](mlir::gpu::LaunchOp op) -> mlir::WalkResult {
+      launch = op;
+      return mlir::WalkResult::interrupt();
+    });
     if (!launch) return;
 
     // ── 2. Get existing workgroup attributions (smemA0, smemB0) ─────────
@@ -3329,12 +3337,11 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
     }
 
     // Tag the K-loop before DynamicMacroGridMappingPass clones body
-    // (StringAttrs survive Operation::clone)
-    if (mapping.split_k_factor > 1 || true) { // always tag for AccHoist/DoubleBuffer
-      run_stage("nvidia-tag-k-loop", [&](mlir::PassManager &pm) {
-        pm.addPass(std::make_unique<TagKLoopPass>(mapping.k_tile));
-      });
-    }
+    // (StringAttrs survive Operation::clone). Required by AccumulatorHoist
+    // and DoubleBufferKLoop passes regardless of split_k_factor.
+    run_stage("nvidia-tag-k-loop", [&](mlir::PassManager &pm) {
+      pm.addPass(std::make_unique<TagKLoopPass>(mapping.k_tile));
+    });
 
     run_stage("nvidia-dynamic-macro-topology", [&](mlir::PassManager &pm) {
       AddNvidiaDynamicMacroGridMappingPasses(pm, mapping);
