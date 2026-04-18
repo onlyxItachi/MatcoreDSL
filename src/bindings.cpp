@@ -356,6 +356,15 @@ matcore::ElementwiseKind parseElementwiseKindFromOp(const std::string &s) {
   if (s == "max") {
     return matcore::ElementwiseKind::kMax;
   }
+  if (s == "sin") {
+    return matcore::ElementwiseKind::kSin;
+  }
+  if (s == "cos") {
+    return matcore::ElementwiseKind::kCos;
+  }
+  if (s == "rsqrt") {
+    return matcore::ElementwiseKind::kRsqrt;
+  }
   throw std::runtime_error("Unknown elementwise op: " + s);
 }
 
@@ -863,6 +872,15 @@ matcore::ElementwiseKind parseElementwiseKind(const nb::dict &op_obj) {
   if (raw_kind == "max") {
     return matcore::ElementwiseKind::kMax;
   }
+  if (raw_kind == "sin") {
+    return matcore::ElementwiseKind::kSin;
+  }
+  if (raw_kind == "cos") {
+    return matcore::ElementwiseKind::kCos;
+  }
+  if (raw_kind == "rsqrt") {
+    return matcore::ElementwiseKind::kRsqrt;
+  }
 
   throw std::runtime_error("Unsupported elementwise kind '" + raw_kind + "'.");
 }
@@ -879,6 +897,9 @@ bool isUnaryElementwise(matcore::ElementwiseKind kind) {
   case matcore::ElementwiseKind::kLog:
   case matcore::ElementwiseKind::kTanh:
   case matcore::ElementwiseKind::kSoftmax:
+  case matcore::ElementwiseKind::kSin:
+  case matcore::ElementwiseKind::kCos:
+  case matcore::ElementwiseKind::kRsqrt:
     return true;
   case matcore::ElementwiseKind::kAdd:
   case matcore::ElementwiseKind::kSub:
