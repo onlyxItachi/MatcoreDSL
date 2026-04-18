@@ -66,6 +66,15 @@ mlir::Value emitElementwiseOnValue(mlir::OpBuilder &builder, mlir::Location loc,
       return builder.create<mlir::arith::NegFOp>(loc, val).getResult();
     case ElementwiseKind::kAbs:
       return builder.create<mlir::math::AbsFOp>(loc, val).getResult();
+    case ElementwiseKind::kSin:
+      return builder.create<mlir::math::SinOp>(loc, val,
+          mlir::arith::FastMathFlags::fast).getResult();
+    case ElementwiseKind::kCos:
+      return builder.create<mlir::math::CosOp>(loc, val,
+          mlir::arith::FastMathFlags::fast).getResult();
+    case ElementwiseKind::kRsqrt:
+      return builder.create<mlir::math::RsqrtOp>(loc, val,
+          mlir::arith::FastMathFlags::fast).getResult();
     case ElementwiseKind::kSigmoid: {
       auto one = makeFloatConst(builder, loc, elemType, 1.0);
       auto neg = builder.create<mlir::arith::NegFOp>(loc, val);

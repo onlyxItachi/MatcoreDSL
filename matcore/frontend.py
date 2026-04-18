@@ -572,6 +572,9 @@ class MatCoreASTVisitor(ast.NodeVisitor):
             "neg",
             "abs",
             "softmax",
+            "sin",
+            "cos",
+            "rsqrt",
         ):
             if self._is_marker(fn, unary_kind):
                 if len(args) != 1 or kwargs:
@@ -750,6 +753,18 @@ def min_op(*_: Any, **__: Any) -> Any:
 
 def max_op(*_: Any, **__: Any) -> Any:
     _marker_error("max")
+
+
+def sin(*_: Any, **__: Any) -> Any:
+    _marker_error("sin")
+
+
+def cos(*_: Any, **__: Any) -> Any:
+    _marker_error("cos")
+
+
+def rsqrt(*_: Any, **__: Any) -> Any:
+    _marker_error("rsqrt")
 
 
 def cast(*_: Any, **__: Any) -> Any:
@@ -1736,6 +1751,18 @@ def softmax_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
     return _elementwise_gpu_unary("softmax", x, out, **kw)
 
 
+def sin_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("sin", x, out, **kw)
+
+
+def cos_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("cos", x, out, **kw)
+
+
+def rsqrt_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("rsqrt", x, out, **kw)
+
+
 def add_gpu(a: Any, b: Any, out: Any = None, **kw: Any) -> Any:
     return _elementwise_gpu_binary("add", a, b, out, **kw)
 
@@ -1770,6 +1797,9 @@ MatCoreNamespace.relu_gpu = staticmethod(relu_gpu)
 MatCoreNamespace.neg_gpu = staticmethod(neg_gpu)
 MatCoreNamespace.abs_gpu = staticmethod(abs_gpu)
 MatCoreNamespace.softmax_gpu = staticmethod(softmax_gpu)
+MatCoreNamespace.sin_gpu = staticmethod(sin_gpu)
+MatCoreNamespace.cos_gpu = staticmethod(cos_gpu)
+MatCoreNamespace.rsqrt_gpu = staticmethod(rsqrt_gpu)
 MatCoreNamespace.add_gpu = staticmethod(add_gpu)
 MatCoreNamespace.sub_gpu = staticmethod(sub_gpu)
 MatCoreNamespace.mul_gpu = staticmethod(mul_gpu)
@@ -1787,6 +1817,9 @@ MatCoreNamespace.relu = staticmethod(relu_gpu)
 MatCoreNamespace.neg = staticmethod(neg_gpu)
 MatCoreNamespace.abs = staticmethod(abs_gpu)
 MatCoreNamespace.softmax = staticmethod(softmax_gpu)
+MatCoreNamespace.sin = staticmethod(sin_gpu)
+MatCoreNamespace.cos = staticmethod(cos_gpu)
+MatCoreNamespace.rsqrt = staticmethod(rsqrt_gpu)
 MatCoreNamespace.add = staticmethod(add_gpu)
 MatCoreNamespace.sub = staticmethod(sub_gpu)
 MatCoreNamespace.mul = staticmethod(mul_gpu)
@@ -1807,6 +1840,9 @@ if _parent_module is not None:
         "neg_gpu",
         "abs_gpu",
         "softmax_gpu",
+        "sin_gpu",
+        "cos_gpu",
+        "rsqrt_gpu",
         "add_gpu",
         "sub_gpu",
         "mul_gpu",
@@ -1864,6 +1900,9 @@ mc.gelu = _tracer_aware_unary("gelu", gelu_gpu)
 mc.relu = _tracer_aware_unary("relu", relu_gpu)
 mc.neg = _tracer_aware_unary("neg", neg_gpu)
 mc.abs = _tracer_aware_unary("abs", abs_gpu)
+mc.sin = _tracer_aware_unary("sin", sin_gpu)
+mc.cos = _tracer_aware_unary("cos", cos_gpu)
+mc.rsqrt = _tracer_aware_unary("rsqrt", rsqrt_gpu)
 mc.softmax = _tracer_aware_softmax(softmax_gpu)
 mc.min = _tracer_aware_binary("min", min_gpu)
 mc.max = _tracer_aware_binary("max", max_gpu)

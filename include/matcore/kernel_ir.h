@@ -91,6 +91,9 @@ enum class ElementwiseKind {
   kSoftmax,
   kMin,
   kMax,
+  kSin,
+  kCos,
+  kRsqrt,
 };
 
 enum class KernelIRVersion {

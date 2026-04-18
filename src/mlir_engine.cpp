@@ -261,6 +261,9 @@ static bool isUnaryOp(ElementwiseKind kind) {
     case ElementwiseKind::kNeg:
     case ElementwiseKind::kAbs:
     case ElementwiseKind::kSoftmax:
+    case ElementwiseKind::kSin:
+    case ElementwiseKind::kCos:
+    case ElementwiseKind::kRsqrt:
       return true;
     default:
       return false;
@@ -366,6 +369,15 @@ mlir::Value emitElementwiseOp(mlir::OpBuilder &builder, mlir::Location loc,
       return builder.create<arith::MinimumFOp>(loc, lhsVal, rhsVal);
     case ElementwiseKind::kMax:
       return builder.create<arith::MaximumFOp>(loc, lhsVal, rhsVal);
+    case ElementwiseKind::kSin:
+      return builder.create<math::SinOp>(loc, lhsVal,
+          arith::FastMathFlags::fast);
+    case ElementwiseKind::kCos:
+      return builder.create<math::CosOp>(loc, lhsVal,
+          arith::FastMathFlags::fast);
+    case ElementwiseKind::kRsqrt:
+      return builder.create<math::RsqrtOp>(loc, lhsVal,
+          arith::FastMathFlags::fast);
     case ElementwiseKind::kSoftmax:
       fail("softmax must not be dispatched through emitElementwiseOp");
   }
