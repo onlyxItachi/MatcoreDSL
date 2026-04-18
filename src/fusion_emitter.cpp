@@ -1053,6 +1053,62 @@ struct FusionEpiloguePass
       return;  // No epilogue needed
     }
 
+    // Collect epilogue kinds in order.
+    llvm::SmallVector<ElementwiseKind, 4> kinds;
+    for (auto kind_attr : epilogue_attr) {
+      kinds.push_back(static_cast<ElementwiseKind>(
+          kind_attr.cast<mlir::IntegerAttr>().getInt()));
+    }
+
+    // Find the entry function.
+    mlir::func::FuncOp func;
+    module.walk([&](mlir::func::FuncOp f) { func = f; });
+    if (!func) {
+      signalPassFailure();
+      return;
+    }
+
+    // === IN-REGISTER EPILOGUE FUSION ===
+    // Try to find output stores tagged by AccumulatorHoistPass inside the
+    // matmul gpu.launch and apply the epilogue chain directly on the stored
+    // value (in registers, before the GMEM write). This eliminates the
+    // separate epilogue kernel entirely.
+    llvm::SmallVector<mlir::memref::StoreOp, 32> tagged_stores;
+    func.walk([&](mlir::memref::StoreOp store) {
+      if (store->hasAttr("matcore.epilogue_store"))
+        tagged_stores.push_back(store);
+    });
+
+    if (!tagged_stores.empty()) {
+      unsigned rewritten = 0;
+      for (auto store : tagged_stores) {
+        mlir::OpBuilder builder(store);
+        auto loc = store.getLoc();
+        mlir::Value val = store.getValueToStore();
+
+        // Apply the full epilogue chain on the stored value.
+        for (auto kind : kinds) {
+          val = emitElementwiseOnValue(builder, loc, kind, val,
+                                       builder.getF32Type());
+        }
+        store.getValueMutable().assign(val);
+        store->removeAttr("matcore.epilogue_store");
+        ++rewritten;
+      }
+      fprintf(stderr,
+              "[FusionEpilogue] In-register: rewrote %u tagged output "
+              "stores with %lu epilogue ops (no separate kernel)\n",
+              rewritten, (unsigned long)kinds.size());
+      return;  // Done — no separate kernel needed
+    }
+
+    // === FALLBACK: SEPARATE EPILOGUE KERNEL ===
+    // No tagged stores found (non-MMA path or single-warp without AccHoist).
+    // Create a single gpu.launch that applies the full epilogue chain.
+    fprintf(stderr,
+            "[FusionEpilogue] Fallback: creating separate epilogue kernel "
+            "(%lu ops)\n", (unsigned long)kinds.size());
+
     auto m_attr =
         module->getAttrOfType<mlir::IntegerAttr>("matcore.matmul_m");
     auto n_attr =
@@ -1067,18 +1123,8 @@ struct FusionEpiloguePass
     const int64_t block_size = 256;
     const int64_t grid_size = (total_elems + block_size - 1) / block_size;
 
-    // Find the entry function
-    mlir::func::FuncOp func;
-    module.walk([&](mlir::func::FuncOp f) { func = f; });
-    if (!func) {
-      signalPassFailure();
-      return;
-    }
-
-    // Output is the 3rd function argument (C memref)
     auto out_arg = func.getArgument(2);
 
-    // Find the return op — insert epilogue launches before it
     mlir::func::ReturnOp return_op;
     func.walk([&](mlir::func::ReturnOp r) { return_op = r; });
     if (!return_op) {
@@ -1089,54 +1135,53 @@ struct FusionEpiloguePass
     mlir::OpBuilder builder(return_op);
     auto loc = builder.getUnknownLoc();
 
-    for (auto kind_attr : epilogue_attr) {
-      int kind = kind_attr.cast<mlir::IntegerAttr>().getInt();
+    // Single gpu.launch that chains ALL epilogue ops (load → chain → store).
+    auto c_grid = builder.create<mlir::arith::ConstantIndexOp>(loc, grid_size);
+    auto c_one = builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
+    auto c_block = builder.create<mlir::arith::ConstantIndexOp>(loc, block_size);
 
-      auto c_grid = builder.create<mlir::arith::ConstantIndexOp>(loc, grid_size);
-      auto c_one = builder.create<mlir::arith::ConstantIndexOp>(loc, 1);
-      auto c_block = builder.create<mlir::arith::ConstantIndexOp>(loc, block_size);
+    auto launch = builder.create<mlir::gpu::LaunchOp>(
+        loc, c_grid, c_one, c_one, c_block, c_one, c_one);
+    {
+      mlir::OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPointToStart(&launch.getBody().front());
 
-      auto launch = builder.create<mlir::gpu::LaunchOp>(
-          loc, c_grid, c_one, c_one, c_block, c_one, c_one);
+      auto tid = launch.getThreadIds().x;
+      auto bid = launch.getBlockIds().x;
+      auto c_bd = builder.create<mlir::arith::ConstantIndexOp>(loc, block_size);
+      auto c_total = builder.create<mlir::arith::ConstantIndexOp>(loc, total_elems);
+      auto c_N_val = builder.create<mlir::arith::ConstantIndexOp>(loc, N);
 
-      // Build the epilogue kernel body
+      auto idx = builder.create<mlir::arith::AddIOp>(
+          loc, builder.create<mlir::arith::MulIOp>(loc, bid, c_bd), tid);
+
+      auto in_bounds = builder.create<mlir::arith::CmpIOp>(
+          loc, mlir::arith::CmpIPredicate::ult, idx, c_total);
+
+      auto if_op = builder.create<mlir::scf::IfOp>(loc, in_bounds,
+                                                     /*withElse=*/false);
       {
-        mlir::OpBuilder::InsertionGuard guard(builder);
-        builder.setInsertionPointToStart(&launch.getBody().front());
+        mlir::OpBuilder::InsertionGuard guard2(builder);
+        builder.setInsertionPointToStart(&if_op.getThenRegion().front());
 
-        auto tid = launch.getThreadIds().x;
-        auto bid = launch.getBlockIds().x;
-        auto c_bd = builder.create<mlir::arith::ConstantIndexOp>(loc, block_size);
-        auto c_total = builder.create<mlir::arith::ConstantIndexOp>(loc, total_elems);
-        auto c_N_val = builder.create<mlir::arith::ConstantIndexOp>(loc, N);
+        auto row = builder.create<mlir::arith::DivUIOp>(loc, idx, c_N_val);
+        auto col = builder.create<mlir::arith::RemUIOp>(loc, idx, c_N_val);
+        auto val = builder.create<mlir::memref::LoadOp>(
+            loc, out_arg, mlir::ValueRange{row, col});
 
-        auto idx = builder.create<mlir::arith::AddIOp>(
-            loc, builder.create<mlir::arith::MulIOp>(loc, bid, c_bd), tid);
-
-        auto in_bounds = builder.create<mlir::arith::CmpIOp>(
-            loc, mlir::arith::CmpIPredicate::ult, idx, c_total);
-
-        auto if_op = builder.create<mlir::scf::IfOp>(loc, in_bounds, /*withElse=*/false);
-        {
-          mlir::OpBuilder::InsertionGuard guard2(builder);
-          builder.setInsertionPointToStart(&if_op.getThenRegion().front());
-
-          auto row = builder.create<mlir::arith::DivUIOp>(loc, idx, c_N_val);
-          auto col = builder.create<mlir::arith::RemUIOp>(loc, idx, c_N_val);
-          auto val = builder.create<mlir::memref::LoadOp>(
-              loc, out_arg, mlir::ValueRange{row, col});
-
-          mlir::Value result = emitElementwiseOnValue(
-              builder, loc, static_cast<ElementwiseKind>(kind),
-              val, builder.getF32Type());
-
-          builder.create<mlir::memref::StoreOp>(
-              loc, result, out_arg, mlir::ValueRange{row, col});
+        // Apply ALL epilogue ops in one shot (single load → chain → store).
+        mlir::Value result = val;
+        for (auto kind : kinds) {
+          result = emitElementwiseOnValue(builder, loc, kind, result,
+                                          builder.getF32Type());
         }
 
-        builder.setInsertionPointAfter(if_op);
-        builder.create<mlir::gpu::TerminatorOp>(loc);
+        builder.create<mlir::memref::StoreOp>(
+            loc, result, out_arg, mlir::ValueRange{row, col});
       }
+
+      builder.setInsertionPointAfter(if_op);
+      builder.create<mlir::gpu::TerminatorOp>(loc);
     }
   }
 };
