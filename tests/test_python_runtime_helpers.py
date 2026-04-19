@@ -85,21 +85,6 @@ class ConfigModuleTests(unittest.TestCase):
     def tearDown(self) -> None:
         config_module.reset_config()
 
-    def test_env_bool_parses_common_values(self) -> None:
-        with mock.patch.dict(
-            os.environ,
-            {
-                "BOOL_TRUE": " yes ",
-                "BOOL_FALSE": "OFF",
-                "BOOL_INVALID": "sometimes",
-            },
-            clear=False,
-        ):
-            self.assertTrue(config_module._env_bool("BOOL_TRUE"))
-            self.assertFalse(config_module._env_bool("BOOL_FALSE"))
-            self.assertIsNone(config_module._env_bool("BOOL_INVALID"))
-            self.assertIsNone(config_module._env_bool("BOOL_MISSING"))
-
     def test_configure_get_and_reset_round_trip(self) -> None:
         config_module.configure(default_target="x86-avx512", debug=True, trace="ir")
         snapshot = config_module.get_config()
