@@ -39,7 +39,7 @@ class CacheModuleTests(unittest.TestCase):
 
             artifact_b = prefixed_cache / "artifact-b"
             artifact_b.mkdir()
-            (artifact_b / "artifact_payload.txt").write_text("payload")
+            (artifact_b / "artifact.bin").write_text("payload")
             (artifact_b / "metadata.json").write_text("{invalid json")
 
             info = cache_module.cache_info(tmpdir, include_prefixed=True)
@@ -112,7 +112,7 @@ class ConfigModuleTests(unittest.TestCase):
             {
                 "MATCORE_TARGET": "nvidia-dgpu:sm_90",
                 "MATCORE_DEBUG": "true",
-                "MATCORE_TRACE": "IR",
+                "MATCORE_TRACE": "ir",
                 "MATCORE_VALIDATE": "1",
             },
             clear=False,
@@ -315,7 +315,13 @@ class DeviceTensorTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unsupported numpy dtype"):
                 device_tensor_module.to_device(np.array([1 + 2j], dtype=np.complex64))
 
-            tensor = device_tensor_module.DeviceTensor("raw-handle", (1,), "complex64", (1,), 8)
+            tensor = device_tensor_module.DeviceTensor(
+                handle="raw-handle",
+                shape=(1,),
+                dtype="complex64",
+                strides=(1,),
+                size_bytes=8,
+            )
             with self.assertRaisesRegex(ValueError, "Unsupported MatCore dtype"):
                 tensor.to_host()
 
