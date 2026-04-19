@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import importlib
 import os
 import pathlib
@@ -38,7 +39,7 @@ class CacheModuleTests(unittest.TestCase):
 
             artifact_b = prefixed_cache / "artifact-b"
             artifact_b.mkdir()
-            (artifact_b / "notes.txt").write_text("payload")
+            (artifact_b / "artifact_payload.txt").write_text("payload")
             (artifact_b / "metadata.json").write_text("{invalid json")
 
             info = cache_module.cache_info(tmpdir, include_prefixed=True)
@@ -65,9 +66,14 @@ class CacheModuleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             env_cache = pathlib.Path(tmpdir) / ".matcore_cache"
             env_cache.mkdir()
+            artifact = env_cache / "artifact-a"
+            artifact.mkdir()
+            (artifact / "metadata.json").write_text('{"via": "env"}')
             with mock.patch.dict(os.environ, {"MATCORE_CACHE_DIR": str(env_cache)}, clear=False):
-                found = cache_module._find_cache_dirs()
-            self.assertEqual(found, [env_cache])
+                info = cache_module.cache_info()
+            self.assertEqual(len(info), 1)
+            self.assertEqual(info[0]["cache_dir"], str(env_cache))
+            self.assertEqual(info[0]["artifact_dirs"][0]["metadata"], {"via": "env"})
 
     def test_cache_summary_reports_empty_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -267,38 +273,30 @@ class _FakeNativeModule:
         self.uploads: list[tuple[object, int]] = []
         self.zeroed: list[object] = []
         self.freed: list[object] = []
+        self._buffers: dict[object, bytes] = {}
 
     def matcore_device_alloc(self, size_bytes: int) -> object:
         handle = f"handle-{len(self.alloc_sizes)}"
         self.alloc_sizes.append(size_bytes)
         return handle
 
-    def matcore_device_upload(self, handle: object, _host_ptr: int, size_bytes: int) -> None:
+    def matcore_device_upload(self, handle: object, host_ptr: int, size_bytes: int) -> None:
         self.uploads.append((handle, size_bytes))
+        self._buffers[handle] = ctypes.string_at(host_ptr, size_bytes)
+
+    def matcore_device_download(self, host_ptr: int, handle: object, size_bytes: int) -> None:
+        ctypes.memmove(host_ptr, self._buffers[handle], size_bytes)
 
     def matcore_device_zero(self, handle: object) -> None:
         self.zeroed.append(handle)
+        self._buffers[handle] = b"\x00" * len(self._buffers[handle])
 
     def matcore_device_free(self, handle: object) -> None:
         self.freed.append(handle)
 
 
 class DeviceTensorTests(unittest.TestCase):
-    def test_dtype_helpers_and_contiguous_strides(self) -> None:
-        self.assertEqual(device_tensor_module._numpy_dtype("float8_e4m3fn"), np.dtype(np.uint8))
-        self.assertEqual(device_tensor_module._matcore_dtype(np.int32), "int32")
-        self.assertEqual(
-            device_tensor_module._contiguous_strides(np.zeros((2, 3, 4), dtype=np.float32)),
-            (12, 4, 1),
-        )
-        self.assertEqual(device_tensor_module._contiguous_strides(np.array(7, dtype=np.float32)), ())
-
-        with self.assertRaisesRegex(ValueError, "Unsupported MatCore dtype"):
-            device_tensor_module._numpy_dtype("complex64")
-        with self.assertRaisesRegex(ValueError, "Unsupported numpy dtype"):
-            device_tensor_module._matcore_dtype(np.complex64)
-
-    def test_to_device_zero_and_free_use_native_runtime(self) -> None:
+    def test_to_device_to_host_zero_and_free_use_native_runtime(self) -> None:
         fake_native = _FakeNativeModule()
         host = np.arange(6, dtype=np.float16).reshape(2, 3)
 
@@ -309,8 +307,10 @@ class DeviceTensorTests(unittest.TestCase):
             self.assertEqual(tensor.strides, (3, 1))
             self.assertEqual(tensor.size_bytes, host.nbytes)
             self.assertEqual(tensor.device_ptr, "handle-0")
+            np.testing.assert_array_equal(tensor.to_host(), host)
 
             tensor.zero_()
+            np.testing.assert_array_equal(tensor.to_host(), np.zeros_like(host))
             tensor.free()
             tensor.free()
 
@@ -323,6 +323,16 @@ class DeviceTensorTests(unittest.TestCase):
             tensor.zero_()
         with self.assertRaisesRegex(RuntimeError, "already been freed"):
             _ = tensor.device_ptr
+
+    def test_public_apis_raise_for_unsupported_dtypes(self) -> None:
+        fake_native = _FakeNativeModule()
+        with mock.patch.object(device_tensor_module, "_get_native_module", return_value=fake_native):
+            with self.assertRaisesRegex(ValueError, "Unsupported numpy dtype"):
+                device_tensor_module.to_device(np.array([1 + 2j], dtype=np.complex64))
+
+            tensor = device_tensor_module.DeviceTensor("raw-handle", (1,), "complex64", (1,), 8)
+            with self.assertRaisesRegex(ValueError, "Unsupported MatCore dtype"):
+                tensor.to_host()
 
 
 if __name__ == "__main__":
