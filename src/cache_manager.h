@@ -19,12 +19,13 @@ struct DiskCacheArtifacts {
 };
 
 inline constexpr std::string_view kDiskCacheVersion =
-    "matcore-phase4-cache-v4-nvidia-shared-mma-hotfix";
+    "matcore-phase4-cache-v9-family-c-block-coop";
 
 std::string buildExecutionCacheKey(
     const KernelIR &kernel, const RequestedTargetProfile &target,
     const std::vector<RuntimeTensorView> &tensors,
-    const std::optional<std::string_view> &x86_cache_tag);
+    const std::optional<std::string_view> &x86_cache_tag,
+    bool graph_mode = false);
 
 DiskCacheArtifacts buildDiskCacheArtifacts(const std::string &cache_key);
 bool isDiskCacheSupported(const RequestedTargetProfile &target);

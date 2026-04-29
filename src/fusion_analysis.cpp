@@ -139,6 +139,10 @@ std::vector<SharedBufferDesc> buildSharedBuffers(
     case FusionPatternKind::kMatmulSoftmaxMatmul: {
       (void)softmaxScoreDType(graph, region);
       add_buffer("accum_tile", TensorDType::kFloat32, {tile.br, tile.d});
+      add_buffer("score_tile", TensorDType::kFloat32, {tile.br, tile.bc});
+      add_buffer("row_m", TensorDType::kFloat32, {tile.br});
+      add_buffer("row_l", TensorDType::kFloat32, {tile.br});
+      add_buffer("row_scale", TensorDType::kFloat32, {tile.br});
       break;
     }
     case FusionPatternKind::kNone:
@@ -191,7 +195,7 @@ FusionAnalysisResult FusionAnalyzer::Analyze(
   debug << "fusion_candidates=" << candidates.size() << '\n';
 
   for (const auto &region : candidates) {
-    if (region.size() <= 1) {
+    if (region.empty()) {
       continue;
     }
 
@@ -312,7 +316,7 @@ std::vector<std::vector<uint32_t>> FusionAnalyzer::discoverCandidates(
   std::unordered_set<std::string> seen;
 
   auto maybe_add = [&](std::vector<std::uint32_t> region) {
-    if (region.size() <= 1) {
+    if (region.empty()) {
       return;
     }
     std::ostringstream key;
@@ -458,7 +462,9 @@ std::vector<TileShape> FusionAnalyzer::enumerateTileCandidates(
       return {{64, 64, 64, 32, 2, 4, 128},
               {128, 64, 64, 32, 2, 8, 256}};
     case FusionPatternKind::kMatmulSoftmaxMatmul:
-      return {{32, 32, 16, 16, 1, 2, 64},
+      return {{32, 32, 64, 16, 1, 2, 64},
+              {32, 32, 32, 16, 1, 2, 64},
+              {32, 32, 16, 16, 1, 2, 64},
               {32, 16, 16, 16, 1, 2, 64},
               {16, 16, 8, 8, 1, 1, 32}};
     case FusionPatternKind::kGenericTileChain:
@@ -490,7 +496,9 @@ std::size_t FusionAnalyzer::estimateSharedMemory(
              static_cast<std::size_t>(tile.br * tile.bc) * dtype_bytes;
     case FusionPatternKind::kMatmulSoftmaxMatmul: {
       (void)softmaxScoreDType(graph, region);
-      return static_cast<std::size_t>(tile.br * tile.d) * sizeof(float);
+      return static_cast<std::size_t>(
+                 tile.br * tile.d + tile.br * tile.bc + 3 * tile.br) *
+             sizeof(float);
     }
     case FusionPatternKind::kNone:
       return 0;
@@ -584,9 +592,14 @@ double FusionAnalyzer::scorePlan(const FusedKernelPlan &plan,
       std::max(0.0, static_cast<double>(plan.regs.total_regs - kRegSoftCap)) /
       16.0;
   const double spill_penalty = plan.regs.may_spill ? 1.0 : 0.0;
+  const double family_c_value_tile_bonus =
+      (plan.pattern == FusionPatternKind::kMatmulSoftmaxMatmul)
+          ? std::min(1.0, static_cast<double>(std::max(plan.tile.d, 0)) / 64.0)
+          : 0.0;
 
   return 4.0 * bytes_avoided + 2.0 * tc_bonus + 1.0 * occ_bonus -
-         2.5 * smem_penalty - 3.0 * reg_penalty - 5.0 * spill_penalty;
+         2.5 * smem_penalty - 3.0 * reg_penalty - 5.0 * spill_penalty +
+         family_c_value_tile_bonus;
 }
 
 }  // namespace matcore

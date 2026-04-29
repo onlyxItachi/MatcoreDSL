@@ -10,27 +10,25 @@ try:
 except ImportError:
     HAS_TORCH = False
 
-@mc.kernel
-def matmul(A, B, C):
-    a = mc.load(A)
-    b = mc.load(B)
-    c = mc.matmul(a, b)
-    mc.store(c, C)
+@mc.fused
+def fused_matmul(A, B):
+    return A @ B
 
-def bench_matcore_graph(N, warmup=5, iters=20):
+def bench_matcore_fused(N, warmup=5, iters=20):
     A = np.random.randn(N, N).astype(np.float16)
     B = np.random.randn(N, N).astype(np.float16)
-    C = np.zeros((N, N), dtype=np.float16)
     dA = mc.to_device(A)
     dB = mc.to_device(B)
-    dC = mc.to_device(C)
-    gplan = mc.create_plan(matmul, dA, dB, dC, target="nvidia-dgpu", graph_mode=True)
-    mc.execute_plan(gplan, dA, dB, dC)  # capture
+    # warmup (includes JIT)
     for _ in range(warmup):
-        mc.execute_plan(gplan, dA, dB, dC)
+        dC = fused_matmul(dA, dB)
+    if HAS_TORCH:
+        torch.cuda.synchronize()
     t0 = time.perf_counter()
     for _ in range(iters):
-        mc.execute_plan(gplan, dA, dB, dC)
+        dC = fused_matmul(dA, dB)
+    if HAS_TORCH:
+        torch.cuda.synchronize()
     t_ms = (time.perf_counter() - t0) / iters * 1000
     flops = 2 * N**3
     tflops = flops / (t_ms / 1000) / 1e12
@@ -57,7 +55,7 @@ def bench_pytorch(N, warmup=5, iters=20):
 sizes = [2**k for k in range(7, 17)]  # 128, 256, 512, ..., 65536
 
 print("=" * 82)
-print("Extended Power-of-2 Benchmark: MatcoreDSL (graph) vs PyTorch")
+print("Extended Power-of-2 Benchmark: MatcoreDSL (fused) vs PyTorch")
 print("=" * 82)
 print(f"{'Size':>8} | {'MC time':>10} {'MC TFLOP/s':>11} | {'PT time':>10} {'PT TFLOP/s':>11} | {'gap':>6}")
 print(f"{'':>8} | {'(ms)':>10} {'':>11} | {'(ms)':>10} {'':>11} | {'':>6}")
@@ -71,7 +69,7 @@ for N in sizes:
     # MatCore
     mc_ms, mc_tf = None, None
     try:
-        mc_ms, mc_tf = bench_matcore_graph(N, warmup=3, iters=max(3, min(20, 50000 // max(1, N))))
+        mc_ms, mc_tf = bench_matcore_fused(N, warmup=3, iters=max(3, min(20, 50000 // max(1, N))))
     except Exception as e:
         err = str(e)[:40]
         pass
@@ -88,7 +86,7 @@ for N in sizes:
     pt_ms_s = f"{pt_ms:10.3f}" if pt_ms else "       OOM"
     pt_tf_s = f"{pt_tf:11.4f}" if pt_tf else "        N/A"
     if mc_tf and pt_tf:
-        gap = f"{pt_tf/mc_tf:5.1f}x"
+        gap = f"{mc_tf/pt_tf:5.2f}x"
     else:
         gap = "  N/A "
     print(f"{mc_ms_s} {mc_tf_s} | {pt_ms_s} {pt_tf_s} | {gap}")

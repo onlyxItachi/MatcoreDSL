@@ -61,8 +61,10 @@ _global_config = MatCoreConfig()
 
 
 def get_config() -> MatCoreConfig:
-    """Get the current global configuration."""
-    return deepcopy(_global_config)
+    """Get the current effective global configuration."""
+    cfg = deepcopy(_global_config)
+    cfg._apply_env_overrides()
+    return cfg
 
 
 def configure(**kwargs: Any) -> None:

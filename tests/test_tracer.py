@@ -114,6 +114,54 @@ def test_topo_order():
     print("  topo_order: PASS")
 
 
+def test_logical_dtype_trace():
+    """Logical dtype wrappers should trace their logical dtype, not storage dtype."""
+    builder = FusionTraceBuilder()
+    bf16 = mc.asdtype(np.zeros((8, 8), dtype=np.uint16), "bfloat16")
+    fp8 = mc.asdtype(np.zeros((8, 8), dtype=np.uint8), "float8_e4m3fn")
+
+    lhs = builder.add_input("lhs", bf16)
+    rhs = builder.add_input("rhs", fp8)
+    graph = builder.finish((lhs, rhs))
+
+    assert graph["values"][0]["dtype"] == "bfloat16"
+    assert graph["values"][1]["dtype"] == "float8_e4m3fn"
+    print("  logical_dtype_trace: PASS")
+
+
+def test_matmul_trace_dtype_inference():
+    """Tracer matmul should infer the same output dtypes as launch-time validation."""
+    builder = FusionTraceBuilder()
+    lhs = builder.add_input("lhs", mc.asdtype(np.zeros((4, 6), dtype=np.int8), "int8"))
+    rhs = builder.add_input("rhs", mc.asdtype(np.zeros((6, 5), dtype=np.int8), "int8"))
+    graph = builder.finish(lhs @ rhs)
+    assert graph["values"][-1]["dtype"] == "int32"
+
+    builder_fp8 = FusionTraceBuilder()
+    fp8_lhs = builder_fp8.add_input(
+        "lhs", mc.asdtype(np.zeros((4, 6), dtype=np.uint8), "float8_e4m3fn")
+    )
+    fp8_rhs = builder_fp8.add_input(
+        "rhs", mc.asdtype(np.zeros((6, 5), dtype=np.uint8), "float8_e4m3fn")
+    )
+    graph_fp8 = builder_fp8.finish(fp8_lhs @ fp8_rhs)
+    assert graph_fp8["values"][-1]["dtype"] == "float32"
+    print("  matmul_trace_dtype_inference: PASS")
+
+
+def test_cast_trace():
+    """Tracer-aware cast should emit canonical target dtypes."""
+    builder = FusionTraceBuilder()
+    lhs = builder.add_input("lhs", np.zeros((4, 4), dtype=np.float16))
+    casted = builder.add_cast(lhs, "bf16")
+    graph = builder.finish(casted)
+
+    assert graph["nodes"][-1]["op"] == "cast"
+    assert graph["nodes"][-1]["attrs"]["target_dtype"] == "bfloat16"
+    assert graph["values"][-1]["dtype"] == "bfloat16"
+    print("  cast_trace: PASS")
+
+
 if __name__ == "__main__":
     print("=== Tracer Unit Tests ===")
     test_simple_matmul_trace()
@@ -122,4 +170,7 @@ if __name__ == "__main__":
     test_fused_decorator()
     test_fused_gemm_epilogue()
     test_topo_order()
+    test_logical_dtype_trace()
+    test_matmul_trace_dtype_inference()
+    test_cast_trace()
     print("\nAll tracer tests passed! ✓")

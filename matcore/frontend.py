@@ -65,6 +65,34 @@ _DTYPE_STORAGE_BYTES: dict[str, int] = {
     "int32": 4,
     "float8_e4m3fn": 1,
 }
+_KERNEL_HELPER_NAMES = frozenset(
+    {
+        "load",
+        "store",
+        "matmul",
+        "transpose",
+        "add",
+        "sub",
+        "mul",
+        "div",
+        "relu",
+        "exp",
+        "log",
+        "sqrt",
+        "tanh",
+        "sigmoid",
+        "gelu",
+        "neg",
+        "abs",
+        "softmax",
+        "sin",
+        "cos",
+        "rsqrt",
+        "min",
+        "max",
+        "cast",
+    }
+)
 
 
 def _expr_to_source(node: ast.AST | None) -> str | None:
@@ -192,6 +220,78 @@ def _normalize_dtype_name(dtype_name: str) -> str:
     return aliases.get(lowered, lowered)
 
 
+def _storage_numpy_dtype(dtype_name: str) -> np.dtype:
+    normalized = _normalize_dtype_name(dtype_name)
+    if normalized == "bfloat16":
+        try:
+            return np.dtype("bfloat16")
+        except TypeError:
+            return np.dtype(np.uint16)
+    if normalized == "float8_e4m3fn":
+        return np.dtype(np.uint8)
+    mapping = {
+        "float32": np.dtype(np.float32),
+        "float16": np.dtype(np.float16),
+        "int8": np.dtype(np.int8),
+        "int32": np.dtype(np.int32),
+    }
+    try:
+        return mapping[normalized]
+    except KeyError:
+        raise ValueError(f"Unsupported logical dtype '{dtype_name}'.") from None
+
+
+def _wrap_storage_array(array: np.ndarray, logical_dtype: str) -> Any:
+    normalized = _normalize_dtype_name(logical_dtype)
+    if normalized == "bfloat16" and np.dtype(array.dtype) != np.dtype("bfloat16"):
+        return asdtype(array, "bfloat16")
+    if normalized == "float8_e4m3fn":
+        return asdtype(array, "float8_e4m3fn")
+    return array
+
+
+def _graph_output_tensor(
+    output_shape: tuple[int, ...],
+    output_dtype_name: str,
+    out: Any | None,
+) -> Any:
+    normalized_dtype = _normalize_dtype_name(output_dtype_name)
+    if out is None:
+        storage = np.empty(output_shape, dtype=_storage_numpy_dtype(normalized_dtype))
+        return _wrap_storage_array(storage, normalized_dtype)
+
+    shape = getattr(out, "shape", None)
+    if shape is None:
+        raise ValueError("@mc.fused output tensor does not expose a shape.")
+    actual_shape = tuple(int(dim) for dim in shape)
+    if actual_shape != output_shape:
+        raise ValueError(
+            f"Output shape mismatch for @mc.fused: expected {output_shape}, got {actual_shape}."
+        )
+
+    try:
+        actual_dtype = _logical_dtype_name(out, 0)
+    except TypeError:
+        actual_dtype = ""
+
+    if actual_dtype != normalized_dtype:
+        if isinstance(out, np.ndarray):
+            storage_dtype = np.dtype(out.dtype)
+            if normalized_dtype == "bfloat16" and storage_dtype == np.dtype(np.uint16):
+                out = asdtype(out, "bfloat16")
+                actual_dtype = "bfloat16"
+            elif normalized_dtype == "float8_e4m3fn" and storage_dtype == np.dtype(np.uint8):
+                out = asdtype(out, "float8_e4m3fn")
+                actual_dtype = "float8_e4m3fn"
+        if actual_dtype != normalized_dtype:
+            display_dtype = actual_dtype or getattr(getattr(out, "dtype", None), "name", None)
+            raise ValueError(
+                "Output dtype mismatch for @mc.fused: "
+                f"expected {normalized_dtype}, got {display_dtype}."
+            )
+    return out
+
+
 def _tensor_symbol(params: list[str], idx: int) -> str:
     return params[idx] if idx < len(params) else f"arg{idx}"
 
@@ -316,6 +416,75 @@ def _build_runtime_ir(
     runtime_ir["tensor_quantization"] = tensor_quantization
     runtime_ir["global_quantization"] = global_quantization
     return runtime_ir
+
+
+def _resolve_effective_target(target: str | None) -> str:
+    from .config import resolve_launch_options
+
+    resolved = resolve_launch_options(target=target, debug=None, trace=None, validate=None)
+    return _normalize_target(resolved["target"])
+
+
+def _resolve_fused_target(target: str | None) -> str:
+    if target is not None:
+        return _resolve_effective_target(target)
+
+    env_target = os.environ.get("MATCORE_TARGET")
+    if env_target:
+        return _resolve_effective_target(env_target)
+
+    from .config import get_config
+
+    cfg = get_config()
+    if cfg.default_target != "x86-auto":
+        return _normalize_target(cfg.default_target)
+    return _normalize_target("nvidia-dgpu:sm_89")
+
+
+def _analyze_tensor_residency(arrays: tuple[Any, ...]) -> tuple[bool, bool]:
+    has_device = any(isinstance(a, DeviceTensor) for a in arrays)
+    has_host = any(not isinstance(a, DeviceTensor) for a in arrays)
+    return has_device, has_host
+
+
+def _has_quantized_device_tensor(array: Any) -> bool:
+    if not isinstance(array, DeviceTensor):
+        return False
+    quant_obj = getattr(array, "matcore_quantization", None)
+    if isinstance(quant_obj, dict):
+        if bool(quant_obj.get("enabled", False)):
+            return True
+        if quant_obj.get("scale") is not None or quant_obj.get("zero_point") is not None:
+            return True
+    if bool(getattr(array, "matcore_quant_enabled", False)):
+        return True
+    return hasattr(array, "matcore_scale") or hasattr(array, "matcore_zero_point")
+
+
+def _validate_tensor_residency(arrays: tuple[Any, ...], *, api_name: str) -> bool:
+    has_device, has_host = _analyze_tensor_residency(arrays)
+    if has_device and has_host:
+        raise TypeError(
+            f"{api_name}() does not support mixed host/device tensors. "
+            "Use mc.to_device() on all tensors or none."
+        )
+    if any(_has_quantized_device_tensor(array) for array in arrays):
+        raise ValueError(
+            "Quantized DeviceTensors are not yet supported. "
+            "Upload plain int8 tensors with mc.to_device() or keep quantized tensors "
+            "on the host path."
+        )
+    return has_device
+
+
+def _require_device_tensor_target(
+    has_device_tensors: bool, normalized_target: str, *, api_name: str
+) -> None:
+    if has_device_tensors and not normalized_target.startswith("nvidia-dgpu"):
+        raise ValueError(
+            "DeviceTensors are only supported with nvidia-dgpu target (v1). "
+            f"Got target={normalized_target!r} for {api_name}()."
+        )
 
 
 @dataclass(frozen=True)
@@ -628,11 +797,15 @@ class MatCoreASTVisitor(ast.NodeVisitor):
                 "target_dtype": target_dtype,
             }
 
+        if isinstance(call.func, ast.Name) and call.func.id in _KERNEL_HELPER_NAMES:
+            raise RuntimeError(
+                f"Kernel helper '{call.func.id}' must be namespace-qualified. "
+                f"Use mc.{call.func.id}(...) or the same alias used for @mc.kernel."
+            )
+
         return {"op": "assign", "output": None, "value": _expr_to_source(call)}
 
     def _is_marker(self, fn: str, marker: str) -> bool:
-        if fn == marker:
-            return marker in {"load", "store", "matmul"}
         if not fn.endswith(f".{marker}"):
             return False
         root = fn[: -(len(marker) + 1)]
@@ -1101,28 +1274,7 @@ def launch(
     if not isinstance(kernel_obj, MatCoreKernel):
         raise TypeError("mc.launch expects a kernel object returned by @mc.kernel.")
 
-    # Detect and reject mixed host/device tensor sets early (better error message).
-    has_device = any(isinstance(a, DeviceTensor) for a in arrays)
-    has_host = any(not isinstance(a, DeviceTensor) for a in arrays)
-    if has_device and has_host:
-        raise TypeError(
-            "mc.launch() does not support mixed host/device tensors. "
-            "Use mc.to_device() on all tensors or none."
-        )
-
-    # Device-resident tensors require NVIDIA backend (v1 limitation).
-    if has_device:
-        _tgt = (target or "").lower()
-        if _tgt and "nvidia" not in _tgt:
-            raise ValueError(
-                "DeviceTensors are only supported with nvidia-dgpu target (v1). "
-                f"Got target={target!r}."
-            )
-        # Auto-zero the output tensor (last arg, C) before launch.
-        # The MLIR module skips linalg.fill for device-resident output, so
-        # the caller must pre-zero it for the accumulation (C += A @ B).
-        if len(arrays) > 2 and isinstance(arrays[-1], DeviceTensor):
-            arrays[-1].zero_()
+    has_device = _validate_tensor_residency(arrays, api_name="mc.launch")
 
     runtime_ir, normalized_target, obs_options, validation_enabled = _prepare_launch(
         kernel_obj,
@@ -1133,6 +1285,11 @@ def launch(
         trace=trace,
         validate=validate,
     )
+    _require_device_tensor_target(has_device, normalized_target, api_name="mc.launch")
+    if has_device and len(arrays) > 2 and isinstance(arrays[-1], DeviceTensor):
+        # The MLIR module skips linalg.fill for device-resident output, so
+        # the caller must pre-zero it for the accumulation (C += A @ B).
+        arrays[-1].zero_()
     if validation_enabled:
         _validate_tensors(arrays, runtime_ir, normalized_target)
     from .graph import get_active_graph
@@ -1187,19 +1344,7 @@ def create_plan(
     if not isinstance(kernel_obj, MatCoreKernel):
         raise TypeError("mc.create_plan expects a kernel object returned by @mc.kernel.")
 
-    has_device = any(isinstance(a, DeviceTensor) for a in template_tensors)
-    has_host = any(not isinstance(a, DeviceTensor) for a in template_tensors)
-    if has_device and has_host:
-        raise TypeError(
-            "mc.create_plan() does not support mixed host/device tensors."
-        )
-
-    if has_device:
-        _tgt = (target or "").lower()
-        if _tgt and "nvidia" not in _tgt:
-            raise ValueError(
-                "DeviceTensors are only supported with nvidia-dgpu target (v1)."
-            )
+    has_device = _validate_tensor_residency(template_tensors, api_name="mc.create_plan")
 
     runtime_ir, normalized_target, _, _ = _prepare_launch(
         kernel_obj,
@@ -1210,6 +1355,7 @@ def create_plan(
         trace=None,
         validate=None,
     )
+    _require_device_tensor_target(has_device, normalized_target, api_name="mc.create_plan")
 
     native = _get_native_module()
     return native.create_plan(
@@ -1269,6 +1415,20 @@ def _numpy_dtype_to_str(dtype: Any) -> str:
     return str(dtype)
 
 
+def _infer_traced_matmul_dtype(lhs_dtype: str, rhs_dtype: str) -> str:
+    lhs = _normalize_dtype_name(lhs_dtype)
+    rhs = _normalize_dtype_name(rhs_dtype)
+    if lhs != rhs:
+        raise TypeError(
+            f"Tracer matmul requires matching lhs/rhs dtypes, got {lhs!r} and {rhs!r}."
+        )
+    if lhs == "int8":
+        return "int32"
+    if lhs == "float8_e4m3fn":
+        return "float32"
+    return lhs
+
+
 class FusionTraceBuilder:
     """Builds a trace graph by recording operations symbolically."""
 
@@ -1319,7 +1479,7 @@ class FusionTraceBuilder:
 
     def add_input(self, symbol: str, tensor: Any) -> "TracerTensor":
         """Register an input tensor and return a TracerTensor."""
-        dtype = _numpy_dtype_to_str(tensor.dtype)
+        dtype = _logical_dtype_name(tensor, 0)
         shape = tuple(tensor.shape)
         vid = self._new_value(symbol, dtype, shape, kind="input")
         return TracerTensor(vid, self, dtype=dtype, shape=shape)
@@ -1334,7 +1494,7 @@ class FusionTraceBuilder:
         lhs_shape = lhs.shape
         rhs_shape = rhs.shape
         out_shape = (lhs_shape[0], rhs_shape[1])
-        out_dtype = lhs.dtype
+        out_dtype = _infer_traced_matmul_dtype(lhs.dtype, rhs.dtype)
         out_vid = self._new_value(f"mm_{self._next_node_id}", out_dtype, out_shape)
         self._new_node(
             "matmul",
@@ -1343,6 +1503,17 @@ class FusionTraceBuilder:
             {"transpose_rhs": rhs_transposed},
         )
         return TracerTensor(out_vid, self, dtype=out_dtype, shape=out_shape)
+
+    def add_cast(self, x: "TracerTensor", target_dtype: str) -> "TracerTensor":
+        normalized = _normalize_dtype_name(target_dtype)
+        if normalized not in SUPPORTED_INPUT_DTYPES:
+            raise TypeError(
+                f"Unsupported cast dtype '{target_dtype}'. "
+                f"Supported dtypes: {', '.join(SUPPORTED_INPUT_DTYPES)}"
+            )
+        out_vid = self._new_value(f"cast_{self._next_node_id}", normalized, x.shape)
+        self._new_node("cast", [x.value_id], [out_vid], {"target_dtype": normalized})
+        return TracerTensor(out_vid, self, dtype=normalized, shape=x.shape)
 
     def add_elementwise_unary(self, op: str, x: "TracerTensor") -> "TracerTensor":
         """Record a unary elementwise op (exp, relu, log, etc.)."""
@@ -1503,30 +1674,13 @@ class TracerTensor:
         )
 
 
-def _graph_dtype_to_numpy(dtype_name: str) -> Any:
-    mapping = {
-        "float32": np.float32,
-        "float16": np.float16,
-        "int32": np.int32,
-        "int8": np.int8,
-    }
-    if dtype_name == "bfloat16":
-        try:
-            return np.dtype("bfloat16")
-        except TypeError:
-            return np.float32
-    if dtype_name in mapping:
-        return mapping[dtype_name]
-    raise ValueError(f"Unsupported fused graph output dtype '{dtype_name}'.")
-
-
 def fused(fn: Any) -> Any:
     """Decorator that traces a function and executes the fused graph."""
 
     @functools.wraps(fn)
     def wrapper(
         *args: Any,
-        target: str = "nvidia-dgpu:sm_89",
+        target: str | None = None,
         out: Any = None,
         debug: bool = False,
         **kwargs: Any,
@@ -1536,27 +1690,19 @@ def fused(fn: Any) -> Any:
         sig = inspect.signature(fn)
         param_names = list(sig.parameters.keys())
 
-        # Detect DeviceTensor vs numpy inputs (reject mixed).
-        has_device = any(isinstance(a, DeviceTensor) for a in args)
-        has_host = any(isinstance(a, np.ndarray) for a in args)
-        if has_device and has_host:
-            raise TypeError(
-                "@mc.fused does not support mixed host/device tensors. "
-                "Use mc.to_device() on all tensors or none."
-            )
+        has_device = _validate_tensor_residency(args, api_name="@mc.fused")
+        normalized_target = _resolve_fused_target(target)
+        _require_device_tensor_target(has_device, normalized_target, api_name="@mc.fused")
 
         tracer_args = []
         for i, arg in enumerate(args):
             name = param_names[i] if i < len(param_names) else f"arg{i}"
-            if isinstance(arg, DeviceTensor):
-                from .device_tensor import _numpy_dtype
-                dummy = np.empty(arg.shape, dtype=_numpy_dtype(arg.dtype))
-                tracer_args.append(builder.add_input(name, dummy))
-            elif isinstance(arg, np.ndarray):
+            if isinstance(arg, (DeviceTensor, MatCoreTensorView, np.ndarray)):
                 tracer_args.append(builder.add_input(name, arg))
             else:
                 raise TypeError(
-                    f"@mc.fused expects numpy arrays or DeviceTensors, got {type(arg)}"
+                    "@mc.fused expects numpy arrays, logical tensor views, or "
+                    f"DeviceTensors, got {type(arg)}"
                 )
 
         trace_result = fn(*tracer_args, **kwargs)
@@ -1576,15 +1722,14 @@ def fused(fn: Any) -> Any:
             raise ValueError("Fused graph output descriptor is missing.")
 
         output_shape = tuple(int(dim) for dim in output_desc.get("shape", []))
-        output_dtype_name = str(output_desc.get("dtype", "float32"))
-        output_dtype = _graph_dtype_to_numpy(output_dtype_name)
+        output_dtype_name = _normalize_dtype_name(str(output_desc.get("dtype", "float32")))
 
         if has_device:
             native = _get_native_module()
             num_elements = 1
             for d in output_shape:
                 num_elements *= d
-            element_size = int(np.dtype(output_dtype).itemsize)
+            element_size = _DTYPE_STORAGE_BYTES[output_dtype_name]
             size_bytes = num_elements * element_size
             handle = native.matcore_device_alloc(size_bytes)
 
@@ -1602,21 +1747,7 @@ def fused(fn: Any) -> Any:
             # Zero the output buffer (matmul accumulation needs zeros).
             output_tensor.zero_()
         else:
-            output_tensor = out
-            if output_tensor is None:
-                output_tensor = np.empty(output_shape, dtype=output_dtype)
-            else:
-                output_arr = np.asarray(output_tensor)
-                if tuple(int(dim) for dim in output_arr.shape) != output_shape:
-                    raise ValueError(
-                        f"Output shape mismatch for @mc.fused: expected {output_shape}, got {tuple(output_arr.shape)}."
-                    )
-                if _normalize_dtype_name(str(output_arr.dtype)) != _normalize_dtype_name(output_dtype_name):
-                    raise ValueError(
-                        "Output dtype mismatch for @mc.fused: "
-                        f"expected {output_dtype_name}, got {output_arr.dtype}."
-                    )
-                output_tensor = output_arr
+            output_tensor = _graph_output_tensor(output_shape, output_dtype_name, out)
 
         kernel_ir_dict = {
             "kernel_name": f"{fn.__name__}_fused",
@@ -1625,7 +1756,6 @@ def fused(fn: Any) -> Any:
             "graph": graph,
         }
 
-        normalized_target = _normalize_target(target)
         native = _get_native_module()
         native.compile_and_run(kernel_ir_dict, normalized_target, *args, output_tensor)
         return output_tensor
@@ -1881,11 +2011,30 @@ def _tracer_aware_binary(op_name: str, gpu_func: Any) -> Any:
     return f
 
 
+def _tracer_aware_cast(marker_func: Any) -> Any:
+    def f(x: Any, dtype: str | None = None, **kwargs: Any) -> Any:
+        dtype_kw = kwargs.pop("dtype", None)
+        if kwargs:
+            unexpected = ", ".join(sorted(kwargs))
+            raise TypeError(f"mc.cast got unexpected keyword arguments: {unexpected}")
+        target_dtype = dtype_kw if dtype_kw is not None else dtype
+        if dtype_kw is not None and dtype is not None:
+            raise TypeError("mc.cast dtype must be provided once (positional or keyword).")
+        if target_dtype is None:
+            raise TypeError("mc.cast requires a target dtype.")
+        if isinstance(x, TracerTensor):
+            return x._builder.add_cast(x, str(target_dtype))
+        return marker_func(x, target_dtype)
+
+    f.__name__ = "cast"
+    return f
+
+
 def _tracer_aware_softmax(gpu_func: Any) -> Any:
     def f(x: Any, axis: int = -1, **kwargs: Any) -> Any:
         if isinstance(x, TracerTensor):
             return x._builder.add_softmax(x, axis=axis)
-        return gpu_func(x, **kwargs)
+        return gpu_func(x, axis=axis, **kwargs)
 
     f.__name__ = "softmax"
     return f
@@ -1904,5 +2053,10 @@ mc.sin = _tracer_aware_unary("sin", sin_gpu)
 mc.cos = _tracer_aware_unary("cos", cos_gpu)
 mc.rsqrt = _tracer_aware_unary("rsqrt", rsqrt_gpu)
 mc.softmax = _tracer_aware_softmax(softmax_gpu)
+mc.add = _tracer_aware_binary("add", add_gpu)
+mc.sub = _tracer_aware_binary("sub", sub_gpu)
+mc.mul = _tracer_aware_binary("mul", mul_gpu)
+mc.div = _tracer_aware_binary("div", div_gpu)
 mc.min = _tracer_aware_binary("min", min_gpu)
 mc.max = _tracer_aware_binary("max", max_gpu)
+mc.cast = _tracer_aware_cast(cast)

@@ -7,6 +7,7 @@ and to_device(), which uploads a numpy array to GPU memory.
 from __future__ import annotations
 
 import importlib
+import re
 import weakref
 from typing import Any
 
@@ -26,6 +27,36 @@ def _get_native_module() -> Any:
             "Failed to import native module '_matcore_native'. Build the extension first."
         ) from exc
 
+
+_SUPPORTED_TARGETS: tuple[str, ...] = (
+    "x86-auto",
+    "x86-avx2",
+    "x86-avx512",
+    "amd-igpu",
+    "nvidia-dgpu",
+    "amd-npu",
+)
+
+_TARGET_ALIASES: dict[str, str] = {
+    "x86": "x86-auto",
+    "x86auto": "x86-auto",
+    "x86-avx2": "x86-avx2",
+    "x86_avx2": "x86-avx2",
+    "x86-avx512": "x86-avx512",
+    "x86_avx512": "x86-avx512",
+    "amdgcn": "amd-igpu",
+    "amd-igpu": "amd-igpu",
+    "amd_igpu": "amd-igpu",
+    "nvptx": "nvidia-dgpu",
+    "nvidia-dgpu": "nvidia-dgpu",
+    "nvidia_dgpu": "nvidia-dgpu",
+    "npu": "amd-npu",
+    "amd-npu": "amd-npu",
+    "amd_npu": "amd-npu",
+}
+
+_NVIDIA_SM_TOKEN = re.compile(r"^(?:compute_)?sm?_?([0-9]{2,3})$")
+_AMD_GFX_TOKEN = re.compile(r"^gfx[0-9a-z]+$")
 
 _DTYPE_TO_NUMPY = {
     "float16": np.float16,
@@ -59,6 +90,95 @@ def _matcore_dtype(np_dtype) -> str:
         return _NUMPY_TO_DTYPE[key]
     except KeyError:
         raise ValueError(f"Unsupported numpy dtype: {key!r}") from None
+
+
+def _normalize_dtype_name(dtype_name: str) -> str:
+    lowered = dtype_name.strip().lower()
+    aliases = {
+        "float32": "float32",
+        "single": "float32",
+        "float16": "float16",
+        "half": "float16",
+        "bfloat16": "bfloat16",
+        "bf16": "bfloat16",
+        "int8": "int8",
+        "i8": "int8",
+        "int32": "int32",
+        "i32": "int32",
+        "float8_e4m3fn": "float8_e4m3fn",
+        "float8e4m3fn": "float8_e4m3fn",
+        "f8e4m3fn": "float8_e4m3fn",
+        "fp8_e4m3fn": "float8_e4m3fn",
+        "fp8-e4m3fn": "float8_e4m3fn",
+        "e4m3fn": "float8_e4m3fn",
+    }
+    return aliases.get(lowered, lowered)
+
+
+def _normalize_target(target: str) -> str:
+    if not isinstance(target, str):
+        raise TypeError("target must be a string")
+    normalized = target.strip().lower()
+    if not normalized:
+        raise ValueError("target must not be empty")
+
+    if match := _NVIDIA_SM_TOKEN.fullmatch(normalized):
+        return f"nvidia-dgpu:sm_{match.group(1)}"
+
+    base = normalized
+    suffix = ""
+    for separator in (":", "@", "/"):
+        if separator in normalized:
+            base, suffix = normalized.split(separator, 1)
+            break
+
+    base = _TARGET_ALIASES.get(base, base)
+    if base not in _SUPPORTED_TARGETS:
+        raise ValueError(
+            "Unsupported target "
+            f"'{target}'. Supported base targets: {', '.join(_SUPPORTED_TARGETS)}. "
+            "GPU profiles may be requested as nvidia-dgpu:sm_90 or amd-igpu:gfx90a."
+        )
+
+    if not suffix:
+        return base
+
+    normalized_suffix = suffix.strip()
+    if base == "nvidia-dgpu":
+        match = _NVIDIA_SM_TOKEN.fullmatch(normalized_suffix)
+        if match is None:
+            raise ValueError(
+                f"Unsupported NVIDIA target profile '{target}'. Use forms like 'nvidia-dgpu:sm_90'."
+            )
+        return f"{base}:sm_{match.group(1)}"
+    if base == "amd-igpu":
+        if _AMD_GFX_TOKEN.fullmatch(normalized_suffix) is None:
+            raise ValueError(
+                f"Unsupported AMD target profile '{target}'. Use forms like 'amd-igpu:gfx90a'."
+            )
+        return f"{base}:{normalized_suffix}"
+
+    raise ValueError(
+        f"Target profile suffixes are not supported for '{base}', got '{target}'."
+    )
+
+
+def _logical_dtype_name(array: Any) -> str:
+    override = getattr(array, "matcore_dtype", None)
+    if override is not None:
+        dtype_name = _normalize_dtype_name(str(override))
+    else:
+        dtype_obj = getattr(array, "dtype", None)
+        if dtype_obj is None:
+            raise TypeError("to_device expects a NumPy-like array with a dtype")
+        dtype_name = _normalize_dtype_name(str(getattr(dtype_obj, "name", dtype_obj)))
+
+    if dtype_name not in _DTYPE_TO_NUMPY:
+        raise ValueError(
+            f"Unsupported logical MatCore dtype: {dtype_name!r}. "
+            f"Supported dtypes: {', '.join(sorted(_DTYPE_TO_NUMPY))}"
+        )
+    return dtype_name
 
 
 def _contiguous_strides(arr: np.ndarray) -> tuple:
@@ -193,7 +313,37 @@ class DeviceTensor:
 
 def to_device(array, *, target: str = "nvidia-dgpu") -> DeviceTensor:
     """Upload a numpy array to GPU memory. Returns a DeviceTensor."""
+    normalized_target = _normalize_target(target)
+    if not normalized_target.startswith("nvidia-dgpu"):
+        raise ValueError(
+            "DeviceTensor uploads are only supported for nvidia-dgpu targets. "
+            f"Got target={target!r}."
+        )
+
+    logical_dtype = _logical_dtype_name(array)
+    if logical_dtype == "int8":
+        quant_obj = getattr(array, "matcore_quantization", None)
+        has_quant_metadata = (
+            quant_obj is not None
+            or hasattr(array, "matcore_scale")
+            or hasattr(array, "matcore_zero_point")
+            or hasattr(array, "matcore_quant_enabled")
+        )
+        if has_quant_metadata:
+            raise ValueError(
+                "to_device() does not yet support quantized int8 logical tensors. "
+                "Upload plain int8 tensors or keep quantized tensors on the host path."
+            )
     arr = np.ascontiguousarray(array)
+    storage_itemsize = int(np.dtype(arr.dtype).itemsize)
+    expected_itemsize = int(_numpy_dtype(logical_dtype).itemsize)
+    if storage_itemsize != expected_itemsize:
+        raise ValueError(
+            "Logical MatCore dtype and runtime storage dtype do not match for to_device(): "
+            f"logical dtype '{logical_dtype}' expects itemsize {expected_itemsize}, "
+            f"got storage itemsize {storage_itemsize}."
+        )
+
     size_bytes = arr.nbytes
     native = _get_native_module()
     handle = native.matcore_device_alloc(size_bytes)
@@ -201,7 +351,7 @@ def to_device(array, *, target: str = "nvidia-dgpu") -> DeviceTensor:
     return DeviceTensor(
         handle,
         arr.shape,
-        _matcore_dtype(arr.dtype),
+        logical_dtype,
         _contiguous_strides(arr),
         size_bytes,
     )

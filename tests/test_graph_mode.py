@@ -78,6 +78,27 @@ def test_graph_pointer_validation():
     dA.free(); dB.free(); dC.free(); dA2.free()
 
 
+def test_graph_large_capture():
+    """Large graph-mode capture should avoid capture-time workspace allocs."""
+    N = 256
+    A = np.random.randn(N, N).astype(np.float16)
+    B = np.random.randn(N, N).astype(np.float16)
+    C = np.zeros((N, N), dtype=np.float16)
+
+    dA = mc.to_device(A)
+    dB = mc.to_device(B)
+    dC = mc.to_device(C)
+
+    plan = mc.create_plan(matmul, dA, dB, dC, target=TARGET, graph_mode=True)
+    mc.execute_plan(plan, dA, dB, dC)
+    result = dC.to_host()
+
+    assert result.shape == C.shape
+
+    dA.free(); dB.free(); dC.free()
+    print("PASS: Large graph capture test")
+
+
 def test_no_graph_still_works():
     """Plans without graph_mode still work normally."""
     N = 32
@@ -175,6 +196,9 @@ if __name__ == "__main__":
     print()
 
     test_graph_pointer_validation()
+    print()
+
+    test_graph_large_capture()
     print()
 
     benchmark_graph_vs_plan()

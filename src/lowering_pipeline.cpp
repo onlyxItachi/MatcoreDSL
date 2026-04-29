@@ -3308,6 +3308,13 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
       }
       llvm_unreachable("nvidia-select-mapping should fail through fail_with_report");
     }();
+    if (module->hasAttr("matcore.graph_mode") && mapping.split_k_factor > 1) {
+      fprintf(stderr,
+              "[GraphMode] Disabling split_k=%lld for CUDA graph capture-safe "
+              "plan\n",
+              (long long)mapping.split_k_factor);
+      mapping.split_k_factor = 1;
+    }
     if (obs) {
       obs->snapshot("nvidia-apply-transform_pre", module);
     }
