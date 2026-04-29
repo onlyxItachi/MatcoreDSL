@@ -22,6 +22,7 @@ struct FrozenTensorMeta {
   std::vector<int64_t> strides;
   bool is_device_resident = false;
   bool is_output = false;
+  QuantizationParams quantization;
 };
 
 /// Pre-compiled execution plan. Python calls create_plan() once (expensive),
@@ -31,7 +32,8 @@ struct FrozenTensorMeta {
 /// This prevents dangling MLIR state that would occur if only the engine were shared.
 ///
 /// Plans are shape-locked: tensors passed to execute_plan() must match the
-/// frozen metadata exactly (dtype, rank, shape, strides, residency).
+/// frozen metadata exactly (dtype, rank, shape, strides, residency,
+/// quantization).
 class MatcorePlan {
 public:
   ~MatcorePlan();

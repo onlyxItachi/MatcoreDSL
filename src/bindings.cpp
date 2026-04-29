@@ -244,19 +244,7 @@ matcore::TensorDType parseRuntimeTensorDType(const std::string &dtype_name) {
 }
 
 matcore::TensorDType parseTensorDType(const std::string &s) {
-  if (s == "float32") {
-    return matcore::TensorDType::kFloat32;
-  }
-  if (s == "float16") {
-    return matcore::TensorDType::kFloat16;
-  }
-  if (s == "int32") {
-    return matcore::TensorDType::kInt32;
-  }
-  if (s == "int8") {
-    return matcore::TensorDType::kInt8;
-  }
-  throw std::runtime_error("Unknown dtype: " + s);
+  return parseRuntimeTensorDType(normalizeDTypeName(s));
 }
 
 matcore::ValueKind parseValueKind(const std::string &s) {
@@ -631,6 +619,12 @@ ParsedTensor parseTensorArgument(const nb::object &tensor, std::size_t index) {
                                " uses unsupported dtype '" + parsed.dtype_name +
                                "'. Supported dtypes: float32, float16, bfloat16, "
                                "int8, int32, float8_e4m3fn.");
+    }
+    parsed.quantization = parseTensorQuantization(tensor, parsed.dtype_name);
+    if (parsed.quantization.enabled) {
+      throw std::runtime_error(
+          "Quantized DeviceTensor inputs are not yet supported. "
+          "Upload plain int8 tensors or keep quantized tensors on the host path.");
     }
     parsed.shape = parseInt64Sequence(tensor.attr("shape"), "shape");
     parsed.element_strides = parseInt64Sequence(tensor.attr("strides"), "strides");
@@ -1274,6 +1268,17 @@ NB_MODULE(_matcore_native, m) {
           info[nb::str("reg_budget_exceeded")] =
               nb::bool_(stats.reg_budget_exceeded);
           info[nb::str("route")] = nb::str(stats.route.c_str());
+          if (stats.fusion_launch_count > 0) {
+            info[nb::str("fusion_launch_count")] =
+                nb::int_(stats.fusion_launch_count);
+          }
+          if (!stats.family_c_strategy.empty()) {
+            info[nb::str("family_c_strategy")] =
+                nb::str(stats.family_c_strategy.c_str());
+          }
+          if (stats.family_c_dtile > 0) {
+            info[nb::str("family_c_dtile")] = nb::int_(stats.family_c_dtile);
+          }
           return info;
         },
         "Return stats from the most recent compile_and_run invocation.");

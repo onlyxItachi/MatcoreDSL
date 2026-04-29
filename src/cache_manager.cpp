@@ -224,9 +224,13 @@ void appendKernelStructure(std::string &key, const KernelIR &kernel) {
 std::string buildExecutionCacheKey(
     const KernelIR &kernel, const RequestedTargetProfile &target_profile,
     const std::vector<RuntimeTensorView> &tensors,
-    const std::optional<std::string_view> &x86_cache_tag) {
+    const std::optional<std::string_view> &x86_cache_tag,
+    bool graph_mode) {
   std::string key = kernel.kernel_name.empty() ? "matcore_kernel" : kernel.kernel_name;
   key += "|target=" + targetName(target_profile);
+  if (graph_mode) {
+    key += "|graph_mode";
+  }
   if (x86_cache_tag.has_value()) {
     key += "|";
     key += std::string(*x86_cache_tag);

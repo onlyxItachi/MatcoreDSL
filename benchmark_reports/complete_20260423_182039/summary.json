@@ -1,0 +1,209 @@
+{
+  "generated_at": "2026-04-23T18:29:47",
+  "results": [
+    {
+      "name": "core_suite",
+      "category": "core",
+      "relpath": "tests/run_benchmarks.py",
+      "command": [
+        "/home/hamza-usta/MatcoreDSL/.venv/bin/python",
+        "/home/hamza-usta/MatcoreDSL/tests/run_benchmarks.py"
+      ],
+      "timeout_seconds": 3600.0,
+      "started_at": "2026-04-23T18:20:39",
+      "duration_seconds": 206.7567441719998,
+      "status": "FAIL",
+      "returncode": 1,
+      "detail": "Overall:      FAIL",
+      "stdout_log": "benchmark_reports/complete_20260423_182039/core_suite.stdout.log",
+      "stderr_log": "benchmark_reports/complete_20260423_182039/core_suite.stderr.log"
+    },
+    {
+      "name": "device_resident",
+      "category": "device",
+      "relpath": "tests/benchmark_device_resident.py",
+      "command": [
+        "/home/hamza-usta/MatcoreDSL/.venv/bin/python",
+        "/home/hamza-usta/MatcoreDSL/tests/benchmark_device_resident.py"
+      ],
+      "timeout_seconds": 1800.0,
+      "started_at": "2026-04-23T18:24:06",
+      "duration_seconds": 0.08323409500007983,
+      "status": "FAIL",
+      "returncode": 1,
+      "detail": "ModuleNotFoundError: No module named 'matcore'",
+      "stdout_log": "benchmark_reports/complete_20260423_182039/device_resident.stdout.log",
+      "stderr_log": "benchmark_reports/complete_20260423_182039/device_resident.stderr.log"
+    },
+    {
+      "name": "graph_vs_torch",
+      "category": "comparison",
+      "relpath": "tests/bench_vs_torch.py",
+      "command": [
+        "/home/hamza-usta/MatcoreDSL/.venv/bin/python",
+        "/home/hamza-usta/MatcoreDSL/tests/bench_vs_torch.py"
+      ],
+      "timeout_seconds": 1800.0,
+      "started_at": "2026-04-23T18:24:06",
+      "duration_seconds": 2.1931667029998607,
+      "status": "PASS",
+      "returncode": 0,
+      "detail": "with multi-warp cooperation and shared-memory double-buffering.",
+      "stdout_log": "benchmark_reports/complete_20260423_182039/graph_vs_torch.stdout.log",
+      "stderr_log": "benchmark_reports/complete_20260423_182039/graph_vs_torch.stderr.log"
+    },
+    {
+      "name": "full_comparison",
+      "category": "comparison",
+      "relpath": "tests/bench_full_comparison.py",
+      "command": [
+        "/home/hamza-usta/MatcoreDSL/.venv/bin/python",
+        "/home/hamza-usta/MatcoreDSL/tests/bench_full_comparison.py"
+      ],
+      "timeout_seconds": 1800.0,
+      "started_at": "2026-04-23T18:24:08",
+      "duration_seconds": 3.131975149000027,
+      "status": "PASS",
+      "returncode": 0,
+      "detail": "\u2192 Closest gap: 1.2x at 1024x1024",
+      "stdout_log": "benchmark_reports/complete_20260423_182039/full_comparison.stdout.log",
+      "stderr_log": "benchmark_reports/complete_20260423_182039/full_comparison.stderr.log"
+    },
+    {
+      "name": "attention",
+      "category": "fusion",
+      "relpath": "tests/bench_attention.py",
+      "command": [
+        "/home/hamza-usta/MatcoreDSL/.venv/bin/python",
+        "/home/hamza-usta/MatcoreDSL/tests/bench_attention.py"
+      ],
+      "timeout_seconds": 1800.0,
+      "started_at": "2026-04-23T18:24:11",
+      "duration_seconds": 2.0642407260002074,
+      "status": "PASS",
+      "returncode": 0,
+      "detail": "128x128x64   | 2.875          | 0.023            | 0.261           | 0.003",
+      "stdout_log": "benchmark_reports/complete_20260423_182039/attention.stdout.log",
+      "stderr_log": "benchmark_reports/complete_20260423_182039/attention.stderr.log"
+    },
+    {
+      "name": "fusion_suite",
+      "category": "fusion",
+      "relpath": "tests/bench_fusion_suite.py",
+      "command": [
+        "/home/hamza-usta/MatcoreDSL/.venv/bin/python",
+        "/home/hamza-usta/MatcoreDSL/tests/bench_fusion_suite.py"
+      ],
+      "timeout_seconds": 2400.0,
+      "started_at": "2026-04-23T18:24:14",
+      "duration_seconds": 4.36631063699997,
+      "status": "PASS",
+      "returncode": 0,
+      "detail": "Family C avg speedup: 0.08x",
+      "stdout_log": "benchmark_reports/complete_20260423_182039/fusion_suite.stdout.log",
+      "stderr_log": "benchmark_reports/complete_20260423_182039/fusion_suite.stderr.log"
+    },
+    {
+      "name": "fusion_fair",
+      "category": "fusion",
+      "relpath": "tests/bench_fusion_fair.py",
+      "command": [
+        "/home/hamza-usta/MatcoreDSL/.venv/bin/python",
+        "/home/hamza-usta/MatcoreDSL/tests/bench_fusion_fair.py"
+      ],
+      "timeout_seconds": 2400.0,
+      "started_at": "2026-04-23T18:24:18",
+      "duration_seconds": 33.09117692400014,
+      "status": "PASS",
+      "returncode": 0,
+      "detail": "==================================================================================",
+      "stdout_log": "benchmark_reports/complete_20260423_182039/fusion_fair.stdout.log",
+      "stderr_log": "benchmark_reports/complete_20260423_182039/fusion_fair.stderr.log"
+    },
+    {
+      "name": "fusion_devtensor",
+      "category": "fusion",
+      "relpath": "tests/bench_fusion_devtensor.py",
+      "command": [
+        "/home/hamza-usta/MatcoreDSL/.venv/bin/python",
+        "/home/hamza-usta/MatcoreDSL/tests/bench_fusion_devtensor.py"
+      ],
+      "timeout_seconds": 2400.0,
+      "started_at": "2026-04-23T18:24:51",
+      "duration_seconds": 198.83836330299982,
+      "status": "PASS",
+      "returncode": 0,
+      "detail": "=======================================================================================",
+      "stdout_log": "benchmark_reports/complete_20260423_182039/fusion_devtensor.stdout.log",
+      "stderr_log": "benchmark_reports/complete_20260423_182039/fusion_devtensor.stderr.log"
+    },
+    {
+      "name": "three_way",
+      "category": "fusion",
+      "relpath": "tests/benchmark_3way.py",
+      "command": [
+        "/home/hamza-usta/MatcoreDSL/.venv/bin/python",
+        "/home/hamza-usta/MatcoreDSL/tests/benchmark_3way.py"
+      ],
+      "timeout_seconds": 2400.0,
+      "started_at": "2026-04-23T18:28:10",
+      "duration_seconds": 8.135206418000053,
+      "status": "PASS",
+      "returncode": 0,
+      "detail": "================================================================================",
+      "stdout_log": "benchmark_reports/complete_20260423_182039/three_way.stdout.log",
+      "stderr_log": "benchmark_reports/complete_20260423_182039/three_way.stderr.log"
+    },
+    {
+      "name": "absurd_activation",
+      "category": "fusion",
+      "relpath": "tests/benchmark_absurd_activation.py",
+      "command": [
+        "/home/hamza-usta/MatcoreDSL/.venv/bin/python",
+        "/home/hamza-usta/MatcoreDSL/tests/benchmark_absurd_activation.py"
+      ],
+      "timeout_seconds": 2400.0,
+      "started_at": "2026-04-23T18:28:18",
+      "duration_seconds": 2.533179456000198,
+      "status": "PASS",
+      "returncode": 0,
+      "detail": "================================================================================",
+      "stdout_log": "benchmark_reports/complete_20260423_182039/absurd_activation.stdout.log",
+      "stderr_log": "benchmark_reports/complete_20260423_182039/absurd_activation.stderr.log"
+    },
+    {
+      "name": "rsqrt_sin_softmax",
+      "category": "fusion",
+      "relpath": "tests/benchmark_rsqrt_sin_softmax.py",
+      "command": [
+        "/home/hamza-usta/MatcoreDSL/.venv/bin/python",
+        "/home/hamza-usta/MatcoreDSL/tests/benchmark_rsqrt_sin_softmax.py"
+      ],
+      "timeout_seconds": 2400.0,
+      "started_at": "2026-04-23T18:28:21",
+      "duration_seconds": 15.315948087999914,
+      "status": "PASS",
+      "returncode": 0,
+      "detail": "================================================================================",
+      "stdout_log": "benchmark_reports/complete_20260423_182039/rsqrt_sin_softmax.stdout.log",
+      "stderr_log": "benchmark_reports/complete_20260423_182039/rsqrt_sin_softmax.stderr.log"
+    },
+    {
+      "name": "pow2_extended",
+      "category": "stress",
+      "relpath": "tests/bench_pow2_extended.py",
+      "command": [
+        "/home/hamza-usta/MatcoreDSL/.venv/bin/python",
+        "/home/hamza-usta/MatcoreDSL/tests/bench_pow2_extended.py"
+      ],
+      "timeout_seconds": 3600.0,
+      "started_at": "2026-04-23T18:28:36",
+      "duration_seconds": 71.48901768999986,
+      "status": "PASS",
+      "returncode": 0,
+      "detail": "==================================================================================",
+      "stdout_log": "benchmark_reports/complete_20260423_182039/pow2_extended.stdout.log",
+      "stderr_log": "benchmark_reports/complete_20260423_182039/pow2_extended.stderr.log"
+    }
+  ]
+}

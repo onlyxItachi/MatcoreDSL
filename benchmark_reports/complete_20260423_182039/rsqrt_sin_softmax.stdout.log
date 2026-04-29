@@ -1,0 +1,63 @@
+
+================================================================================
+  Benchmark: rsqrt( sin(A) @ softmax(B) )  [dtype=torch.float16]
+  Equation: 1 / sqrt( sin(A) @ softmax(B) )
+================================================================================
+
+──────────────────────────────────────────────────────────────────────
+  1024×1024  FP16  (0.002 TFLOP)
+──────────────────────────────────────────────────────────────────────
+  [torch.compile warming up...]
+
+  FULL EQUATION: rsqrt(sin(A) @ softmax(B))
+    PyTorch naive:        0.10 ms
+    torch.compile:        0.14 ms  (0.76x vs naive)
+
+  MATMUL + RSQRT only: rsqrt(A @ B)  [our MMA+epilogue fusion]
+    PyTorch naive:        0.09 ms  ( 23.7 TFLOPS)
+    torch.compile:        0.12 ms  ( 18.4 TFLOPS)
+    MatcoreDSL fused:     0.21 ms  ( 10.1 TFLOPS)
+    vs naive:          0.43x
+    vs torch.compile:  0.55x
+    correctness:       max_diff=0.0039
+
+──────────────────────────────────────────────────────────────────────
+  2048×2048  FP16  (0.017 TFLOP)
+──────────────────────────────────────────────────────────────────────
+  [torch.compile warming up...]
+
+  FULL EQUATION: rsqrt(sin(A) @ softmax(B))
+    PyTorch naive:        0.72 ms
+    torch.compile:        0.79 ms  (0.91x vs naive)
+
+  MATMUL + RSQRT only: rsqrt(A @ B)  [our MMA+epilogue fusion]
+    PyTorch naive:        0.58 ms  ( 29.5 TFLOPS)
+    torch.compile:        0.74 ms  ( 23.2 TFLOPS)
+    MatcoreDSL fused:     0.64 ms  ( 26.8 TFLOPS)
+    vs naive:          0.91x
+    vs torch.compile:  1.16x
+    correctness:       max_diff=0.0068
+
+──────────────────────────────────────────────────────────────────────
+  4096×4096  FP16  (0.137 TFLOP)
+──────────────────────────────────────────────────────────────────────
+  [torch.compile warming up...]
+
+  FULL EQUATION: rsqrt(sin(A) @ softmax(B))
+    PyTorch naive:        5.70 ms
+    torch.compile:        6.32 ms  (0.90x vs naive)
+
+  MATMUL + RSQRT only: rsqrt(A @ B)  [our MMA+epilogue fusion]
+    PyTorch naive:        5.09 ms  ( 27.0 TFLOPS)
+    torch.compile:        5.57 ms  ( 24.7 TFLOPS)
+    MatcoreDSL fused:     4.76 ms  ( 28.9 TFLOPS)
+    vs naive:          1.07x
+    vs torch.compile:  1.17x
+    correctness:       max_diff=0.0098
+
+================================================================================
+Notes:
+  - MatcoreDSL benchmarks matmul+rsqrt (MMA tensor cores + in-register epilogue)
+  - sin/rsqrt use SFU fast-math (per-op fastmath<fast>, zero FP16 accuracy cost)
+  - Prologue fusion (sin/softmax into tile load) not yet implemented
+================================================================================

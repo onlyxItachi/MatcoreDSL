@@ -12,7 +12,7 @@
 
 # =============================================================================
 # Project: MatCore
-# Configurations: 
+# Configurations: Release
 # =============================================================================
 
 #############################################
@@ -20,6 +20,11 @@
 
 ninja_required_version = 1.5
 
+
+#############################################
+# Set configuration variable for custom commands.
+
+CONFIGURATION = Release
 # =============================================================================
 # Include auxiliary files.
 
@@ -92,196 +97,301 @@ build mlir-doc: phony
 
 build cmake_object_order_depends_target__matcore_native: phony || cmake_object_order_depends_target_nanobind-static
 
-build CMakeFiles/_matcore_native.dir/src/bindings.cpp.o: CXX_COMPILER___matcore_native_unscanned_ /home/hamza-usta/MatcoreDSL/src/bindings.cpp || cmake_object_order_depends_target__matcore_native
+build CMakeFiles/_matcore_native.dir/src/amd_runtime_symbols.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/amd_runtime_symbols.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
+  DEFINES = -D_matcore_native_EXPORTS
+  DEP_FILE = CMakeFiles/_matcore_native.dir/src/amd_runtime_symbols.cpp.o.d
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
+  INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
+  LAUNCHER = /usr/bin/ccache 
+  OBJECT_DIR = CMakeFiles/_matcore_native.dir
+  OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
+  TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
+
+build CMakeFiles/_matcore_native.dir/src/bindings.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/bindings.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
   DEFINES = -D_matcore_native_EXPORTS
   DEP_FILE = CMakeFiles/_matcore_native.dir/src/bindings.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
   INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/_matcore_native.dir
   OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
-  TARGET_COMPILE_PDB = CMakeFiles/_matcore_native.dir/
-  TARGET_PDB = /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
 
-build CMakeFiles/_matcore_native.dir/src/cache_manager.cpp.o: CXX_COMPILER___matcore_native_unscanned_ /home/hamza-usta/MatcoreDSL/src/cache_manager.cpp || cmake_object_order_depends_target__matcore_native
+build CMakeFiles/_matcore_native.dir/src/cache_manager.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/cache_manager.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
   DEFINES = -D_matcore_native_EXPORTS
   DEP_FILE = CMakeFiles/_matcore_native.dir/src/cache_manager.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
   INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/_matcore_native.dir
   OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
-  TARGET_COMPILE_PDB = CMakeFiles/_matcore_native.dir/
-  TARGET_PDB = /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
 
-build CMakeFiles/_matcore_native.dir/src/cpu_lowering.cpp.o: CXX_COMPILER___matcore_native_unscanned_ /home/hamza-usta/MatcoreDSL/src/cpu_lowering.cpp || cmake_object_order_depends_target__matcore_native
+build CMakeFiles/_matcore_native.dir/src/cpu_lowering.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/cpu_lowering.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
   DEFINES = -D_matcore_native_EXPORTS
   DEP_FILE = CMakeFiles/_matcore_native.dir/src/cpu_lowering.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
   INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/_matcore_native.dir
   OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
-  TARGET_COMPILE_PDB = CMakeFiles/_matcore_native.dir/
-  TARGET_PDB = /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
 
-build CMakeFiles/_matcore_native.dir/src/diagnostics.cpp.o: CXX_COMPILER___matcore_native_unscanned_ /home/hamza-usta/MatcoreDSL/src/diagnostics.cpp || cmake_object_order_depends_target__matcore_native
+build CMakeFiles/_matcore_native.dir/src/diagnostics.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/diagnostics.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
   DEFINES = -D_matcore_native_EXPORTS
   DEP_FILE = CMakeFiles/_matcore_native.dir/src/diagnostics.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
   INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/_matcore_native.dir
   OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
-  TARGET_COMPILE_PDB = CMakeFiles/_matcore_native.dir/
-  TARGET_PDB = /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
 
-build CMakeFiles/_matcore_native.dir/src/executor.cpp.o: CXX_COMPILER___matcore_native_unscanned_ /home/hamza-usta/MatcoreDSL/src/executor.cpp || cmake_object_order_depends_target__matcore_native
+build CMakeFiles/_matcore_native.dir/src/executor.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/executor.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
   DEFINES = -D_matcore_native_EXPORTS
   DEP_FILE = CMakeFiles/_matcore_native.dir/src/executor.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
   INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/_matcore_native.dir
   OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
-  TARGET_COMPILE_PDB = CMakeFiles/_matcore_native.dir/
-  TARGET_PDB = /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
 
-build CMakeFiles/_matcore_native.dir/src/gpu_mapping.cpp.o: CXX_COMPILER___matcore_native_unscanned_ /home/hamza-usta/MatcoreDSL/src/gpu_mapping.cpp || cmake_object_order_depends_target__matcore_native
+build CMakeFiles/_matcore_native.dir/src/fp8_wgmma.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/fp8_wgmma.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
+  DEFINES = -D_matcore_native_EXPORTS
+  DEP_FILE = CMakeFiles/_matcore_native.dir/src/fp8_wgmma.cpp.o.d
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
+  INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
+  LAUNCHER = /usr/bin/ccache 
+  OBJECT_DIR = CMakeFiles/_matcore_native.dir
+  OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
+  TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
+
+build CMakeFiles/_matcore_native.dir/src/fusion_analysis.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/fusion_analysis.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
+  DEFINES = -D_matcore_native_EXPORTS
+  DEP_FILE = CMakeFiles/_matcore_native.dir/src/fusion_analysis.cpp.o.d
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
+  INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
+  LAUNCHER = /usr/bin/ccache 
+  OBJECT_DIR = CMakeFiles/_matcore_native.dir
+  OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
+  TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
+
+build CMakeFiles/_matcore_native.dir/src/fusion_emitter.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/fusion_emitter.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
+  DEFINES = -D_matcore_native_EXPORTS
+  DEP_FILE = CMakeFiles/_matcore_native.dir/src/fusion_emitter.cpp.o.d
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
+  INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
+  LAUNCHER = /usr/bin/ccache 
+  OBJECT_DIR = CMakeFiles/_matcore_native.dir
+  OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
+  TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
+
+build CMakeFiles/_matcore_native.dir/src/fusion_emitter_common.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/fusion_emitter_common.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
+  DEFINES = -D_matcore_native_EXPORTS
+  DEP_FILE = CMakeFiles/_matcore_native.dir/src/fusion_emitter_common.cpp.o.d
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
+  INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
+  LAUNCHER = /usr/bin/ccache 
+  OBJECT_DIR = CMakeFiles/_matcore_native.dir
+  OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
+  TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
+
+build CMakeFiles/_matcore_native.dir/src/fusion_emitter_family_a.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/fusion_emitter_family_a.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
+  DEFINES = -D_matcore_native_EXPORTS
+  DEP_FILE = CMakeFiles/_matcore_native.dir/src/fusion_emitter_family_a.cpp.o.d
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
+  INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
+  LAUNCHER = /usr/bin/ccache 
+  OBJECT_DIR = CMakeFiles/_matcore_native.dir
+  OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
+  TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
+
+build CMakeFiles/_matcore_native.dir/src/fusion_emitter_family_b.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/fusion_emitter_family_b.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
+  DEFINES = -D_matcore_native_EXPORTS
+  DEP_FILE = CMakeFiles/_matcore_native.dir/src/fusion_emitter_family_b.cpp.o.d
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
+  INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
+  LAUNCHER = /usr/bin/ccache 
+  OBJECT_DIR = CMakeFiles/_matcore_native.dir
+  OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
+  TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
+
+build CMakeFiles/_matcore_native.dir/src/fusion_emitter_family_c.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/fusion_emitter_family_c.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
+  DEFINES = -D_matcore_native_EXPORTS
+  DEP_FILE = CMakeFiles/_matcore_native.dir/src/fusion_emitter_family_c.cpp.o.d
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
+  INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
+  LAUNCHER = /usr/bin/ccache 
+  OBJECT_DIR = CMakeFiles/_matcore_native.dir
+  OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
+  TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
+
+build CMakeFiles/_matcore_native.dir/src/fusion_epilogue_pass.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/fusion_epilogue_pass.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
+  DEFINES = -D_matcore_native_EXPORTS
+  DEP_FILE = CMakeFiles/_matcore_native.dir/src/fusion_epilogue_pass.cpp.o.d
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
+  INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
+  LAUNCHER = /usr/bin/ccache 
+  OBJECT_DIR = CMakeFiles/_matcore_native.dir
+  OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
+  TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
+
+build CMakeFiles/_matcore_native.dir/src/gpu_amd_lowering.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/gpu_amd_lowering.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
+  DEFINES = -D_matcore_native_EXPORTS
+  DEP_FILE = CMakeFiles/_matcore_native.dir/src/gpu_amd_lowering.cpp.o.d
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
+  INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
+  LAUNCHER = /usr/bin/ccache 
+  OBJECT_DIR = CMakeFiles/_matcore_native.dir
+  OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
+  TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
+
+build CMakeFiles/_matcore_native.dir/src/gpu_data_staging.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/gpu_data_staging.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
+  DEFINES = -D_matcore_native_EXPORTS
+  DEP_FILE = CMakeFiles/_matcore_native.dir/src/gpu_data_staging.cpp.o.d
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
+  INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
+  LAUNCHER = /usr/bin/ccache 
+  OBJECT_DIR = CMakeFiles/_matcore_native.dir
+  OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
+  TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
+
+build CMakeFiles/_matcore_native.dir/src/gpu_mapping.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/gpu_mapping.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
   DEFINES = -D_matcore_native_EXPORTS
   DEP_FILE = CMakeFiles/_matcore_native.dir/src/gpu_mapping.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
   INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/_matcore_native.dir
   OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
-  TARGET_COMPILE_PDB = CMakeFiles/_matcore_native.dir/
-  TARGET_PDB = /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
 
-build CMakeFiles/_matcore_native.dir/src/gpu_nvvm_lowering.cpp.o: CXX_COMPILER___matcore_native_unscanned_ /home/hamza-usta/MatcoreDSL/src/gpu_nvvm_lowering.cpp || cmake_object_order_depends_target__matcore_native
+build CMakeFiles/_matcore_native.dir/src/gpu_nvvm_lowering.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/gpu_nvvm_lowering.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
   DEFINES = -D_matcore_native_EXPORTS
   DEP_FILE = CMakeFiles/_matcore_native.dir/src/gpu_nvvm_lowering.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
   INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/_matcore_native.dir
   OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
-  TARGET_COMPILE_PDB = CMakeFiles/_matcore_native.dir/
-  TARGET_PDB = /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
 
-build CMakeFiles/_matcore_native.dir/src/transform_builder.cpp.o: CXX_COMPILER___matcore_native_unscanned_ /home/hamza-usta/MatcoreDSL/src/transform_builder.cpp || cmake_object_order_depends_target__matcore_native
+build CMakeFiles/_matcore_native.dir/src/transform_builder.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/transform_builder.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
   DEFINES = -D_matcore_native_EXPORTS
   DEP_FILE = CMakeFiles/_matcore_native.dir/src/transform_builder.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
   INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/_matcore_native.dir
   OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
-  TARGET_COMPILE_PDB = CMakeFiles/_matcore_native.dir/
-  TARGET_PDB = /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
 
-build CMakeFiles/_matcore_native.dir/src/gpu_runtime_symbols.cpp.o: CXX_COMPILER___matcore_native_unscanned_ /home/hamza-usta/MatcoreDSL/src/gpu_runtime_symbols.cpp || cmake_object_order_depends_target__matcore_native
+build CMakeFiles/_matcore_native.dir/src/gpu_runtime_symbols.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/gpu_runtime_symbols.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
   DEFINES = -D_matcore_native_EXPORTS
   DEP_FILE = CMakeFiles/_matcore_native.dir/src/gpu_runtime_symbols.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
   INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/_matcore_native.dir
   OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
-  TARGET_COMPILE_PDB = CMakeFiles/_matcore_native.dir/
-  TARGET_PDB = /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
 
-build CMakeFiles/_matcore_native.dir/src/gpu_tiling.cpp.o: CXX_COMPILER___matcore_native_unscanned_ /home/hamza-usta/MatcoreDSL/src/gpu_tiling.cpp || cmake_object_order_depends_target__matcore_native
+build CMakeFiles/_matcore_native.dir/src/gpu_tiling.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/gpu_tiling.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
   DEFINES = -D_matcore_native_EXPORTS
   DEP_FILE = CMakeFiles/_matcore_native.dir/src/gpu_tiling.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
   INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/_matcore_native.dir
   OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
-  TARGET_COMPILE_PDB = CMakeFiles/_matcore_native.dir/
-  TARGET_PDB = /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
 
-build CMakeFiles/_matcore_native.dir/src/lowering_pipeline.cpp.o: CXX_COMPILER___matcore_native_unscanned_ /home/hamza-usta/MatcoreDSL/src/lowering_pipeline.cpp || cmake_object_order_depends_target__matcore_native
+build CMakeFiles/_matcore_native.dir/src/lowering_pipeline.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/lowering_pipeline.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
   DEFINES = -D_matcore_native_EXPORTS
   DEP_FILE = CMakeFiles/_matcore_native.dir/src/lowering_pipeline.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
   INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/_matcore_native.dir
   OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
-  TARGET_COMPILE_PDB = CMakeFiles/_matcore_native.dir/
-  TARGET_PDB = /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
 
-build CMakeFiles/_matcore_native.dir/src/mlir_engine.cpp.o: CXX_COMPILER___matcore_native_unscanned_ /home/hamza-usta/MatcoreDSL/src/mlir_engine.cpp || cmake_object_order_depends_target__matcore_native
+build CMakeFiles/_matcore_native.dir/src/mlir_engine.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/mlir_engine.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
   DEFINES = -D_matcore_native_EXPORTS
   DEP_FILE = CMakeFiles/_matcore_native.dir/src/mlir_engine.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
   INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/_matcore_native.dir
   OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
-  TARGET_COMPILE_PDB = CMakeFiles/_matcore_native.dir/
-  TARGET_PDB = /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
 
-build CMakeFiles/_matcore_native.dir/src/jit_runner.cpp.o: CXX_COMPILER___matcore_native_unscanned_ /home/hamza-usta/MatcoreDSL/src/jit_runner.cpp || cmake_object_order_depends_target__matcore_native
+build CMakeFiles/_matcore_native.dir/src/jit_runner.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/jit_runner.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
   DEFINES = -D_matcore_native_EXPORTS
   DEP_FILE = CMakeFiles/_matcore_native.dir/src/jit_runner.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
   INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/_matcore_native.dir
   OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
-  TARGET_COMPILE_PDB = CMakeFiles/_matcore_native.dir/
-  TARGET_PDB = /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
 
-build CMakeFiles/_matcore_native.dir/src/runtime_capabilities.cpp.o: CXX_COMPILER___matcore_native_unscanned_ /home/hamza-usta/MatcoreDSL/src/runtime_capabilities.cpp || cmake_object_order_depends_target__matcore_native
+build CMakeFiles/_matcore_native.dir/src/runtime_capabilities.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/runtime_capabilities.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
   DEFINES = -D_matcore_native_EXPORTS
   DEP_FILE = CMakeFiles/_matcore_native.dir/src/runtime_capabilities.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
   INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/_matcore_native.dir
   OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
-  TARGET_COMPILE_PDB = CMakeFiles/_matcore_native.dir/
-  TARGET_PDB = /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
 
-build CMakeFiles/_matcore_native.dir/src/observability.cpp.o: CXX_COMPILER___matcore_native_unscanned_ /home/hamza-usta/MatcoreDSL/src/observability.cpp || cmake_object_order_depends_target__matcore_native
+build CMakeFiles/_matcore_native.dir/src/observability.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/observability.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
   DEFINES = -D_matcore_native_EXPORTS
   DEP_FILE = CMakeFiles/_matcore_native.dir/src/observability.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
   INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/_matcore_native.dir
   OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
-  TARGET_COMPILE_PDB = CMakeFiles/_matcore_native.dir/
-  TARGET_PDB = /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
 
-build CMakeFiles/_matcore_native.dir/src/target_registry.cpp.o: CXX_COMPILER___matcore_native_unscanned_ /home/hamza-usta/MatcoreDSL/src/target_registry.cpp || cmake_object_order_depends_target__matcore_native
+build CMakeFiles/_matcore_native.dir/src/target_registry.cpp.o: CXX_COMPILER___matcore_native_unscanned_Release /home/hamza-usta/MatcoreDSL/src/target_registry.cpp || cmake_object_order_depends_target__matcore_native
+  CONFIG = Release
   DEFINES = -D_matcore_native_EXPORTS
   DEP_FILE = CMakeFiles/_matcore_native.dir/src/target_registry.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-stack-protector -Os -ffunction-sections -fdata-sections
   INCLUDES = -I/home/hamza-usta/MatcoreDSL/include -I/usr/local/cuda/include -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/_matcore_native.dir
   OBJECT_FILE_DIR = CMakeFiles/_matcore_native.dir/src
-  TARGET_COMPILE_PDB = CMakeFiles/_matcore_native.dir/
-  TARGET_PDB = /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
 
 
@@ -292,16 +402,17 @@ build CMakeFiles/_matcore_native.dir/src/target_registry.cpp.o: CXX_COMPILER___m
 #############################################
 # Link the shared module /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.cpython-312-x86_64-linux-gnu.so
 
-build /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.cpython-312-x86_64-linux-gnu.so: CXX_MODULE_LIBRARY_LINKER___matcore_native_ CMakeFiles/_matcore_native.dir/src/bindings.cpp.o CMakeFiles/_matcore_native.dir/src/cache_manager.cpp.o CMakeFiles/_matcore_native.dir/src/cpu_lowering.cpp.o CMakeFiles/_matcore_native.dir/src/diagnostics.cpp.o CMakeFiles/_matcore_native.dir/src/executor.cpp.o CMakeFiles/_matcore_native.dir/src/gpu_mapping.cpp.o CMakeFiles/_matcore_native.dir/src/gpu_nvvm_lowering.cpp.o CMakeFiles/_matcore_native.dir/src/transform_builder.cpp.o CMakeFiles/_matcore_native.dir/src/gpu_runtime_symbols.cpp.o CMakeFiles/_matcore_native.dir/src/gpu_tiling.cpp.o CMakeFiles/_matcore_native.dir/src/lowering_pipeline.cpp.o CMakeFiles/_matcore_native.dir/src/mlir_engine.cpp.o CMakeFiles/_matcore_native.dir/src/jit_runner.cpp.o CMakeFiles/_matcore_native.dir/src/runtime_capabilities.cpp.o CMakeFiles/_matcore_native.dir/src/observability.cpp.o CMakeFiles/_matcore_native.dir/src/target_registry.cpp.o | libnanobind-static.a /usr/lib/llvm-18/lib/libMLIR.so.18.1 /usr/lib/llvm-18/lib/libMLIRArithDialect.a /usr/lib/llvm-18/lib/libMLIRArithToLLVM.a /usr/lib/llvm-18/lib/libMLIRBuiltinToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRControlFlowDialect.a /usr/lib/llvm-18/lib/libMLIRControlFlowToLLVM.a /usr/lib/llvm-18/lib/libMLIRExecutionEngine.a /usr/lib/llvm-18/lib/libMLIRFuncDialect.a /usr/lib/llvm-18/lib/libMLIRFuncToLLVM.a /usr/lib/llvm-18/lib/libMLIRGPUDialect.a /usr/lib/llvm-18/lib/libMLIRGPUPipelines.a /usr/lib/llvm-18/lib/libMLIRGPUToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRGPUToNVVMTransforms.a /usr/lib/llvm-18/lib/libMLIRGPUToROCDLTransforms.a /usr/lib/llvm-18/lib/libMLIRGPUTransforms.a /usr/lib/llvm-18/lib/libMLIRGPUTransformOps.a /usr/lib/llvm-18/lib/libMLIRIR.a /usr/lib/llvm-18/lib/libMLIRLLVMCommonConversion.a /usr/lib/llvm-18/lib/libMLIRLLVMDialect.a /usr/lib/llvm-18/lib/libMLIRLLVMToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRLinalgDialect.a /usr/lib/llvm-18/lib/libMLIRLinalgTransformOps.a /usr/lib/llvm-18/lib/libMLIRLinalgTransforms.a /usr/lib/llvm-18/lib/libMLIRMemRefDialect.a /usr/lib/llvm-18/lib/libMLIRMemRefToLLVM.a /usr/lib/llvm-18/lib/libMLIRNVGPUDialect.a /usr/lib/llvm-18/lib/libMLIRNVGPUTransformOps.a /usr/lib/llvm-18/lib/libMLIRNVGPUToNVVM.a /usr/lib/llvm-18/lib/libMLIRNVGPUTransforms.a /usr/lib/llvm-18/lib/libMLIRNVVMDialect.a /usr/lib/llvm-18/lib/libMLIRNVVMTarget.a /usr/lib/llvm-18/lib/libMLIRNVVMToLLVM.a /usr/lib/llvm-18/lib/libMLIRNVVMToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRParser.a /usr/lib/llvm-18/lib/libMLIRPass.a /usr/lib/llvm-18/lib/libMLIRROCDLDialect.a /usr/lib/llvm-18/lib/libMLIRROCDLTarget.a /usr/lib/llvm-18/lib/libMLIRROCDLToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRSCFDialect.a /usr/lib/llvm-18/lib/libMLIRSCFToGPU.a /usr/lib/llvm-18/lib/libMLIRSCFToControlFlow.a /usr/lib/llvm-18/lib/libMLIRTargetLLVMIRExport.a /usr/lib/llvm-18/lib/libMLIRTransformDialect.a /usr/lib/llvm-18/lib/libMLIRTransformDebugExtension.a /usr/lib/llvm-18/lib/libMLIRTransformDialectTransforms.a /usr/lib/llvm-18/lib/libMLIRTransformDialectUtils.a /usr/lib/llvm-18/lib/libMLIRTransforms.a /usr/lib/llvm-18/lib/libMLIRVectorDialect.a /usr/lib/llvm-18/lib/libMLIRVectorToLLVMPass.a /usr/lib/llvm-18/lib/libMLIRX86VectorDialect.a /usr/lib/llvm-18/lib/libMLIRX86VectorToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRX86VectorTransforms.a /usr/lib/llvm-18/lib/libMLIROpenMPToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIROpenMPDialect.a /usr/lib/llvm-18/lib/libMLIROpenACCMPCommon.a /usr/lib/llvm-18/lib/libMLIRIndexToLLVM.a /usr/lib/llvm-18/lib/libMLIRReconcileUnrealizedCasts.a /usr/lib/llvm-18/lib/libMLIRMathToLLVM.a /usr/lib/llvm-18/lib/libMLIRAMDGPUToROCDL.a /usr/lib/llvm-18/lib/libMLIRAMDGPUUtils.a /usr/lib/llvm-18/lib/libMLIRAMDGPUDialect.a /usr/lib/llvm-18/lib/libMLIRGPUToNVVMTransforms.a /usr/lib/llvm-18/lib/libMLIRMemRefTransforms.a /usr/lib/llvm-18/lib/libMLIRVectorToSCF.a /usr/lib/llvm-18/lib/libMLIRArithTransforms.a /usr/lib/llvm-18/lib/libMLIRTensorTilingInterfaceImpl.a /usr/lib/llvm-18/lib/libMLIRLinalgUtils.a /usr/lib/llvm-18/lib/libMLIRGPUToGPURuntimeTransforms.a /usr/lib/llvm-18/lib/libMLIRMemRefToLLVM.a /usr/lib/llvm-18/lib/libMLIRAsyncToLLVM.a /usr/lib/llvm-18/lib/libMLIRFuncToLLVM.a /usr/lib/llvm-18/lib/libMLIRArithToLLVM.a /usr/lib/llvm-18/lib/libMLIRControlFlowToLLVM.a /usr/lib/llvm-18/lib/libMLIRFuncTransforms.a /usr/lib/llvm-18/lib/libMLIRConvertToLLVMPass.a /usr/lib/llvm-18/lib/libMLIRConvertToLLVMInterface.a /usr/lib/llvm-18/lib/libMLIRNVGPUDialect.a /usr/lib/llvm-18/lib/libMLIRSCFTransforms.a /usr/lib/llvm-18/lib/libMLIRTensorTransforms.a /usr/lib/llvm-18/lib/libMLIRAffineTransforms.a /usr/lib/llvm-18/lib/libMLIRSCFUtils.a /usr/lib/llvm-18/lib/libMLIRTensorUtils.a /usr/lib/llvm-18/lib/libMLIRGPUTransforms.a /usr/lib/llvm-18/lib/libMLIRBuiltinToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRGPUToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRLLVMToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRNVVMTarget.a /usr/lib/llvm-18/lib/libMLIRNVVMToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRROCDLTarget.a /usr/lib/llvm-18/lib/libMLIRTargetLLVM.a /usr/lib/llvm-18/lib/libMLIRROCDLToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRROCDLDialect.a /usr/lib/llvm-18/lib/libMLIRExecutionEngineUtils.a /usr/lib/llvm-18/lib/libMLIRAsyncDialect.a /usr/lib/llvm-18/lib/libMLIRIndexDialect.a /usr/lib/llvm-18/lib/libMLIRSPIRVTarget.a /usr/lib/llvm-18/lib/libMLIRSPIRVSerialization.a /usr/lib/llvm-18/lib/libMLIRSPIRVBinaryUtils.a /usr/lib/llvm-18/lib/libMLIRSPIRVDialect.a /usr/lib/llvm-18/lib/libMLIRAffineToStandard.a /usr/lib/llvm-18/lib/libMLIRTransformDialect.a /usr/lib/llvm-18/lib/libMLIRTransformDialectUtils.a /usr/lib/llvm-18/lib/libMLIRVectorToLLVM.a /usr/lib/llvm-18/lib/libMLIRVectorTransforms.a /usr/lib/llvm-18/lib/libMLIRGPUDialect.a /usr/lib/llvm-18/lib/libMLIRLinalgDialect.a /usr/lib/llvm-18/lib/libMLIRMathDialect.a /usr/lib/llvm-18/lib/libMLIRTilingInterface.a /usr/lib/llvm-18/lib/libMLIRAffineUtils.a /usr/lib/llvm-18/lib/libMLIRBufferizationTransforms.a /usr/lib/llvm-18/lib/libMLIRBufferizationDialect.a /usr/lib/llvm-18/lib/libMLIRSparseTensorDialect.a /usr/lib/llvm-18/lib/libMLIRVectorUtils.a /usr/lib/llvm-18/lib/libMLIRMemRefUtils.a /usr/lib/llvm-18/lib/libMLIRAffineAnalysis.a /usr/lib/llvm-18/lib/libMLIRArmNeonDialect.a /usr/lib/llvm-18/lib/libMLIRArmSMETransforms.a /usr/lib/llvm-18/lib/libMLIRArmSVETransforms.a /usr/lib/llvm-18/lib/libMLIRArmSVEDialect.a /usr/lib/llvm-18/lib/libMLIRVectorToArmSME.a /usr/lib/llvm-18/lib/libMLIRArmSMEDialect.a /usr/lib/llvm-18/lib/libMLIRSCFDialect.a /usr/lib/llvm-18/lib/libMLIRControlFlowDialect.a /usr/lib/llvm-18/lib/libMLIRVectorDialect.a /usr/lib/llvm-18/lib/libMLIRTensorDialect.a /usr/lib/llvm-18/lib/libMLIRAffineDialect.a /usr/lib/llvm-18/lib/libMLIRMemRefDialect.a /usr/lib/llvm-18/lib/libMLIRDialectUtils.a /usr/lib/llvm-18/lib/libMLIRArithUtils.a /usr/lib/llvm-18/lib/libMLIRComplexDialect.a /usr/lib/llvm-18/lib/libMLIRArithAttrToLLVMConversion.a /usr/lib/llvm-18/lib/libMLIRArithDialect.a /usr/lib/llvm-18/lib/libMLIRCastInterfaces.a /usr/lib/llvm-18/lib/libMLIRDialect.a /usr/lib/llvm-18/lib/libMLIRInferIntRangeCommon.a /usr/lib/llvm-18/lib/libMLIRUBDialect.a /usr/lib/llvm-18/lib/libMLIRShapedOpInterfaces.a /usr/lib/llvm-18/lib/libMLIRParallelCombiningOpInterface.a /usr/lib/llvm-18/lib/libMLIRMaskableOpInterface.a /usr/lib/llvm-18/lib/libMLIRMaskingOpInterface.a /usr/lib/llvm-18/lib/libMLIRVectorInterfaces.a /usr/lib/llvm-18/lib/libMLIRAMXTransforms.a /usr/lib/llvm-18/lib/libMLIRLLVMCommonConversion.a /usr/lib/llvm-18/lib/libMLIRAMXDialect.a /usr/lib/llvm-18/lib/libMLIRTargetLLVMIRExport.a /usr/lib/llvm-18/lib/libMLIRDLTIDialect.a /usr/lib/llvm-18/lib/libMLIRLLVMIRTransforms.a /usr/lib/llvm-18/lib/libMLIRFuncDialect.a /usr/lib/llvm-18/lib/libMLIRNVVMDialect.a /usr/lib/llvm-18/lib/libMLIRTransforms.a /usr/lib/llvm-18/lib/libMLIRTransformUtils.a /usr/lib/llvm-18/lib/libMLIRSubsetOpInterface.a /usr/lib/llvm-18/lib/libMLIRValueBoundsOpInterface.a /usr/lib/llvm-18/lib/libMLIRDestinationStyleOpInterface.a /usr/lib/llvm-18/lib/libMLIRRewrite.a /usr/lib/llvm-18/lib/libMLIRRewritePDL.a /usr/lib/llvm-18/lib/libMLIRPDLToPDLInterp.a /usr/lib/llvm-18/lib/libMLIRPass.a /usr/lib/llvm-18/lib/libMLIRAnalysis.a /usr/lib/llvm-18/lib/libMLIRInferIntRangeInterface.a /usr/lib/llvm-18/lib/libMLIRViewLikeInterface.a /usr/lib/llvm-18/lib/libMLIRPresburger.a /usr/lib/llvm-18/lib/libMLIRPDLInterpDialect.a /usr/lib/llvm-18/lib/libMLIRPDLDialect.a /usr/lib/llvm-18/lib/libMLIRLoopLikeInterface.a /usr/lib/llvm-18/lib/libMLIRCopyOpInterface.a /usr/lib/llvm-18/lib/libMLIRRuntimeVerifiableOpInterface.a /usr/lib/llvm-18/lib/libMLIRTranslateLib.a /usr/lib/llvm-18/lib/libMLIRParser.a /usr/lib/llvm-18/lib/libMLIRBytecodeReader.a /usr/lib/llvm-18/lib/libMLIRAsmParser.a /usr/lib/llvm-18/lib/libMLIRX86VectorDialect.a /usr/lib/llvm-18/lib/libMLIRLLVMDialect.a /usr/lib/llvm-18/lib/libMLIRInferTypeOpInterface.a /usr/lib/llvm-18/lib/libMLIRControlFlowInterfaces.a /usr/lib/llvm-18/lib/libMLIRCallInterfaces.a /usr/lib/llvm-18/lib/libMLIRFunctionInterfaces.a /usr/lib/llvm-18/lib/libMLIRDataLayoutInterfaces.a /usr/lib/llvm-18/lib/libMLIRMemorySlotInterfaces.a /usr/lib/llvm-18/lib/libMLIRSideEffectInterfaces.a /usr/lib/llvm-18/lib/libMLIRIR.a /usr/lib/llvm-18/lib/libMLIRSupport.a /usr/lib/llvm-18/lib/libLLVM.so.1 || libnanobind-static.a
+build /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.cpython-312-x86_64-linux-gnu.so: CXX_MODULE_LIBRARY_LINKER___matcore_native_Release CMakeFiles/_matcore_native.dir/src/amd_runtime_symbols.cpp.o CMakeFiles/_matcore_native.dir/src/bindings.cpp.o CMakeFiles/_matcore_native.dir/src/cache_manager.cpp.o CMakeFiles/_matcore_native.dir/src/cpu_lowering.cpp.o CMakeFiles/_matcore_native.dir/src/diagnostics.cpp.o CMakeFiles/_matcore_native.dir/src/executor.cpp.o CMakeFiles/_matcore_native.dir/src/fp8_wgmma.cpp.o CMakeFiles/_matcore_native.dir/src/fusion_analysis.cpp.o CMakeFiles/_matcore_native.dir/src/fusion_emitter.cpp.o CMakeFiles/_matcore_native.dir/src/fusion_emitter_common.cpp.o CMakeFiles/_matcore_native.dir/src/fusion_emitter_family_a.cpp.o CMakeFiles/_matcore_native.dir/src/fusion_emitter_family_b.cpp.o CMakeFiles/_matcore_native.dir/src/fusion_emitter_family_c.cpp.o CMakeFiles/_matcore_native.dir/src/fusion_epilogue_pass.cpp.o CMakeFiles/_matcore_native.dir/src/gpu_amd_lowering.cpp.o CMakeFiles/_matcore_native.dir/src/gpu_data_staging.cpp.o CMakeFiles/_matcore_native.dir/src/gpu_mapping.cpp.o CMakeFiles/_matcore_native.dir/src/gpu_nvvm_lowering.cpp.o CMakeFiles/_matcore_native.dir/src/transform_builder.cpp.o CMakeFiles/_matcore_native.dir/src/gpu_runtime_symbols.cpp.o CMakeFiles/_matcore_native.dir/src/gpu_tiling.cpp.o CMakeFiles/_matcore_native.dir/src/lowering_pipeline.cpp.o CMakeFiles/_matcore_native.dir/src/mlir_engine.cpp.o CMakeFiles/_matcore_native.dir/src/jit_runner.cpp.o CMakeFiles/_matcore_native.dir/src/runtime_capabilities.cpp.o CMakeFiles/_matcore_native.dir/src/observability.cpp.o CMakeFiles/_matcore_native.dir/src/target_registry.cpp.o | libnanobind-static.a /usr/lib/llvm-18/lib/libMLIR.so.18.1 /usr/lib/llvm-18/lib/libMLIRArithDialect.a /usr/lib/llvm-18/lib/libMLIRArithToLLVM.a /usr/lib/llvm-18/lib/libMLIRBuiltinToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRControlFlowDialect.a /usr/lib/llvm-18/lib/libMLIRControlFlowToLLVM.a /usr/lib/llvm-18/lib/libMLIRExecutionEngine.a /usr/lib/llvm-18/lib/libMLIRFuncDialect.a /usr/lib/llvm-18/lib/libMLIRFuncToLLVM.a /usr/lib/llvm-18/lib/libMLIRGPUDialect.a /usr/lib/llvm-18/lib/libMLIRGPUPipelines.a /usr/lib/llvm-18/lib/libMLIRGPUToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRGPUToNVVMTransforms.a /usr/lib/llvm-18/lib/libMLIRGPUToROCDLTransforms.a /usr/lib/llvm-18/lib/libMLIRGPUTransforms.a /usr/lib/llvm-18/lib/libMLIRGPUTransformOps.a /usr/lib/llvm-18/lib/libMLIRIR.a /usr/lib/llvm-18/lib/libMLIRLLVMCommonConversion.a /usr/lib/llvm-18/lib/libMLIRLLVMDialect.a /usr/lib/llvm-18/lib/libMLIRLLVMToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRLinalgDialect.a /usr/lib/llvm-18/lib/libMLIRLinalgTransformOps.a /usr/lib/llvm-18/lib/libMLIRLinalgTransforms.a /usr/lib/llvm-18/lib/libMLIRMemRefDialect.a /usr/lib/llvm-18/lib/libMLIRMemRefToLLVM.a /usr/lib/llvm-18/lib/libMLIRNVGPUDialect.a /usr/lib/llvm-18/lib/libMLIRNVGPUTransformOps.a /usr/lib/llvm-18/lib/libMLIRNVGPUToNVVM.a /usr/lib/llvm-18/lib/libMLIRNVGPUTransforms.a /usr/lib/llvm-18/lib/libMLIRNVVMDialect.a /usr/lib/llvm-18/lib/libMLIRNVVMTarget.a /usr/lib/llvm-18/lib/libMLIRNVVMToLLVM.a /usr/lib/llvm-18/lib/libMLIRNVVMToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRParser.a /usr/lib/llvm-18/lib/libMLIRPass.a /usr/lib/llvm-18/lib/libMLIRROCDLDialect.a /usr/lib/llvm-18/lib/libMLIRROCDLTarget.a /usr/lib/llvm-18/lib/libMLIRROCDLToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRSCFDialect.a /usr/lib/llvm-18/lib/libMLIRSCFToGPU.a /usr/lib/llvm-18/lib/libMLIRSCFToControlFlow.a /usr/lib/llvm-18/lib/libMLIRTargetLLVMIRExport.a /usr/lib/llvm-18/lib/libMLIRTransformDialect.a /usr/lib/llvm-18/lib/libMLIRTransformDebugExtension.a /usr/lib/llvm-18/lib/libMLIRTransformDialectTransforms.a /usr/lib/llvm-18/lib/libMLIRTransformDialectUtils.a /usr/lib/llvm-18/lib/libMLIRTransforms.a /usr/lib/llvm-18/lib/libMLIRVectorDialect.a /usr/lib/llvm-18/lib/libMLIRVectorToLLVMPass.a /usr/lib/llvm-18/lib/libMLIRX86VectorDialect.a /usr/lib/llvm-18/lib/libMLIRX86VectorToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRX86VectorTransforms.a /usr/lib/llvm-18/lib/libMLIROpenMPToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIROpenMPDialect.a /usr/lib/llvm-18/lib/libMLIROpenACCMPCommon.a /usr/lib/llvm-18/lib/libMLIRIndexToLLVM.a /usr/lib/llvm-18/lib/libMLIRReconcileUnrealizedCasts.a /usr/lib/llvm-18/lib/libMLIRMathToLLVM.a /usr/lib/llvm-18/lib/libMLIRAMDGPUToROCDL.a /usr/lib/llvm-18/lib/libMLIRAMDGPUUtils.a /usr/lib/llvm-18/lib/libMLIRAMDGPUDialect.a /usr/lib/llvm-18/lib/libMLIRGPUToNVVMTransforms.a /usr/lib/llvm-18/lib/libMLIRMemRefTransforms.a /usr/lib/llvm-18/lib/libMLIRVectorToSCF.a /usr/lib/llvm-18/lib/libMLIRArithTransforms.a /usr/lib/llvm-18/lib/libMLIRTensorTilingInterfaceImpl.a /usr/lib/llvm-18/lib/libMLIRLinalgUtils.a /usr/lib/llvm-18/lib/libMLIRGPUToGPURuntimeTransforms.a /usr/lib/llvm-18/lib/libMLIRMemRefToLLVM.a /usr/lib/llvm-18/lib/libMLIRAsyncToLLVM.a /usr/lib/llvm-18/lib/libMLIRFuncToLLVM.a /usr/lib/llvm-18/lib/libMLIRArithToLLVM.a /usr/lib/llvm-18/lib/libMLIRControlFlowToLLVM.a /usr/lib/llvm-18/lib/libMLIRFuncTransforms.a /usr/lib/llvm-18/lib/libMLIRConvertToLLVMPass.a /usr/lib/llvm-18/lib/libMLIRConvertToLLVMInterface.a /usr/lib/llvm-18/lib/libMLIRNVGPUDialect.a /usr/lib/llvm-18/lib/libMLIRSCFTransforms.a /usr/lib/llvm-18/lib/libMLIRTensorTransforms.a /usr/lib/llvm-18/lib/libMLIRAffineTransforms.a /usr/lib/llvm-18/lib/libMLIRSCFUtils.a /usr/lib/llvm-18/lib/libMLIRTensorUtils.a /usr/lib/llvm-18/lib/libMLIRGPUTransforms.a /usr/lib/llvm-18/lib/libMLIRBuiltinToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRGPUToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRLLVMToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRNVVMTarget.a /usr/lib/llvm-18/lib/libMLIRNVVMToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRROCDLTarget.a /usr/lib/llvm-18/lib/libMLIRTargetLLVM.a /usr/lib/llvm-18/lib/libMLIRROCDLToLLVMIRTranslation.a /usr/lib/llvm-18/lib/libMLIRROCDLDialect.a /usr/lib/llvm-18/lib/libMLIRExecutionEngineUtils.a /usr/lib/llvm-18/lib/libMLIRAsyncDialect.a /usr/lib/llvm-18/lib/libMLIRIndexDialect.a /usr/lib/llvm-18/lib/libMLIRSPIRVTarget.a /usr/lib/llvm-18/lib/libMLIRSPIRVSerialization.a /usr/lib/llvm-18/lib/libMLIRSPIRVBinaryUtils.a /usr/lib/llvm-18/lib/libMLIRSPIRVDialect.a /usr/lib/llvm-18/lib/libMLIRAffineToStandard.a /usr/lib/llvm-18/lib/libMLIRTransformDialect.a /usr/lib/llvm-18/lib/libMLIRTransformDialectUtils.a /usr/lib/llvm-18/lib/libMLIRVectorToLLVM.a /usr/lib/llvm-18/lib/libMLIRVectorTransforms.a /usr/lib/llvm-18/lib/libMLIRGPUDialect.a /usr/lib/llvm-18/lib/libMLIRLinalgDialect.a /usr/lib/llvm-18/lib/libMLIRMathDialect.a /usr/lib/llvm-18/lib/libMLIRTilingInterface.a /usr/lib/llvm-18/lib/libMLIRAffineUtils.a /usr/lib/llvm-18/lib/libMLIRBufferizationTransforms.a /usr/lib/llvm-18/lib/libMLIRBufferizationDialect.a /usr/lib/llvm-18/lib/libMLIRSparseTensorDialect.a /usr/lib/llvm-18/lib/libMLIRVectorUtils.a /usr/lib/llvm-18/lib/libMLIRMemRefUtils.a /usr/lib/llvm-18/lib/libMLIRAffineAnalysis.a /usr/lib/llvm-18/lib/libMLIRArmNeonDialect.a /usr/lib/llvm-18/lib/libMLIRArmSMETransforms.a /usr/lib/llvm-18/lib/libMLIRArmSVETransforms.a /usr/lib/llvm-18/lib/libMLIRArmSVEDialect.a /usr/lib/llvm-18/lib/libMLIRVectorToArmSME.a /usr/lib/llvm-18/lib/libMLIRArmSMEDialect.a /usr/lib/llvm-18/lib/libMLIRSCFDialect.a /usr/lib/llvm-18/lib/libMLIRControlFlowDialect.a /usr/lib/llvm-18/lib/libMLIRVectorDialect.a /usr/lib/llvm-18/lib/libMLIRTensorDialect.a /usr/lib/llvm-18/lib/libMLIRAffineDialect.a /usr/lib/llvm-18/lib/libMLIRMemRefDialect.a /usr/lib/llvm-18/lib/libMLIRDialectUtils.a /usr/lib/llvm-18/lib/libMLIRArithUtils.a /usr/lib/llvm-18/lib/libMLIRComplexDialect.a /usr/lib/llvm-18/lib/libMLIRArithAttrToLLVMConversion.a /usr/lib/llvm-18/lib/libMLIRArithDialect.a /usr/lib/llvm-18/lib/libMLIRCastInterfaces.a /usr/lib/llvm-18/lib/libMLIRDialect.a /usr/lib/llvm-18/lib/libMLIRInferIntRangeCommon.a /usr/lib/llvm-18/lib/libMLIRUBDialect.a /usr/lib/llvm-18/lib/libMLIRShapedOpInterfaces.a /usr/lib/llvm-18/lib/libMLIRParallelCombiningOpInterface.a /usr/lib/llvm-18/lib/libMLIRMaskableOpInterface.a /usr/lib/llvm-18/lib/libMLIRMaskingOpInterface.a /usr/lib/llvm-18/lib/libMLIRVectorInterfaces.a /usr/lib/llvm-18/lib/libMLIRAMXTransforms.a /usr/lib/llvm-18/lib/libMLIRLLVMCommonConversion.a /usr/lib/llvm-18/lib/libMLIRAMXDialect.a /usr/lib/llvm-18/lib/libMLIRTargetLLVMIRExport.a /usr/lib/llvm-18/lib/libMLIRDLTIDialect.a /usr/lib/llvm-18/lib/libMLIRLLVMIRTransforms.a /usr/lib/llvm-18/lib/libMLIRFuncDialect.a /usr/lib/llvm-18/lib/libMLIRNVVMDialect.a /usr/lib/llvm-18/lib/libMLIRTransforms.a /usr/lib/llvm-18/lib/libMLIRTransformUtils.a /usr/lib/llvm-18/lib/libMLIRSubsetOpInterface.a /usr/lib/llvm-18/lib/libMLIRValueBoundsOpInterface.a /usr/lib/llvm-18/lib/libMLIRDestinationStyleOpInterface.a /usr/lib/llvm-18/lib/libMLIRRewrite.a /usr/lib/llvm-18/lib/libMLIRRewritePDL.a /usr/lib/llvm-18/lib/libMLIRPDLToPDLInterp.a /usr/lib/llvm-18/lib/libMLIRPass.a /usr/lib/llvm-18/lib/libMLIRAnalysis.a /usr/lib/llvm-18/lib/libMLIRInferIntRangeInterface.a /usr/lib/llvm-18/lib/libMLIRViewLikeInterface.a /usr/lib/llvm-18/lib/libMLIRPresburger.a /usr/lib/llvm-18/lib/libMLIRPDLInterpDialect.a /usr/lib/llvm-18/lib/libMLIRPDLDialect.a /usr/lib/llvm-18/lib/libMLIRLoopLikeInterface.a /usr/lib/llvm-18/lib/libMLIRCopyOpInterface.a /usr/lib/llvm-18/lib/libMLIRRuntimeVerifiableOpInterface.a /usr/lib/llvm-18/lib/libMLIRTranslateLib.a /usr/lib/llvm-18/lib/libMLIRParser.a /usr/lib/llvm-18/lib/libMLIRBytecodeReader.a /usr/lib/llvm-18/lib/libMLIRAsmParser.a /usr/lib/llvm-18/lib/libMLIRX86VectorDialect.a /usr/lib/llvm-18/lib/libMLIRLLVMDialect.a /usr/lib/llvm-18/lib/libMLIRInferTypeOpInterface.a /usr/lib/llvm-18/lib/libMLIRControlFlowInterfaces.a /usr/lib/llvm-18/lib/libMLIRCallInterfaces.a /usr/lib/llvm-18/lib/libMLIRFunctionInterfaces.a /usr/lib/llvm-18/lib/libMLIRDataLayoutInterfaces.a /usr/lib/llvm-18/lib/libMLIRMemorySlotInterfaces.a /usr/lib/llvm-18/lib/libMLIRSideEffectInterfaces.a /usr/lib/llvm-18/lib/libMLIRIR.a /usr/lib/llvm-18/lib/libMLIRSupport.a /usr/lib/llvm-18/lib/libLLVM.so.1 || libnanobind-static.a
+  CONFIG = Release
   DEP_FILE = CMakeFiles/_matcore_native.dir/link.d
-  LINK_FLAGS = -shared -Xlinker --dependency-file=CMakeFiles/_matcore_native.dir/link.d
+  LANGUAGE_COMPILE_FLAGS = -O3 -DNDEBUG
+  LINK_FLAGS = -shared -Wl,-s -Wl,--gc-sections -Xlinker --dependency-file=CMakeFiles/_matcore_native.dir/link.d
   LINK_LIBRARIES = -Wl,-rpath,/usr/lib/llvm-18/lib  libnanobind-static.a  -ldl  /usr/lib/llvm-18/lib/libMLIR.so.18.1  /usr/lib/llvm-18/lib/libMLIRArithDialect.a  /usr/lib/llvm-18/lib/libMLIRArithToLLVM.a  /usr/lib/llvm-18/lib/libMLIRBuiltinToLLVMIRTranslation.a  /usr/lib/llvm-18/lib/libMLIRControlFlowDialect.a  /usr/lib/llvm-18/lib/libMLIRControlFlowToLLVM.a  /usr/lib/llvm-18/lib/libMLIRExecutionEngine.a  /usr/lib/llvm-18/lib/libMLIRFuncDialect.a  /usr/lib/llvm-18/lib/libMLIRFuncToLLVM.a  /usr/lib/llvm-18/lib/libMLIRGPUDialect.a  /usr/lib/llvm-18/lib/libMLIRGPUPipelines.a  /usr/lib/llvm-18/lib/libMLIRGPUToLLVMIRTranslation.a  /usr/lib/llvm-18/lib/libMLIRGPUToNVVMTransforms.a  /usr/lib/llvm-18/lib/libMLIRGPUToROCDLTransforms.a  /usr/lib/llvm-18/lib/libMLIRGPUTransforms.a  /usr/lib/llvm-18/lib/libMLIRGPUTransformOps.a  /usr/lib/llvm-18/lib/libMLIRIR.a  /usr/lib/llvm-18/lib/libMLIRLLVMCommonConversion.a  /usr/lib/llvm-18/lib/libMLIRLLVMDialect.a  /usr/lib/llvm-18/lib/libMLIRLLVMToLLVMIRTranslation.a  /usr/lib/llvm-18/lib/libMLIRLinalgDialect.a  /usr/lib/llvm-18/lib/libMLIRLinalgTransformOps.a  /usr/lib/llvm-18/lib/libMLIRLinalgTransforms.a  /usr/lib/llvm-18/lib/libMLIRMemRefDialect.a  /usr/lib/llvm-18/lib/libMLIRMemRefToLLVM.a  /usr/lib/llvm-18/lib/libMLIRNVGPUDialect.a  /usr/lib/llvm-18/lib/libMLIRNVGPUTransformOps.a  /usr/lib/llvm-18/lib/libMLIRNVGPUToNVVM.a  /usr/lib/llvm-18/lib/libMLIRNVGPUTransforms.a  /usr/lib/llvm-18/lib/libMLIRNVVMDialect.a  /usr/lib/llvm-18/lib/libMLIRNVVMTarget.a  /usr/lib/llvm-18/lib/libMLIRNVVMToLLVM.a  /usr/lib/llvm-18/lib/libMLIRNVVMToLLVMIRTranslation.a  /usr/lib/llvm-18/lib/libMLIRParser.a  /usr/lib/llvm-18/lib/libMLIRPass.a  /usr/lib/llvm-18/lib/libMLIRROCDLDialect.a  /usr/lib/llvm-18/lib/libMLIRROCDLTarget.a  /usr/lib/llvm-18/lib/libMLIRROCDLToLLVMIRTranslation.a  /usr/lib/llvm-18/lib/libMLIRSCFDialect.a  /usr/lib/llvm-18/lib/libMLIRSCFToGPU.a  /usr/lib/llvm-18/lib/libMLIRSCFToControlFlow.a  /usr/lib/llvm-18/lib/libMLIRTargetLLVMIRExport.a  /usr/lib/llvm-18/lib/libMLIRTransformDialect.a  /usr/lib/llvm-18/lib/libMLIRTransformDebugExtension.a  /usr/lib/llvm-18/lib/libMLIRTransformDialectTransforms.a  /usr/lib/llvm-18/lib/libMLIRTransformDialectUtils.a  /usr/lib/llvm-18/lib/libMLIRTransforms.a  /usr/lib/llvm-18/lib/libMLIRVectorDialect.a  /usr/lib/llvm-18/lib/libMLIRVectorToLLVMPass.a  /usr/lib/llvm-18/lib/libMLIRX86VectorDialect.a  /usr/lib/llvm-18/lib/libMLIRX86VectorToLLVMIRTranslation.a  /usr/lib/llvm-18/lib/libMLIRX86VectorTransforms.a  /usr/lib/llvm-18/lib/libMLIROpenMPToLLVMIRTranslation.a  /usr/lib/llvm-18/lib/libMLIROpenMPDialect.a  /usr/lib/llvm-18/lib/libMLIROpenACCMPCommon.a  /usr/lib/llvm-18/lib/libMLIRIndexToLLVM.a  /usr/lib/llvm-18/lib/libMLIRReconcileUnrealizedCasts.a  /usr/lib/llvm-18/lib/libMLIRMathToLLVM.a  /usr/lib/llvm-18/lib/libMLIRAMDGPUToROCDL.a  /usr/lib/llvm-18/lib/libMLIRAMDGPUUtils.a  /usr/lib/llvm-18/lib/libMLIRAMDGPUDialect.a  /usr/lib/llvm-18/lib/libMLIRGPUToNVVMTransforms.a  /usr/lib/llvm-18/lib/libMLIRMemRefTransforms.a  /usr/lib/llvm-18/lib/libMLIRVectorToSCF.a  /usr/lib/llvm-18/lib/libMLIRArithTransforms.a  /usr/lib/llvm-18/lib/libMLIRTensorTilingInterfaceImpl.a  /usr/lib/llvm-18/lib/libMLIRLinalgUtils.a  /usr/lib/llvm-18/lib/libMLIRGPUToGPURuntimeTransforms.a  /usr/lib/llvm-18/lib/libMLIRMemRefToLLVM.a  /usr/lib/llvm-18/lib/libMLIRAsyncToLLVM.a  /usr/lib/llvm-18/lib/libMLIRFuncToLLVM.a  /usr/lib/llvm-18/lib/libMLIRArithToLLVM.a  /usr/lib/llvm-18/lib/libMLIRControlFlowToLLVM.a  /usr/lib/llvm-18/lib/libMLIRFuncTransforms.a  /usr/lib/llvm-18/lib/libMLIRConvertToLLVMPass.a  /usr/lib/llvm-18/lib/libMLIRConvertToLLVMInterface.a  /usr/lib/llvm-18/lib/libMLIRNVGPUDialect.a  /usr/lib/llvm-18/lib/libMLIRSCFTransforms.a  /usr/lib/llvm-18/lib/libMLIRTensorTransforms.a  /usr/lib/llvm-18/lib/libMLIRAffineTransforms.a  /usr/lib/llvm-18/lib/libMLIRSCFUtils.a  /usr/lib/llvm-18/lib/libMLIRTensorUtils.a  /usr/lib/llvm-18/lib/libMLIRGPUTransforms.a  /usr/lib/llvm-18/lib/libMLIRBuiltinToLLVMIRTranslation.a  /usr/lib/llvm-18/lib/libMLIRGPUToLLVMIRTranslation.a  /usr/lib/llvm-18/lib/libMLIRLLVMToLLVMIRTranslation.a  /usr/lib/llvm-18/lib/libMLIRNVVMTarget.a  /usr/lib/llvm-18/lib/libMLIRNVVMToLLVMIRTranslation.a  /usr/lib/llvm-18/lib/libMLIRROCDLTarget.a  /usr/lib/llvm-18/lib/libMLIRTargetLLVM.a  /usr/lib/llvm-18/lib/libMLIRROCDLToLLVMIRTranslation.a  /usr/lib/llvm-18/lib/libMLIRROCDLDialect.a  /usr/lib/llvm-18/lib/libMLIRExecutionEngineUtils.a  /usr/lib/llvm-18/lib/libMLIRAsyncDialect.a  /usr/lib/llvm-18/lib/libMLIRIndexDialect.a  /usr/lib/llvm-18/lib/libMLIRSPIRVTarget.a  /usr/lib/llvm-18/lib/libMLIRSPIRVSerialization.a  /usr/lib/llvm-18/lib/libMLIRSPIRVBinaryUtils.a  /usr/lib/llvm-18/lib/libMLIRSPIRVDialect.a  /usr/lib/llvm-18/lib/libMLIRAffineToStandard.a  /usr/lib/llvm-18/lib/libMLIRTransformDialect.a  /usr/lib/llvm-18/lib/libMLIRTransformDialectUtils.a  /usr/lib/llvm-18/lib/libMLIRVectorToLLVM.a  /usr/lib/llvm-18/lib/libMLIRVectorTransforms.a  /usr/lib/llvm-18/lib/libMLIRGPUDialect.a  /usr/lib/llvm-18/lib/libMLIRLinalgDialect.a  /usr/lib/llvm-18/lib/libMLIRMathDialect.a  /usr/lib/llvm-18/lib/libMLIRTilingInterface.a  /usr/lib/llvm-18/lib/libMLIRAffineUtils.a  /usr/lib/llvm-18/lib/libMLIRBufferizationTransforms.a  /usr/lib/llvm-18/lib/libMLIRBufferizationDialect.a  /usr/lib/llvm-18/lib/libMLIRSparseTensorDialect.a  /usr/lib/llvm-18/lib/libMLIRVectorUtils.a  /usr/lib/llvm-18/lib/libMLIRMemRefUtils.a  /usr/lib/llvm-18/lib/libMLIRAffineAnalysis.a  /usr/lib/llvm-18/lib/libMLIRArmNeonDialect.a  /usr/lib/llvm-18/lib/libMLIRArmSMETransforms.a  /usr/lib/llvm-18/lib/libMLIRArmSVETransforms.a  /usr/lib/llvm-18/lib/libMLIRArmSVEDialect.a  /usr/lib/llvm-18/lib/libMLIRVectorToArmSME.a  /usr/lib/llvm-18/lib/libMLIRArmSMEDialect.a  /usr/lib/llvm-18/lib/libMLIRSCFDialect.a  /usr/lib/llvm-18/lib/libMLIRControlFlowDialect.a  /usr/lib/llvm-18/lib/libMLIRVectorDialect.a  /usr/lib/llvm-18/lib/libMLIRTensorDialect.a  /usr/lib/llvm-18/lib/libMLIRAffineDialect.a  /usr/lib/llvm-18/lib/libMLIRMemRefDialect.a  /usr/lib/llvm-18/lib/libMLIRDialectUtils.a  /usr/lib/llvm-18/lib/libMLIRArithUtils.a  /usr/lib/llvm-18/lib/libMLIRComplexDialect.a  /usr/lib/llvm-18/lib/libMLIRArithAttrToLLVMConversion.a  /usr/lib/llvm-18/lib/libMLIRArithDialect.a  /usr/lib/llvm-18/lib/libMLIRCastInterfaces.a  /usr/lib/llvm-18/lib/libMLIRDialect.a  /usr/lib/llvm-18/lib/libMLIRInferIntRangeCommon.a  /usr/lib/llvm-18/lib/libMLIRUBDialect.a  /usr/lib/llvm-18/lib/libMLIRShapedOpInterfaces.a  /usr/lib/llvm-18/lib/libMLIRParallelCombiningOpInterface.a  /usr/lib/llvm-18/lib/libMLIRMaskableOpInterface.a  /usr/lib/llvm-18/lib/libMLIRMaskingOpInterface.a  /usr/lib/llvm-18/lib/libMLIRVectorInterfaces.a  /usr/lib/llvm-18/lib/libMLIRAMXTransforms.a  /usr/lib/llvm-18/lib/libMLIRLLVMCommonConversion.a  /usr/lib/llvm-18/lib/libMLIRAMXDialect.a  /usr/lib/llvm-18/lib/libMLIRTargetLLVMIRExport.a  /usr/lib/llvm-18/lib/libMLIRDLTIDialect.a  /usr/lib/llvm-18/lib/libMLIRLLVMIRTransforms.a  /usr/lib/llvm-18/lib/libMLIRFuncDialect.a  /usr/lib/llvm-18/lib/libMLIRNVVMDialect.a  /usr/lib/llvm-18/lib/libMLIRTransforms.a  /usr/lib/llvm-18/lib/libMLIRTransformUtils.a  /usr/lib/llvm-18/lib/libMLIRSubsetOpInterface.a  /usr/lib/llvm-18/lib/libMLIRValueBoundsOpInterface.a  /usr/lib/llvm-18/lib/libMLIRDestinationStyleOpInterface.a  /usr/lib/llvm-18/lib/libMLIRRewrite.a  /usr/lib/llvm-18/lib/libMLIRRewritePDL.a  /usr/lib/llvm-18/lib/libMLIRPDLToPDLInterp.a  /usr/lib/llvm-18/lib/libMLIRPass.a  /usr/lib/llvm-18/lib/libMLIRAnalysis.a  /usr/lib/llvm-18/lib/libMLIRInferIntRangeInterface.a  /usr/lib/llvm-18/lib/libMLIRViewLikeInterface.a  /usr/lib/llvm-18/lib/libMLIRPresburger.a  /usr/lib/llvm-18/lib/libMLIRPDLInterpDialect.a  /usr/lib/llvm-18/lib/libMLIRPDLDialect.a  /usr/lib/llvm-18/lib/libMLIRLoopLikeInterface.a  /usr/lib/llvm-18/lib/libMLIRCopyOpInterface.a  /usr/lib/llvm-18/lib/libMLIRRuntimeVerifiableOpInterface.a  /usr/lib/llvm-18/lib/libMLIRTranslateLib.a  /usr/lib/llvm-18/lib/libMLIRParser.a  /usr/lib/llvm-18/lib/libMLIRBytecodeReader.a  /usr/lib/llvm-18/lib/libMLIRAsmParser.a  /usr/lib/llvm-18/lib/libMLIRX86VectorDialect.a  /usr/lib/llvm-18/lib/libMLIRLLVMDialect.a  /usr/lib/llvm-18/lib/libMLIRInferTypeOpInterface.a  /usr/lib/llvm-18/lib/libMLIRControlFlowInterfaces.a  /usr/lib/llvm-18/lib/libMLIRCallInterfaces.a  /usr/lib/llvm-18/lib/libMLIRFunctionInterfaces.a  /usr/lib/llvm-18/lib/libMLIRDataLayoutInterfaces.a  /usr/lib/llvm-18/lib/libMLIRMemorySlotInterfaces.a  /usr/lib/llvm-18/lib/libMLIRSideEffectInterfaces.a  /usr/lib/llvm-18/lib/libMLIRIR.a  /usr/lib/llvm-18/lib/libMLIRSupport.a  /usr/lib/llvm-18/lib/libLLVM.so.1
   OBJECT_DIR = CMakeFiles/_matcore_native.dir
   POST_BUILD = :
   PRE_LINK = :
-  TARGET_COMPILE_PDB = CMakeFiles/_matcore_native.dir/
   TARGET_FILE = /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.cpython-312-x86_64-linux-gnu.so
-  TARGET_PDB = /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.pdb
+  TARGET_PDB = _matcore_native.cpython-312-x86_64-linux-gnu.so.dbg
   TARGET_SUPPORT_DIR = CMakeFiles/_matcore_native.dir
 
 # =============================================================================
@@ -313,114 +424,114 @@ build /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.cpython-312-x86_64-lin
 
 build cmake_object_order_depends_target_nanobind-static: phony || .
 
-build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_internals.cpp.o: CXX_COMPILER__nanobind-static_unscanned_ /usr/share/nanobind/src/nb_internals.cpp || cmake_object_order_depends_target_nanobind-static
+build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_internals.cpp.o: CXX_COMPILER__nanobind-static_unscanned_Release /usr/share/nanobind/src/nb_internals.cpp || cmake_object_order_depends_target_nanobind-static
+  CONFIG = Release
+  DEFINES = -DNB_COMPACT_ASSERTIONS
   DEP_FILE = CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_internals.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-strict-aliasing
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -ffunction-sections -fdata-sections -fno-strict-aliasing
   INCLUDES = -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/nanobind-static.dir
   OBJECT_FILE_DIR = CMakeFiles/nanobind-static.dir/usr/share/nanobind/src
-  TARGET_COMPILE_PDB = CMakeFiles/nanobind-static.dir/nanobind-static.pdb
-  TARGET_PDB = libnanobind-static.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/nanobind-static.dir
 
-build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_func.cpp.o: CXX_COMPILER__nanobind-static_unscanned_ /usr/share/nanobind/src/nb_func.cpp || cmake_object_order_depends_target_nanobind-static
+build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_func.cpp.o: CXX_COMPILER__nanobind-static_unscanned_Release /usr/share/nanobind/src/nb_func.cpp || cmake_object_order_depends_target_nanobind-static
+  CONFIG = Release
+  DEFINES = -DNB_COMPACT_ASSERTIONS
   DEP_FILE = CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_func.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-strict-aliasing
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -ffunction-sections -fdata-sections -fno-strict-aliasing
   INCLUDES = -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/nanobind-static.dir
   OBJECT_FILE_DIR = CMakeFiles/nanobind-static.dir/usr/share/nanobind/src
-  TARGET_COMPILE_PDB = CMakeFiles/nanobind-static.dir/nanobind-static.pdb
-  TARGET_PDB = libnanobind-static.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/nanobind-static.dir
 
-build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_type.cpp.o: CXX_COMPILER__nanobind-static_unscanned_ /usr/share/nanobind/src/nb_type.cpp || cmake_object_order_depends_target_nanobind-static
+build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_type.cpp.o: CXX_COMPILER__nanobind-static_unscanned_Release /usr/share/nanobind/src/nb_type.cpp || cmake_object_order_depends_target_nanobind-static
+  CONFIG = Release
+  DEFINES = -DNB_COMPACT_ASSERTIONS
   DEP_FILE = CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_type.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-strict-aliasing
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -ffunction-sections -fdata-sections -fno-strict-aliasing
   INCLUDES = -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/nanobind-static.dir
   OBJECT_FILE_DIR = CMakeFiles/nanobind-static.dir/usr/share/nanobind/src
-  TARGET_COMPILE_PDB = CMakeFiles/nanobind-static.dir/nanobind-static.pdb
-  TARGET_PDB = libnanobind-static.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/nanobind-static.dir
 
-build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_enum.cpp.o: CXX_COMPILER__nanobind-static_unscanned_ /usr/share/nanobind/src/nb_enum.cpp || cmake_object_order_depends_target_nanobind-static
+build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_enum.cpp.o: CXX_COMPILER__nanobind-static_unscanned_Release /usr/share/nanobind/src/nb_enum.cpp || cmake_object_order_depends_target_nanobind-static
+  CONFIG = Release
+  DEFINES = -DNB_COMPACT_ASSERTIONS
   DEP_FILE = CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_enum.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-strict-aliasing
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -ffunction-sections -fdata-sections -fno-strict-aliasing
   INCLUDES = -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/nanobind-static.dir
   OBJECT_FILE_DIR = CMakeFiles/nanobind-static.dir/usr/share/nanobind/src
-  TARGET_COMPILE_PDB = CMakeFiles/nanobind-static.dir/nanobind-static.pdb
-  TARGET_PDB = libnanobind-static.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/nanobind-static.dir
 
-build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_ndarray.cpp.o: CXX_COMPILER__nanobind-static_unscanned_ /usr/share/nanobind/src/nb_ndarray.cpp || cmake_object_order_depends_target_nanobind-static
+build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_ndarray.cpp.o: CXX_COMPILER__nanobind-static_unscanned_Release /usr/share/nanobind/src/nb_ndarray.cpp || cmake_object_order_depends_target_nanobind-static
+  CONFIG = Release
+  DEFINES = -DNB_COMPACT_ASSERTIONS
   DEP_FILE = CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_ndarray.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-strict-aliasing
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -ffunction-sections -fdata-sections -fno-strict-aliasing
   INCLUDES = -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/nanobind-static.dir
   OBJECT_FILE_DIR = CMakeFiles/nanobind-static.dir/usr/share/nanobind/src
-  TARGET_COMPILE_PDB = CMakeFiles/nanobind-static.dir/nanobind-static.pdb
-  TARGET_PDB = libnanobind-static.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/nanobind-static.dir
 
-build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_static_property.cpp.o: CXX_COMPILER__nanobind-static_unscanned_ /usr/share/nanobind/src/nb_static_property.cpp || cmake_object_order_depends_target_nanobind-static
+build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_static_property.cpp.o: CXX_COMPILER__nanobind-static_unscanned_Release /usr/share/nanobind/src/nb_static_property.cpp || cmake_object_order_depends_target_nanobind-static
+  CONFIG = Release
+  DEFINES = -DNB_COMPACT_ASSERTIONS
   DEP_FILE = CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_static_property.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-strict-aliasing
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -ffunction-sections -fdata-sections -fno-strict-aliasing
   INCLUDES = -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/nanobind-static.dir
   OBJECT_FILE_DIR = CMakeFiles/nanobind-static.dir/usr/share/nanobind/src
-  TARGET_COMPILE_PDB = CMakeFiles/nanobind-static.dir/nanobind-static.pdb
-  TARGET_PDB = libnanobind-static.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/nanobind-static.dir
 
-build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/common.cpp.o: CXX_COMPILER__nanobind-static_unscanned_ /usr/share/nanobind/src/common.cpp || cmake_object_order_depends_target_nanobind-static
+build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/common.cpp.o: CXX_COMPILER__nanobind-static_unscanned_Release /usr/share/nanobind/src/common.cpp || cmake_object_order_depends_target_nanobind-static
+  CONFIG = Release
+  DEFINES = -DNB_COMPACT_ASSERTIONS
   DEP_FILE = CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/common.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-strict-aliasing
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -ffunction-sections -fdata-sections -fno-strict-aliasing
   INCLUDES = -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/nanobind-static.dir
   OBJECT_FILE_DIR = CMakeFiles/nanobind-static.dir/usr/share/nanobind/src
-  TARGET_COMPILE_PDB = CMakeFiles/nanobind-static.dir/nanobind-static.pdb
-  TARGET_PDB = libnanobind-static.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/nanobind-static.dir
 
-build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/error.cpp.o: CXX_COMPILER__nanobind-static_unscanned_ /usr/share/nanobind/src/error.cpp || cmake_object_order_depends_target_nanobind-static
+build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/error.cpp.o: CXX_COMPILER__nanobind-static_unscanned_Release /usr/share/nanobind/src/error.cpp || cmake_object_order_depends_target_nanobind-static
+  CONFIG = Release
+  DEFINES = -DNB_COMPACT_ASSERTIONS
   DEP_FILE = CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/error.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-strict-aliasing
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -ffunction-sections -fdata-sections -fno-strict-aliasing
   INCLUDES = -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/nanobind-static.dir
   OBJECT_FILE_DIR = CMakeFiles/nanobind-static.dir/usr/share/nanobind/src
-  TARGET_COMPILE_PDB = CMakeFiles/nanobind-static.dir/nanobind-static.pdb
-  TARGET_PDB = libnanobind-static.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/nanobind-static.dir
 
-build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/trampoline.cpp.o: CXX_COMPILER__nanobind-static_unscanned_ /usr/share/nanobind/src/trampoline.cpp || cmake_object_order_depends_target_nanobind-static
+build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/trampoline.cpp.o: CXX_COMPILER__nanobind-static_unscanned_Release /usr/share/nanobind/src/trampoline.cpp || cmake_object_order_depends_target_nanobind-static
+  CONFIG = Release
+  DEFINES = -DNB_COMPACT_ASSERTIONS
   DEP_FILE = CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/trampoline.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-strict-aliasing
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -ffunction-sections -fdata-sections -fno-strict-aliasing
   INCLUDES = -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/nanobind-static.dir
   OBJECT_FILE_DIR = CMakeFiles/nanobind-static.dir/usr/share/nanobind/src
-  TARGET_COMPILE_PDB = CMakeFiles/nanobind-static.dir/nanobind-static.pdb
-  TARGET_PDB = libnanobind-static.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/nanobind-static.dir
 
-build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/implicit.cpp.o: CXX_COMPILER__nanobind-static_unscanned_ /usr/share/nanobind/src/implicit.cpp || cmake_object_order_depends_target_nanobind-static
+build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/implicit.cpp.o: CXX_COMPILER__nanobind-static_unscanned_Release /usr/share/nanobind/src/implicit.cpp || cmake_object_order_depends_target_nanobind-static
+  CONFIG = Release
+  DEFINES = -DNB_COMPACT_ASSERTIONS
   DEP_FILE = CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/implicit.cpp.o.d
-  FLAGS = -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -fno-strict-aliasing
+  FLAGS = -O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -ffunction-sections -fdata-sections -fno-strict-aliasing
   INCLUDES = -I/usr/share/nanobind/include -isystem /usr/lib/llvm-18/include -isystem /usr/include/python3.12
   LAUNCHER = /usr/bin/ccache 
   OBJECT_DIR = CMakeFiles/nanobind-static.dir
   OBJECT_FILE_DIR = CMakeFiles/nanobind-static.dir/usr/share/nanobind/src
-  TARGET_COMPILE_PDB = CMakeFiles/nanobind-static.dir/nanobind-static.pdb
-  TARGET_PDB = libnanobind-static.pdb
   TARGET_SUPPORT_DIR = CMakeFiles/nanobind-static.dir
 
 
@@ -431,13 +542,14 @@ build CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/implicit.cpp.o: CXX_
 #############################################
 # Link the static library libnanobind-static.a
 
-build libnanobind-static.a: CXX_STATIC_LIBRARY_LINKER__nanobind-static_ CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_internals.cpp.o CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_func.cpp.o CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_type.cpp.o CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_enum.cpp.o CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_ndarray.cpp.o CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_static_property.cpp.o CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/common.cpp.o CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/error.cpp.o CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/trampoline.cpp.o CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/implicit.cpp.o
+build libnanobind-static.a: CXX_STATIC_LIBRARY_LINKER__nanobind-static_Release CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_internals.cpp.o CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_func.cpp.o CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_type.cpp.o CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_enum.cpp.o CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_ndarray.cpp.o CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/nb_static_property.cpp.o CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/common.cpp.o CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/error.cpp.o CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/trampoline.cpp.o CMakeFiles/nanobind-static.dir/usr/share/nanobind/src/implicit.cpp.o
+  CONFIG = Release
+  LANGUAGE_COMPILE_FLAGS = -O3 -DNDEBUG
   OBJECT_DIR = CMakeFiles/nanobind-static.dir
   POST_BUILD = :
   PRE_LINK = :
-  TARGET_COMPILE_PDB = CMakeFiles/nanobind-static.dir/nanobind-static.pdb
   TARGET_FILE = libnanobind-static.a
-  TARGET_PDB = libnanobind-static.pdb
+  TARGET_PDB = nanobind-static.a.dbg
   TARGET_SUPPORT_DIR = CMakeFiles/nanobind-static.dir
 
 
@@ -489,14 +601,14 @@ build all: phony /home/hamza-usta/MatcoreDSL/matcore/_matcore_native.cpython-312
 #############################################
 # Re-run CMake if any of its inputs changed.
 
-build build.ninja /home/hamza-usta/MatcoreDSL/build-review/cmake_install.cmake: RERUN_CMAKE | /home/hamza-usta/MatcoreDSL/CMakeLists.txt /usr/lib/llvm-18/lib/cmake/llvm/FindFFI.cmake /usr/lib/llvm-18/lib/cmake/llvm/FindLibEdit.cmake /usr/lib/llvm-18/lib/cmake/llvm/FindTerminfo.cmake /usr/lib/llvm-18/lib/cmake/llvm/Findzstd.cmake /usr/lib/llvm-18/lib/cmake/llvm/LLVM-Config.cmake /usr/lib/llvm-18/lib/cmake/llvm/LLVMConfig.cmake /usr/lib/llvm-18/lib/cmake/llvm/LLVMConfigVersion.cmake /usr/lib/llvm-18/lib/cmake/llvm/LLVMExports-relwithdebinfo.cmake /usr/lib/llvm-18/lib/cmake/llvm/LLVMExports.cmake /usr/lib/llvm-18/lib/cmake/mlir/MLIRConfig.cmake /usr/lib/llvm-18/lib/cmake/mlir/MLIRConfigVersion.cmake /usr/lib/llvm-18/lib/cmake/mlir/MLIRTargets-relwithdebinfo.cmake /usr/lib/llvm-18/lib/cmake/mlir/MLIRTargets.cmake /usr/share/cmake-4.2/Modules/CMakeCCompiler.cmake.in /usr/share/cmake-4.2/Modules/CMakeCCompilerABI.c /usr/share/cmake-4.2/Modules/CMakeCInformation.cmake /usr/share/cmake-4.2/Modules/CMakeCXXCompiler.cmake.in /usr/share/cmake-4.2/Modules/CMakeCXXCompilerABI.cpp /usr/share/cmake-4.2/Modules/CMakeCXXInformation.cmake /usr/share/cmake-4.2/Modules/CMakeCommonLanguageInclude.cmake /usr/share/cmake-4.2/Modules/CMakeCompilerIdDetection.cmake /usr/share/cmake-4.2/Modules/CMakeDetermineCCompiler.cmake /usr/share/cmake-4.2/Modules/CMakeDetermineCXXCompiler.cmake /usr/share/cmake-4.2/Modules/CMakeDetermineCompiler.cmake /usr/share/cmake-4.2/Modules/CMakeDetermineCompilerABI.cmake /usr/share/cmake-4.2/Modules/CMakeDetermineCompilerId.cmake /usr/share/cmake-4.2/Modules/CMakeDetermineCompilerSupport.cmake /usr/share/cmake-4.2/Modules/CMakeDetermineSystem.cmake /usr/share/cmake-4.2/Modules/CMakeFindBinUtils.cmake /usr/share/cmake-4.2/Modules/CMakeFindDependencyMacro.cmake /usr/share/cmake-4.2/Modules/CMakeGenericSystem.cmake /usr/share/cmake-4.2/Modules/CMakeInitializeConfigs.cmake /usr/share/cmake-4.2/Modules/CMakeLanguageInformation.cmake /usr/share/cmake-4.2/Modules/CMakeNinjaFindMake.cmake /usr/share/cmake-4.2/Modules/CMakeParseImplicitIncludeInfo.cmake /usr/share/cmake-4.2/Modules/CMakeParseImplicitLinkInfo.cmake /usr/share/cmake-4.2/Modules/CMakeParseLibraryArchitecture.cmake /usr/share/cmake-4.2/Modules/CMakePushCheckState.cmake /usr/share/cmake-4.2/Modules/CMakeSystem.cmake.in /usr/share/cmake-4.2/Modules/CMakeSystemSpecificInformation.cmake /usr/share/cmake-4.2/Modules/CMakeSystemSpecificInitialize.cmake /usr/share/cmake-4.2/Modules/CMakeTestCCompiler.cmake /usr/share/cmake-4.2/Modules/CMakeTestCXXCompiler.cmake /usr/share/cmake-4.2/Modules/CMakeTestCompilerCommon.cmake /usr/share/cmake-4.2/Modules/CheckCSourceCompiles.cmake /usr/share/cmake-4.2/Modules/CheckIncludeFile.cmake /usr/share/cmake-4.2/Modules/Compiler/ADSP-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/ARMCC-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/ARMClang-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/AppleClang-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Borland-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Bruce-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/CMakeCommonCompilerMacros.cmake /usr/share/cmake-4.2/Modules/Compiler/Clang-C.cmake /usr/share/cmake-4.2/Modules/Compiler/Clang-CXX-CXXImportStd.cmake /usr/share/cmake-4.2/Modules/Compiler/Clang-CXX.cmake /usr/share/cmake-4.2/Modules/Compiler/Clang-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Clang-DetermineCompilerInternal.cmake /usr/share/cmake-4.2/Modules/Compiler/Clang-FindBinUtils.cmake /usr/share/cmake-4.2/Modules/Compiler/Clang.cmake /usr/share/cmake-4.2/Modules/Compiler/Compaq-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Compaq-CXX-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Cray-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/CrayClang-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Diab-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Embarcadero-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Fujitsu-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/FujitsuClang-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/GHS-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/GNU-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/GNU-CXX-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/GNU.cmake /usr/share/cmake-4.2/Modules/Compiler/HP-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/HP-CXX-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/IAR-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/IBMCPP-C-DetermineVersionInternal.cmake /usr/share/cmake-4.2/Modules/Compiler/IBMCPP-CXX-DetermineVersionInternal.cmake /usr/share/cmake-4.2/Modules/Compiler/IBMClang-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/IBMClang-CXX-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Intel-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/IntelLLVM-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/LCC-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/LCC-CXX-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/MSVC-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/NVHPC-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/NVIDIA-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/OpenWatcom-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/OrangeC-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/PGI-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/PathScale-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Renesas-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/SCO-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/SDCC-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/SunPro-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/SunPro-CXX-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/TI-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/TIClang-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Tasking-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/TinyCC-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/VisualAge-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/VisualAge-CXX-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Watcom-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/XL-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/XL-CXX-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/XLClang-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/XLClang-CXX-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/zOS-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/zOS-CXX-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/FindCURL.cmake /usr/share/cmake-4.2/Modules/FindLibXml2.cmake /usr/share/cmake-4.2/Modules/FindPackageHandleStandardArgs.cmake /usr/share/cmake-4.2/Modules/FindPackageMessage.cmake /usr/share/cmake-4.2/Modules/FindPkgConfig.cmake /usr/share/cmake-4.2/Modules/FindPython.cmake /usr/share/cmake-4.2/Modules/FindPython/Support.cmake /usr/share/cmake-4.2/Modules/FindZLIB.cmake /usr/share/cmake-4.2/Modules/Internal/CMakeCLinkerInformation.cmake /usr/share/cmake-4.2/Modules/Internal/CMakeCXXLinkerInformation.cmake /usr/share/cmake-4.2/Modules/Internal/CMakeCommonLinkerInformation.cmake /usr/share/cmake-4.2/Modules/Internal/CMakeDetermineLinkerId.cmake /usr/share/cmake-4.2/Modules/Internal/CMakeInspectCLinker.cmake /usr/share/cmake-4.2/Modules/Internal/CMakeInspectCXXLinker.cmake /usr/share/cmake-4.2/Modules/Internal/CheckSourceCompiles.cmake /usr/share/cmake-4.2/Modules/Internal/FeatureTesting.cmake /usr/share/cmake-4.2/Modules/Linker/GNU-C.cmake /usr/share/cmake-4.2/Modules/Linker/GNU-CXX.cmake /usr/share/cmake-4.2/Modules/Linker/GNU.cmake /usr/share/cmake-4.2/Modules/Platform/Linker/GNU.cmake /usr/share/cmake-4.2/Modules/Platform/Linker/Linux-GNU-C.cmake /usr/share/cmake-4.2/Modules/Platform/Linker/Linux-GNU-CXX.cmake /usr/share/cmake-4.2/Modules/Platform/Linker/Linux-GNU.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-Clang-C.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-Clang-CXX.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-Determine-CXX.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-GNU-C.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-GNU-CXX.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-GNU.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-Initialize.cmake /usr/share/cmake-4.2/Modules/Platform/Linux.cmake /usr/share/cmake-4.2/Modules/Platform/UnixPaths.cmake /usr/share/cmake-4.2/Modules/SelectLibraryConfigurations.cmake /usr/share/cmake/tsl-robin-map/tsl-robin-mapConfig.cmake /usr/share/cmake/tsl-robin-map/tsl-robin-mapConfigVersion.cmake /usr/share/cmake/tsl-robin-map/tsl-robin-mapTargets.cmake /usr/share/nanobind/cmake/nanobind-config.cmake CMakeCache.txt CMakeFiles/4.2.3/CMakeCCompiler.cmake CMakeFiles/4.2.3/CMakeCXXCompiler.cmake CMakeFiles/4.2.3/CMakeSystem.cmake
+build build.ninja /home/hamza-usta/MatcoreDSL/build-review/cmake_install.cmake: RERUN_CMAKE | /home/hamza-usta/MatcoreDSL/CMakeLists.txt /usr/lib/llvm-18/lib/cmake/llvm/FindFFI.cmake /usr/lib/llvm-18/lib/cmake/llvm/FindLibEdit.cmake /usr/lib/llvm-18/lib/cmake/llvm/FindTerminfo.cmake /usr/lib/llvm-18/lib/cmake/llvm/Findzstd.cmake /usr/lib/llvm-18/lib/cmake/llvm/LLVM-Config.cmake /usr/lib/llvm-18/lib/cmake/llvm/LLVMConfig.cmake /usr/lib/llvm-18/lib/cmake/llvm/LLVMConfigVersion.cmake /usr/lib/llvm-18/lib/cmake/llvm/LLVMExports-relwithdebinfo.cmake /usr/lib/llvm-18/lib/cmake/llvm/LLVMExports.cmake /usr/lib/llvm-18/lib/cmake/mlir/MLIRConfig.cmake /usr/lib/llvm-18/lib/cmake/mlir/MLIRConfigVersion.cmake /usr/lib/llvm-18/lib/cmake/mlir/MLIRTargets-relwithdebinfo.cmake /usr/lib/llvm-18/lib/cmake/mlir/MLIRTargets.cmake /usr/share/cmake-4.2/Modules/CMakeCInformation.cmake /usr/share/cmake-4.2/Modules/CMakeCXXInformation.cmake /usr/share/cmake-4.2/Modules/CMakeCommonLanguageInclude.cmake /usr/share/cmake-4.2/Modules/CMakeFindDependencyMacro.cmake /usr/share/cmake-4.2/Modules/CMakeGenericSystem.cmake /usr/share/cmake-4.2/Modules/CMakeInitializeConfigs.cmake /usr/share/cmake-4.2/Modules/CMakeLanguageInformation.cmake /usr/share/cmake-4.2/Modules/CMakePushCheckState.cmake /usr/share/cmake-4.2/Modules/CMakeSystemSpecificInformation.cmake /usr/share/cmake-4.2/Modules/CMakeSystemSpecificInitialize.cmake /usr/share/cmake-4.2/Modules/CheckCSourceCompiles.cmake /usr/share/cmake-4.2/Modules/CheckIncludeFile.cmake /usr/share/cmake-4.2/Modules/Compiler/CMakeCommonCompilerMacros.cmake /usr/share/cmake-4.2/Modules/Compiler/Clang-C.cmake /usr/share/cmake-4.2/Modules/Compiler/Clang-CXX.cmake /usr/share/cmake-4.2/Modules/Compiler/Clang.cmake /usr/share/cmake-4.2/Modules/Compiler/GNU.cmake /usr/share/cmake-4.2/Modules/FindCURL.cmake /usr/share/cmake-4.2/Modules/FindLibXml2.cmake /usr/share/cmake-4.2/Modules/FindPackageHandleStandardArgs.cmake /usr/share/cmake-4.2/Modules/FindPackageMessage.cmake /usr/share/cmake-4.2/Modules/FindPkgConfig.cmake /usr/share/cmake-4.2/Modules/FindPython.cmake /usr/share/cmake-4.2/Modules/FindPython/Support.cmake /usr/share/cmake-4.2/Modules/FindZLIB.cmake /usr/share/cmake-4.2/Modules/Internal/CMakeCLinkerInformation.cmake /usr/share/cmake-4.2/Modules/Internal/CMakeCXXLinkerInformation.cmake /usr/share/cmake-4.2/Modules/Internal/CMakeCommonLinkerInformation.cmake /usr/share/cmake-4.2/Modules/Internal/CheckSourceCompiles.cmake /usr/share/cmake-4.2/Modules/Linker/GNU-C.cmake /usr/share/cmake-4.2/Modules/Linker/GNU-CXX.cmake /usr/share/cmake-4.2/Modules/Linker/GNU.cmake /usr/share/cmake-4.2/Modules/Platform/Linker/GNU.cmake /usr/share/cmake-4.2/Modules/Platform/Linker/Linux-GNU-C.cmake /usr/share/cmake-4.2/Modules/Platform/Linker/Linux-GNU-CXX.cmake /usr/share/cmake-4.2/Modules/Platform/Linker/Linux-GNU.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-Clang-C.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-Clang-CXX.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-GNU-C.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-GNU-CXX.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-GNU.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-Initialize.cmake /usr/share/cmake-4.2/Modules/Platform/Linux.cmake /usr/share/cmake-4.2/Modules/Platform/UnixPaths.cmake /usr/share/cmake-4.2/Modules/SelectLibraryConfigurations.cmake /usr/share/cmake/tsl-robin-map/tsl-robin-mapConfig.cmake /usr/share/cmake/tsl-robin-map/tsl-robin-mapConfigVersion.cmake /usr/share/cmake/tsl-robin-map/tsl-robin-mapTargets.cmake /usr/share/nanobind/cmake/nanobind-config.cmake CMakeCache.txt CMakeFiles/4.2.3/CMakeCCompiler.cmake CMakeFiles/4.2.3/CMakeCXXCompiler.cmake CMakeFiles/4.2.3/CMakeSystem.cmake
   pool = console
 
 
 #############################################
 # A missing CMake input file is not an error.
 
-build /home/hamza-usta/MatcoreDSL/CMakeLists.txt /usr/lib/llvm-18/lib/cmake/llvm/FindFFI.cmake /usr/lib/llvm-18/lib/cmake/llvm/FindLibEdit.cmake /usr/lib/llvm-18/lib/cmake/llvm/FindTerminfo.cmake /usr/lib/llvm-18/lib/cmake/llvm/Findzstd.cmake /usr/lib/llvm-18/lib/cmake/llvm/LLVM-Config.cmake /usr/lib/llvm-18/lib/cmake/llvm/LLVMConfig.cmake /usr/lib/llvm-18/lib/cmake/llvm/LLVMConfigVersion.cmake /usr/lib/llvm-18/lib/cmake/llvm/LLVMExports-relwithdebinfo.cmake /usr/lib/llvm-18/lib/cmake/llvm/LLVMExports.cmake /usr/lib/llvm-18/lib/cmake/mlir/MLIRConfig.cmake /usr/lib/llvm-18/lib/cmake/mlir/MLIRConfigVersion.cmake /usr/lib/llvm-18/lib/cmake/mlir/MLIRTargets-relwithdebinfo.cmake /usr/lib/llvm-18/lib/cmake/mlir/MLIRTargets.cmake /usr/share/cmake-4.2/Modules/CMakeCCompiler.cmake.in /usr/share/cmake-4.2/Modules/CMakeCCompilerABI.c /usr/share/cmake-4.2/Modules/CMakeCInformation.cmake /usr/share/cmake-4.2/Modules/CMakeCXXCompiler.cmake.in /usr/share/cmake-4.2/Modules/CMakeCXXCompilerABI.cpp /usr/share/cmake-4.2/Modules/CMakeCXXInformation.cmake /usr/share/cmake-4.2/Modules/CMakeCommonLanguageInclude.cmake /usr/share/cmake-4.2/Modules/CMakeCompilerIdDetection.cmake /usr/share/cmake-4.2/Modules/CMakeDetermineCCompiler.cmake /usr/share/cmake-4.2/Modules/CMakeDetermineCXXCompiler.cmake /usr/share/cmake-4.2/Modules/CMakeDetermineCompiler.cmake /usr/share/cmake-4.2/Modules/CMakeDetermineCompilerABI.cmake /usr/share/cmake-4.2/Modules/CMakeDetermineCompilerId.cmake /usr/share/cmake-4.2/Modules/CMakeDetermineCompilerSupport.cmake /usr/share/cmake-4.2/Modules/CMakeDetermineSystem.cmake /usr/share/cmake-4.2/Modules/CMakeFindBinUtils.cmake /usr/share/cmake-4.2/Modules/CMakeFindDependencyMacro.cmake /usr/share/cmake-4.2/Modules/CMakeGenericSystem.cmake /usr/share/cmake-4.2/Modules/CMakeInitializeConfigs.cmake /usr/share/cmake-4.2/Modules/CMakeLanguageInformation.cmake /usr/share/cmake-4.2/Modules/CMakeNinjaFindMake.cmake /usr/share/cmake-4.2/Modules/CMakeParseImplicitIncludeInfo.cmake /usr/share/cmake-4.2/Modules/CMakeParseImplicitLinkInfo.cmake /usr/share/cmake-4.2/Modules/CMakeParseLibraryArchitecture.cmake /usr/share/cmake-4.2/Modules/CMakePushCheckState.cmake /usr/share/cmake-4.2/Modules/CMakeSystem.cmake.in /usr/share/cmake-4.2/Modules/CMakeSystemSpecificInformation.cmake /usr/share/cmake-4.2/Modules/CMakeSystemSpecificInitialize.cmake /usr/share/cmake-4.2/Modules/CMakeTestCCompiler.cmake /usr/share/cmake-4.2/Modules/CMakeTestCXXCompiler.cmake /usr/share/cmake-4.2/Modules/CMakeTestCompilerCommon.cmake /usr/share/cmake-4.2/Modules/CheckCSourceCompiles.cmake /usr/share/cmake-4.2/Modules/CheckIncludeFile.cmake /usr/share/cmake-4.2/Modules/Compiler/ADSP-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/ARMCC-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/ARMClang-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/AppleClang-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Borland-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Bruce-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/CMakeCommonCompilerMacros.cmake /usr/share/cmake-4.2/Modules/Compiler/Clang-C.cmake /usr/share/cmake-4.2/Modules/Compiler/Clang-CXX-CXXImportStd.cmake /usr/share/cmake-4.2/Modules/Compiler/Clang-CXX.cmake /usr/share/cmake-4.2/Modules/Compiler/Clang-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Clang-DetermineCompilerInternal.cmake /usr/share/cmake-4.2/Modules/Compiler/Clang-FindBinUtils.cmake /usr/share/cmake-4.2/Modules/Compiler/Clang.cmake /usr/share/cmake-4.2/Modules/Compiler/Compaq-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Compaq-CXX-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Cray-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/CrayClang-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Diab-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Embarcadero-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Fujitsu-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/FujitsuClang-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/GHS-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/GNU-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/GNU-CXX-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/GNU.cmake /usr/share/cmake-4.2/Modules/Compiler/HP-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/HP-CXX-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/IAR-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/IBMCPP-C-DetermineVersionInternal.cmake /usr/share/cmake-4.2/Modules/Compiler/IBMCPP-CXX-DetermineVersionInternal.cmake /usr/share/cmake-4.2/Modules/Compiler/IBMClang-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/IBMClang-CXX-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Intel-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/IntelLLVM-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/LCC-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/LCC-CXX-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/MSVC-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/NVHPC-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/NVIDIA-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/OpenWatcom-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/OrangeC-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/PGI-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/PathScale-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Renesas-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/SCO-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/SDCC-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/SunPro-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/SunPro-CXX-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/TI-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/TIClang-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Tasking-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/TinyCC-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/VisualAge-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/VisualAge-CXX-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/Watcom-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/XL-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/XL-CXX-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/XLClang-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/XLClang-CXX-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/zOS-C-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/Compiler/zOS-CXX-DetermineCompiler.cmake /usr/share/cmake-4.2/Modules/FindCURL.cmake /usr/share/cmake-4.2/Modules/FindLibXml2.cmake /usr/share/cmake-4.2/Modules/FindPackageHandleStandardArgs.cmake /usr/share/cmake-4.2/Modules/FindPackageMessage.cmake /usr/share/cmake-4.2/Modules/FindPkgConfig.cmake /usr/share/cmake-4.2/Modules/FindPython.cmake /usr/share/cmake-4.2/Modules/FindPython/Support.cmake /usr/share/cmake-4.2/Modules/FindZLIB.cmake /usr/share/cmake-4.2/Modules/Internal/CMakeCLinkerInformation.cmake /usr/share/cmake-4.2/Modules/Internal/CMakeCXXLinkerInformation.cmake /usr/share/cmake-4.2/Modules/Internal/CMakeCommonLinkerInformation.cmake /usr/share/cmake-4.2/Modules/Internal/CMakeDetermineLinkerId.cmake /usr/share/cmake-4.2/Modules/Internal/CMakeInspectCLinker.cmake /usr/share/cmake-4.2/Modules/Internal/CMakeInspectCXXLinker.cmake /usr/share/cmake-4.2/Modules/Internal/CheckSourceCompiles.cmake /usr/share/cmake-4.2/Modules/Internal/FeatureTesting.cmake /usr/share/cmake-4.2/Modules/Linker/GNU-C.cmake /usr/share/cmake-4.2/Modules/Linker/GNU-CXX.cmake /usr/share/cmake-4.2/Modules/Linker/GNU.cmake /usr/share/cmake-4.2/Modules/Platform/Linker/GNU.cmake /usr/share/cmake-4.2/Modules/Platform/Linker/Linux-GNU-C.cmake /usr/share/cmake-4.2/Modules/Platform/Linker/Linux-GNU-CXX.cmake /usr/share/cmake-4.2/Modules/Platform/Linker/Linux-GNU.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-Clang-C.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-Clang-CXX.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-Determine-CXX.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-GNU-C.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-GNU-CXX.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-GNU.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-Initialize.cmake /usr/share/cmake-4.2/Modules/Platform/Linux.cmake /usr/share/cmake-4.2/Modules/Platform/UnixPaths.cmake /usr/share/cmake-4.2/Modules/SelectLibraryConfigurations.cmake /usr/share/cmake/tsl-robin-map/tsl-robin-mapConfig.cmake /usr/share/cmake/tsl-robin-map/tsl-robin-mapConfigVersion.cmake /usr/share/cmake/tsl-robin-map/tsl-robin-mapTargets.cmake /usr/share/nanobind/cmake/nanobind-config.cmake CMakeCache.txt CMakeFiles/4.2.3/CMakeCCompiler.cmake CMakeFiles/4.2.3/CMakeCXXCompiler.cmake CMakeFiles/4.2.3/CMakeSystem.cmake: phony
+build /home/hamza-usta/MatcoreDSL/CMakeLists.txt /usr/lib/llvm-18/lib/cmake/llvm/FindFFI.cmake /usr/lib/llvm-18/lib/cmake/llvm/FindLibEdit.cmake /usr/lib/llvm-18/lib/cmake/llvm/FindTerminfo.cmake /usr/lib/llvm-18/lib/cmake/llvm/Findzstd.cmake /usr/lib/llvm-18/lib/cmake/llvm/LLVM-Config.cmake /usr/lib/llvm-18/lib/cmake/llvm/LLVMConfig.cmake /usr/lib/llvm-18/lib/cmake/llvm/LLVMConfigVersion.cmake /usr/lib/llvm-18/lib/cmake/llvm/LLVMExports-relwithdebinfo.cmake /usr/lib/llvm-18/lib/cmake/llvm/LLVMExports.cmake /usr/lib/llvm-18/lib/cmake/mlir/MLIRConfig.cmake /usr/lib/llvm-18/lib/cmake/mlir/MLIRConfigVersion.cmake /usr/lib/llvm-18/lib/cmake/mlir/MLIRTargets-relwithdebinfo.cmake /usr/lib/llvm-18/lib/cmake/mlir/MLIRTargets.cmake /usr/share/cmake-4.2/Modules/CMakeCInformation.cmake /usr/share/cmake-4.2/Modules/CMakeCXXInformation.cmake /usr/share/cmake-4.2/Modules/CMakeCommonLanguageInclude.cmake /usr/share/cmake-4.2/Modules/CMakeFindDependencyMacro.cmake /usr/share/cmake-4.2/Modules/CMakeGenericSystem.cmake /usr/share/cmake-4.2/Modules/CMakeInitializeConfigs.cmake /usr/share/cmake-4.2/Modules/CMakeLanguageInformation.cmake /usr/share/cmake-4.2/Modules/CMakePushCheckState.cmake /usr/share/cmake-4.2/Modules/CMakeSystemSpecificInformation.cmake /usr/share/cmake-4.2/Modules/CMakeSystemSpecificInitialize.cmake /usr/share/cmake-4.2/Modules/CheckCSourceCompiles.cmake /usr/share/cmake-4.2/Modules/CheckIncludeFile.cmake /usr/share/cmake-4.2/Modules/Compiler/CMakeCommonCompilerMacros.cmake /usr/share/cmake-4.2/Modules/Compiler/Clang-C.cmake /usr/share/cmake-4.2/Modules/Compiler/Clang-CXX.cmake /usr/share/cmake-4.2/Modules/Compiler/Clang.cmake /usr/share/cmake-4.2/Modules/Compiler/GNU.cmake /usr/share/cmake-4.2/Modules/FindCURL.cmake /usr/share/cmake-4.2/Modules/FindLibXml2.cmake /usr/share/cmake-4.2/Modules/FindPackageHandleStandardArgs.cmake /usr/share/cmake-4.2/Modules/FindPackageMessage.cmake /usr/share/cmake-4.2/Modules/FindPkgConfig.cmake /usr/share/cmake-4.2/Modules/FindPython.cmake /usr/share/cmake-4.2/Modules/FindPython/Support.cmake /usr/share/cmake-4.2/Modules/FindZLIB.cmake /usr/share/cmake-4.2/Modules/Internal/CMakeCLinkerInformation.cmake /usr/share/cmake-4.2/Modules/Internal/CMakeCXXLinkerInformation.cmake /usr/share/cmake-4.2/Modules/Internal/CMakeCommonLinkerInformation.cmake /usr/share/cmake-4.2/Modules/Internal/CheckSourceCompiles.cmake /usr/share/cmake-4.2/Modules/Linker/GNU-C.cmake /usr/share/cmake-4.2/Modules/Linker/GNU-CXX.cmake /usr/share/cmake-4.2/Modules/Linker/GNU.cmake /usr/share/cmake-4.2/Modules/Platform/Linker/GNU.cmake /usr/share/cmake-4.2/Modules/Platform/Linker/Linux-GNU-C.cmake /usr/share/cmake-4.2/Modules/Platform/Linker/Linux-GNU-CXX.cmake /usr/share/cmake-4.2/Modules/Platform/Linker/Linux-GNU.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-Clang-C.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-Clang-CXX.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-GNU-C.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-GNU-CXX.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-GNU.cmake /usr/share/cmake-4.2/Modules/Platform/Linux-Initialize.cmake /usr/share/cmake-4.2/Modules/Platform/Linux.cmake /usr/share/cmake-4.2/Modules/Platform/UnixPaths.cmake /usr/share/cmake-4.2/Modules/SelectLibraryConfigurations.cmake /usr/share/cmake/tsl-robin-map/tsl-robin-mapConfig.cmake /usr/share/cmake/tsl-robin-map/tsl-robin-mapConfigVersion.cmake /usr/share/cmake/tsl-robin-map/tsl-robin-mapTargets.cmake /usr/share/nanobind/cmake/nanobind-config.cmake CMakeCache.txt CMakeFiles/4.2.3/CMakeCCompiler.cmake CMakeFiles/4.2.3/CMakeCXXCompiler.cmake CMakeFiles/4.2.3/CMakeSystem.cmake: phony
 
 
 #############################################

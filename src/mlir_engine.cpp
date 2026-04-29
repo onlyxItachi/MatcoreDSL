@@ -966,7 +966,7 @@ mlir::OwningOpRef<mlir::ModuleOp> buildMatmulModule(
 LoweredModule MlirEngine::BuildAndLower(
     const KernelIR &kernel, const RequestedTargetProfile &target_profile,
     const std::vector<RuntimeTensorView> &tensors, mlir::MLIRContext &context,
-    ObservabilityContext *obs) {
+    ObservabilityContext *obs, bool graph_mode) {
   mlir::DialectRegistry registry;
   mlir::registerAllDialects(registry);
   context.appendDialectRegistry(registry);
@@ -995,6 +995,10 @@ LoweredModule MlirEngine::BuildAndLower(
     module->getOperation()->setAttr(
         "matcore.requested_target",
         mlir::StringAttr::get(&context, target_profile.canonical));
+    if (graph_mode) {
+      module->getOperation()->setAttr("matcore.graph_mode",
+                                      mlir::UnitAttr::get(&context));
+    }
     if (normalizeTarget(target_profile.kind) == TargetKind::kNvidiaDGPU) {
       const std::string nvidia_chip = requestedNvidiaChip(target_profile);
       module->getOperation()->setAttr("matcore.nvidia_chip",
@@ -1042,6 +1046,30 @@ LoweredModule MlirEngine::BuildAndLower(
       }
       return actual_reg_count > FusionAnalyzer::kRegHardCap;
     }();
+    const int fusion_launch_count = [&]() {
+      if (auto launch_attr =
+              module->getOperation()->getAttrOfType<mlir::IntegerAttr>(
+                  "matcore.fusion_launch_count")) {
+        return static_cast<int>(launch_attr.getInt());
+      }
+      return 0;
+    }();
+    const std::string family_c_strategy = [&]() {
+      if (auto strategy_attr =
+              module->getOperation()->getAttrOfType<mlir::StringAttr>(
+                  "matcore.family_c_strategy")) {
+        return strategy_attr.getValue().str();
+      }
+      return std::string();
+    }();
+    const int family_c_dtile = [&]() {
+      if (auto dtile_attr =
+              module->getOperation()->getAttrOfType<mlir::IntegerAttr>(
+                  "matcore.family_c_dtile")) {
+        return static_cast<int>(dtile_attr.getInt());
+      }
+      return 0;
+    }();
 
     LoweredModule lowered;
     lowered.module = std::move(module);
@@ -1053,6 +1081,9 @@ LoweredModule MlirEngine::BuildAndLower(
     lowered.route_description = "NVIDIA fused GPU kernel";
     lowered.executable = true;
     lowered.tensor_count = tensors.size();
+    lowered.fusion_launch_count = fusion_launch_count;
+    lowered.family_c_strategy = family_c_strategy;
+    lowered.family_c_dtile = family_c_dtile;
     // Family A/B use linalg.matmul which accumulates (C += A*B) — output must
     // be zeroed so the accumulation produces correct results.
     const bool has_matmul =
@@ -1101,6 +1132,10 @@ LoweredModule MlirEngine::BuildAndLower(
     module->getOperation()->setAttr(
         "matcore.requested_target",
         mlir::StringAttr::get(&context, target_profile.canonical));
+    if (graph_mode) {
+      module->getOperation()->setAttr("matcore.graph_mode",
+                                      mlir::UnitAttr::get(&context));
+    }
     if (normalizeTarget(target_profile.kind) == TargetKind::kNvidiaDGPU) {
       const std::string nvidia_chip = requestedNvidiaChip(target_profile);
       module->getOperation()->setAttr("matcore.nvidia_chip",
@@ -1184,6 +1219,10 @@ LoweredModule MlirEngine::BuildAndLower(
   module->getOperation()->setAttr(
       "matcore.requested_target_raw",
       mlir::StringAttr::get(&context, target_profile.requested));
+  if (graph_mode) {
+    module->getOperation()->setAttr("matcore.graph_mode",
+                                    mlir::UnitAttr::get(&context));
+  }
   if (normalizeTarget(target_profile.kind) == TargetKind::kNvidiaDGPU) {
     module->getOperation()->setAttr("matcore.nvidia_chip",
                                     mlir::StringAttr::get(&context, nvidia_chip));

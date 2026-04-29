@@ -86,6 +86,17 @@ static std::size_t dtypeElementBytes(TensorDType dtype) {
   return 4; // fallback
 }
 
+bool quantizationMatches(const QuantizationParams &lhs,
+                         const QuantizationParams &rhs) {
+  if (lhs.enabled != rhs.enabled) {
+    return false;
+  }
+  if (!lhs.enabled) {
+    return true;
+  }
+  return lhs.scale == rhs.scale && lhs.zero_point == rhs.zero_point;
+}
+
 /// Zero the output tensor(s) before invoking the JIT function.
 /// linalg.matmul semantics are C += A*B, so the output must be zeroed
 /// to get C = A*B.  We do this on the host side (memset) rather than
@@ -567,7 +578,8 @@ getOrCreateExecution(const KernelIR &kernel,
                      const RequestedTargetProfile &target_profile,
                      const std::vector<RuntimeTensorView> &tensors,
                      RuntimeCapabilities &runtime,
-                     ObservabilityContext *obs) {
+                     ObservabilityContext *obs,
+                     bool graph_mode) {
   static std::mutex cache_mutex;
   static auto *cache =
       new std::unordered_map<std::string, std::shared_ptr<CachedExecution>>();
@@ -603,7 +615,8 @@ getOrCreateExecution(const KernelIR &kernel,
           ? std::optional<std::string_view>(x86_profile->cache_tag)
           : std::nullopt;
   const std::string cache_key =
-      buildExecutionCacheKey(kernel, compile_target, tensors, x86_cache_tag);
+      buildExecutionCacheKey(kernel, compile_target, tensors, x86_cache_tag,
+                             graph_mode);
   const DiskCacheArtifacts disk_artifacts = buildDiskCacheArtifacts(cache_key);
   const bool skip_cache_lookup = obs && obs->forceRecompile();
   if (!skip_cache_lookup) {
@@ -651,7 +664,8 @@ getOrCreateExecution(const KernelIR &kernel,
   compiled->context->loadAllAvailableDialects();
 
   compiled->lowered = MlirEngine::BuildAndLower(kernel, compile_target, tensors,
-                                                *compiled->context, obs);
+                                                *compiled->context, obs,
+                                                graph_mode);
   enforceExecutionPolicy(compiled->lowered);
   validateExecutionEligibility(compiled->lowered.target_profile,
                                compiled->lowered.execution_requirements);
@@ -723,14 +737,23 @@ void compileAndRun(const KernelIR &kernel,
       auto compile_scope = obs->scopedTrace(TraceEventKind::kCompileStart,
                                             TraceEventKind::kCompileEnd,
                                             "compileAndRun");
-      compiled = getOrCreateExecution(kernel, target_profile, tensors, runtime, obs);
+      compiled =
+          getOrCreateExecution(kernel, target_profile, tensors, runtime, obs,
+                               false);
     } else {
-      compiled = getOrCreateExecution(kernel, target_profile, tensors, runtime, obs);
+      compiled =
+          getOrCreateExecution(kernel, target_profile, tensors, runtime, obs,
+                               false);
     }
     g_last_compilation_stats.actual_reg_count = compiled->lowered.actual_reg_count;
     g_last_compilation_stats.reg_budget_exceeded =
         compiled->lowered.reg_budget_exceeded;
     g_last_compilation_stats.route = compiled->lowered.route_description;
+    g_last_compilation_stats.fusion_launch_count =
+        compiled->lowered.fusion_launch_count;
+    g_last_compilation_stats.family_c_strategy =
+        compiled->lowered.family_c_strategy;
+    g_last_compilation_stats.family_c_dtile = compiled->lowered.family_c_dtile;
     g_last_compilation_stats.available = true;
     g_has_last_compilation_stats = true;
     auto t1 = std::chrono::high_resolution_clock::now();
@@ -862,7 +885,8 @@ MatcorePlan::create(const KernelIR &kernel,
 
   // Full JIT compilation — this is the expensive part (done once)
   std::shared_ptr<CachedExecution> compiled =
-      getOrCreateExecution(kernel, target_profile, template_tensors, runtime, obs);
+      getOrCreateExecution(kernel, target_profile, template_tensors, runtime,
+                           obs, graph_mode);
 
   // Build the plan
   auto plan = std::unique_ptr<MatcorePlan>(new MatcorePlan());
@@ -880,6 +904,7 @@ MatcorePlan::create(const KernelIR &kernel,
     meta.shape = t.shape;
     meta.strides = t.strides;
     meta.is_device_resident = t.is_device_resident;
+    meta.quantization = t.quantization;
     if (!plan->execution_->lowered.output_tensor_indices.empty()) {
       for (std::size_t output_idx : plan->execution_->lowered.output_tensor_indices) {
         if (i == output_idx) {
@@ -948,6 +973,15 @@ bool MatcorePlan::validateTensors(const std::vector<RuntimeTensorView> &tensors,
       if (error_msg) {
         *error_msg = "tensor[" + std::to_string(i) + "] residency mismatch — "
                      "cannot mix host/device tensors with a device-resident plan";
+      }
+      return false;
+    }
+    if (!quantizationMatches(t.quantization, m.quantization)) {
+      if (error_msg) {
+        *error_msg =
+            "tensor[" + std::to_string(i) +
+            "] quantization mismatch — plans are quantization-locked, "
+            "create a new plan for different scale/zero_point";
       }
       return false;
     }
