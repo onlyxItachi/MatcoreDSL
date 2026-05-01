@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <variant>
 
 #include "mlir/ExecutionEngine/CRunnerUtils.h"
 #include "mlir/ExecutionEngine/ExecutionEngine.h"
@@ -18,6 +19,34 @@ struct GenericStridedMemRef2D {
   int64_t sizes[2] = {0, 0};
   int64_t strides[2] = {0, 0};
 };
+
+struct GenericStridedMemRef1D {
+  void *basePtr = nullptr;
+  void *data = nullptr;
+  int64_t offset = 0;
+  int64_t sizes[1] = {0};
+  int64_t strides[1] = {0};
+};
+
+struct GenericStridedMemRef3D {
+  void *basePtr = nullptr;
+  void *data = nullptr;
+  int64_t offset = 0;
+  int64_t sizes[3] = {0, 0, 0};
+  int64_t strides[3] = {0, 0, 0};
+};
+
+struct GenericStridedMemRef4D {
+  void *basePtr = nullptr;
+  void *data = nullptr;
+  int64_t offset = 0;
+  int64_t sizes[4] = {0, 0, 0, 0};
+  int64_t strides[4] = {0, 0, 0, 0};
+};
+
+using GenericMemRefDescriptor =
+    std::variant<GenericStridedMemRef1D, GenericStridedMemRef2D,
+                 GenericStridedMemRef3D, GenericStridedMemRef4D>;
 
 [[noreturn]] void fail(const std::string &message) {
   throw std::runtime_error("MatCore JIT runner: " + message);
@@ -234,23 +263,68 @@ llvm::Error invokeUnary(const CachedExecution &compiled,
                                  "unsupported input dtype");
 }
 
-GenericStridedMemRef2D
-makeGenericMemRef2DDescriptor(const RuntimeTensorView &tensor) {
+GenericMemRefDescriptor makeGenericMemRefDescriptor(
+    const RuntimeTensorView &tensor) {
   if (tensor.data == nullptr) {
     fail("tensor '" + tensor.symbol + "' has null data pointer");
   }
-  if (tensor.shape.size() != 2 || tensor.strides.size() != 2) {
-    fail("tensor '" + tensor.symbol + "' must be rank-2 for JIT invocation");
+  if (tensor.shape.size() != tensor.strides.size()) {
+    fail("tensor '" + tensor.symbol +
+         "' shape/stride rank mismatch for JIT invocation");
   }
-  GenericStridedMemRef2D descriptor;
-  descriptor.basePtr = tensor.data;
-  descriptor.data = tensor.data;
-  descriptor.offset = 0;
-  descriptor.sizes[0] = tensor.shape[0];
-  descriptor.sizes[1] = tensor.shape[1];
-  descriptor.strides[0] = tensor.strides[0];
-  descriptor.strides[1] = tensor.strides[1];
-  return descriptor;
+  switch (tensor.shape.size()) {
+    case 1: {
+      GenericStridedMemRef1D descriptor;
+      descriptor.basePtr = tensor.data;
+      descriptor.data = tensor.data;
+      descriptor.offset = 0;
+      descriptor.sizes[0] = tensor.shape[0];
+      descriptor.strides[0] = tensor.strides[0];
+      return descriptor;
+    }
+    case 2: {
+      GenericStridedMemRef2D descriptor;
+      descriptor.basePtr = tensor.data;
+      descriptor.data = tensor.data;
+      descriptor.offset = 0;
+      descriptor.sizes[0] = tensor.shape[0];
+      descriptor.sizes[1] = tensor.shape[1];
+      descriptor.strides[0] = tensor.strides[0];
+      descriptor.strides[1] = tensor.strides[1];
+      return descriptor;
+    }
+    case 3: {
+      GenericStridedMemRef3D descriptor;
+      descriptor.basePtr = tensor.data;
+      descriptor.data = tensor.data;
+      descriptor.offset = 0;
+      for (int i = 0; i < 3; ++i) {
+        descriptor.sizes[i] = tensor.shape[i];
+        descriptor.strides[i] = tensor.strides[i];
+      }
+      return descriptor;
+    }
+    case 4: {
+      GenericStridedMemRef4D descriptor;
+      descriptor.basePtr = tensor.data;
+      descriptor.data = tensor.data;
+      descriptor.offset = 0;
+      for (int i = 0; i < 4; ++i) {
+        descriptor.sizes[i] = tensor.shape[i];
+        descriptor.strides[i] = tensor.strides[i];
+      }
+      return descriptor;
+    }
+    default:
+      fail("tensor '" + tensor.symbol +
+           "' must be rank 1-4 for generic JIT invocation");
+  }
+}
+
+void *descriptorData(GenericMemRefDescriptor &descriptor) {
+  return std::visit(
+      [](auto &typed_descriptor) -> void * { return &typed_descriptor; },
+      descriptor);
 }
 
 llvm::Error invokeNTensorPacked(const CachedExecution &compiled,
@@ -262,12 +336,13 @@ llvm::Error invokeNTensorPacked(const CachedExecution &compiled,
         "N-tensor invocation requires at least tensor_count runtime tensors");
   }
 
-  std::vector<GenericStridedMemRef2D> descriptors(tensor_count);
+  std::vector<GenericMemRefDescriptor> descriptors;
+  descriptors.reserve(tensor_count);
   std::vector<void *> arg_ptrs(tensor_count);
   std::vector<void *> packed_args(tensor_count);
   for (std::size_t i = 0; i < tensor_count; ++i) {
-    descriptors[i] = makeGenericMemRef2DDescriptor(tensors[i]);
-    arg_ptrs[i] = &descriptors[i];
+    descriptors.push_back(makeGenericMemRefDescriptor(tensors[i]));
+    arg_ptrs[i] = descriptorData(descriptors[i]);
     packed_args[i] = &arg_ptrs[i];
   }
 
@@ -280,92 +355,92 @@ llvm::Error invokeNTensorPacked(const CachedExecution &compiled,
       case 1: {
         auto fn = reinterpret_cast<void (*)(void *)>(
             compiled.ciface_entrypoint);
-        fn(&descriptors[0]);
+        fn(arg_ptrs[0]);
         return llvm::Error::success();
       }
       case 2: {
         auto fn = reinterpret_cast<void (*)(void *, void *)>(
             compiled.ciface_entrypoint);
-        fn(&descriptors[0], &descriptors[1]);
+        fn(arg_ptrs[0], arg_ptrs[1]);
         return llvm::Error::success();
       }
       case 3: {
         auto fn = reinterpret_cast<void (*)(void *, void *, void *)>(
             compiled.ciface_entrypoint);
-        fn(&descriptors[0], &descriptors[1], &descriptors[2]);
+        fn(arg_ptrs[0], arg_ptrs[1], arg_ptrs[2]);
         return llvm::Error::success();
       }
       case 4: {
         auto fn = reinterpret_cast<void (*)(void *, void *, void *, void *)>(
             compiled.ciface_entrypoint);
-        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3]);
+        fn(arg_ptrs[0], arg_ptrs[1], arg_ptrs[2], arg_ptrs[3]);
         return llvm::Error::success();
       }
       case 5: {
         auto fn = reinterpret_cast<void (*)(void *, void *, void *, void *, void *)>(
             compiled.ciface_entrypoint);
-        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
-           &descriptors[4]);
+        fn(arg_ptrs[0], arg_ptrs[1], arg_ptrs[2], arg_ptrs[3],
+           arg_ptrs[4]);
         return llvm::Error::success();
       }
       case 6: {
         auto fn = reinterpret_cast<void (*)(
             void *, void *, void *, void *, void *, void *)>(
             compiled.ciface_entrypoint);
-        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
-           &descriptors[4], &descriptors[5]);
+        fn(arg_ptrs[0], arg_ptrs[1], arg_ptrs[2], arg_ptrs[3],
+           arg_ptrs[4], arg_ptrs[5]);
         return llvm::Error::success();
       }
       case 7: {
         auto fn = reinterpret_cast<void (*)(
             void *, void *, void *, void *, void *, void *, void *)>(
             compiled.ciface_entrypoint);
-        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
-           &descriptors[4], &descriptors[5], &descriptors[6]);
+        fn(arg_ptrs[0], arg_ptrs[1], arg_ptrs[2], arg_ptrs[3],
+           arg_ptrs[4], arg_ptrs[5], arg_ptrs[6]);
         return llvm::Error::success();
       }
       case 8: {
         auto fn = reinterpret_cast<void (*)(
             void *, void *, void *, void *, void *, void *, void *, void *)>(
             compiled.ciface_entrypoint);
-        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
-           &descriptors[4], &descriptors[5], &descriptors[6], &descriptors[7]);
+        fn(arg_ptrs[0], arg_ptrs[1], arg_ptrs[2], arg_ptrs[3],
+           arg_ptrs[4], arg_ptrs[5], arg_ptrs[6], arg_ptrs[7]);
         return llvm::Error::success();
       }
       case 9: {
         auto fn = reinterpret_cast<void (*)(
             void *, void *, void *, void *, void *, void *, void *, void *,
             void *)>(compiled.ciface_entrypoint);
-        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
-           &descriptors[4], &descriptors[5], &descriptors[6], &descriptors[7],
-           &descriptors[8]);
+        fn(arg_ptrs[0], arg_ptrs[1], arg_ptrs[2], arg_ptrs[3],
+           arg_ptrs[4], arg_ptrs[5], arg_ptrs[6], arg_ptrs[7],
+           arg_ptrs[8]);
         return llvm::Error::success();
       }
       case 10: {
         auto fn = reinterpret_cast<void (*)(
             void *, void *, void *, void *, void *, void *, void *, void *,
             void *, void *)>(compiled.ciface_entrypoint);
-        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
-           &descriptors[4], &descriptors[5], &descriptors[6], &descriptors[7],
-           &descriptors[8], &descriptors[9]);
+        fn(arg_ptrs[0], arg_ptrs[1], arg_ptrs[2], arg_ptrs[3],
+           arg_ptrs[4], arg_ptrs[5], arg_ptrs[6], arg_ptrs[7],
+           arg_ptrs[8], arg_ptrs[9]);
         return llvm::Error::success();
       }
       case 11: {
         auto fn = reinterpret_cast<void (*)(
             void *, void *, void *, void *, void *, void *, void *, void *,
             void *, void *, void *)>(compiled.ciface_entrypoint);
-        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
-           &descriptors[4], &descriptors[5], &descriptors[6], &descriptors[7],
-           &descriptors[8], &descriptors[9], &descriptors[10]);
+        fn(arg_ptrs[0], arg_ptrs[1], arg_ptrs[2], arg_ptrs[3],
+           arg_ptrs[4], arg_ptrs[5], arg_ptrs[6], arg_ptrs[7],
+           arg_ptrs[8], arg_ptrs[9], arg_ptrs[10]);
         return llvm::Error::success();
       }
       case 12: {
         auto fn = reinterpret_cast<void (*)(
             void *, void *, void *, void *, void *, void *, void *, void *,
             void *, void *, void *, void *)>(compiled.ciface_entrypoint);
-        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
-           &descriptors[4], &descriptors[5], &descriptors[6], &descriptors[7],
-           &descriptors[8], &descriptors[9], &descriptors[10], &descriptors[11]);
+        fn(arg_ptrs[0], arg_ptrs[1], arg_ptrs[2], arg_ptrs[3],
+           arg_ptrs[4], arg_ptrs[5], arg_ptrs[6], arg_ptrs[7],
+           arg_ptrs[8], arg_ptrs[9], arg_ptrs[10], arg_ptrs[11]);
         return llvm::Error::success();
       }
       case 13: {
@@ -373,10 +448,10 @@ llvm::Error invokeNTensorPacked(const CachedExecution &compiled,
             void *, void *, void *, void *, void *, void *, void *, void *,
             void *, void *, void *, void *, void *)>(
             compiled.ciface_entrypoint);
-        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
-           &descriptors[4], &descriptors[5], &descriptors[6], &descriptors[7],
-           &descriptors[8], &descriptors[9], &descriptors[10], &descriptors[11],
-           &descriptors[12]);
+        fn(arg_ptrs[0], arg_ptrs[1], arg_ptrs[2], arg_ptrs[3],
+           arg_ptrs[4], arg_ptrs[5], arg_ptrs[6], arg_ptrs[7],
+           arg_ptrs[8], arg_ptrs[9], arg_ptrs[10], arg_ptrs[11],
+           arg_ptrs[12]);
         return llvm::Error::success();
       }
       case 14: {
@@ -384,10 +459,10 @@ llvm::Error invokeNTensorPacked(const CachedExecution &compiled,
             void *, void *, void *, void *, void *, void *, void *, void *,
             void *, void *, void *, void *, void *, void *)>(
             compiled.ciface_entrypoint);
-        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
-           &descriptors[4], &descriptors[5], &descriptors[6], &descriptors[7],
-           &descriptors[8], &descriptors[9], &descriptors[10], &descriptors[11],
-           &descriptors[12], &descriptors[13]);
+        fn(arg_ptrs[0], arg_ptrs[1], arg_ptrs[2], arg_ptrs[3],
+           arg_ptrs[4], arg_ptrs[5], arg_ptrs[6], arg_ptrs[7],
+           arg_ptrs[8], arg_ptrs[9], arg_ptrs[10], arg_ptrs[11],
+           arg_ptrs[12], arg_ptrs[13]);
         return llvm::Error::success();
       }
       case 15: {
@@ -395,10 +470,10 @@ llvm::Error invokeNTensorPacked(const CachedExecution &compiled,
             void *, void *, void *, void *, void *, void *, void *, void *,
             void *, void *, void *, void *, void *, void *, void *)>(
             compiled.ciface_entrypoint);
-        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
-           &descriptors[4], &descriptors[5], &descriptors[6], &descriptors[7],
-           &descriptors[8], &descriptors[9], &descriptors[10], &descriptors[11],
-           &descriptors[12], &descriptors[13], &descriptors[14]);
+        fn(arg_ptrs[0], arg_ptrs[1], arg_ptrs[2], arg_ptrs[3],
+           arg_ptrs[4], arg_ptrs[5], arg_ptrs[6], arg_ptrs[7],
+           arg_ptrs[8], arg_ptrs[9], arg_ptrs[10], arg_ptrs[11],
+           arg_ptrs[12], arg_ptrs[13], arg_ptrs[14]);
         return llvm::Error::success();
       }
       case 16: {
@@ -406,11 +481,10 @@ llvm::Error invokeNTensorPacked(const CachedExecution &compiled,
             void *, void *, void *, void *, void *, void *, void *, void *,
             void *, void *, void *, void *, void *, void *, void *, void *)>(
             compiled.ciface_entrypoint);
-        fn(&descriptors[0], &descriptors[1], &descriptors[2], &descriptors[3],
-           &descriptors[4], &descriptors[5], &descriptors[6], &descriptors[7],
-           &descriptors[8], &descriptors[9], &descriptors[10], &descriptors[11],
-           &descriptors[12], &descriptors[13], &descriptors[14],
-           &descriptors[15]);
+        fn(arg_ptrs[0], arg_ptrs[1], arg_ptrs[2], arg_ptrs[3],
+           arg_ptrs[4], arg_ptrs[5], arg_ptrs[6], arg_ptrs[7],
+           arg_ptrs[8], arg_ptrs[9], arg_ptrs[10], arg_ptrs[11],
+           arg_ptrs[12], arg_ptrs[13], arg_ptrs[14], arg_ptrs[15]);
         return llvm::Error::success();
       }
       default:

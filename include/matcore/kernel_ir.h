@@ -99,6 +99,7 @@ enum class ElementwiseKind {
 enum class KernelIRVersion {
   kLinearV1,  // Current linear IR
   kGraphV2,   // New graph IR for fusion
+  kRegionV1,  // Structured region IR for runtime-specialized JIT programs
 };
 
 enum class OpKind {
@@ -224,6 +225,39 @@ struct KernelGraphIR {
   std::vector<std::uint32_t> topo_order;
 };
 
+enum class RegionOpKind {
+  kBlockAttnRes,
+};
+
+struct BlockAttnResAttrs {
+  std::uint32_t blocks = 0;
+  std::uint32_t partial = 0;
+  std::uint32_t query = 0;
+  std::int64_t block_count = 0;
+  bool has_partial = true;
+  float eps = 1.0e-6f;
+};
+
+using RegionNodeAttrs = std::variant<BlockAttnResAttrs>;
+
+struct RegionNode {
+  std::uint32_t id = 0;
+  RegionOpKind kind = RegionOpKind::kBlockAttnRes;
+  std::string debug_name;
+  std::vector<std::uint32_t> inputs;
+  std::vector<std::uint32_t> outputs;
+  RegionNodeAttrs attrs;
+  bool side_effect_free = true;
+};
+
+struct RegionIR {
+  std::vector<TensorDesc> values;
+  std::vector<RegionNode> nodes;
+  std::vector<std::uint32_t> input_values;
+  std::vector<std::uint32_t> output_values;
+  std::vector<std::uint32_t> topo_order;
+};
+
 // Elementwise operation: apply unary/binary op to tiles
 struct ElementwiseOp {
   std::string result;
@@ -253,6 +287,9 @@ struct KernelIR {
 
   // V2 graph form (optional — used when version == kGraphV2)
   std::optional<KernelGraphIR> graph;
+
+  // Region form (optional — used when version == kRegionV1)
+  std::optional<RegionIR> region;
 
   QuantizationParams global_quantization;
 };

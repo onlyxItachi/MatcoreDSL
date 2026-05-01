@@ -8,6 +8,7 @@ from .frontend import (
     asdtype,
     create_plan,
     execute_plan,
+    jit,
     fused,
     kernel,
     launch,
@@ -17,6 +18,7 @@ from .frontend import (
     cast,
     matmul,
     softmax,
+    block_attn_res,
     mc,
     store,
     transpose,
@@ -51,6 +53,7 @@ sin = mc.sin
 cos = mc.cos
 rsqrt = mc.rsqrt
 softmax = mc.softmax
+block_attn_res = mc.block_attn_res
 min = mc.min
 max = mc.max
 
@@ -60,6 +63,7 @@ __all__ = [
     "launch",
     "create_plan",
     "execute_plan",
+    "jit",
     "fused",
     "to_device",
     "DeviceTensor",
@@ -71,6 +75,7 @@ __all__ = [
     "store",
     "matmul",
     "softmax",
+    "block_attn_res",
     "transpose",
     "graph",
     "FusionGraph",

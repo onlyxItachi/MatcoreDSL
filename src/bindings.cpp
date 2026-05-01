@@ -541,6 +541,132 @@ matcore::KernelGraphIR parseKernelGraphIR(const nb::dict &graph_dict) {
   return graph;
 }
 
+matcore::RegionOpKind parseRegionOpKind(const std::string &s) {
+  if (s == "block_attn_res") {
+    return matcore::RegionOpKind::kBlockAttnRes;
+  }
+  throw std::runtime_error("Unknown region op: " + s);
+}
+
+matcore::RegionIR parseRegionIR(const nb::dict &region_dict) {
+  matcore::RegionIR region;
+
+  auto values_list = nb::cast<nb::list>(region_dict["values"]);
+  for (auto val_obj : values_list) {
+    auto val_dict = nb::cast<nb::dict>(val_obj);
+    matcore::TensorDesc td;
+    td.symbol = nb::cast<std::string>(val_dict["symbol"]);
+    td.dtype = parseTensorDType(nb::cast<std::string>(val_dict["dtype"]));
+
+    auto shape_list = nb::cast<nb::list>(val_dict["shape"]);
+    for (auto s : shape_list) {
+      td.shape.push_back(nb::cast<int64_t>(s));
+    }
+
+    td.value_kind = parseValueKind(nb::cast<std::string>(val_dict["kind"]));
+    if (val_dict.contains("storage_hint")) {
+      td.storage_hint =
+          parseStorageHint(nb::cast<std::string>(val_dict["storage_hint"]));
+    }
+    if (val_dict.contains("strides")) {
+      auto strides_list = nb::cast<nb::list>(val_dict["strides"]);
+      for (auto s : strides_list) {
+        td.strides.push_back(nb::cast<int64_t>(s));
+      }
+    }
+    if (val_dict.contains("escape")) {
+      const std::string esc = nb::cast<std::string>(val_dict["escape"]);
+      td.escape = esc == "vram" ? matcore::EscapeKind::kEscapeToVRAM
+                                 : matcore::EscapeKind::kNoEscape;
+    }
+    if (val_dict.contains("is_device_resident")) {
+      td.is_device_resident = nb::cast<bool>(val_dict["is_device_resident"]);
+    }
+
+    td.is_parameter = (td.value_kind == matcore::ValueKind::kInput);
+    td.is_output = (td.value_kind == matcore::ValueKind::kOutput);
+    if (val_dict.contains("producer")) {
+      int prod = nb::cast<int>(val_dict["producer"]);
+      if (prod >= 0) {
+        td.producer = static_cast<uint32_t>(prod);
+      }
+    }
+    if (val_dict.contains("consumers")) {
+      auto cons_list = nb::cast<nb::list>(val_dict["consumers"]);
+      for (auto c : cons_list) {
+        td.consumers.push_back(nb::cast<uint32_t>(c));
+      }
+    }
+    region.values.push_back(std::move(td));
+  }
+
+  auto nodes_list = nb::cast<nb::list>(region_dict["nodes"]);
+  for (auto node_obj : nodes_list) {
+    auto node_dict = nb::cast<nb::dict>(node_obj);
+    matcore::RegionNode node;
+    node.id = nb::cast<uint32_t>(node_dict["id"]);
+    const std::string op_str = toLower(nb::cast<std::string>(node_dict["op"]));
+    node.kind = parseRegionOpKind(op_str);
+    node.debug_name = op_str;
+
+    auto inputs_list = nb::cast<nb::list>(node_dict["inputs"]);
+    for (auto i : inputs_list) {
+      node.inputs.push_back(nb::cast<uint32_t>(i));
+    }
+    auto outputs_list = nb::cast<nb::list>(node_dict["outputs"]);
+    for (auto o : outputs_list) {
+      node.outputs.push_back(nb::cast<uint32_t>(o));
+    }
+
+    nb::dict attrs_dict = nb::dict();
+    if (node_dict.contains("attrs")) {
+      attrs_dict = nb::cast<nb::dict>(node_dict["attrs"]);
+    }
+
+    switch (node.kind) {
+      case matcore::RegionOpKind::kBlockAttnRes: {
+        matcore::BlockAttnResAttrs attrs;
+        attrs.blocks = node.inputs.size() > 0 ? node.inputs[0] : 0u;
+        attrs.partial = node.inputs.size() > 1 ? node.inputs[1] : 0u;
+        attrs.query = node.inputs.size() > 2 ? node.inputs[2] : 0u;
+        if (attrs_dict.contains("block_count")) {
+          attrs.block_count =
+              nb::cast<std::int64_t>(attrs_dict["block_count"]);
+        }
+        if (attrs_dict.contains("has_partial")) {
+          attrs.has_partial = nb::cast<bool>(attrs_dict["has_partial"]);
+        }
+        if (attrs_dict.contains("eps")) {
+          attrs.eps = static_cast<float>(nb::cast<double>(attrs_dict["eps"]));
+        }
+        node.attrs = attrs;
+        break;
+      }
+    }
+
+    region.nodes.push_back(std::move(node));
+  }
+
+  auto input_ids = nb::cast<nb::list>(region_dict["input_values"]);
+  for (auto i : input_ids) {
+    region.input_values.push_back(nb::cast<uint32_t>(i));
+  }
+
+  auto output_ids = nb::cast<nb::list>(region_dict["output_values"]);
+  for (auto o : output_ids) {
+    region.output_values.push_back(nb::cast<uint32_t>(o));
+  }
+
+  if (region_dict.contains("topo_order")) {
+    auto topo = nb::cast<nb::list>(region_dict["topo_order"]);
+    for (auto t : topo) {
+      region.topo_order.push_back(nb::cast<uint32_t>(t));
+    }
+  }
+
+  return region;
+}
+
 matcore::QuantizationParams parseQuantizationConfig(const nb::dict &obj,
                                                     bool default_enabled) {
   matcore::QuantizationParams quant;
@@ -1071,6 +1197,30 @@ matcore::KernelIR parseKernelIR(const nb::dict &kernel_obj) {
         kernel.kernel_name = toString(kernel_obj["name"]);
       } else {
         kernel.kernel_name = "graph_v2_kernel";
+      }
+      kernel.global_quantization = parseKernelGlobalQuantization(kernel_obj);
+      return kernel;
+    }
+    if (version_str == "region_v1") {
+      kernel.version = matcore::KernelIRVersion::kRegionV1;
+      nb::dict region_dict = kernel_obj;
+      if (kernel_obj.contains("region")) {
+        region_dict = nb::cast<nb::dict>(kernel_obj["region"]);
+      }
+      kernel.region = parseRegionIR(region_dict);
+      if (hasKey(kernel_obj, "kernel_name")) {
+        kernel.kernel_name = toString(kernel_obj["kernel_name"]);
+      } else if (hasKey(kernel_obj, "name")) {
+        kernel.kernel_name = toString(kernel_obj["name"]);
+      } else {
+        kernel.kernel_name = "region_v1_kernel";
+      }
+      if (hasKey(kernel_obj, "params")) {
+        kernel.params = parseStringSequence(kernel_obj["params"], "params");
+      } else if (kernel.region.has_value()) {
+        for (std::uint32_t value_id : kernel.region->input_values) {
+          kernel.params.push_back(kernel.region->values.at(value_id).symbol);
+        }
       }
       kernel.global_quantization = parseKernelGlobalQuantization(kernel_obj);
       return kernel;

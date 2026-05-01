@@ -84,7 +84,75 @@ fs::path cacheRootPath() {
 }
 
 void appendKernelStructure(std::string &key, const KernelIR &kernel) {
-  if (kernel.version == KernelIRVersion::kGraphV2 && kernel.graph.has_value()) {
+  if (kernel.version == KernelIRVersion::kRegionV1 && kernel.region.has_value()) {
+    const RegionIR &r = *kernel.region;
+    key += "|rv1";
+    key += "|nv=" + std::to_string(r.values.size());
+    for (const TensorDesc &v : r.values) {
+      key += ";v:";
+      key += v.symbol;
+      key += ":";
+      key += std::to_string(static_cast<int>(v.dtype));
+      key += ":";
+      key += std::to_string(static_cast<int>(v.value_kind));
+      key += ":s=";
+      for (auto d : v.shape) {
+        key += std::to_string(d);
+        key += ",";
+      }
+      if (v.is_parameter) key += ":p";
+      if (v.is_output) key += ":o";
+      if (v.is_device_resident) key += ":dev";
+    }
+    key += "|iv=";
+    for (auto id : r.input_values) {
+      key += std::to_string(id);
+      key += ",";
+    }
+    key += "|ov=";
+    for (auto id : r.output_values) {
+      key += std::to_string(id);
+      key += ",";
+    }
+    key += "|topo=";
+    for (auto id : r.topo_order) {
+      key += std::to_string(id);
+      key += ",";
+    }
+    key += "|nn=" + std::to_string(r.nodes.size());
+    for (const RegionNode &n : r.nodes) {
+      key += ";rn:";
+      key += std::to_string(n.id);
+      key += ":";
+      key += std::to_string(static_cast<int>(n.kind));
+      key += ":in=";
+      for (auto id : n.inputs) {
+        key += std::to_string(id);
+        key += ",";
+      }
+      key += ":out=";
+      for (auto id : n.outputs) {
+        key += std::to_string(id);
+        key += ",";
+      }
+      key += ":attr=";
+      std::visit(
+          [&key](const auto &a) {
+            using T = std::decay_t<decltype(a)>;
+            if constexpr (std::is_same_v<T, BlockAttnResAttrs>) {
+              key += "bar:";
+              key += std::to_string(a.blocks) + ",";
+              key += std::to_string(a.partial) + ",";
+              key += std::to_string(a.query) + ",";
+              key += std::to_string(a.block_count) + ",";
+              key += (a.has_partial ? "1" : "0");
+              key += ",";
+              key += std::to_string(a.eps);
+            }
+          },
+          n.attrs);
+    }
+  } else if (kernel.version == KernelIRVersion::kGraphV2 && kernel.graph.has_value()) {
     const KernelGraphIR &g = *kernel.graph;
     key += "|gv2";
     key += "|nv=" + std::to_string(g.values.size());

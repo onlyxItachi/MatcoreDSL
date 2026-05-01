@@ -2799,8 +2799,11 @@ void runFusionLoweringPipeline(mlir::ModuleOp module,
                                ObservabilityContext *obs) {
   auto kernel_type_attr =
       module->getAttrOfType<mlir::StringAttr>("matcore.kernel_type");
-  if (!kernel_type_attr || !kernel_type_attr.getValue().starts_with("fused_")) {
-    fail("fusion lowering currently expects matcore.kernel_type to start with fused_");
+  if (!kernel_type_attr ||
+      (!kernel_type_attr.getValue().starts_with("fused_") &&
+       !kernel_type_attr.getValue().starts_with("region_"))) {
+    fail("explicit GPU launch lowering expects matcore.kernel_type to start with "
+         "fused_ or region_");
   }
 
   auto *ctx = module.getContext();
@@ -3188,9 +3191,11 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
   }
   if (auto kernel_type_attr =
           module->getAttrOfType<mlir::StringAttr>("matcore.kernel_type");
-      kernel_type_attr && kernel_type_attr.getValue().starts_with("fused_")) {
+      kernel_type_attr &&
+      (kernel_type_attr.getValue().starts_with("fused_") ||
+       kernel_type_attr.getValue().starts_with("region_"))) {
     if (plan.route != LoweringRoute::kNvidiaNvptx) {
-      fail("fusion GPU lowering currently requires nvidia-dgpu target route");
+      fail("explicit GPU launch lowering currently requires nvidia-dgpu target route");
     }
     RequestedTargetProfile target_profile;
     if (auto requested_target =
