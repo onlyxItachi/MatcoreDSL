@@ -38,6 +38,9 @@ Residuals / Block AttnRes style depth attention over packed block history.
   - `src/cache_manager.cpp`
 - MLIR dispatch:
   - `src/mlir_engine.cpp`
+- Region verifier:
+  - `include/matcore/region_verifier.h`
+  - `src/region_verifier.cpp`
 - New region emitter:
   - `include/matcore/region_emitter.h`
   - `src/region_emitter.cpp`
@@ -53,8 +56,14 @@ Residuals / Block AttnRes style depth attention over packed block history.
   `@mc.fused` stay unchanged.
 - Python exposes `mc.jit` / `@mc.jit` and direct `mc.block_attn_res(...)`.
 - Native parser/cache/lowering understand `version == "region_v1"`.
+- `ValidateRegionIR` now runs before MLIR emission and rejects malformed value
+  references, bad topo order, invalid output count, dtype/rank/shape mismatch,
+  invalid BlockAttnRes attrs, and runtime tensor descriptor mismatch.
 - `RegionMlirEmitter` supports one `block_attn_res` op and emits one explicit
   NVIDIA `gpu.launch`.
+- `RegionMlirEmitter` now consumes topo-ordered nodes and reports a clear
+  multi-op lowering gap after verifier acceptance instead of assuming
+  `region.nodes.front()`.
 - The lowering pipeline routes `matcore.kernel_type = "region_*"` through the
   explicit GPU-launch lowering path instead of matmul mapping.
 - Executor generic packed invocation now supports rank 1-4 memref descriptors,
@@ -65,13 +74,13 @@ Residuals / Block AttnRes style depth attention over packed block history.
 
 - Passed: `ninja -C /home/hamza-usta/MatcoreDSL/build-review`
 - Passed: `/usr/bin/python3 -m pytest tests/test_region_ir.py tests/test_block_attn_res.py -q`
-  (covers direct intrinsic and `@mc.jit` native smoke)
-- Passed: `/usr/bin/python3 -m pytest tests/test_region_ir.py tests/test_frontend_contract.py -q`
+  (covers direct intrinsic, `@mc.jit` native smoke, invalid RegionIR verifier
+  cases, and the multi-op lowering gap)
+- Passed: `/usr/bin/python3 -m pytest tests/test_frontend_contract.py tests/test_fusion_contracts.py -q`
 - Passed: `/usr/bin/python3 -m pytest tests/test_devtensor_fused.py -q`
-- Passed: `/usr/bin/python3 -m pytest tests/test_fusion_contracts.py -q`
 - Project-local Python environments exist at `.venv` and `.venv_gladiator`.
   Both are Python 3.12.3. `.venv` imports local MatCore and native BlockAttnRes
-  smoke passed with max error `0.0`.
+  smoke passes.
 - Neither `.venv` nor `.venv_gladiator` currently has `pytest`; use
   `/usr/bin/python3 -m pytest ...` for pytest suites unless installing pytest
   into the project env.
@@ -87,5 +96,4 @@ Residuals / Block AttnRes style depth attention over packed block history.
 - BlockAttnRes v1 is correctness-first: float32, compile-time `block_count`,
   compile-time `has_partial`, packed layout, and one CTA per `(B,T)` row.
 - Next architecture step is generalizing RegionV1 beyond one intrinsic:
-  multiple region ops, control-flow nodes, symbolic scalar attrs, and a real
-  region verifier before lowering.
+  true multi-op lowering, control-flow nodes, and symbolic/runtime scalar attrs.

@@ -33,6 +33,7 @@
 #include "matcore/lowering_pipeline.h"
 #include "matcore/observability.h"
 #include "matcore/region_emitter.h"
+#include "matcore/region_verifier.h"
 
 namespace matcore {
 namespace {
@@ -983,6 +984,7 @@ LoweredModule MlirEngine::BuildAndLower(
                       mlir::x86vector::X86VectorDialect, mlir::LLVM::LLVMDialect>();
 
   if (kernel.version == KernelIRVersion::kRegionV1 && kernel.region.has_value()) {
+    ValidateRegionIR(kernel, tensors);
     mlir::OwningOpRef<mlir::ModuleOp> module =
         RegionMlirEmitter::Emit(kernel, tensors, target_profile, context);
     module->getOperation()->setAttr(
