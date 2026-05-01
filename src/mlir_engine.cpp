@@ -32,6 +32,7 @@
 #include "matcore/fusion_emitter.h"
 #include "matcore/lowering_pipeline.h"
 #include "matcore/observability.h"
+#include "matcore/region_emitter.h"
 
 namespace matcore {
 namespace {
@@ -980,6 +981,91 @@ LoweredModule MlirEngine::BuildAndLower(
                       mlir::scf::SCFDialect, mlir::tensor::TensorDialect,
                       mlir::vector::VectorDialect,
                       mlir::x86vector::X86VectorDialect, mlir::LLVM::LLVMDialect>();
+
+  if (kernel.version == KernelIRVersion::kRegionV1 && kernel.region.has_value()) {
+    mlir::OwningOpRef<mlir::ModuleOp> module =
+        RegionMlirEmitter::Emit(kernel, tensors, target_profile, context);
+    module->getOperation()->setAttr(
+        "matcore.requested_target",
+        mlir::StringAttr::get(&context, target_profile.canonical));
+    if (graph_mode) {
+      module->getOperation()->setAttr("matcore.graph_mode",
+                                      mlir::UnitAttr::get(&context));
+    }
+    if (normalizeTarget(target_profile.kind) == TargetKind::kNvidiaDGPU) {
+      const std::string nvidia_chip = requestedNvidiaChip(target_profile);
+      module->getOperation()->setAttr("matcore.nvidia_chip",
+                                      mlir::StringAttr::get(&context, nvidia_chip));
+    }
+
+    {
+      mlir::func::FuncOp func_op;
+      module->walk([&](mlir::func::FuncOp f) { func_op = f; });
+      if (func_op) {
+        for (std::size_t i = 0; i < tensors.size() && i < func_op.getNumArguments();
+             ++i) {
+          if (tensors[i].is_device_resident) {
+            func_op.setArgAttr(static_cast<unsigned>(i), "matcore.device_resident",
+                               mlir::UnitAttr::get(&context));
+          }
+        }
+      }
+    }
+
+    const LoweringPlan plan = selectLoweringPlan(target_profile.kind);
+    const std::string nvidia_chip = requestedNvidiaChip(target_profile);
+    const std::string amd_chip = requestedAmdChip(target_profile);
+    matcore::runLoweringPipeline(*module, plan, MatmulLoweringSignature{},
+                                 nvidia_chip, amd_chip, obs);
+
+    const int actual_reg_count = [&]() {
+      if (auto actual_attr =
+              module->getOperation()->getAttrOfType<mlir::IntegerAttr>(
+                  "matcore.actual_reg_count")) {
+        return static_cast<int>(actual_attr.getInt());
+      }
+      return 0;
+    }();
+    const int fusion_launch_count = [&]() {
+      if (auto launch_attr =
+              module->getOperation()->getAttrOfType<mlir::IntegerAttr>(
+                  "matcore.fusion_launch_count")) {
+        return static_cast<int>(launch_attr.getInt());
+      }
+      return 0;
+    }();
+
+    LoweredModule lowered;
+    lowered.module = std::move(module);
+    const std::string base_name =
+        kernel.kernel_name.empty() ? "matcore_region" : kernel.kernel_name;
+    lowered.entry_point = "fused_" + base_name;
+    lowered.target_profile = target_profile;
+    lowered.execution_requirements = BuildExecutionRequirements(target_profile);
+    lowered.route_description = "NVIDIA RegionV1 JIT kernel";
+    lowered.executable = true;
+    lowered.tensor_count = tensors.size();
+    lowered.out_tensor_index = tensors.empty() ? 0 : tensors.size() - 1;
+    lowered.needs_output_zeroing = false;
+    lowered.actual_reg_count = actual_reg_count;
+    lowered.reg_budget_exceeded = false;
+    lowered.fusion_launch_count = fusion_launch_count;
+    lowered.arguments.clear();
+    lowered.arguments.reserve(tensors.size());
+    for (std::size_t i = 0; i < tensors.size(); ++i) {
+      KernelArgumentDesc arg;
+      arg.symbol = tensors[i].symbol;
+      arg.dtype = tensors[i].dtype;
+      arg.rank = static_cast<int>(tensors[i].shape.size());
+      arg.is_output = (i == lowered.out_tensor_index);
+      arg.is_input = !arg.is_output;
+      lowered.arguments.push_back(std::move(arg));
+    }
+    if (!tensors.empty()) {
+      lowered.output_tensor_indices = {lowered.out_tensor_index};
+    }
+    return lowered;
+  }
 
   if (kernel.version == KernelIRVersion::kGraphV2 && kernel.graph.has_value()) {
     const FusionAnalysisResult analysis =

@@ -1674,6 +1674,398 @@ class TracerTensor:
         )
 
 
+def _is_runtime_tensor(value: Any) -> bool:
+    return isinstance(value, (DeviceTensor, MatCoreTensorView, np.ndarray))
+
+
+def _contiguous_element_strides(shape: tuple[int, ...]) -> tuple[int, ...]:
+    strides: list[int] = []
+    acc = 1
+    for dim in reversed(shape):
+        strides.append(acc)
+        acc *= int(dim)
+    return tuple(reversed(strides))
+
+
+def _allocate_output_for_shape(
+    output_shape: tuple[int, ...],
+    output_dtype_name: str,
+    out: Any | None,
+    *,
+    device: bool,
+) -> Any:
+    if device:
+        native = _get_native_module()
+        num_elements = 1
+        for d in output_shape:
+            num_elements *= int(d)
+        size_bytes = num_elements * _DTYPE_STORAGE_BYTES[output_dtype_name]
+        handle = native.matcore_device_alloc(size_bytes)
+        return DeviceTensor(
+            handle,
+            output_shape,
+            output_dtype_name,
+            _contiguous_element_strides(output_shape),
+            size_bytes,
+        )
+    return _graph_output_tensor(output_shape, output_dtype_name, out)
+
+
+def _validate_block_attn_res_signature(
+    blocks: Any,
+    partial: Any,
+    query: Any,
+    *,
+    block_count: int,
+    has_partial: bool,
+    eps: float,
+) -> tuple[tuple[int, ...], str]:
+    del has_partial
+    block_shape = tuple(int(d) for d in getattr(blocks, "shape", ()))
+    partial_shape = tuple(int(d) for d in getattr(partial, "shape", ()))
+    query_shape = tuple(int(d) for d in getattr(query, "shape", ()))
+    if len(block_shape) != 4:
+        raise ValueError("mc.block_attn_res blocks must have shape [MAX_BLOCKS, B, T, D].")
+    if len(partial_shape) != 3:
+        raise ValueError("mc.block_attn_res partial must have shape [B, T, D].")
+    if len(query_shape) != 1:
+        raise ValueError("mc.block_attn_res query must have shape [D].")
+    max_blocks, batch, tokens, width = block_shape
+    if partial_shape != (batch, tokens, width):
+        raise ValueError(
+            "mc.block_attn_res partial shape must match blocks trailing [B, T, D]."
+        )
+    if query_shape[0] != width:
+        raise ValueError("mc.block_attn_res query width must match D.")
+    if max_blocks <= 0 or max_blocks > 32:
+        raise ValueError("mc.block_attn_res v1 requires 1 <= MAX_BLOCKS <= 32.")
+    if block_count < 0 or block_count > max_blocks:
+        raise ValueError("mc.block_attn_res block_count must be in [0, MAX_BLOCKS].")
+    if eps <= 0.0:
+        raise ValueError("mc.block_attn_res eps must be positive.")
+
+    dtypes = [
+        _normalize_dtype_name(_logical_dtype_name(blocks, 0)),
+        _normalize_dtype_name(_logical_dtype_name(partial, 1)),
+        _normalize_dtype_name(_logical_dtype_name(query, 2)),
+    ]
+    if dtypes != ["float32", "float32", "float32"]:
+        raise TypeError("BlockAttnRes v1 supports float32 inputs only.")
+    return partial_shape, "float32"
+
+
+class RegionTraceBuilder:
+    """Builds the v1 structured-region IR for runtime-specialized JIT programs."""
+
+    def __init__(self):
+        self._values: list[TraceValue] = []
+        self._nodes: list[TraceNode] = []
+        self._next_value_id = 0
+        self._next_node_id = 0
+
+    def _new_value(
+        self,
+        symbol: str,
+        dtype: str,
+        shape: tuple[int, ...],
+        kind: str = "intermediate",
+        producer: int = -1,
+    ) -> int:
+        vid = self._next_value_id
+        self._next_value_id += 1
+        self._values.append(
+            TraceValue(
+                id=vid,
+                symbol=symbol,
+                dtype=dtype,
+                shape=tuple(shape),
+                kind=kind,
+                producer=producer,
+            )
+        )
+        return vid
+
+    def _new_node(
+        self,
+        op: str,
+        input_ids: list[int],
+        output_ids: list[int],
+        attrs: dict[str, Any] | None = None,
+    ) -> int:
+        nid = self._next_node_id
+        self._next_node_id += 1
+        node = TraceNode(
+            id=nid, op=op, inputs=list(input_ids), outputs=list(output_ids),
+            attrs=attrs or {},
+        )
+        self._nodes.append(node)
+        for vid in input_ids:
+            self._values[vid].consumers.append(nid)
+        for vid in output_ids:
+            self._values[vid].producer = nid
+        return nid
+
+    def add_input(self, symbol: str, tensor: Any) -> "RegionTensor":
+        dtype = _logical_dtype_name(tensor, len(self._values))
+        shape = tuple(int(d) for d in tensor.shape)
+        vid = self._new_value(symbol, dtype, shape, kind="input")
+        return RegionTensor(vid, self, dtype=dtype, shape=shape)
+
+    def add_block_attn_res(
+        self,
+        blocks: "RegionTensor",
+        partial: "RegionTensor",
+        query: "RegionTensor",
+        *,
+        block_count: int,
+        has_partial: bool = True,
+        eps: float = 1.0e-6,
+    ) -> "RegionTensor":
+        output_shape, output_dtype = _validate_block_attn_res_signature(
+            blocks, partial, query,
+            block_count=int(block_count),
+            has_partial=bool(has_partial),
+            eps=float(eps),
+        )
+        out_vid = self._new_value(
+            f"block_attn_res_{self._next_node_id}", output_dtype, output_shape
+        )
+        self._new_node(
+            "block_attn_res",
+            [blocks.value_id, partial.value_id, query.value_id],
+            [out_vid],
+            {
+                "block_count": int(block_count),
+                "has_partial": bool(has_partial),
+                "eps": float(eps),
+            },
+        )
+        return RegionTensor(out_vid, self, dtype=output_dtype, shape=output_shape)
+
+    def finish(self, outputs: Any) -> dict[str, Any]:
+        if not isinstance(outputs, (list, tuple)):
+            outputs = [outputs]
+        input_ids = [v.id for v in self._values if v.kind == "input"]
+        output_ids: list[int] = []
+        for output in outputs:
+            if not isinstance(output, RegionTensor):
+                raise ValueError(f"@mc.jit must return RegionTensor(s), got {type(output)}")
+            self._values[output.value_id].kind = "output"
+            output_ids.append(output.value_id)
+
+        topo: list[int] = []
+        visited: set[int] = set()
+
+        def visit(nid: int) -> None:
+            if nid in visited:
+                return
+            visited.add(nid)
+            node = self._nodes[nid]
+            for inp_vid in node.inputs:
+                prod = self._values[inp_vid].producer
+                if prod >= 0:
+                    visit(prod)
+            topo.append(nid)
+
+        for oid in output_ids:
+            prod = self._values[oid].producer
+            if prod >= 0:
+                visit(prod)
+
+        return {
+            "version": "region_v1",
+            "values": [
+                {
+                    "id": v.id,
+                    "symbol": v.symbol,
+                    "dtype": v.dtype,
+                    "shape": list(v.shape),
+                    "kind": v.kind,
+                    "storage_hint": v.storage_hint,
+                    "producer": v.producer,
+                    "consumers": v.consumers,
+                }
+                for v in self._values
+            ],
+            "nodes": [
+                {
+                    "id": n.id,
+                    "op": n.op,
+                    "inputs": n.inputs,
+                    "outputs": n.outputs,
+                    "attrs": n.attrs,
+                }
+                for n in self._nodes
+            ],
+            "input_values": input_ids,
+            "output_values": output_ids,
+            "topo_order": topo,
+        }
+
+
+class RegionTensor:
+    """Symbolic tensor for the structured `@mc.jit` RegionV1 path."""
+
+    def __init__(
+        self,
+        value_id: int,
+        builder: RegionTraceBuilder,
+        dtype: str = "float32",
+        shape: tuple[int, ...] = (),
+    ):
+        self.value_id = value_id
+        self._builder = builder
+        self.dtype = dtype
+        self.shape = tuple(shape)
+
+
+def _execute_region(
+    *,
+    kernel_name: str,
+    region: dict[str, Any],
+    tensor_args: tuple[Any, ...],
+    target: str | None,
+    out: Any | None,
+    debug: bool,
+) -> Any:
+    if debug:
+        print("=== Region Trace IR ===")
+        print(json.dumps(region, indent=2))
+
+    output_values = list(region.get("output_values", []))
+    if len(output_values) != 1:
+        raise ValueError("@mc.jit currently supports exactly one region output.")
+    output_id = int(output_values[0])
+    output_desc = next(
+        (v for v in region.get("values", []) if int(v.get("id", -1)) == output_id),
+        None,
+    )
+    if output_desc is None:
+        raise ValueError("Region output descriptor is missing.")
+
+    output_shape = tuple(int(dim) for dim in output_desc.get("shape", []))
+    output_dtype_name = _normalize_dtype_name(str(output_desc.get("dtype", "float32")))
+
+    has_device = _validate_tensor_residency(tensor_args, api_name="@mc.jit")
+    normalized_target = _resolve_fused_target(target)
+    _require_device_tensor_target(has_device, normalized_target, api_name="@mc.jit")
+    if not normalized_target.startswith("nvidia-dgpu"):
+        raise ValueError("RegionV1 JIT currently supports nvidia-dgpu targets only.")
+
+    output_tensor = _allocate_output_for_shape(
+        output_shape, output_dtype_name, out, device=has_device
+    )
+    params = [
+        str(v["symbol"])
+        for v in region.get("values", [])
+        if int(v.get("id", -1)) in set(region.get("input_values", []))
+    ]
+    kernel_ir_dict = {
+        "kernel_name": kernel_name,
+        "version": "region_v1",
+        **region,
+        "region": region,
+        "params": params,
+    }
+    native = _get_native_module()
+    native.compile_and_run(kernel_ir_dict, normalized_target, *tensor_args, output_tensor)
+    return output_tensor
+
+
+def block_attn_res(
+    blocks: Any,
+    partial: Any,
+    query: Any,
+    *,
+    block_count: int,
+    has_partial: bool = True,
+    eps: float = 1.0e-6,
+    target: str | None = None,
+    out: Any | None = None,
+    debug: bool = False,
+) -> Any:
+    if isinstance(blocks, RegionTensor) or isinstance(partial, RegionTensor) or isinstance(query, RegionTensor):
+        if not isinstance(blocks, RegionTensor) or not isinstance(partial, RegionTensor) or not isinstance(query, RegionTensor):
+            raise TypeError("mc.block_attn_res cannot mix RegionTensor and real tensors.")
+        return blocks._builder.add_block_attn_res(
+            blocks, partial, query,
+            block_count=int(block_count),
+            has_partial=bool(has_partial),
+            eps=float(eps),
+        )
+
+    _validate_block_attn_res_signature(
+        blocks, partial, query,
+        block_count=int(block_count),
+        has_partial=bool(has_partial),
+        eps=float(eps),
+    )
+    builder = RegionTraceBuilder()
+    t_blocks = builder.add_input("blocks", blocks)
+    t_partial = builder.add_input("partial", partial)
+    t_query = builder.add_input("query", query)
+    result = builder.add_block_attn_res(
+        t_blocks, t_partial, t_query,
+        block_count=int(block_count),
+        has_partial=bool(has_partial),
+        eps=float(eps),
+    )
+    region = builder.finish(result)
+    return _execute_region(
+        kernel_name="block_attn_res_region",
+        region=region,
+        tensor_args=(blocks, partial, query),
+        target=target,
+        out=out,
+        debug=debug,
+    )
+
+
+def jit(fn: Any) -> Any:
+    """Decorator for structured RegionV1 runtime-JIT programs."""
+
+    @functools.wraps(fn)
+    def wrapper(
+        *args: Any,
+        target: str | None = None,
+        out: Any = None,
+        debug: bool = False,
+        **kwargs: Any,
+    ) -> Any:
+        sig = inspect.signature(fn)
+        bound = sig.bind_partial(*args, **kwargs)
+        bound.apply_defaults()
+
+        builder = RegionTraceBuilder()
+        traced_kwargs: dict[str, Any] = {}
+        runtime_tensors: list[Any] = []
+        for name, param in sig.parameters.items():
+            if name not in bound.arguments:
+                continue
+            value = bound.arguments[name]
+            if _is_runtime_tensor(value):
+                traced = builder.add_input(name, value)
+                runtime_tensors.append(value)
+                traced_kwargs[name] = traced
+            else:
+                traced_kwargs[name] = value
+
+        trace_result = fn(**traced_kwargs)
+        region = builder.finish(trace_result)
+        return _execute_region(
+            kernel_name=f"{fn.__name__}_region",
+            region=region,
+            tensor_args=tuple(runtime_tensors),
+            target=target,
+            out=out,
+            debug=debug,
+        )
+
+    wrapper._is_jit = True
+    wrapper._original_fn = fn
+    return wrapper
+
+
 def fused(fn: Any) -> Any:
     """Decorator that traces a function and executes the fused graph."""
 
@@ -1772,6 +2164,7 @@ class MatCoreNamespace:
     launch = staticmethod(launch)
     create_plan = staticmethod(create_plan)
     execute_plan = staticmethod(execute_plan)
+    jit = staticmethod(jit)
     fused = staticmethod(fused)
     to_device = staticmethod(to_device)
     DeviceTensor = DeviceTensor
@@ -1794,6 +2187,7 @@ class MatCoreNamespace:
     neg = staticmethod(neg)
     abs = staticmethod(abs_op)
     softmax = staticmethod(softmax)
+    block_attn_res = staticmethod(block_attn_res)
     min = staticmethod(min_op)
     max = staticmethod(max_op)
     cast = staticmethod(cast)
@@ -2053,6 +2447,7 @@ mc.sin = _tracer_aware_unary("sin", sin_gpu)
 mc.cos = _tracer_aware_unary("cos", cos_gpu)
 mc.rsqrt = _tracer_aware_unary("rsqrt", rsqrt_gpu)
 mc.softmax = _tracer_aware_softmax(softmax_gpu)
+mc.block_attn_res = block_attn_res
 mc.add = _tracer_aware_binary("add", add_gpu)
 mc.sub = _tracer_aware_binary("sub", sub_gpu)
 mc.mul = _tracer_aware_binary("mul", mul_gpu)

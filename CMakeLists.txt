@@ -72,6 +72,8 @@ set(MATCORE_NATIVE_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/jit_runner.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime_capabilities.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/observability.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/region_emitter.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/region_emitter_block_attn_res.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/target_registry.cpp"
 )
 
