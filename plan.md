@@ -12,6 +12,9 @@
 Status: implemented and smoke-tested on the CPython 3.12 native extension.
 The project `.venv` is present and works for native MatCore execution; pytest is
 not installed in that env.
+Verifier stage is implemented locally after commit `62ddb88`: malformed RegionIR
+now fails before MLIR emission, and verified multi-op regions get a clear
+lowering-gap error.
 
 ## Public API
 
@@ -33,6 +36,8 @@ not installed in that env.
   tracer-aware `mc.block_attn_res`.
 - Add native `region_v1` parser and cache-key hashing.
 - Add a `RegionMlirEmitter` route in `MlirEngine::BuildAndLower`.
+- Add `ValidateRegionIR` before MLIR emission for value/node/topo/shape/attr
+  and runtime tensor descriptor checks.
 - Add rank 1/3/4 generic memref descriptor support in the executor.
 - Add tests for IR capture, validation, correctness, and existing fusion
   regression coverage.
@@ -41,7 +46,7 @@ not installed in that env.
 
 - Passed: `ninja -C /home/hamza-usta/MatcoreDSL/build-review`
 - New tests:
-  - `tests/test_region_ir.py`
+  - `tests/test_region_ir.py` including invalid native RegionIR verifier cases
   - `tests/test_block_attn_res.py`
 - Regression tests:
   - Passed: `tests/test_frontend_contract.py`
