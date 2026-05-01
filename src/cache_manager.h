@@ -19,7 +19,7 @@ struct DiskCacheArtifacts {
 };
 
 inline constexpr std::string_view kDiskCacheVersion =
-    "matcore-phase4-cache-v9-family-c-block-coop";
+    "matcore-phase4-cache-v10-regionv1-block-attn-res-cta-reduce";
 
 std::string buildExecutionCacheKey(
     const KernelIR &kernel, const RequestedTargetProfile &target,

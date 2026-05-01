@@ -1968,7 +1968,10 @@ def _execute_region(
         "params": params,
     }
     native = _get_native_module()
-    native.compile_and_run(kernel_ir_dict, normalized_target, *tensor_args, output_tensor)
+    obs_options = {"debug": True} if debug else {}
+    native.compile_and_run(
+        kernel_ir_dict, normalized_target, *tensor_args, output_tensor, **obs_options
+    )
     return output_tensor
 
 
