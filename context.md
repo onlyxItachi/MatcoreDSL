@@ -61,6 +61,10 @@ Residuals / Block AttnRes style depth attention over packed block history.
   invalid BlockAttnRes attrs, and runtime tensor descriptor mismatch.
 - `RegionMlirEmitter` supports one `block_attn_res` op and emits one explicit
   NVIDIA `gpu.launch`.
+- BlockAttnRes score setup is now CTA-parallel: RMS and dot scores use
+  thread-strided `D` loops plus shared-memory tree reductions. The old
+  correctness-first path computed scores in `tid == 0` and caused barrier
+  stalls / lane underutilization.
 - `RegionMlirEmitter` now consumes topo-ordered nodes and reports a clear
   multi-op lowering gap after verifier acceptance instead of assuming
   `region.nodes.front()`.
@@ -78,12 +82,19 @@ Residuals / Block AttnRes style depth attention over packed block history.
   cases, and the multi-op lowering gap)
 - Passed: `/usr/bin/python3 -m pytest tests/test_frontend_contract.py tests/test_fusion_contracts.py -q`
 - Passed: `/usr/bin/python3 -m pytest tests/test_devtensor_fused.py -q`
+- Nsight Compute on `[16,8,1024,128]`, `block_count=12`, `D=128`:
+  old kernel duration ~5.51 ms, active threads/warp ~3.3, barrier stall ~73.8%;
+  optimized kernel duration ~1.17 ms, active threads/warp ~31.7,
+  compute/memory throughput ~87.5%.
+- Large one-forward benchmark after reduction rewrite:
+  `[8,4,512,128]` 0.284 ms, `[8,8,1024,128]` 0.681 ms,
+  `[16,8,1024,128]` 1.597 ms, `[8,4,1024,256]` 0.409 ms,
+  `[16,8,2048,128]` 2.432 ms. Correctness stayed below ~1.5e-6 max error.
 - Project-local Python environments exist at `.venv` and `.venv_gladiator`.
-  Both are Python 3.12.3. `.venv` imports local MatCore and native BlockAttnRes
-  smoke passes.
-- Neither `.venv` nor `.venv_gladiator` currently has `pytest`; use
-  `/usr/bin/python3 -m pytest ...` for pytest suites unless installing pytest
-  into the project env.
+  `.venv_gladiator` was repaired to `torch==2.11.0+cu130`, CUDA 13.0,
+  NumPy 2.4.4 for attention-residual benchmarks.
+- Project envs do not currently have `pytest`; use `/usr/bin/python3 -m pytest`
+  for pytest suites unless installing pytest into the project env.
 - `tests/test_family_a.py`
 - `tests/test_family_b.py`
 - `tests/test_family_c.py`
@@ -93,7 +104,7 @@ Residuals / Block AttnRes style depth attention over packed block history.
 - Do not retry the failed Family C score-padding or naive row-subtile
   experiments as part of this work.
 - Keep RegionV1 additive; no existing `graph_v2` schema migration in v1.
-- BlockAttnRes v1 is correctness-first: float32, compile-time `block_count`,
-  compile-time `has_partial`, packed layout, and one CTA per `(B,T)` row.
+- BlockAttnRes v1 is still not fully optimized, but the first NCU-guided
+  reduction rewrite removed the worst `tid == 0` bottleneck.
 - Next architecture step is generalizing RegionV1 beyond one intrinsic:
   true multi-op lowering, control-flow nodes, and symbolic/runtime scalar attrs.

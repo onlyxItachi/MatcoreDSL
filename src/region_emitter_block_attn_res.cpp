@@ -155,8 +155,6 @@ mlir::OwningOpRef<mlir::ModuleOp> RegionMlirEmitter::emitBlockAttnRes(
   auto c_zero = builder.create<mlir::arith::ConstantIndexOp>(loc, 0);
   auto c_T = builder.create<mlir::arith::ConstantIndexOp>(loc, T);
   auto c_D = builder.create<mlir::arith::ConstantIndexOp>(loc, D);
-  auto c_score_slots =
-      builder.create<mlir::arith::ConstantIndexOp>(loc, score_slots);
   auto c_active_sources =
       builder.create<mlir::arith::ConstantIndexOp>(loc, active_sources);
   auto c_block_count =
@@ -179,6 +177,14 @@ mlir::OwningOpRef<mlir::ModuleOp> RegionMlirEmitter::emitBlockAttnRes(
                                           mlir::MemRefLayoutAttrInterface(),
                                           smem_as);
   auto score_smem = launch.addWorkgroupAttribution(score_type, loc);
+  auto inv_rms_type = mlir::MemRefType::get({score_slots}, f32,
+                                            mlir::MemRefLayoutAttrInterface(),
+                                            smem_as);
+  auto inv_rms_smem = launch.addWorkgroupAttribution(inv_rms_type, loc);
+  auto scratch_type = mlir::MemRefType::get({block_dim}, f32,
+                                            mlir::MemRefLayoutAttrInterface(),
+                                            smem_as);
+  auto reduce_scratch = launch.addWorkgroupAttribution(scratch_type, loc);
 
   auto emitSourceLoadByConst = [&](int64_t source, mlir::Value col) -> mlir::Value {
     const bool partial_source = attrs.has_partial && source == attrs.block_count;
@@ -218,70 +224,107 @@ mlir::OwningOpRef<mlir::ModuleOp> RegionMlirEmitter::emitBlockAttnRes(
     return if_source.getResult(0);
   };
 
-  auto is_tid_zero = builder.create<mlir::arith::CmpIOp>(
-      loc, mlir::arith::CmpIPredicate::eq, tid, c_zero);
-  auto if_tid_zero = builder.create<mlir::scf::IfOp>(loc, is_tid_zero, false);
-  {
-    mlir::OpBuilder::InsertionGuard guard(builder);
-    builder.setInsertionPointToStart(&if_tid_zero.getThenRegion().front());
+  auto emitScratchSumReduction = [&]() {
+    for (int64_t stride = block_dim / 2; stride >= 1; stride /= 2) {
+      auto c_stride = builder.create<mlir::arith::ConstantIndexOp>(loc, stride);
+      auto is_active_lane = builder.create<mlir::arith::CmpIOp>(
+          loc, mlir::arith::CmpIPredicate::ult, tid, c_stride);
+      auto if_reduce =
+          builder.create<mlir::scf::IfOp>(loc, is_active_lane, false);
+      {
+        mlir::OpBuilder::InsertionGuard guard(builder);
+        builder.setInsertionPointToStart(&if_reduce.getThenRegion().front());
+        auto rhs_idx = builder.create<mlir::arith::AddIOp>(loc, tid, c_stride);
+        auto lhs = builder.create<mlir::memref::LoadOp>(
+            loc, reduce_scratch, mlir::ValueRange{tid});
+        auto rhs = builder.create<mlir::memref::LoadOp>(
+            loc, reduce_scratch, mlir::ValueRange{rhs_idx.getResult()});
+        auto sum = builder.create<mlir::arith::AddFOp>(
+            loc, lhs, rhs);
+        builder.create<mlir::memref::StoreOp>(
+            loc, sum.getResult(), reduce_scratch, mlir::ValueRange{tid});
+      }
+      builder.create<mlir::gpu::BarrierOp>(loc);
+    }
+  };
 
-    auto init_scores =
-        builder.create<mlir::scf::ForOp>(loc, c_zero, c_score_slots, c_one);
+  auto emitSourceThreadSum = [&](int64_t source, bool dot_product) -> mlir::Value {
+    auto loop = builder.create<mlir::scf::ForOp>(
+        loc, tid, c_D, c_block, mlir::ValueRange{zero_f32.getResult()});
     {
       mlir::OpBuilder::InsertionGuard loop_guard(builder);
-      builder.setInsertionPointToStart(init_scores.getBody());
-      builder.create<mlir::memref::StoreOp>(
-          loc, neg_inf.getResult(), score_smem,
-          mlir::ValueRange{init_scores.getInductionVar()});
-    }
-
-    for (int64_t source = 0; source < active_sources; ++source) {
-      auto sumsq_loop = builder.create<mlir::scf::ForOp>(
-          loc, c_zero, c_D, c_one, mlir::ValueRange{zero_f32.getResult()});
-      {
-        mlir::OpBuilder::InsertionGuard loop_guard(builder);
-        builder.setInsertionPointToStart(sumsq_loop.getBody());
-        auto col = sumsq_loop.getInductionVar();
-        auto acc = sumsq_loop.getRegionIterArgs()[0];
-        auto val = emitSourceLoadByConst(source, col);
-        auto sq = builder.create<mlir::arith::MulFOp>(loc, val, val);
-        auto updated = builder.create<mlir::arith::AddFOp>(loc, acc, sq);
-        builder.create<mlir::scf::YieldOp>(
-            loc, mlir::ValueRange{updated.getResult()});
-      }
-
-      auto mean = builder.create<mlir::arith::MulFOp>(
-          loc, sumsq_loop.getResult(0), inv_d.getResult());
-      auto mean_eps = builder.create<mlir::arith::AddFOp>(
-          loc, mean.getResult(), eps.getResult());
-      auto inv_rms = builder.create<mlir::math::RsqrtOp>(
-          loc, mean_eps.getResult(), mlir::arith::FastMathFlags::fast);
-
-      auto dot_loop = builder.create<mlir::scf::ForOp>(
-          loc, c_zero, c_D, c_one, mlir::ValueRange{zero_f32.getResult()});
-      {
-        mlir::OpBuilder::InsertionGuard loop_guard(builder);
-        builder.setInsertionPointToStart(dot_loop.getBody());
-        auto col = dot_loop.getInductionVar();
-        auto acc = dot_loop.getRegionIterArgs()[0];
-        auto val = emitSourceLoadByConst(source, col);
+      builder.setInsertionPointToStart(loop.getBody());
+      auto col = loop.getInductionVar();
+      auto acc = loop.getRegionIterArgs()[0];
+      auto val = emitSourceLoadByConst(source, col);
+      mlir::Value term = val;
+      if (dot_product) {
+        auto c_source = builder.create<mlir::arith::ConstantIndexOp>(loc, source);
+        auto inv_rms = builder.create<mlir::memref::LoadOp>(
+            loc, inv_rms_smem, mlir::ValueRange{c_source});
         auto q = builder.create<mlir::memref::LoadOp>(
             loc, query_arg, mlir::ValueRange{col});
         auto normed = builder.create<mlir::arith::MulFOp>(
             loc, val, inv_rms.getResult());
-        auto prod = builder.create<mlir::arith::MulFOp>(
-            loc, normed.getResult(), q);
-        auto updated = builder.create<mlir::arith::AddFOp>(
-            loc, acc, prod.getResult());
-        builder.create<mlir::scf::YieldOp>(
-            loc, mlir::ValueRange{updated.getResult()});
+        term = builder.create<mlir::arith::MulFOp>(
+            loc, normed.getResult(), q).getResult();
+      } else {
+        term = builder.create<mlir::arith::MulFOp>(loc, val, val).getResult();
       }
-
-      auto c_source = builder.create<mlir::arith::ConstantIndexOp>(loc, source);
-      builder.create<mlir::memref::StoreOp>(
-          loc, dot_loop.getResult(0), score_smem, mlir::ValueRange{c_source});
+      auto updated = builder.create<mlir::arith::AddFOp>(loc, acc, term);
+      builder.create<mlir::scf::YieldOp>(
+          loc, mlir::ValueRange{updated.getResult()});
     }
-  }
+    return loop.getResult(0);
+  };
+
+  auto emitTidZero = [&](auto &&emit_body) {
+    auto is_tid_zero = builder.create<mlir::arith::CmpIOp>(
+        loc, mlir::arith::CmpIPredicate::eq, tid, c_zero);
+    auto if_tid_zero =
+        builder.create<mlir::scf::IfOp>(loc, is_tid_zero, false);
+    mlir::OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(&if_tid_zero.getThenRegion().front());
+    emit_body();
+  };
+
+  for (int64_t source = 0; source < active_sources; ++source) {
+    auto c_source = builder.create<mlir::arith::ConstantIndexOp>(loc, source);
+
+    auto partial_sumsq = emitSourceThreadSum(source, /*dot_product=*/false);
+    builder.create<mlir::memref::StoreOp>(
+        loc, partial_sumsq, reduce_scratch, mlir::ValueRange{tid});
+    builder.create<mlir::gpu::BarrierOp>(loc);
+    emitScratchSumReduction();
+
+    emitTidZero([&]() {
+      auto sumsq = builder.create<mlir::memref::LoadOp>(
+          loc, reduce_scratch, mlir::ValueRange{c_zero});
+      auto mean = builder.create<mlir::arith::MulFOp>(
+          loc, sumsq, inv_d.getResult());
+      auto mean_eps = builder.create<mlir::arith::AddFOp>(
+          loc, mean.getResult(), eps.getResult());
+      auto inv_rms = builder.create<mlir::math::RsqrtOp>(
+          loc, mean_eps.getResult(), mlir::arith::FastMathFlags::fast);
+      builder.create<mlir::memref::StoreOp>(
+          loc, inv_rms.getResult(), inv_rms_smem, mlir::ValueRange{c_source});
+    });
+    builder.create<mlir::gpu::BarrierOp>(loc);
+
+    auto partial_dot = emitSourceThreadSum(source, /*dot_product=*/true);
+    builder.create<mlir::memref::StoreOp>(
+        loc, partial_dot, reduce_scratch, mlir::ValueRange{tid});
+    builder.create<mlir::gpu::BarrierOp>(loc);
+    emitScratchSumReduction();
+
+    emitTidZero([&]() {
+      auto dot = builder.create<mlir::memref::LoadOp>(
+          loc, reduce_scratch, mlir::ValueRange{c_zero});
+      builder.create<mlir::memref::StoreOp>(
+          loc, dot, score_smem, mlir::ValueRange{c_source});
+    });
+    builder.create<mlir::gpu::BarrierOp>(loc);
+    }
 
   builder.create<mlir::gpu::BarrierOp>(loc);
 
