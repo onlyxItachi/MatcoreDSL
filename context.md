@@ -65,6 +65,16 @@ Residuals / Block AttnRes style depth attention over packed block history.
   thread-strided `D` loops plus shared-memory tree reductions. The old
   correctness-first path computed scores in `tid == 0` and caused barrier
   stalls / lane underutilization.
+- Speculative follow-ups were evaluated and reverted:
+  - shared softmax-weight reuse was numerically correct but did not clear the
+    no-regression bar across large one-forward cases;
+  - an NVVM warp-shuffle reduction prototype was faster but numerically wrong
+    under fresh-cache validation.
+- Disk cache version is now `matcore-phase4-cache-v10-regionv1-block-attn-res-cta-reduce`
+  so the RegionV1 CTA-reduction emitter cannot collide with older cached
+  scalar-score kernels.
+- RegionV1 `debug=True` now forwards to native `compile_and_run`, which enables
+  the existing force-recompile path for debug/profiling runs.
 - `RegionMlirEmitter` now consumes topo-ordered nodes and reports a clear
   multi-op lowering gap after verifier acceptance instead of assuming
   `region.nodes.front()`.
@@ -85,8 +95,13 @@ Residuals / Block AttnRes style depth attention over packed block history.
 - Nsight Compute on `[16,8,1024,128]`, `block_count=12`, `D=128`:
   old kernel duration ~5.51 ms, active threads/warp ~3.3, barrier stall ~73.8%;
   optimized kernel duration ~1.17 ms, active threads/warp ~31.7,
-  compute/memory throughput ~87.5%.
-- Large one-forward benchmark after reduction rewrite:
+  compute/memory throughput ~87.5%, achieved occupancy ~98.3%, barrier stall
+  ~36.6%.
+- Fresh-cache large one-forward benchmark after cache v10 hardening:
+  `[8,4,512,128]` 0.317 ms, `[8,8,1024,128]` 0.810 ms,
+  `[16,8,1024,128]` 1.340 ms, `[8,4,1024,256]` 0.510 ms,
+  `[16,8,2048,128]` 3.183 ms. Correctness stayed below ~4.2e-7 max error.
+- Earlier large one-forward benchmark after reduction rewrite:
   `[8,4,512,128]` 0.284 ms, `[8,8,1024,128]` 0.681 ms,
   `[16,8,1024,128]` 1.597 ms, `[8,4,1024,256]` 0.409 ms,
   `[16,8,2048,128]` 2.432 ms. Correctness stayed below ~1.5e-6 max error.
@@ -106,5 +121,8 @@ Residuals / Block AttnRes style depth attention over packed block history.
 - Keep RegionV1 additive; no existing `graph_v2` schema migration in v1.
 - BlockAttnRes v1 is still not fully optimized, but the first NCU-guided
   reduction rewrite removed the worst `tid == 0` bottleneck.
+- Next performance target remains reduction synchronization: NCU still reports
+  ~36% CTA-barrier stall. Do not re-land the current NVVM shuffle prototype
+  without first adding a focused reduction correctness test for `D >= 128`.
 - Next architecture step is generalizing RegionV1 beyond one intrinsic:
   true multi-op lowering, control-flow nodes, and symbolic/runtime scalar attrs.
