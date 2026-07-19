@@ -114,11 +114,41 @@ def main() -> int:
     ])
     run([args.cmake, "--build", str(build), "--", "-j2"])
     executable = build / "matcore_consumer"
-    run([str(executable)])
+    initial_run = run([str(executable)], capture=True)
+    if "consumer-header=1" not in initial_run.stdout:
+        raise RuntimeError(f"initial consumer header value is wrong:\n{initial_run.stdout}")
 
     objects = list((build / "CMakeFiles" / "matcore_consumer.mdsl").glob("*.o"))
     if len(objects) != 1:
         raise RuntimeError(f"expected one generated MDSLC object, found {objects}")
+    depfiles = list((build / "CMakeFiles" / "matcore_consumer.mdsl").glob("*.o.d"))
+    if len(depfiles) != 1:
+        raise RuntimeError(f"expected one MDSLC depfile, found {depfiles}")
+    depfile_text = depfiles[0].read_text(encoding="utf-8")
+    for expected_dependency in (source / "consumer.mdsl", source / "consumer_value.h"):
+        if str(expected_dependency) not in depfile_text:
+            raise RuntimeError(
+                f"MDSLC depfile does not track {expected_dependency}:\n{depfile_text}"
+            )
+    for forbidden_dependency in (
+        ".host.cpp",
+        ".sites.h",
+        ".stubs.cpp",
+        ".backend.cpp",
+        "/tmp/mdslc-",
+    ):
+        if forbidden_dependency in depfile_text:
+            raise RuntimeError(
+                f"temporary generated dependency leaked into depfile: {depfile_text}"
+            )
+
+    initial_noop = run(
+        [args.cmake, "--build", str(build), "--", "-j2"], capture=True
+    )
+    if "no work to do" not in initial_noop.stdout.lower():
+        raise RuntimeError(
+            f"depfile caused work immediately after a clean build:\n{initial_noop.stdout}"
+        )
     object_before = objects[0].stat().st_mtime_ns
 
     mdsl_source = source / "consumer.mdsl"
@@ -141,7 +171,45 @@ def main() -> int:
         )
     if objects[0].stat().st_mtime_ns <= object_before:
         raise RuntimeError("generated MDSLC object timestamp did not advance")
-    run([str(executable)])
+    source_rebuilt_run = run([str(executable)], capture=True)
+    if "consumer-header=1" not in source_rebuilt_run.stdout:
+        raise RuntimeError(
+            f"source rebuild changed the header value unexpectedly:\n{source_rebuilt_run.stdout}"
+        )
+
+    header = source / "consumer_value.h"
+    object_before_header = objects[0].stat().st_mtime_ns
+    header.write_text(
+        "#pragma once\n\ninline constexpr int consumer_header_value = 2;\n",
+        encoding="utf-8",
+    )
+    header_rebuild = run(
+        [args.cmake, "--build", str(build), "--", "-j2"], capture=True
+    )
+    if "Compiling MDSLC source consumer.mdsl" not in header_rebuild.stdout:
+        raise RuntimeError(
+            "editing an included header did not regenerate its MDSLC object:\n"
+            f"{header_rebuild.stdout}"
+        )
+    header_rebuild_steps = [
+        line for line in header_rebuild.stdout.splitlines() if line.startswith("[")
+    ]
+    if (
+        len(header_rebuild_steps) != 2
+        or "Linking CXX executable" not in header_rebuild_steps[1]
+    ):
+        raise RuntimeError(
+            "editing one included header should only regenerate its object and relink; "
+            f"observed:\n{header_rebuild.stdout}"
+        )
+    if objects[0].stat().st_mtime_ns <= object_before_header:
+        raise RuntimeError("included-header rebuild did not refresh the MDSLC object")
+    header_rebuilt_run = run([str(executable)], capture=True)
+    if "consumer-header=2" not in header_rebuilt_run.stdout:
+        raise RuntimeError(
+            "included-header rebuild executed stale code:\n"
+            f"{header_rebuilt_run.stdout}"
+        )
 
     noop = run([args.cmake, "--build", str(build), "--", "-j2"], capture=True)
     if "no work to do" not in noop.stdout.lower():
@@ -160,7 +228,7 @@ def main() -> int:
                     f"absolute local path leaked into {package_file}: {path}"
                 )
 
-    print("installed consumer: configure/build/run/rebuild/no-op PASS")
+    print("installed consumer: configure/build/run/source+header rebuild/no-op PASS")
     return 0
 
 

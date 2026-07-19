@@ -530,6 +530,27 @@ def execute_case(context: Context, case: dict[str, object], work: Path) -> None:
         require(not output.exists(), "unsupported link mode emitted an artifact")
         return
 
+    if mode == "driver_xlinker_mode_reject":
+        source = source_argument(context, case)
+        output = work / "unsupported-output.so"
+        completed = run(
+            [
+                str(context.driver),
+                "--matcore-target=cpu",
+                "-std=c++20",
+                "-Xlinker",
+                str(case["link_mode"]),
+                source,
+                "-o",
+                str(output),
+            ],
+            context.repository,
+        )
+        require(completed.returncode == 2, "-Xlinker mode was not rejected")
+        require(str(case["diagnostic"]) in completed.stderr, "-Xlinker diagnostic missing")
+        require(not output.exists(), "-Xlinker mode emitted an artifact")
+        return
+
     if mode == "driver_link_response_reject":
         source = source_argument(context, case)
         output = work / "response-output.so"
@@ -602,6 +623,76 @@ def execute_case(context: Context, case: dict[str, object], work: Path) -> None:
         require(str(case["diagnostic"]) in completed.stderr, "alias diagnostic missing")
         require(hashlib.sha256(source.read_bytes()).digest() == before, "input source changed")
         require(not paths["ir"].exists(), "rejected generation emitted IR")
+        return
+
+    if mode == "driver_shadow_header":
+        source = source_argument(context, case)
+        trusted_header = context.repository / "compiler/include/matcore/mdsl.h"
+        fake_header = work / "fake-include/matcore/mdsl.h"
+        fake_header.parent.mkdir(parents=True)
+        header_text = trusted_header.read_text(encoding="utf-8")
+        original_return = "  return out_arg{&value};"
+        require(original_return in header_text, "trusted out() body changed unexpectedly")
+        fake_header.write_text(
+            header_text.replace(
+                original_return,
+                "  value.rows = 0;\n  return out_arg{&value};",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        output = work / "program"
+        compiled = run(
+            [
+                str(context.driver),
+                "--matcore-target=cpu",
+                "-std=c++20",
+                f"-I{fake_header.parent.parent}",
+                source,
+                "-o",
+                str(output),
+            ],
+            context.repository,
+        )
+        completed_ok(compiled, "shadow-header CPU pipeline")
+        executed = run([str(output)], work)
+        completed_ok(executed, "shadow-header CPU executable")
+        require(executed.stdout == str(case["stdout"]), "shadow header changed runtime semantics")
+        return
+
+    if mode == "driver_preprocessor_include":
+        fixture = context.repository / source_argument(context, case)
+        source = work / "preprocessor.mdsl"
+        scenario = str(case["scenario"])
+        if scenario == "active":
+            prefix = "#if 0\n#include <inactive-bootstrap-probe.h>\n#endif\n"
+        elif scenario == "ambiguous":
+            prefix = "#if 0\n#include <matcore/mdsl.h>\n#endif\n"
+        else:
+            raise ValidationFailure(f"unknown preprocessor scenario: {scenario}")
+        source.write_text(prefix + fixture.read_text(encoding="utf-8"), encoding="utf-8")
+        output = work / "program"
+        completed = run(
+            [
+                str(context.driver),
+                "--matcore-target=cpu",
+                "-std=c++20",
+                str(source),
+                "-o",
+                str(output),
+            ],
+            work,
+        )
+        if scenario == "active":
+            completed_ok(completed, "active preprocessor include pipeline")
+            executed = run([str(output)], work)
+            completed_ok(executed, "active preprocessor include executable")
+            require(executed.stdout == str(case["stdout"]), "preprocessor host behavior changed")
+        else:
+            require(completed.returncode != 0, "ambiguous opt-in include succeeded")
+            require(str(case["diagnostic"]) in completed.stderr, "ambiguous include diagnostic missing")
+            require(SOURCE_DIAGNOSTIC.search(completed.stderr) is not None, "ambiguous include location missing")
+            require(not output.exists(), "ambiguous include emitted an executable")
         return
 
     if mode == "runtime_contract":
