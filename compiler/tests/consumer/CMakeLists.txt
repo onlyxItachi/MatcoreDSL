@@ -9,6 +9,7 @@ matcoredsl_add_executable(
   SOURCE consumer.mdsl
   CXX_STANDARD 20
   MATCORE_TARGET cpu
+  FRONTEND native
 )
 
 enable_testing()

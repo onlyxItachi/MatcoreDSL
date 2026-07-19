@@ -5,7 +5,7 @@ function(matcoredsl_add_executable target_name)
     PARSE_ARGV 1
     MDSLC
     ""
-    "SOURCE;CXX_STANDARD;MATCORE_TARGET"
+    "SOURCE;CXX_STANDARD;MATCORE_TARGET;FRONTEND"
     "COMPILE_OPTIONS;LINK_LIBRARIES"
   )
 
@@ -29,10 +29,19 @@ function(matcoredsl_add_executable target_name)
   if(NOT MDSLC_MATCORE_TARGET)
     set(MDSLC_MATCORE_TARGET cpu)
   endif()
+  if(NOT MDSLC_FRONTEND)
+    set(MDSLC_FRONTEND native)
+  endif()
   if(NOT MDSLC_MATCORE_TARGET STREQUAL "cpu")
     message(FATAL_ERROR
       "matcoredsl_add_executable(${target_name}): bootstrap v0 supports only "
       "MATCORE_TARGET cpu")
+  endif()
+  if(NOT MDSLC_FRONTEND STREQUAL "native" AND
+     NOT MDSLC_FRONTEND STREQUAL "ast-json-bootstrap")
+    message(FATAL_ERROR
+      "matcoredsl_add_executable(${target_name}): FRONTEND must be native or "
+      "ast-json-bootstrap; no automatic fallback is performed")
   endif()
 
   get_filename_component(
@@ -65,6 +74,7 @@ function(matcoredsl_add_executable target_name)
       "$<TARGET_FILE:MatcoreDSL::Compiler>"
       "-std=c++${MDSLC_CXX_STANDARD}"
       "--matcore-target=${MDSLC_MATCORE_TARGET}"
+      "--frontend=${MDSLC_FRONTEND}"
       ${MDSLC_COMPILE_OPTIONS}
       -MD -MF "${mdsl_depfile}"
       -c "${mdsl_source}"
