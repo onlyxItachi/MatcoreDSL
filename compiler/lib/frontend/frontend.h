@@ -29,6 +29,8 @@ struct Options {
 struct Result {
   ir::Module module;
   std::vector<Diagnostic> diagnostics;
+  // Exact bytes parsed for source ranges and later consumed by codegen.
+  std::string source_snapshot;
 };
 
 class Frontend {

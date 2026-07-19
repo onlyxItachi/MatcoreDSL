@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -179,6 +180,35 @@ def main() -> int:
         )
         if versioned.returncode == 0 or "expected version 0" not in versioned.stderr:
             failures.append("version-mismatched serialized IR was not rejected cleanly")
+
+        changing_source = output_root / "changing.mdsl"
+        changing_source.write_bytes((repository / tests / "gemm_capture.mdsl").read_bytes())
+        changing_compiler = output_root / "changing-clang++"
+        changing_compiler.write_text(
+            "#!/bin/sh\n"
+            "printf '\\n// concurrent edit\\n' >> \"$MDSLC_RACE_SOURCE\"\n"
+            "exec /usr/bin/clang++-21 \"$@\"\n",
+            encoding="utf-8",
+        )
+        changing_compiler.chmod(0o755)
+        changing_command = extraction_command(
+            arguments.extractor, changing_source, output_root / "changing.json"
+        )
+        changing_command[changing_command.index("--"):changing_command.index("--")] = [
+            "--clang",
+            str(changing_compiler),
+        ]
+        del changing_command[changing_command.index("--") + 1]
+        changed = subprocess.run(
+            changing_command,
+            cwd=repository,
+            env={**os.environ, "MDSLC_RACE_SOURCE": str(changing_source)},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if changed.returncode == 0 or "changed while Clang parsed it" not in changed.stderr:
+            failures.append("concurrently changed source was not rejected cleanly")
 
         deterministic_output = output_root / "gemm_capture.second.json"
         deterministic = subprocess.run(
@@ -519,7 +549,7 @@ def main() -> int:
         print(f"frontend tests: {len(failures)} failure(s)", file=sys.stderr)
         return 1
 
-    total = len(POSITIVE_CASES) + len(NEGATIVE_CASES) + 18
+    total = len(POSITIVE_CASES) + len(NEGATIVE_CASES) + 19
     print(f"frontend tests: {total} checks passed")
     return 0
 
