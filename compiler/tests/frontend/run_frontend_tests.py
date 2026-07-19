@@ -181,6 +181,38 @@ def main() -> int:
         if versioned.returncode == 0 or "expected version 0" not in versioned.stderr:
             failures.append("version-mismatched serialized IR was not rejected cleanly")
 
+        semantic_mutations = {
+            "missing-shape": lambda document: document["operations"][0]["output"].pop(
+                "shape"
+            ),
+            "wrong-strides": lambda document: document["operations"][0]["operands"][
+                0
+            ].__setitem__("strides", ["1", "dynamic-columns"]),
+            "missing-aliases": lambda document: document["operations"][0].pop(
+                "alias_requirements"
+            ),
+            "missing-effects": lambda document: document["operations"][0].pop(
+                "effects"
+            ),
+            "invalid-site-id": lambda document: document["operations"][0].__setitem__(
+                "site_id", "not-valid!"
+            ),
+        }
+        for mutation_name, mutate in semantic_mutations.items():
+            mutated_document = json.loads(golden.read_text())
+            mutate(mutated_document)
+            mutated_path = output_root / f"{mutation_name}.json"
+            mutated_path.write_text(json.dumps(mutated_document))
+            mutated = subprocess.run(
+                [str(arguments.extractor), "--verify-ir", str(mutated_path)],
+                cwd=repository,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if mutated.returncode == 0:
+                failures.append(f"IR verifier accepted semantic mutation {mutation_name}")
+
         changing_source = output_root / "changing.mdsl"
         changing_source.write_bytes((repository / tests / "gemm_capture.mdsl").read_bytes())
         changing_compiler = output_root / "changing-clang++"
@@ -549,7 +581,7 @@ def main() -> int:
         print(f"frontend tests: {len(failures)} failure(s)", file=sys.stderr)
         return 1
 
-    total = len(POSITIVE_CASES) + len(NEGATIVE_CASES) + 19
+    total = len(POSITIVE_CASES) + len(NEGATIVE_CASES) + 24
     print(f"frontend tests: {total} checks passed")
     return 0
 
