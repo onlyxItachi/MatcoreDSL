@@ -14,10 +14,18 @@
 #include <utility>
 #include <vector>
 
+#ifndef MDSLC_INSTALL_BINDIR
+#define MDSLC_INSTALL_BINDIR "bin"
+#endif
+#ifndef MDSLC_INSTALL_INCLUDEDIR
+#define MDSLC_INSTALL_INCLUDEDIR "include"
+#endif
+
 namespace {
 
 struct CommandLine {
   matcore::mdslc::frontend::Options frontend;
+  std::string frontend_name = "native";
   std::string tool_include_directory;
   std::string ir_output;
   std::string rewrite_output;
@@ -47,6 +55,48 @@ bool pathsReferToSameLocation(const std::filesystem::path &left,
     return true;
   }
   return normalizedPath(left) == normalizedPath(right);
+}
+
+std::optional<std::filesystem::path>
+installedPrefixForExecutable(const std::filesystem::path &executable) {
+  const std::filesystem::path bindir(MDSLC_INSTALL_BINDIR);
+  if (bindir.empty() || bindir.is_absolute()) {
+    return std::nullopt;
+  }
+  std::vector<std::filesystem::path> components;
+  for (const std::filesystem::path &component : bindir) {
+    if (component != "." && !component.empty()) {
+      components.push_back(component);
+    }
+  }
+  std::filesystem::path cursor = executable.parent_path();
+  for (auto iterator = components.rbegin(); iterator != components.rend();
+       ++iterator) {
+    if (cursor.filename() != *iterator) {
+      return std::nullopt;
+    }
+    cursor = cursor.parent_path();
+  }
+  return cursor;
+}
+
+std::optional<std::filesystem::path>
+discoverToolIncludeDirectory(const std::filesystem::path &executable) {
+  std::vector<std::filesystem::path> candidates;
+  if (const auto prefix = installedPrefixForExecutable(executable)) {
+    candidates.push_back(*prefix / MDSLC_INSTALL_INCLUDEDIR);
+  }
+  // Standalone build-tree layout remains bin/ plus include/ even when a
+  // non-default install bindir was configured.
+  candidates.push_back(executable.parent_path().parent_path() / "include");
+  for (const std::filesystem::path &candidate : candidates) {
+    std::error_code error;
+    if (std::filesystem::is_regular_file(candidate / "matcore" / "mdsl.h",
+                                         error)) {
+      return normalizedPath(candidate);
+    }
+  }
+  return std::nullopt;
 }
 
 bool validateOutputPaths(const CommandLine &command) {
@@ -85,7 +135,12 @@ void usage(std::ostream &output) {
       << "usage: matcore-extract --input FILE.mdsl --ir-out FILE.json [options] "
          "-- [clang++-placeholder] COMPILE_ARGS\n"
       << "\n"
-      << "Bootstrap frontend options:\n"
+      << "Frontend selection:\n"
+      << "  --frontend=native             supported Clang LibTooling frontend "
+         "(default)\n"
+      << "  --frontend=ast-json-bootstrap compatibility/differential frontend\n"
+      << "\n"
+      << "Frontend options:\n"
       << "  --clang PATH          Clang executable (default: "
          "/usr/bin/clang++-21)\n"
       << "  --ast-byte-limit N    maximum captured AST JSON bytes\n"
@@ -95,7 +150,7 @@ void usage(std::ostream &output) {
       << "  --stubs-out FILE      generated C++ descriptor stubs\n"
       << "  --backend-out FILE    generated C ABI backend forwarding entries\n"
       << "  --verify-ir FILE      verify serialized Matcore IR v0 and exit\n"
-      << "  --frontend-info       describe this non-LibTooling fallback\n"
+      << "  --frontend-info       describe the built frontend modes\n"
       << "\n"
       << "A bare clang++ token after -- is a command-shape placeholder; the "
          "configured\n"
@@ -119,8 +174,9 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
   const std::filesystem::path executable =
       std::filesystem::canonical("/proc/self/exe", executable_error);
   if (!executable_error) {
-    command.tool_include_directory =
-        (executable.parent_path().parent_path() / "include").string();
+    if (const auto include_directory = discoverToolIncludeDirectory(executable)) {
+      command.tool_include_directory = include_directory->string();
+    }
   }
   bool after_separator = false;
   for (int index = 1; index < argc; ++index) {
@@ -168,6 +224,13 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
         return std::nullopt;
       }
       command.compiler_was_explicit = true;
+    } else if (argument == "--frontend") {
+      if (!takeValue(argc, argv, index, command.frontend_name,
+                     "--frontend")) {
+        return std::nullopt;
+      }
+    } else if (argument.starts_with("--frontend=")) {
+      command.frontend_name = argument.substr(std::string("--frontend=").size());
     } else if (argument == "--ast-byte-limit") {
       std::string value;
       if (!takeValue(argc, argv, index, value, "--ast-byte-limit")) {
@@ -185,11 +248,20 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
       usage(std::cout);
       std::exit(0);
     } else if (argument == "--frontend-info") {
-      std::cout
-          << "clang-ast-json-bootstrap-v0: executes Clang parsing/Sema, then "
-             "structurally consumes one bounded JSON AST. This is not the "
-             "planned LibTooling frontend. Clang JSON exposes AnnotateAttr "
-             "presence but not its payload.\n";
+      std::cout << "default: native\n";
+#if MDSLC_HAS_NATIVE_FRONTEND
+      std::cout << "native [built]: clang-libtooling-v1; in-process Clang 21 "
+                   "PPCallbacks, parse/Sema, ASTMatcher, canonical declaration "
+                   "and AnnotateAttr authentication, SourceManager ranges\n";
+#else
+      std::cout << "native [not built]\n";
+#endif
+#if MDSLC_HAS_BOOTSTRAP_FRONTEND
+      std::cout << "ast-json-bootstrap [built, compatibility-only]: "
+                   "clang-ast-json-bootstrap-v0\n";
+#else
+      std::cout << "ast-json-bootstrap [not built]\n";
+#endif
       std::exit(0);
     } else {
       std::cerr << "matcore-extract: unknown tool option: " << argument
@@ -208,6 +280,21 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
       return std::nullopt;
     }
     return command;
+  }
+  if (command.frontend_name != "native" &&
+      command.frontend_name != "ast-json-bootstrap") {
+    std::cerr << "matcore-extract: unsupported --frontend value: "
+              << command.frontend_name << '\n';
+    return std::nullopt;
+  }
+  if (command.frontend_name == "native" &&
+      !pathsReferToSameLocation(command.frontend.clang_path,
+                                MDSLC_DEFAULT_CLANGXX)) {
+    std::cerr << "matcore-extract: native frontend is linked to the configured "
+                 "Clang 21.1.8 tuple and cannot honor a different --clang "
+                 "executable: "
+              << command.frontend.clang_path << '\n';
+    return std::nullopt;
   }
   if (command.frontend.input_path.empty() || command.ir_output.empty()) {
     std::cerr << "matcore-extract: --input and --ir-out are required\n";
@@ -351,8 +438,25 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  std::unique_ptr<matcore::mdslc::frontend::Frontend> frontend =
-      matcore::mdslc::frontend::createClangAstJsonBootstrapFrontend();
+  std::unique_ptr<matcore::mdslc::frontend::Frontend> frontend;
+  if (command->frontend_name == "native") {
+#if MDSLC_HAS_NATIVE_FRONTEND
+    frontend = matcore::mdslc::frontend::createClangLibToolingFrontend();
+#else
+    std::cerr << "matcore-extract: native frontend is the default but was not "
+                 "built; rebuild with MDSLC_ENABLE_NATIVE_FRONTEND=ON or "
+                 "explicitly request the compatibility frontend\n";
+    return 1;
+#endif
+  } else {
+#if MDSLC_HAS_BOOTSTRAP_FRONTEND
+    frontend =
+        matcore::mdslc::frontend::createClangAstJsonBootstrapFrontend();
+#else
+    std::cerr << "matcore-extract: AST-JSON bootstrap frontend was not built\n";
+    return 1;
+#endif
+  }
   matcore::mdslc::frontend::Result result;
   if (!frontend->extract(command->frontend, result)) {
     for (const auto &diagnostic : result.diagnostics) {
