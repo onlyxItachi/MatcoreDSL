@@ -17,6 +17,15 @@ the same translation unit into normal native artifacts. It must preserve C++
 language semantics through Clang while creating an inspectable,
 target-independent matrix representation for later planning and lowering.
 
+Implementation note (2026-07-19): the architecture still selects LibTooling as
+the production frontend, but this machine does not have the matching Clang 21
+development headers/libraries. The first executable proof therefore uses the
+explicitly labeled, replaceable `clang-ast-json-bootstrap-v0` adapter. It runs
+Clang parsing/Sema and consumes structural declaration IDs, but Clang's JSON
+does not expose annotation payloads. This implementation is a validated
+bootstrap boundary, not a change to the LibTooling decision and not a claim
+that Goal 3's exact annotation contract is complete.
+
 This project is not a Triton reimplementation. Triton may be studied as prior
 art, but its Python blocked-programming language and runtime are neither the
 MDSLC source model nor a v0 dependency.

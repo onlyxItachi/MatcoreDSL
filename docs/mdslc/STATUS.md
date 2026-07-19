@@ -1,108 +1,189 @@
 # MDSLC bootstrap status
 
 Status date: 2026-07-19
-Integration baseline: `351075e4d8af1880330b7c0474d701ca76776dfa`
+
+Verified baseline: `351075e4d8af1880330b7c0474d701ca76776dfa`
+
+Integration branch: `mdslc/bootstrap-v0`
+
+Final validation code head: `9d6b4dae127d745a7abcdbb708a158cb520343d9`
 
 ## Current verdict
 
-The architecture and environment have been audited, and the standalone design
-is frozen in ADR 0001. No standalone compiler implementation has been
-integrated yet. The architecture proof is therefore **not yet passed**.
+The standalone CPU vertical slice, normal native-artifact path, installation,
+and external-consumer proof pass. The overall architecture proof is
+**partially passed** because the installed machine lacks matching Clang 21
+LibTooling development headers and libraries. The implemented, explicitly
+labeled `clang-ast-json-bootstrap-v0` frontend does run Clang parsing and Sema,
+uses AST declaration identity, authenticates the exact public header, and is
+replaceable behind the frontend interface. It cannot read the
+`AnnotateAttr("matcore.op.gemm")` payload or provide literal LibTooling
+`getDirectCallee()` semantics, so Goal 3 is not represented as fully complete.
 
-The original checkout contained 50 tracked deletions. Work proceeds only in
-isolated worktrees so those changes remain untouched.
+No Python, nanobind, MLIR, JIT cache, or legacy native extension participates
+in the standalone compiler's normal execution path.
 
 ## Acceptance status
 
-| Goal | State | Evidence or remaining gate |
+| Goal | State | Verified evidence |
 | --- | --- | --- |
-| Preflight and baseline | Complete | Branch/SHA, dirty state, tools, memory, devices, and dependency gaps recorded in `PREFLIGHT.md` |
-| Architecture freeze | Complete in docs branch | Valid-C++ source model, post-Sema recognition, JSON IR v0, C ABI, CPU-first path, and future capability model recorded in ADR 0001 |
-| Standalone CMake skeleton | Not started in this branch | Must configure under `compiler/` without Python, nanobind, or MLIR |
-| Goal 2 `.mdsl` host compile | Not yet accepted | Raw `/usr/bin/clang++-21 -x c++` syntax test passed; no `mdslc++`, executable, or relocatable-object proof exists yet |
-| Goal 3 post-Sema extraction | Blocked | Matching LibTooling development headers are absent |
-| Goal 4 CPU GEMM vertical slice | Not started | Depends on verified extraction and rewrite |
-| Goal 5 install/consumer | Not started | Depends on stable driver/runtime targets |
-| Goal 6 validation matrix | Not started | Must validate positive, negative, clean, sanitizer, artifact, and runtime cases |
-| Goal 7 CUDA/cuBLAS | Not attempted | Optional only after Goals 1-6 pass |
+| Preflight and archaeology | Complete | Baseline, dirty original checkout, toolchain, devices, dependency gaps, and legacy reuse boundaries are recorded in `PREFLIGHT.md` and `LEGACY_REUSE_MAP.md` |
+| Goal 1 architecture and skeleton | Complete | Independent `compiler/` CMake project builds 15 targets/steps without root CMake, Python, nanobind, or MLIR |
+| Goal 2 valid-C++ `.mdsl` proof | Complete | `hello_host.mdsl` prints `5`; executable and ELF64 x86-64 relocatable modes pass through `mdslc++ -x c++` |
+| Goal 3 post-Sema extraction | Partial | Clang 21 parsing/Sema, canonical AST declaration IDs, trusted-header equality, deterministic JSON and source diagnostics pass; exact annotation-payload authentication remains blocked on LibTooling development files |
+| Goal 4 CPU GEMM vertical slice | Complete | Rewrite, JSON, sites, stubs, backend, three objects, `clang++ -r`, external ordinary link, runtime resolution, and independent-oracle execution pass |
+| Goal 5 install/consumer | Complete | Installed tools/headers/runtime/CMake package and external `find_package` consumer configure, build, run, regenerate, and no-op rebuild pass |
+| Goal 6 validation and review | Complete for implemented scope | Fresh Release and Debug suites pass; sanitizer proofs pass; all high/medium review findings in the bootstrap implementation are resolved |
+| Goal 7 CUDA/cuBLAS | Not attempted | Optional GPU implementation was not started because the exact LibTooling frontend gate remains partial |
 
-## Selected bootstrap toolchain
-
-For driver-only work, use Clang 21.1.8 explicitly:
+## Implemented pipeline
 
 ```text
-/usr/bin/clang-21
-/usr/bin/clang++-21
-/usr/bin/llvm-config-21
+valid C++ foo.mdsl
+  -> mdslc++ (forces Clang 21 -x c++)
+  -> Clang parsing/Sema and bounded structural AST JSON
+  -> trusted canonical matcore::mdsl declaration recognition
+  -> verified deterministic Matcore JSON IR v0
+  -> exact main-file CallExpr rewrite from one stable source snapshot
+  -> foo.host.cpp + foo.sites.h + foo.stubs.cpp + foo.backend.cpp
+  -> three ordinary Clang C++ objects
+  -> clang++ -r combined relocatable object
+  -> ordinary external clang++ link against libmatcore_runtime
+  -> synchronous checked CPU f32 GEMM
 ```
 
-This selection avoids PATH's default experimental Clang 22.1.6 and aligns with
-the installed LLVM/Clang 21.1.8 packages. It does **not** make LibTooling
-available: `libclang-21-dev` and its Tooling/ASTMatcher/Rewriter headers remain
-missing and require explicit installation approval.
+`--save-temps` produces the five requested source/IR files, the three component
+objects, and the combined `.o`. Generated call-site identifiers use the stable
+source identity, exact source contents, call offset, and operation kind; tests
+cover relative/absolute spelling, two sites, same-spelled sources in separate
+directories, and multi-TU relocatable co-linking.
 
-Build concurrency is capped at Ninja `-j2`, with `-j1` for large links and
-ctest. ccache 4.12.3 is available.
+## Final validation evidence
 
-## Device status
+Fresh Release build: `/tmp/matcoredsl-final-release.ZQTocW`
 
-- CPU execution target: available, not yet validated through MDSLC.
-- NVIDIA RTX 4060 Laptop GPU, compute capability 8.9, CUDA 13.3: detected only;
-  no MDSLC compile or runtime validation.
-- AMD `gfx1150`, HIP 7.1: detected only and out of v0 implementation scope.
-- RyzenAI `aie2p`: detected only and out of scope.
+- Ninja: 15/15 steps.
+- CTest: 4/4 targets passed in 39.53 seconds.
+- Frontend suite: 44/44 checks.
+- Integration matrix: 46/46 active cases, 0 failures, 6 future capabilities
+  explicitly not counted as passes.
+- Installed consumer: configure/build/run/rebuild/no-op passed.
+- Runtime suite: three GEMM shapes plus descriptor/policy failure contracts.
 
-## Command log
+Fresh Debug build: `/tmp/matcoredsl-final-debug.ohqv7h`
 
-Commands completed for this documentation milestone:
+- Ninja: 15/15 steps.
+- CTest: 4/4 targets passed in 80.52 seconds.
+- Runtime dynamic exports: only `matcore_runtime_gemm_f32_v0`.
+
+Sanitizer build: `/tmp/matcoredsl-final-sanitize.Preeps`
+
+- ASan+UBSan runtime build and test: 1/1 passed with leak detection enabled.
+- Sanitizer-instrumented generated host/stub/backend pipeline ran the GEMM
+  example with no reported sanitizer finding.
+
+CPU result for `gemm_v0.mdsl`:
+
+```text
+host-before
+MDSLC CPU GEMM PASS
+```
+
+The oracle accumulates in `double` with a different loop ordering from the
+runtime. Runtime unit tests additionally cover 1x1x1, 2x3x2, and 3x2x4.
+
+Artifact inspection confirms:
+
+- `hello_host.o`: ELF64 x86-64 relocatable with `main` and `host_add<int>`;
+- `gemm_v0.o`: ELF64 x86-64 `REL`, defining `main`, one stable C++ site
+  wrapper, and one generated C backend entry;
+- `matcore_runtime_gemm_f32_v0` remains unresolved in the combined object and
+  is resolved by the ordinary final link;
+- final program: dynamically linked ELF PIE;
+- `ldd`: `libmatcore_runtime.so.0` resolves from the selected build/install
+  tree;
+- runtime shared object: versioned SONAME and one exported C implementation
+  symbol.
+
+## Reproducible commands
 
 ```sh
-git remote -v
-git status --short --branch
-git branch --show-current
-git rev-parse HEAD
-git log --oneline --decorate -20
-git worktree list
-git submodule status --recursive
+cmake -S compiler -B build-mdslc -G Ninja \
+  -DCMAKE_CXX_COMPILER=/usr/bin/clang++-21 \
+  -DMDSLC_CLANGXX_EXECUTABLE=/usr/bin/clang++-21 \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build-mdslc -- -j2
+ctest --test-dir build-mdslc --output-on-failure -j1
 
-uname -a
-cat /etc/os-release
-getconf LONG_BIT
-lscpu
-nproc
-free -h
-swapon --show
-df -h
-ulimit -a
+build-mdslc/bin/mdslc++ -std=c++20 \
+  compiler/examples/hello_host.mdsl -o build-mdslc/hello_host
+build-mdslc/bin/mdslc++ -std=c++20 -c \
+  compiler/examples/hello_host.mdsl -o build-mdslc/hello_host.o
 
-clang --version
-clang++ --version
-gcc --version
-g++ --version
-llvm-config --version
-cmake --version
-ninja --version
-ccache --version
-ld.lld --version
-ld --version
-ar --version
-nm --version
-readelf --version
-python3 --version
+build-mdslc/bin/mdslc++ -std=c++20 --matcore-target=cpu \
+  --save-temps -c compiler/examples/gemm_v0.mdsl \
+  -o build-mdslc/gemm_v0.o
+/usr/bin/clang++-21 build-mdslc/gemm_v0.o \
+  -Lbuild-mdslc/lib -lmatcore_runtime \
+  -Wl,-rpath,"$PWD/build-mdslc/lib" -o build-mdslc/gemm_v0
+build-mdslc/gemm_v0
 
-find /usr/lib /usr/local/lib -path '*cmake/llvm/LLVMConfig.cmake'
-find /usr/lib /usr/local/lib -path '*cmake/clang/ClangConfig.cmake'
-find /usr/lib /usr/local/lib -path '*cmake/mlir/MLIRConfig.cmake'
-ls -d /usr/lib/llvm-*
-
-nvidia-smi
-nvcc --version
-hipcc --version
-rocminfo
-rocm-smi
-clinfo
+cmake --install build-mdslc --prefix /tmp/matcoredsl-install
+cmake -S compiler/tests/consumer -B /tmp/matcoredsl-consumer -G Ninja \
+  -DCMAKE_PREFIX_PATH=/tmp/matcoredsl-install \
+  -DCMAKE_CXX_COMPILER=/usr/bin/clang++-21
+cmake --build /tmp/matcoredsl-consumer -- -j2
+/tmp/matcoredsl-consumer/matcore_consumer
 ```
 
-`rocm-smi` was the expected nonfatal missing command. No build, test, runtime,
-artifact, sanitizer, or legacy regression result is claimed by this docs-only
-milestone.
+## Toolchain and devices
+
+- Selected host tuple: `/usr/bin/clang-21` and `/usr/bin/clang++-21`, version
+  21.1.8.
+- Matching Clang Tooling/ASTMatcher/Rewriter development headers and usable
+  imported libraries: missing. No package was installed.
+- Build parallelism: Ninja `-j2`, CTest/link validation `-j1`; ccache 4.12.3
+  was used when discovered.
+- CPU: AMD Ryzen AI 9 HX 370, 12 cores/24 threads; CPU path runtime-validated.
+- NVIDIA RTX 4060 Laptop GPU, compute capability 8.9, CUDA 13.3: detected only;
+  MDSLC CUDA not attempted.
+- AMD `gfx1150`, HIP/ROCm 7.1: detected only; MDSLC HIP not attempted.
+- RyzenAI `aie2p`: detected only; no MDSLC backend attempted.
+
+## Legacy regression and original checkout
+
+The standalone diff changes only `AGENTS.md`, `compiler/**`, `docs/mdslc/**`,
+and ADR 0001; no legacy production source is modified. Pure-Python legacy
+smoke tests passed 22 selected cases. Three additional tests failed only at the
+known import boundary because `_matcore_native` is not built. A root legacy
+CMake probe cannot configure: it requests MLIR 18.1.3 while only MLIR 22.1.2
+configuration is installed. The full legacy extension was therefore not
+rebuilt or claimed green.
+
+The original `feature/device-resident-tensors` checkout remains at the baseline
+SHA with its 50 tracked deletions untouched. Final inspection also found an
+untracked top-level `CMakeFiles/` there; preflight originally observed no
+untracked status class, so this discrepancy is recorded and left untouched
+rather than deleted without ownership certainty. The integration worktree is
+clean.
+
+## Known limitations and blockers
+
+- The frontend is the documented AST-JSON bootstrap, not LibTooling. Exact
+  annotation payload authentication remains the primary blocker.
+- Linux, Ninja, Clang 21, one `.mdsl` input, CPU, synchronous rank-2
+  row-major-contiguous `f32` GEMM only.
+- Public `matrix_view` is deliberately minimal and represents host f32 storage;
+  no general tensor framework exists.
+- Driver-managed shared/static/PIE modes are rejected with an instruction to
+  emit `-c` and perform the desired ordinary Clang link explicitly.
+- `gemv`, `gevm`, `relu_gemm`, CUDA/cuBLAS, HIP, Metal, MLIR lowering, cost
+  planning, fusion, and autotuning are not implemented.
+- Generated multi-file publication is per-file atomic; a publication error can
+  leave a partial saved-temp set, but the driver stops and never links it.
+
+## CUDA status
+
+Not attempted. There is no compile-only or runtime-validated MDSLC CUDA result.
+Explicit CUDA requests return a nonzero no-fallback diagnostic and emit no CPU
+artifact.

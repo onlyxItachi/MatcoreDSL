@@ -51,7 +51,7 @@ in `context.md`.
 ## Toolchain and build discipline
 
 The 2026-07-19 audit selected `/usr/bin/clang++-21` 21.1.8 for the
-driver-only valid-C++ proof. A complete LibTooling build is currently blocked
+standalone bootstrap. A complete LibTooling build is currently blocked
 because matching Clang development headers are not installed. Do not describe
 the frontend as buildable until that dependency is resolved. Once the matching
 21.1.8 development package is available, configure the standalone project with
@@ -66,6 +66,24 @@ cmake -S compiler -B build-mdslc -G Ninja \
 cmake --build build-mdslc -- -j2
 ctest --test-dir build-mdslc --output-on-failure -j1
 ```
+
+The currently implemented AST-JSON bootstrap configures without LLVM/Clang
+development CMake packages:
+
+```sh
+cmake -S compiler -B build-mdslc -G Ninja \
+  -DCMAKE_CXX_COMPILER=/usr/bin/clang++-21 \
+  -DMDSLC_CLANGXX_EXECUTABLE=/usr/bin/clang++-21 \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build-mdslc -- -j2
+ctest --test-dir build-mdslc --output-on-failure -j1
+```
+
+Keep its producer label and limitations explicit. It must authenticate the
+exact shipped/source public header, use structural AST declaration IDs, verify
+one unchanged source snapshot, and reject ambiguous constructs. It does not
+replace the required LibTooling implementation because JSON AST omits the
+`AnnotateAttr` payload.
 
 For the driver-only language proof, use the selected executable explicitly:
 
