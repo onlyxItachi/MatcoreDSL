@@ -690,7 +690,9 @@ private:
 
     std::string target;
     std::string fallback;
-    if (!parsePolicy(*call.getArg(3), target, fallback)) {
+    if (call.getArg(3)->HasSideEffects(context)) {
+      fail("gemm policy must not contain function calls or other side effects");
+    } else if (!parsePolicy(*call.getArg(3), target, fallback)) {
       fail("gemm policy must be the default or an inline policy aggregate so "
            "target and fallback are compile-time visible");
     } else if (target != "cpu" || fallback != "error") {

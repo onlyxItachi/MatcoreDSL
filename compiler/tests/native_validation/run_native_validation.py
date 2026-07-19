@@ -376,13 +376,14 @@ def negative_case(
     source: Path,
     expected_words: Sequence[str],
     location_extension: str = "mdsl",
+    frontend: str = "native",
 ) -> None:
     result = extraction(
         extractor,
         source,
         temporary / "negative" / name,
         name,
-        frontend="native",
+        frontend=frontend,
         clang=clang,
     )
     diagnostic = result.completed.stderr.lower()
@@ -612,6 +613,7 @@ def core_suite(checks: Checks, extractor: Path, clang: Path) -> None:
             ("dependent_instantiation", ("template", "dependent"), "mdsl"),
             ("lambda", ("lambda",), "mdsl"),
             ("macro", ("macro",), "mdsl"),
+            ("policy_side_effect", ("policy", "side effect"), "mdsl"),
             ("header_origin", ("header", "main source", "input .mdsl"), "h"),
         )
         for name, words, location_extension in negative_cases:
@@ -630,6 +632,20 @@ def core_suite(checks: Checks, extractor: Path, clang: Path) -> None:
                     )
                 ),
             )
+
+        checks.case(
+            "negative/policy_side_effect_bootstrap",
+            lambda: negative_case(
+                checks,
+                extractor,
+                clang,
+                temporary,
+                "policy_side_effect_bootstrap",
+                negative / "policy_side_effect.mdsl",
+                ("policy", "side effect"),
+                frontend="ast-json-bootstrap",
+            ),
+        )
 
         trusted_annotation = 'MATCORE_MDSL_ANNOTATE("matcore.op.gemm")\nvoid gemm'
         trusted_signature = (

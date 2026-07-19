@@ -448,6 +448,39 @@ void collectEnumConstants(const JsonValue &node,
   }
 }
 
+bool containsPolicySideEffect(const JsonValue &node) {
+  const std::string kind = memberString(node, "kind");
+  if (kind == "CallExpr" || kind == "CXXMemberCallExpr" ||
+      kind == "CXXOperatorCallExpr" || kind == "CXXNewExpr" ||
+      kind == "CXXDeleteExpr" || kind == "CXXThrowExpr" ||
+      kind == "CompoundAssignOperator") {
+    return true;
+  }
+  if (kind == "UnaryOperator") {
+    const std::string opcode = memberString(node, "opcode");
+    if (opcode == "++" || opcode == "--") {
+      return true;
+    }
+  }
+  if (kind == "BinaryOperator") {
+    static const std::unordered_set<std::string> assignments = {
+        "=",  "+=", "-=",  "*=", "/=", "%=",
+        "<<=", ">>=", "&=", "|=", "^=",
+    };
+    if (assignments.contains(memberString(node, "opcode"))) {
+      return true;
+    }
+  }
+  if (const JsonValue *inner = innerArray(node)) {
+    for (const JsonValue &child : inner->GetArray()) {
+      if (containsPolicySideEffect(child)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 bool parsePolicy(const JsonValue &expression, std::string &target,
                  std::string &fallback) {
   target = "cpu";
@@ -828,7 +861,9 @@ bool AstJsonBootstrapFrontend::processCall(
 
   std::string target;
   std::string fallback;
-  if (!parsePolicy((*children)[4], target, fallback)) {
+  if (containsPolicySideEffect((*children)[4])) {
+    reject("gemm policy must not contain function calls or other side effects");
+  } else if (!parsePolicy((*children)[4], target, fallback)) {
     reject("gemm policy must be the default or an inline policy aggregate so "
            "target and fallback are compile-time visible");
   } else if (target != "cpu" || fallback != "error") {
