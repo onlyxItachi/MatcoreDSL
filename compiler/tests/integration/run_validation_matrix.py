@@ -625,6 +625,32 @@ def execute_case(context: Context, case: dict[str, object], work: Path) -> None:
         require(not paths["ir"].exists(), "rejected generation emitted IR")
         return
 
+    if mode == "driver_depfile_artifact_guard":
+        source = source_argument(context, case)
+        output = work / "result.o"
+        conflicting_depfile = work / "result.host.cpp"
+        completed = run(
+            [
+                str(context.driver),
+                "--matcore-target=cpu",
+                "--save-temps",
+                "-std=c++20",
+                "-MD",
+                "-MF",
+                str(conflicting_depfile),
+                "-c",
+                source,
+                "-o",
+                str(output),
+            ],
+            context.repository,
+        )
+        require(completed.returncode == 2, "depfile/save-temps collision was not rejected")
+        require(str(case["diagnostic"]) in completed.stderr, "depfile collision diagnostic missing")
+        require(not output.exists(), "depfile collision emitted an object")
+        require(not conflicting_depfile.exists(), "depfile collision overwrote a saved artifact")
+        return
+
     if mode == "driver_shadow_header":
         source = source_argument(context, case)
         trusted_header = context.repository / "compiler/include/matcore/mdsl.h"
