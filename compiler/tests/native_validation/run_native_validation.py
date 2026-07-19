@@ -1346,6 +1346,135 @@ def driver_suite(checks: Checks, extractor: Path, driver: Path, clang: Path) -> 
             f"symlink retarget diagnostic was unclear:\n{symlink_race.stderr}",
         )
 
+        dotdot_race_root = temporary / "symlink-dotdot-race-prefix"
+        dotdot_race_driver, dotdot_race_extractor = copy_driver_layout(
+            driver, extractor, dotdot_race_root
+        )
+        dotdot_directory = temporary / "symlink-dotdot-source"
+        actual_directory = dotdot_directory / "actual"
+        (actual_directory / "sub").mkdir(parents=True)
+        actual_header = actual_directory / "mode.h"
+        actual_header.write_text(
+            "#pragma once\n#define MDSLC_DOTDOT_MODE 17\n", encoding="utf-8"
+        )
+        decoy_header = dotdot_directory / "mode.h"
+        decoy_header.write_text(
+            "#pragma once\n#define MDSLC_DOTDOT_MODE 17\n", encoding="utf-8"
+        )
+        (dotdot_directory / "link").symlink_to("actual/sub", target_is_directory=True)
+        dotdot_source = dotdot_directory / "symlink_dotdot_race.mdsl"
+        dotdot_source.write_text(
+            '#include "link/../mode.h"\n'
+            + (FIXTURES / "positive/namespace_alias.mdsl").read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+        dotdot_race_extractor.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib, subprocess, sys\n"
+            f"command = [{str(extractor.resolve())!r}, *sys.argv[1:]]\n"
+            "completed = subprocess.run(command, check=False)\n"
+            "if completed.returncode == 0:\n"
+            f"    pathlib.Path({str(actual_header)!r}).write_text("
+            "'#pragma once\\n#define MDSLC_DOTDOT_MODE 91\\n', encoding='utf-8')\n"
+            "raise SystemExit(completed.returncode)\n",
+            encoding="utf-8",
+        )
+        dotdot_race_extractor.chmod(0o755)
+        dotdot_output = temporary / "symlink-dotdot-race.o"
+        dotdot_race = run(
+            [
+                str(dotdot_race_driver),
+                "--frontend=native",
+                "--matcore-target=cpu",
+                "-std=c++20",
+                "-c",
+                str(dotdot_source),
+                "-o",
+                str(dotdot_output),
+            ]
+        )
+        checks.require(
+            dotdot_race.returncode != 0,
+            "driver normalized link/../mode.h to a decoy dependency path",
+        )
+        checks.require(
+            not dotdot_output.exists(),
+            "changed link/../mode.h dependency still produced an object",
+        )
+        checks.require(
+            "dependency changed" in dotdot_race.stderr.lower()
+            and "link/../mode.h" in dotdot_race.stderr,
+            f"symlink/.. race diagnostic was unclear:\n{dotdot_race.stderr}",
+        )
+
+        shadow_race_root = temporary / "include-shadow-race-prefix"
+        shadow_race_driver, shadow_race_extractor = copy_driver_layout(
+            driver, extractor, shadow_race_root
+        )
+        shadow_directory = temporary / "include-shadow-source"
+        early_include = shadow_directory / "early"
+        late_include = shadow_directory / "late"
+        early_include.mkdir(parents=True)
+        late_include.mkdir()
+        late_header = late_include / "mode.h"
+        late_header.write_text(
+            "#pragma once\n#define MDSLC_SHADOW_MODE 17\n", encoding="utf-8"
+        )
+        early_header = early_include / "mode.h"
+        shadow_source = shadow_directory / "include_shadow_race.mdsl"
+        shadow_source.write_text(
+            "#include <mode.h>\n"
+            + (FIXTURES / "positive/namespace_alias.mdsl").read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+        shadow_race_extractor.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib, subprocess, sys\n"
+            f"command = [{str(extractor.resolve())!r}, *sys.argv[1:]]\n"
+            "completed = subprocess.run(command, check=False)\n"
+            "if completed.returncode == 0:\n"
+            f"    pathlib.Path({str(early_header)!r}).write_text("
+            "'#pragma once\\n#define MDSLC_SHADOW_MODE 91\\n', encoding='utf-8')\n"
+            "raise SystemExit(completed.returncode)\n",
+            encoding="utf-8",
+        )
+        shadow_race_extractor.chmod(0o755)
+        shadow_output = temporary / "include-shadow-race.o"
+        shadow_race = run(
+            [
+                str(shadow_race_driver),
+                "--frontend=native",
+                "--matcore-target=cpu",
+                "-std=c++20",
+                "-I",
+                str(early_include),
+                "-I",
+                str(late_include),
+                "-c",
+                str(shadow_source),
+                "-o",
+                str(shadow_output),
+            ]
+        )
+        checks.require(
+            shadow_race.returncode != 0,
+            "driver accepted a higher-priority header created after extraction",
+        )
+        checks.require(
+            not shadow_output.exists(),
+            "changed include resolution still produced an object",
+        )
+        checks.require(
+            "dependency resolution changed" in shadow_race.stderr.lower()
+            and str(early_header) in shadow_race.stderr
+            and str(late_header) in shadow_race.stderr,
+            f"include-shadow race diagnostic was unclear:\n{shadow_race.stderr}",
+        )
+
         include_parity = temporary / "include-parity"
         include_source = include_parity / "source"
         include_output = include_parity / "output"
