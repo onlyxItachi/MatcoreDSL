@@ -9,15 +9,16 @@
 #include <cstdlib>
 #include <iostream>
 #include <optional>
-#include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
 
 struct CommandLine {
   matcore::mdslc::frontend::Options frontend;
+  std::string tool_include_directory;
   std::string ir_output;
   std::string rewrite_output;
   std::string sites_output;
@@ -26,6 +27,58 @@ struct CommandLine {
   std::string verify_ir;
   bool compiler_was_explicit = false;
 };
+
+std::filesystem::path normalizedPath(const std::filesystem::path &path) {
+  std::error_code error;
+  std::filesystem::path absolute = std::filesystem::absolute(path, error);
+  if (error) {
+    absolute = path;
+  }
+  error.clear();
+  const std::filesystem::path normalized =
+      std::filesystem::weakly_canonical(absolute, error);
+  return error ? absolute.lexically_normal() : normalized;
+}
+
+bool pathsReferToSameLocation(const std::filesystem::path &left,
+                              const std::filesystem::path &right) {
+  std::error_code error;
+  if (std::filesystem::equivalent(left, right, error) && !error) {
+    return true;
+  }
+  return normalizedPath(left) == normalizedPath(right);
+}
+
+bool validateOutputPaths(const CommandLine &command) {
+  const std::vector<std::pair<std::string_view, std::string_view>> outputs = {
+      {"--ir-out", command.ir_output},
+      {"--rewrite-out", command.rewrite_output},
+      {"--sites-out", command.sites_output},
+      {"--stubs-out", command.stubs_output},
+      {"--backend-out", command.backend_output},
+  };
+  std::vector<std::pair<std::string_view, std::filesystem::path>> validated;
+  for (const auto &[option, encoded_path] : outputs) {
+    if (encoded_path.empty() || encoded_path == "-") {
+      continue;
+    }
+    const std::filesystem::path path(encoded_path);
+    if (pathsReferToSameLocation(command.frontend.input_path, path)) {
+      std::cerr << "matcore-extract: " << option
+                << " must not overwrite or alias the input .mdsl file\n";
+      return false;
+    }
+    for (const auto &[prior_option, prior_path] : validated) {
+      if (pathsReferToSameLocation(prior_path, path)) {
+        std::cerr << "matcore-extract: " << option << " and " << prior_option
+                  << " must refer to distinct output files\n";
+        return false;
+      }
+    }
+    validated.emplace_back(option, path);
+  }
+  return true;
+}
 
 void usage(std::ostream &output) {
   output
@@ -62,16 +115,12 @@ bool takeValue(int argc, char **argv, int &index, std::string &destination,
 
 std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
   CommandLine command;
-  command.frontend.trusted_public_headers.emplace_back(
-      MDSLC_SOURCE_PUBLIC_HEADER);
   std::error_code executable_error;
   const std::filesystem::path executable =
       std::filesystem::canonical("/proc/self/exe", executable_error);
   if (!executable_error) {
-    command.frontend.trusted_public_headers.push_back(
-        (executable.parent_path().parent_path() / "include" / "matcore" /
-         "mdsl.h")
-            .string());
+    command.tool_include_directory =
+        (executable.parent_path().parent_path() / "include").string();
   }
   bool after_separator = false;
   for (int index = 1; index < argc; ++index) {
@@ -164,6 +213,17 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
     std::cerr << "matcore-extract: --input and --ir-out are required\n";
     return std::nullopt;
   }
+  const std::filesystem::path tool_public_header =
+      std::filesystem::path(command.tool_include_directory) / "matcore" /
+      "mdsl.h";
+  std::error_code header_error;
+  if (command.tool_include_directory.empty() ||
+      !std::filesystem::is_regular_file(tool_public_header, header_error)) {
+    std::cerr << "matcore-extract: unable to locate the tool-owned "
+                 "<matcore/mdsl.h> beside the executable\n";
+    return std::nullopt;
+  }
+  command.frontend.trusted_public_headers.push_back(tool_public_header.string());
   const unsigned generated_output_count =
       static_cast<unsigned>(!command.rewrite_output.empty()) +
       static_cast<unsigned>(!command.sites_output.empty()) +
@@ -174,23 +234,16 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
                  "and --backend-out must be supplied together\n";
     return std::nullopt;
   }
+  if (!validateOutputPaths(command)) {
+    return std::nullopt;
+  }
   if (generated_output_count == 4) {
-    std::set<std::string> unique_outputs;
     for (const std::string *path :
          {&command.ir_output, &command.rewrite_output, &command.sites_output,
           &command.stubs_output, &command.backend_output}) {
       if (*path == "-") {
         std::cerr << "matcore-extract: generated artifact mode requires file "
                      "paths, not standard output\n";
-        return std::nullopt;
-      }
-      std::error_code error;
-      std::filesystem::path normalized = std::filesystem::absolute(*path, error);
-      if (error) {
-        normalized = std::filesystem::path(*path);
-      }
-      if (!unique_outputs.insert(normalized.lexically_normal().string()).second) {
-        std::cerr << "matcore-extract: generated output paths must be distinct\n";
         return std::nullopt;
       }
     }
@@ -218,6 +271,9 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
       return std::nullopt;
     }
   }
+  command.frontend.compiler_arguments.insert(
+      command.frontend.compiler_arguments.begin(),
+      "-I" + command.tool_include_directory);
   return command;
 }
 
