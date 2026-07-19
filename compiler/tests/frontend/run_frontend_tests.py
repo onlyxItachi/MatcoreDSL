@@ -415,6 +415,170 @@ def main() -> int:
                     f"distinct MDSLC translation units did not co-link: {linked.stderr}"
                 )
 
+        # Independent build roots can intentionally produce one stable site ID
+        # when the main source, relative path, compile arguments, and call
+        # location are identical.  Header context may still give the host
+        # translation units different entry points.  Generated definitions for
+        # that shared site ID must therefore use collision-safe linkage.
+        collision_root = output_root / "cross-root-collision"
+        collision_objects: list[Path] = []
+        collision_sites: list[str] = []
+        collision_source = (
+            '#include "entry.h"\n'
+            "#include <matcore/mdsl.h>\n\n"
+            "namespace md = matcore::mdsl;\n\n"
+            "void ENTRY(md::matrix_view &C, md::matrix_view &A, "
+            "md::matrix_view &B) {\n"
+            "  md::gemm(md::out(C), A, B, "
+            "md::policy{.target = md::target::cpu, "
+            ".fallback = md::fallback::error});\n"
+            "}\n"
+        )
+        for label, entry_name in (("left", "entry_left"), ("right", "entry_right")):
+            work = collision_root / label
+            source_dir = work / "src"
+            generated_dir = work / "generated"
+            source_dir.mkdir(parents=True)
+            generated_dir.mkdir()
+            (work / ".git").mkdir()
+            (source_dir / "entry.h").write_text(
+                f"#pragma once\n#define ENTRY {entry_name}\n", encoding="utf-8"
+            )
+            (source_dir / "same.mdsl").write_text(collision_source, encoding="utf-8")
+            outputs = {
+                "ir": generated_dir / "same.json",
+                "host": generated_dir / "same.host.cpp",
+                "sites": generated_dir / "same.sites.h",
+                "stubs": generated_dir / "same.stubs.cpp",
+                "backend": generated_dir / "same.backend.cpp",
+            }
+            extracted = subprocess.run(
+                [
+                    str(arguments.extractor),
+                    "--input",
+                    "src/same.mdsl",
+                    "--ir-out",
+                    str(outputs["ir"]),
+                    "--rewrite-out",
+                    str(outputs["host"]),
+                    "--sites-out",
+                    str(outputs["sites"]),
+                    "--stubs-out",
+                    str(outputs["stubs"]),
+                    "--backend-out",
+                    str(outputs["backend"]),
+                    "--",
+                    "clang++",
+                    "-std=c++20",
+                    "-Isrc",
+                    f"-I{repository / 'compiler/include'}",
+                    "src/same.mdsl",
+                ],
+                cwd=work,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if extracted.returncode != 0:
+                failures.append(
+                    f"cross-root {label} extraction failed: {extracted.stderr}"
+                )
+                continue
+            collision_sites.append(
+                json.loads(outputs["ir"].read_text())["operations"][0]["site_id"]
+            )
+            objects: list[Path] = []
+            for kind in ("host", "stubs", "backend"):
+                object_path = generated_dir / f"same.{kind}.o"
+                compiled = subprocess.run(
+                    [
+                        "/usr/bin/clang++-21",
+                        "-std=c++20",
+                        f"-I{repository / 'compiler/include'}",
+                        f"-I{source_dir}",
+                        f"-I{generated_dir}",
+                        "-c",
+                        str(outputs[kind]),
+                        "-o",
+                        str(object_path),
+                    ],
+                    cwd=work,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                if compiled.returncode != 0:
+                    failures.append(
+                        f"cross-root {label} {kind} compile failed: {compiled.stderr}"
+                    )
+                    break
+                objects.append(object_path)
+            if len(objects) == 3:
+                combined_object = generated_dir / "same.o"
+                combined = subprocess.run(
+                    [
+                        "/usr/bin/clang++-21",
+                        "-r",
+                        *(str(path) for path in objects),
+                        "-o",
+                        str(combined_object),
+                    ],
+                    cwd=work,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                if combined.returncode != 0:
+                    failures.append(
+                        f"cross-root {label} partial link failed: {combined.stderr}"
+                    )
+                else:
+                    symbols = subprocess.run(
+                        ["nm", "-C", "--defined-only", str(combined_object)],
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    if symbols.returncode != 0:
+                        failures.append(
+                            f"cross-root {label} symbol inspection failed: "
+                            f"{symbols.stderr}"
+                        )
+                    elif not all(
+                        marker in symbols.stdout
+                        for marker in (
+                            " W __matcore_call_site_",
+                            " W matcore_generated_backend_",
+                        )
+                    ):
+                        failures.append(
+                            f"cross-root {label} generated definitions are not weak:\n"
+                            f"{symbols.stdout}"
+                        )
+                    collision_objects.append(combined_object)
+        if len(collision_sites) == 2 and collision_sites[0] != collision_sites[1]:
+            failures.append(
+                "cross-root collision fixture did not exercise one stable site ID"
+            )
+        if len(collision_objects) == 2:
+            linked = subprocess.run(
+                [
+                    "/usr/bin/clang++-21",
+                    "-r",
+                    *(str(path) for path in collision_objects),
+                    "-o",
+                    str(collision_root / "combined.o"),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if linked.returncode != 0:
+                failures.append(
+                    "same-ID generated definitions from independent roots did not "
+                    f"co-link: {linked.stderr}"
+                )
+
         generation, generated = generation_command(
             arguments.extractor,
             tests / "gemm_capture.mdsl",

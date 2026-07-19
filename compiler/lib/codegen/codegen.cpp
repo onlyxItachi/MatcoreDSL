@@ -164,7 +164,8 @@ std::string generateStubs(const ir::Module &module,
             "} // namespace\n\n";
 
   for (const ir::Operation &operation : module.operations) {
-    output << declaration(operation, false) << " {\n"
+    output << "__attribute__((weak)) " << declaration(operation, false)
+           << " {\n"
               "  const ::matcore::mdsl::matrix_view empty_output{};\n"
               "  const ::matcore::mdsl::matrix_view &output_view =\n"
               "      output.value != nullptr ? *output.value : empty_output;\n"
@@ -201,7 +202,7 @@ std::string generateBackend(const ir::Module &module) {
   }
   output << '\n';
   for (const ir::Operation &operation : module.operations) {
-    output << "extern \"C\" matcore_status_v0 "
+    output << "extern \"C\" __attribute__((weak)) matcore_status_v0 "
            << backendFunction(operation)
            << "(const matcore_tensor_desc_v0 *output,\n"
               "    const matcore_tensor_desc_v0 *lhs,\n"
