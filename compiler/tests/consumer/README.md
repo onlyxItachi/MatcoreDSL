@@ -19,6 +19,7 @@ cmake --build /tmp/matcoredsl-consumer -- -j2
 ```
 
 The helper currently accepts one `SOURCE`, the bootstrap `cpu` target, optional
-`COMPILE_OPTIONS`, and optional `LINK_LIBRARIES`. Editing the `.mdsl` source
+`COMPILE_OPTIONS`, and optional `LINK_LIBRARIES`. Ninja depfile integration
+tracks both the `.mdsl` source and its included user headers. Editing either
 regenerates its object and relinks the consumer; an unchanged subsequent build
 is a Ninja no-op.

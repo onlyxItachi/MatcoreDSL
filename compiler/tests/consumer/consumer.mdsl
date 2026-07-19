@@ -1,5 +1,7 @@
 #include <matcore/mdsl.h>
 
+#include "consumer_value.h"
+
 #include <array>
 #include <cmath>
 #include <iostream>
@@ -16,6 +18,7 @@ int main() {
   md::matrix_view c_view{c.data(), 2, 2};
 
   std::cout << "consumer-before\n";
+  std::cout << "consumer-header=" << consumer_header_value << "\n";
   md::gemm(md::out(c_view), a_view, b_view,
            md::policy{.target = md::target::cpu,
                       .fallback = md::fallback::error});
