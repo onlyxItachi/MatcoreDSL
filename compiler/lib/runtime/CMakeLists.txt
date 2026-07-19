@@ -7,12 +7,14 @@ endif()
 
 add_library(matcore_runtime SHARED cpu_runtime.cpp)
 add_library(MatcoreDSL::Runtime ALIAS matcore_runtime)
+set_property(TARGET matcore_runtime PROPERTY EXPORT_NAME Runtime)
 
 target_compile_features(matcore_runtime PUBLIC cxx_std_20)
 target_compile_definitions(matcore_runtime PRIVATE MATCORE_RUNTIME_BUILD)
 target_include_directories(matcore_runtime
   PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../include>"
+    "$<INSTALL_INTERFACE:include>"
 )
 set_target_properties(matcore_runtime PROPERTIES
   CXX_VISIBILITY_PRESET hidden

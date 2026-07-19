@@ -3,6 +3,8 @@ cmake_minimum_required(VERSION 3.24)
 project(MatcoreDSLCompiler VERSION 0.1.0 LANGUAGES CXX)
 
 include(CTest)
+include(CMakePackageConfigHelpers)
+include(GNUInstallDirs)
 
 if(NOT CMAKE_GENERATOR STREQUAL "Ninja")
   message(FATAL_ERROR "The standalone MDSLC bootstrap currently supports the Ninja generator only")
@@ -63,6 +65,7 @@ add_subdirectory(tools/matcore-extract)
 add_subdirectory(lib/runtime)
 
 add_executable(mdslc_driver tools/mdslc/main.cpp)
+set_property(TARGET mdslc_driver PROPERTY EXPORT_NAME Compiler)
 set_target_properties(
   mdslc_driver
   PROPERTIES
@@ -81,6 +84,47 @@ target_compile_options(
     -Wpedantic
 )
 add_dependencies(mdslc_driver matcore-extract matcore_runtime)
+
+set_property(TARGET matcore-extract PROPERTY EXPORT_NAME Extractor)
+
+install(
+  TARGETS mdslc_driver matcore-extract matcore_runtime
+  EXPORT MatcoreDSLTargets
+  RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+  ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+)
+install(
+  DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/matcore"
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+  FILES_MATCHING PATTERN "*.h"
+)
+
+set(MATCOREDSL_CMAKE_INSTALL_DIR
+    "${CMAKE_INSTALL_LIBDIR}/cmake/MatcoreDSL")
+configure_package_config_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MatcoreDSLConfig.cmake.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/MatcoreDSLConfig.cmake"
+  INSTALL_DESTINATION "${MATCOREDSL_CMAKE_INSTALL_DIR}"
+)
+write_basic_package_version_file(
+  "${CMAKE_CURRENT_BINARY_DIR}/MatcoreDSLConfigVersion.cmake"
+  VERSION "${PROJECT_VERSION}"
+  COMPATIBILITY SameMajorVersion
+)
+install(
+  EXPORT MatcoreDSLTargets
+  FILE MatcoreDSLTargets.cmake
+  NAMESPACE MatcoreDSL::
+  DESTINATION "${MATCOREDSL_CMAKE_INSTALL_DIR}"
+)
+install(
+  FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/MatcoreDSLConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/MatcoreDSLConfigVersion.cmake"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MatcoreDSLCompile.cmake"
+  DESTINATION "${MATCOREDSL_CMAKE_INSTALL_DIR}"
+)
 
 if(BUILD_TESTING)
   find_package(Python3 COMPONENTS Interpreter QUIET)
@@ -108,5 +152,6 @@ if(BUILD_TESTING)
       integration.validation_matrix
       PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
     )
+
   endif()
 endif()
