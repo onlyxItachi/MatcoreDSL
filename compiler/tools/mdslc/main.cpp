@@ -1108,12 +1108,12 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   extract_command.emplace_back(invocation.input);
 
   int result = RunCommand(std::move(extract_command), wrapper.verbose);
-  if (result != 0) {
-    return result;
-  }
   if (!SourceMatchesSnapshot(source_absolute, *source_snapshot,
                              "frontend extraction")) {
     return 1;
+  }
+  if (result != 0) {
+    return result;
   }
   if (!RequireGeneratedFile(artifacts.host_source) ||
       !RequireGeneratedFile(artifacts.ir) ||
@@ -1127,36 +1127,44 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     result = GenerateDependencyFile(invocation, *layout, source_directory,
                                     source_absolute, output,
                                     raw_dependency, wrapper.verbose);
-    if (result != 0) {
-      return result;
-    }
     if (!SourceMatchesSnapshot(source_absolute, *source_snapshot,
                                "dependency scanning")) {
       return 1;
+    }
+    if (result != 0) {
+      return result;
     }
   }
 
   result = CompileGeneratedSource(artifacts.host_source, artifacts.host_object,
                                   invocation, *layout, source_directory,
                                   wrapper.verbose);
+  if (!SourceMatchesSnapshot(source_absolute, *source_snapshot,
+                             "generated host compilation")) {
+    return 1;
+  }
   if (result != 0) {
     return result;
   }
   result = CompileGeneratedSource(artifacts.stubs_source,
                                   artifacts.stubs_object, invocation, *layout,
                                   source_directory, wrapper.verbose);
+  if (!SourceMatchesSnapshot(source_absolute, *source_snapshot,
+                             "generated stub compilation")) {
+    return 1;
+  }
   if (result != 0) {
     return result;
   }
   result = CompileGeneratedSource(artifacts.backend_source,
                                   artifacts.backend_object, invocation,
                                   *layout, source_directory, wrapper.verbose);
+  if (!SourceMatchesSnapshot(source_absolute, *source_snapshot,
+                             "generated backend compilation")) {
+    return 1;
+  }
   if (result != 0) {
     return result;
-  }
-  if (!SourceMatchesSnapshot(source_absolute, *source_snapshot,
-                             "generated-source compilation")) {
-    return 1;
   }
 
   std::vector<std::string> link_command{
@@ -1176,12 +1184,12 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     link_command.emplace_back(output.string());
   }
   result = RunCommand(std::move(link_command), wrapper.verbose);
-  if (result != 0) {
-    return result;
-  }
   if (!SourceMatchesSnapshot(source_absolute, *source_snapshot, "linking")) {
     fs::remove(output, error);
     return 1;
+  }
+  if (result != 0) {
+    return result;
   }
   if (!invocation.dependency_mode.empty() &&
       !PublishFileAtomically(raw_dependency, dependency_output)) {
