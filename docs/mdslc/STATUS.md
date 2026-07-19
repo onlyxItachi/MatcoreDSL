@@ -61,10 +61,10 @@ directories, and multi-TU relocatable co-linking.
 
 ## Final validation evidence
 
-Release validation tree: `/tmp/matcoredsl-final-clean-release.7Mtksg`
+Fresh final Release build: `/tmp/matcoredsl-review-ready-release.LY9Jyr`
 
 - Ninja: 15/15 steps.
-- CTest at the final code head: 4/4 targets passed in 24.29 seconds.
+- CTest at the final code head: 4/4 targets passed in 24.16 seconds.
 - Frontend suite: 44/44 checks.
 - Integration matrix: 60/60 active cases, 0 failures, 6 future capabilities
   explicitly not counted as passes.
