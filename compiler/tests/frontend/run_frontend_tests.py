@@ -51,6 +51,31 @@ def extraction_command(extractor: Path, source: Path, output: Path) -> list[str]
     ]
 
 
+def generation_command(
+    extractor: Path, source: Path, output_root: Path, stem: str
+) -> tuple[list[str], dict[str, Path]]:
+    outputs = {
+        "ir": output_root / f"{stem}.matcore.json",
+        "host": output_root / f"{stem}.host.cpp",
+        "sites": output_root / f"{stem}.sites.h",
+        "stubs": output_root / f"{stem}.stubs.cpp",
+        "backend": output_root / f"{stem}.backend.cpp",
+    }
+    command = extraction_command(extractor, source, outputs["ir"])
+    separator = command.index("--")
+    command[separator:separator] = [
+        "--rewrite-out",
+        str(outputs["host"]),
+        "--sites-out",
+        str(outputs["sites"]),
+        "--stubs-out",
+        str(outputs["stubs"]),
+        "--backend-out",
+        str(outputs["backend"]),
+    ]
+    return command, outputs
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--extractor", type=Path, required=True)
@@ -102,6 +127,56 @@ def main() -> int:
         if positive_bytes.get("gemm_capture") != golden.read_bytes():
             failures.append("gemm_capture output differs from deterministic golden JSON")
 
+        verified = subprocess.run(
+            [str(arguments.extractor), "--verify-ir", str(golden)],
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if verified.returncode != 0 or "verified Matcore IR v0" not in verified.stdout:
+            failures.append(f"valid serialized IR did not verify: {verified.stderr}")
+
+        malformed_path = output_root / "malformed.json"
+        malformed_path.write_text("{broken\n")
+        malformed = subprocess.run(
+            [str(arguments.extractor), "--verify-ir", str(malformed_path)],
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if malformed.returncode == 0 or "malformed JSON" not in malformed.stderr:
+            failures.append("malformed serialized IR was not rejected cleanly")
+
+        schema_path = output_root / "schema-mismatch.json"
+        schema_document = json.loads(golden.read_text())
+        schema_document["schema"] = "matcore.ir.future"
+        schema_path.write_text(json.dumps(schema_document))
+        schema = subprocess.run(
+            [str(arguments.extractor), "--verify-ir", str(schema_path)],
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if schema.returncode == 0 or "unsupported Matcore IR schema" not in schema.stderr:
+            failures.append("schema-mismatched serialized IR was not rejected cleanly")
+
+        version_path = output_root / "version-mismatch.json"
+        version_document = json.loads(golden.read_text())
+        version_document["version"] = 1
+        version_path.write_text(json.dumps(version_document))
+        versioned = subprocess.run(
+            [str(arguments.extractor), "--verify-ir", str(version_path)],
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if versioned.returncode == 0 or "expected version 0" not in versioned.stderr:
+            failures.append("version-mismatched serialized IR was not rejected cleanly")
+
         deterministic_output = output_root / "gemm_capture.second.json"
         deterministic = subprocess.run(
             extraction_command(
@@ -125,6 +200,144 @@ def main() -> int:
             identifiers = [operation["site_id"] for operation in two_sites["operations"]]
             if len(identifiers) != len(set(identifiers)):
                 failures.append("two Matcore call sites did not receive distinct IDs")
+
+        generation, generated = generation_command(
+            arguments.extractor,
+            tests / "gemm_capture.mdsl",
+            output_root,
+            "gemm_capture",
+        )
+        completed = subprocess.run(
+            generation,
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            failures.append(f"rewrite generation failed: {completed.stderr}")
+        else:
+            golden_artifacts = {
+                "host": tests / "gemm_capture.host.golden.cpp",
+                "sites": tests / "gemm_capture.sites.golden.h",
+                "stubs": tests / "gemm_capture.stubs.golden.cpp",
+                "backend": tests / "gemm_capture.backend.golden.cpp",
+            }
+            for kind, golden_path in golden_artifacts.items():
+                if generated[kind].read_bytes() != (repository / golden_path).read_bytes():
+                    failures.append(f"generated {kind} differs from its golden file")
+
+            objects: list[Path] = []
+            for kind in ("host", "stubs", "backend"):
+                object_path = output_root / f"gemm_capture.{kind}.o"
+                compile_command = [
+                    "/usr/bin/clang++-21",
+                    "-std=c++20",
+                    "-Wall",
+                    "-Wextra",
+                    "-Wpedantic",
+                    "-Werror",
+                    "-Icompiler/include",
+                    f"-I{output_root}",
+                    "-c",
+                    str(generated[kind]),
+                    "-o",
+                    str(object_path),
+                ]
+                compiled = subprocess.run(
+                    compile_command,
+                    cwd=repository,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                if compiled.returncode != 0:
+                    failures.append(
+                        f"generated {kind} failed strict compilation:\n"
+                        f"{compiled.stderr}"
+                    )
+                else:
+                    objects.append(object_path)
+            if len(objects) == 3:
+                combined = subprocess.run(
+                    [
+                        "/usr/bin/clang++-21",
+                        "-r",
+                        *(str(path) for path in objects),
+                        "-o",
+                        str(output_root / "gemm_capture.combined.o"),
+                    ],
+                    cwd=repository,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                if combined.returncode != 0:
+                    failures.append(
+                        f"generated objects failed relocatable link:\n"
+                        f"{combined.stderr}"
+                    )
+
+        second_root = output_root / "second"
+        second_root.mkdir()
+        second_generation, second_generated = generation_command(
+            arguments.extractor,
+            tests / "gemm_capture.mdsl",
+            second_root,
+            "gemm_capture",
+        )
+        repeated = subprocess.run(
+            second_generation,
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if repeated.returncode != 0:
+            failures.append(f"repeated rewrite generation failed: {repeated.stderr}")
+        elif any(
+            generated[kind].read_bytes() != second_generated[kind].read_bytes()
+            for kind in generated
+        ):
+            failures.append("repeated rewrite generation was not byte deterministic")
+
+        empty_generation, empty_generated = generation_command(
+            arguments.extractor,
+            tests / "host_only.mdsl",
+            output_root,
+            "host_only",
+        )
+        empty = subprocess.run(
+            empty_generation,
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if empty.returncode != 0:
+            failures.append(f"zero-operation generation failed: {empty.stderr}")
+        elif not all(path.exists() and path.stat().st_size > 0 for path in empty_generated.values()):
+            failures.append("zero-operation generation did not emit all valid files")
+
+        partial_output = output_root / "partial.host.cpp"
+        partial_command = extraction_command(
+            arguments.extractor,
+            tests / "host_only.mdsl",
+            output_root / "partial.json",
+        )
+        partial_command[partial_command.index("--"):partial_command.index("--")] = [
+            "--rewrite-out",
+            str(partial_output),
+        ]
+        partial = subprocess.run(
+            partial_command,
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if partial.returncode == 0 or "must be supplied together" not in partial.stderr:
+            failures.append("partial generated-output option group was not rejected")
 
         for name, expected_message in NEGATIVE_CASES.items():
             source = tests / f"{name}.mdsl"
@@ -155,7 +368,7 @@ def main() -> int:
         print(f"frontend tests: {len(failures)} failure(s)", file=sys.stderr)
         return 1
 
-    total = len(POSITIVE_CASES) + len(NEGATIVE_CASES) + 3
+    total = len(POSITIVE_CASES) + len(NEGATIVE_CASES) + 15
     print(f"frontend tests: {total} checks passed")
     return 0
 

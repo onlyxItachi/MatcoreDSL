@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace matcore::mdslc::ir {
@@ -54,6 +55,10 @@ bool verify(const Module &module, std::string &error);
 
 // Serialization has a fixed key order and always ends in one newline.
 std::string serializeDeterministicJson(const Module &module);
+
+// Parses serialized bootstrap IR and runs the same verifier as the frontend.
+bool parseAndVerifyJson(std::string_view json, Module &module,
+                        std::string &error);
 
 } // namespace matcore::mdslc::ir
 
