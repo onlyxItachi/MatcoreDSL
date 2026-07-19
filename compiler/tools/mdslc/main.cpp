@@ -1,14 +1,17 @@
 #include "mdslc_config.h"
 
 #include <cerrno>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -19,10 +22,15 @@ namespace {
 
 namespace fs = std::filesystem;
 
+enum class FrontendMode { Native, AstJsonBootstrap };
+
 struct WrapperArguments {
   bool verbose = false;
   bool save_temps = false;
   bool cpu_pipeline = false;
+  bool frontend_was_explicit = false;
+  FrontendMode frontend = FrontendMode::Native;
+  std::optional<fs::path> tool_prefix_for_testing;
   std::vector<std::string> compiler_arguments;
 };
 
@@ -53,6 +61,15 @@ struct GeneratedArtifacts {
   fs::path host_object;
   fs::path stubs_object;
   fs::path backend_object;
+};
+
+struct SourceSnapshot {
+  dev_t device = 0;
+  ino_t inode = 0;
+  off_t size = 0;
+  timespec modified{};
+  timespec changed{};
+  std::string contents;
 };
 
 class ScopedDirectoryCleanup {
@@ -92,6 +109,137 @@ bool PathsReferToSameLocation(const fs::path &left, const fs::path &right) {
     return true;
   }
   return NormalizedPath(left) == NormalizedPath(right);
+}
+
+std::string_view FrontendName(FrontendMode frontend) {
+  switch (frontend) {
+  case FrontendMode::Native:
+    return "native";
+  case FrontendMode::AstJsonBootstrap:
+    return "ast-json-bootstrap";
+  }
+  return "native";
+}
+
+std::optional<FrontendMode> ParseFrontend(std::string_view name) {
+  if (name == "native") {
+    return FrontendMode::Native;
+  }
+  if (name == "ast-json-bootstrap") {
+    return FrontendMode::AstJsonBootstrap;
+  }
+  std::cerr << "mdslc++: unsupported frontend '" << name
+            << "'; expected native or ast-json-bootstrap (no fallback is "
+               "performed)\n";
+  return std::nullopt;
+}
+
+bool SameTimespec(const timespec &left, const timespec &right) {
+  return left.tv_sec == right.tv_sec && left.tv_nsec == right.tv_nsec;
+}
+
+bool SameFileMetadata(const struct stat &left, const struct stat &right) {
+  return left.st_dev == right.st_dev && left.st_ino == right.st_ino &&
+         left.st_size == right.st_size &&
+         SameTimespec(left.st_mtim, right.st_mtim) &&
+         SameTimespec(left.st_ctim, right.st_ctim);
+}
+
+std::optional<SourceSnapshot> ReadSourceSnapshot(const fs::path &source,
+                                                 std::string &error_message) {
+  const int descriptor = ::open(source.c_str(), O_RDONLY | O_CLOEXEC);
+  if (descriptor < 0) {
+    error_message = "cannot open source: " + std::string(std::strerror(errno));
+    return std::nullopt;
+  }
+
+  struct stat before {};
+  if (::fstat(descriptor, &before) != 0) {
+    error_message = "cannot inspect source: " +
+                    std::string(std::strerror(errno));
+    ::close(descriptor);
+    return std::nullopt;
+  }
+  if (!S_ISREG(before.st_mode)) {
+    error_message = "source is not a regular file";
+    ::close(descriptor);
+    return std::nullopt;
+  }
+
+  std::string contents;
+  if (before.st_size > 0) {
+    if (static_cast<std::uintmax_t>(before.st_size) > contents.max_size()) {
+      error_message = "source is too large to snapshot safely";
+      ::close(descriptor);
+      return std::nullopt;
+    }
+    contents.reserve(static_cast<std::size_t>(before.st_size));
+  }
+  char buffer[16384];
+  for (;;) {
+    const ssize_t count = ::read(descriptor, buffer, sizeof(buffer));
+    if (count > 0) {
+      contents.append(buffer, static_cast<std::size_t>(count));
+      continue;
+    }
+    if (count == 0) {
+      break;
+    }
+    if (errno == EINTR) {
+      continue;
+    }
+    error_message = "cannot read source: " + std::string(std::strerror(errno));
+    ::close(descriptor);
+    return std::nullopt;
+  }
+
+  struct stat after_descriptor {};
+  const bool descriptor_stat_ok = ::fstat(descriptor, &after_descriptor) == 0;
+  const int close_result = ::close(descriptor);
+  struct stat after_path {};
+  const bool path_stat_ok = ::stat(source.c_str(), &after_path) == 0;
+  if (!descriptor_stat_ok || close_result != 0 || !path_stat_ok) {
+    error_message = "cannot verify source after reading: " +
+                    std::string(std::strerror(errno));
+    return std::nullopt;
+  }
+  if (!SameFileMetadata(before, after_descriptor) ||
+      !SameFileMetadata(after_descriptor, after_path) ||
+      static_cast<off_t>(contents.size()) != after_descriptor.st_size) {
+    error_message = "source changed while it was being read";
+    return std::nullopt;
+  }
+
+  return SourceSnapshot{.device = after_descriptor.st_dev,
+                        .inode = after_descriptor.st_ino,
+                        .size = after_descriptor.st_size,
+                        .modified = after_descriptor.st_mtim,
+                        .changed = after_descriptor.st_ctim,
+                        .contents = std::move(contents)};
+}
+
+bool SourceMatchesSnapshot(const fs::path &source,
+                           const SourceSnapshot &expected,
+                           std::string_view phase) {
+  std::string error_message;
+  const std::optional<SourceSnapshot> current =
+      ReadSourceSnapshot(source, error_message);
+  if (!current) {
+    std::cerr << "mdslc++: source consistency check failed after " << phase
+              << ": " << source << ": " << error_message << '\n';
+    return false;
+  }
+  if (current->device != expected.device || current->inode != expected.inode ||
+      current->size != expected.size ||
+      !SameTimespec(current->modified, expected.modified) ||
+      !SameTimespec(current->changed, expected.changed) ||
+      current->contents != expected.contents) {
+    std::cerr << "mdslc++: source changed during compilation after " << phase
+              << ": " << source
+              << "; refusing to emit an object from stale generated code\n";
+    return false;
+  }
+  return true;
 }
 
 bool HasMdslExtension(std::string_view argument) {
@@ -164,6 +312,10 @@ std::string QuoteForDisplay(std::string_view argument) {
 }
 
 int RunCommand(std::vector<std::string> command, bool verbose) {
+  if (command.empty() || command.front().empty()) {
+    std::cerr << "mdslc++: refusing to execute an empty command\n";
+    return 1;
+  }
   if (verbose) {
     std::cerr << "mdslc++:";
     for (const std::string &argument : command) {
@@ -240,6 +392,61 @@ std::optional<WrapperArguments> ParseWrapperArguments(int argc, char **argv) {
       continue;
     }
     if (!previous_option_consumes_argument &&
+        argument.starts_with("--frontend=")) {
+      if (parsed.frontend_was_explicit) {
+        std::cerr << "mdslc++: --frontend may be specified only once\n";
+        return std::nullopt;
+      }
+      const std::string_view name =
+          argument.substr(std::string_view("--frontend=").size());
+      const std::optional<FrontendMode> frontend = ParseFrontend(name);
+      if (!frontend) {
+        return std::nullopt;
+      }
+      parsed.frontend = *frontend;
+      parsed.frontend_was_explicit = true;
+      continue;
+    }
+    if (!previous_option_consumes_argument && argument == "--frontend") {
+      std::cerr << "mdslc++: use --frontend=native or "
+                   "--frontend=ast-json-bootstrap\n";
+      return std::nullopt;
+    }
+    if (!previous_option_consumes_argument &&
+        argument.starts_with("--tool-prefix-for-testing=")) {
+#if MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE
+      if (parsed.tool_prefix_for_testing) {
+        std::cerr << "mdslc++: --tool-prefix-for-testing may be specified only "
+                     "once\n";
+        return std::nullopt;
+      }
+      const fs::path prefix(argument.substr(
+          std::string_view("--tool-prefix-for-testing=").size()));
+      if (prefix.empty() || !prefix.is_absolute()) {
+        std::cerr << "mdslc++: --tool-prefix-for-testing requires an absolute "
+                     "test fixture prefix\n";
+        return std::nullopt;
+      }
+      parsed.tool_prefix_for_testing = prefix;
+      continue;
+#else
+      std::cerr << "mdslc++: --tool-prefix-for-testing is unavailable in this "
+                   "production driver build\n";
+      return std::nullopt;
+#endif
+    }
+    if (!previous_option_consumes_argument &&
+        argument == "--tool-prefix-for-testing") {
+#if MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE
+      std::cerr << "mdslc++: use --tool-prefix-for-testing=/absolute/path "
+                   "only in deliberate driver tests\n";
+#else
+      std::cerr << "mdslc++: --tool-prefix-for-testing is unavailable in this "
+                   "production driver build\n";
+#endif
+      return std::nullopt;
+    }
+    if (!previous_option_consumes_argument &&
         argument.starts_with("--matcore-target=")) {
       const std::string_view target =
           argument.substr(std::string_view("--matcore-target=").size());
@@ -267,6 +474,16 @@ std::optional<WrapperArguments> ParseWrapperArguments(int argc, char **argv) {
 
   if (previous_option_consumes_argument) {
     std::cerr << "mdslc++: compiler option requires a value\n";
+    return std::nullopt;
+  }
+  if (!parsed.cpu_pipeline && parsed.frontend_was_explicit) {
+    std::cerr << "mdslc++: --frontend selects the Matcore extraction pipeline "
+                 "and requires --matcore-target=cpu\n";
+    return std::nullopt;
+  }
+  if (!parsed.cpu_pipeline && parsed.tool_prefix_for_testing) {
+    std::cerr << "mdslc++: --tool-prefix-for-testing requires "
+                 "--matcore-target=cpu\n";
     return std::nullopt;
   }
   return parsed;
@@ -504,7 +721,102 @@ ParseCpuInvocation(const WrapperArguments &arguments) {
   return invocation;
 }
 
-std::optional<ToolLayout> DiscoverToolLayout() {
+std::optional<fs::path> StripRelativeSuffix(const fs::path &path,
+                                            const fs::path &suffix) {
+  if (suffix.empty() || suffix.is_absolute()) {
+    return std::nullopt;
+  }
+  std::vector<fs::path> components;
+  for (const fs::path &component : suffix.lexically_normal()) {
+    if (component == ".") {
+      continue;
+    }
+    if (component == ".." || component == "/") {
+      return std::nullopt;
+    }
+    components.emplace_back(component);
+  }
+  if (components.empty()) {
+    return std::nullopt;
+  }
+
+  fs::path prefix = path.lexically_normal();
+  for (auto component = components.rbegin(); component != components.rend();
+       ++component) {
+    if (prefix.filename() != *component) {
+      return std::nullopt;
+    }
+    prefix = prefix.parent_path();
+  }
+  return prefix;
+}
+
+std::optional<ToolLayout> LayoutUnderPrefix(const fs::path &prefix,
+                                            const fs::path &bindir,
+                                            const fs::path &includedir,
+                                            const fs::path &libdir) {
+  const auto is_safe_relative_path = [](const fs::path &path) {
+    if (path.empty() || path.is_absolute()) {
+      return false;
+    }
+    for (const fs::path &component : path.lexically_normal()) {
+      if (component == ".." || component == "/") {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (prefix.empty() || bindir.empty() || includedir.empty() ||
+      libdir.empty() || !is_safe_relative_path(bindir) ||
+      !is_safe_relative_path(includedir) ||
+      !is_safe_relative_path(libdir)) {
+    return std::nullopt;
+  }
+  const fs::path normalized_prefix = NormalizedPath(prefix);
+  const fs::path binary_directory =
+      (normalized_prefix / bindir).lexically_normal();
+  const fs::path include_directory =
+      (normalized_prefix / includedir).lexically_normal();
+  const fs::path runtime_directory =
+      (normalized_prefix / libdir).lexically_normal();
+  return ToolLayout{.extractor = binary_directory / "matcore-extract",
+                    .include_directory = include_directory,
+                    .runtime_directory = runtime_directory,
+                    .runtime_library =
+                        runtime_directory / "libmatcore_runtime.so"};
+}
+
+bool SameLayout(const ToolLayout &left, const ToolLayout &right) {
+  return NormalizedPath(left.extractor) == NormalizedPath(right.extractor) &&
+         NormalizedPath(left.include_directory) ==
+             NormalizedPath(right.include_directory) &&
+         NormalizedPath(left.runtime_directory) ==
+             NormalizedPath(right.runtime_directory);
+}
+
+bool IsUsableLayout(const ToolLayout &layout) {
+  return ::access(layout.extractor.c_str(), X_OK) == 0 &&
+         fs::is_regular_file(layout.include_directory / "matcore" / "mdsl.h") &&
+         fs::is_regular_file(layout.include_directory / "matcore" /
+                             "runtime_c.h") &&
+         fs::is_regular_file(layout.runtime_library);
+}
+
+void AppendUniqueLayout(std::vector<ToolLayout> &layouts,
+                        std::optional<ToolLayout> candidate) {
+  if (!candidate) {
+    return;
+  }
+  for (const ToolLayout &layout : layouts) {
+    if (SameLayout(layout, *candidate)) {
+      return;
+    }
+  }
+  layouts.emplace_back(std::move(*candidate));
+}
+
+std::optional<ToolLayout>
+DiscoverToolLayout(const std::optional<fs::path> &tool_prefix_for_testing) {
   std::error_code error;
   const fs::path executable = fs::canonical("/proc/self/exe", error);
   if (error) {
@@ -513,30 +825,53 @@ std::optional<ToolLayout> DiscoverToolLayout() {
     return std::nullopt;
   }
 
-  const fs::path root = executable.parent_path().parent_path();
-  ToolLayout layout{.extractor = root / "bin" / "matcore-extract",
-                    .include_directory = root / "include",
-                    .runtime_directory = root / "lib",
-                    .runtime_library =
-                        root / "lib" / "libmatcore_runtime.so"};
-  if (::access(layout.extractor.c_str(), X_OK) != 0) {
-    std::cerr << "mdslc++: relative extractor is unavailable: "
-              << layout.extractor << '\n';
-    return std::nullopt;
+  const fs::path configured_bindir(MDSLC_INSTALL_BINDIR);
+  const fs::path configured_includedir(MDSLC_INSTALL_INCLUDEDIR);
+  const fs::path configured_libdir(MDSLC_INSTALL_LIBDIR);
+  std::vector<ToolLayout> candidates;
+
+  if (tool_prefix_for_testing) {
+    const fs::path test_prefix = NormalizedPath(*tool_prefix_for_testing);
+    if (!fs::is_directory(test_prefix)) {
+      std::cerr << "mdslc++: test-only tool prefix is not a directory: "
+                << test_prefix << '\n';
+      return std::nullopt;
+    }
+    AppendUniqueLayout(candidates,
+                       LayoutUnderPrefix(test_prefix, configured_bindir,
+                                         configured_includedir,
+                                         configured_libdir));
+    AppendUniqueLayout(candidates,
+                       LayoutUnderPrefix(test_prefix, "bin", "include", "lib"));
+  } else {
+    const std::optional<fs::path> configured_prefix = StripRelativeSuffix(
+        executable.parent_path(), configured_bindir);
+    if (configured_prefix) {
+      AppendUniqueLayout(candidates,
+                         LayoutUnderPrefix(*configured_prefix,
+                                           configured_bindir,
+                                           configured_includedir,
+                                           configured_libdir));
+    }
+    AppendUniqueLayout(
+        candidates,
+        LayoutUnderPrefix(executable.parent_path().parent_path(), "bin",
+                          "include", "lib"));
   }
-  if (!fs::is_regular_file(layout.include_directory / "matcore" / "mdsl.h") ||
-      !fs::is_regular_file(layout.include_directory / "matcore" /
-                           "runtime_c.h")) {
-    std::cerr << "mdslc++: build-tree Matcore headers are unavailable under "
-              << layout.include_directory << '\n';
-    return std::nullopt;
+
+  for (const ToolLayout &candidate : candidates) {
+    if (IsUsableLayout(candidate)) {
+      return candidate;
+    }
   }
-  if (!fs::exists(layout.runtime_library)) {
-    std::cerr << "mdslc++: relative CPU runtime is unavailable: "
-              << layout.runtime_library << '\n';
-    return std::nullopt;
-  }
-  return layout;
+
+  std::cerr << "mdslc++: no coherent trusted Matcore tool layout was found "
+               "relative to "
+            << (tool_prefix_for_testing ? NormalizedPath(*tool_prefix_for_testing)
+                                        : executable)
+            << "; expected an executable matcore-extract, public headers, and "
+               "libmatcore_runtime.so in one build or install prefix\n";
+  return std::nullopt;
 }
 
 std::optional<fs::path> CreateTemporaryDirectory() {
@@ -660,7 +995,8 @@ bool RequireGeneratedFile(const fs::path &path) {
 
 int RunCpuPipeline(const WrapperArguments &wrapper,
                    const CpuInvocation &invocation) {
-  const std::optional<ToolLayout> layout = DiscoverToolLayout();
+  const std::optional<ToolLayout> layout =
+      DiscoverToolLayout(wrapper.tool_prefix_for_testing);
   if (!layout) {
     return 1;
   }
@@ -704,6 +1040,14 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
                  "source\n";
     return 2;
   }
+  std::string source_snapshot_error;
+  const std::optional<SourceSnapshot> source_snapshot =
+      ReadSourceSnapshot(source_absolute, source_snapshot_error);
+  if (!source_snapshot) {
+    std::cerr << "mdslc++: cannot establish source consistency for "
+              << source_absolute << ": " << source_snapshot_error << '\n';
+    return 2;
+  }
   const fs::path source_directory = source_absolute.parent_path();
   fs::path dependency_output;
   fs::path raw_dependency;
@@ -741,6 +1085,7 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
 
   std::vector<std::string> extract_command{
       layout->extractor.string(),
+      "--frontend=" + std::string(FrontendName(wrapper.frontend)),
       "--input",
       invocation.input,
       "--ir-out",
@@ -766,6 +1111,10 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   if (result != 0) {
     return result;
   }
+  if (!SourceMatchesSnapshot(source_absolute, *source_snapshot,
+                             "frontend extraction")) {
+    return 1;
+  }
   if (!RequireGeneratedFile(artifacts.host_source) ||
       !RequireGeneratedFile(artifacts.ir) ||
       !RequireGeneratedFile(artifacts.sites_header) ||
@@ -780,6 +1129,10 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
                                     raw_dependency, wrapper.verbose);
     if (result != 0) {
       return result;
+    }
+    if (!SourceMatchesSnapshot(source_absolute, *source_snapshot,
+                               "dependency scanning")) {
+      return 1;
     }
   }
 
@@ -801,6 +1154,10 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   if (result != 0) {
     return result;
   }
+  if (!SourceMatchesSnapshot(source_absolute, *source_snapshot,
+                             "generated-source compilation")) {
+    return 1;
+  }
 
   std::vector<std::string> link_command{
       MDSLC_DEFAULT_CLANGXX, artifacts.host_object.string(),
@@ -821,6 +1178,10 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   result = RunCommand(std::move(link_command), wrapper.verbose);
   if (result != 0) {
     return result;
+  }
+  if (!SourceMatchesSnapshot(source_absolute, *source_snapshot, "linking")) {
+    fs::remove(output, error);
+    return 1;
   }
   if (!invocation.dependency_mode.empty() &&
       !PublishFileAtomically(raw_dependency, dependency_output)) {
