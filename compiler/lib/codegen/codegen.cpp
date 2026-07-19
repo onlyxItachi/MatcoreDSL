@@ -4,7 +4,6 @@
 #include <cctype>
 #include <sstream>
 #include <utility>
-#include <vector>
 
 namespace matcore::mdslc::codegen {
 namespace {
@@ -46,40 +45,13 @@ std::string escapeCppString(std::string_view value) {
   return escaped;
 }
 
-std::vector<std::size_t>
-publicHeaderInsertionOffsets(std::string_view source) {
-  constexpr std::string_view required = "#include <matcore/mdsl.h>";
-  std::vector<std::size_t> offsets;
-  std::size_t line_begin = 0;
-  while (line_begin <= source.size()) {
-    const std::size_t newline = source.find('\n', line_begin);
-    const std::size_t line_end =
-        newline == std::string_view::npos ? source.size() : newline;
-    std::string_view line = source.substr(line_begin, line_end - line_begin);
-    while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) {
-      line.remove_prefix(1);
-    }
-    while (!line.empty() && (line.back() == ' ' || line.back() == '\t' ||
-                             line.back() == '\r')) {
-      line.remove_suffix(1);
-    }
-    if (line == required) {
-      offsets.push_back(newline == std::string_view::npos ? source.size()
-                                                          : newline + 1);
-    }
-    if (newline == std::string_view::npos) {
-      break;
-    }
-    line_begin = newline + 1;
-  }
-  return offsets;
-}
-
 std::string declaration(const ir::Operation &operation, bool with_default) {
   std::ostringstream output;
   output << "void " << siteFunction(operation)
-         << "(out_arg output, const matrix_view &lhs, "
-            "const matrix_view &rhs, policy execution_policy";
+         << "(::matcore::mdsl::out_arg output, "
+            "const ::matcore::mdsl::matrix_view &lhs, "
+            "const ::matcore::mdsl::matrix_view &rhs, "
+            "::matcore::mdsl::policy execution_policy";
   if (with_default) {
     output << " = {}";
   }
@@ -90,12 +62,25 @@ std::string declaration(const ir::Operation &operation, bool with_default) {
 std::string generateSites(const ir::Module &module) {
   std::ostringstream output;
   output << "#pragma once\n\n"
-            "#include <matcore/mdsl.h>\n\n"
-            "namespace matcore::mdsl::detail {\n";
+            "#include <matcore/mdsl.h>\n\n";
   for (const ir::Operation &operation : module.operations) {
     output << declaration(operation, true) << ";\n";
   }
-  output << "} // namespace matcore::mdsl::detail\n";
+  return output.str();
+}
+
+std::string generateHostPreamble(const ir::Module &module) {
+  std::ostringstream output;
+  output << "// MDSLC generated global call-site declarations.\n"
+            "namespace matcore::mdsl {\n"
+            "struct matrix_view;\n"
+            "struct out_arg;\n"
+            "struct policy;\n"
+            "} // namespace matcore::mdsl\n\n";
+  for (const ir::Operation &operation : module.operations) {
+    output << declaration(operation, false) << ";\n";
+  }
+  output << '\n';
   return output.str();
 }
 
@@ -176,13 +161,12 @@ std::string generateStubs(const ir::Module &module,
             "                             \": \" + message);\n"
             "  }\n"
             "}\n"
-            "} // namespace\n\n"
-            "namespace matcore::mdsl::detail {\n";
+            "} // namespace\n\n";
 
   for (const ir::Operation &operation : module.operations) {
     output << declaration(operation, false) << " {\n"
-              "  const matrix_view empty_output{};\n"
-              "  const matrix_view &output_view =\n"
+              "  const ::matcore::mdsl::matrix_view empty_output{};\n"
+              "  const ::matcore::mdsl::matrix_view &output_view =\n"
               "      output.value != nullptr ? *output.value : empty_output;\n"
               "  matcore_tensor_desc_v0 output_descriptor =\n"
               "      make_tensor_descriptor(output_view, "
@@ -205,7 +189,6 @@ std::string generateStubs(const ir::Module &module,
            << "\");\n"
               "}\n";
   }
-  output << "} // namespace matcore::mdsl::detail\n";
   return output.str();
 }
 
@@ -267,46 +250,74 @@ bool generate(const ir::Module &module, std::string_view original_source,
        iterator != module.operations.rend(); ++iterator) {
     const ir::Operation &operation = *iterator;
     std::ostringstream replacement;
-    replacement << "::matcore::mdsl::detail::" << siteFunction(operation) << '(';
+    replacement << "::" << siteFunction(operation) << '(';
+    const std::size_t call_begin =
+        static_cast<std::size_t>(operation.call_range.begin);
+    const std::size_t first_argument_begin =
+        static_cast<std::size_t>(operation.argument_ranges.front().begin);
+    const std::string_view discarded_call_prefix = original_source.substr(
+        call_begin, first_argument_begin - call_begin);
+    const std::size_t prefix_newlines = static_cast<std::size_t>(std::count(
+        discarded_call_prefix.begin(), discarded_call_prefix.end(), '\n'));
+    replacement << std::string(prefix_newlines, '\n');
     for (std::size_t index = 0; index < operation.argument_ranges.size();
          ++index) {
-      if (index != 0) {
-        replacement << ", ";
-      }
       const ir::SourceRange range = operation.argument_ranges[index];
       replacement << original_source.substr(
           static_cast<std::size_t>(range.begin),
           static_cast<std::size_t>(range.end - range.begin));
+      if (index + 1 < operation.argument_ranges.size()) {
+        const ir::SourceRange next = operation.argument_ranges[index + 1];
+        replacement << original_source.substr(
+            static_cast<std::size_t>(range.end),
+            static_cast<std::size_t>(next.begin - range.end));
+      }
     }
-    replacement << ')';
+    if (operation.argument_ranges.size() == 3) {
+      replacement << ", ::matcore::mdsl::policy{}";
+    }
+    const ir::SourceRange last_argument = operation.argument_ranges.back();
+    replacement << original_source.substr(
+        static_cast<std::size_t>(last_argument.end),
+        static_cast<std::size_t>(operation.call_range.end -
+                                 last_argument.end));
+    std::string replacement_text = replacement.str();
+    const std::string_view original_call = original_source.substr(
+        static_cast<std::size_t>(operation.call_range.begin),
+        static_cast<std::size_t>(operation.call_range.end -
+                                 operation.call_range.begin));
+    const std::size_t original_newlines = static_cast<std::size_t>(
+        std::count(original_call.begin(), original_call.end(), '\n'));
+    const std::size_t replacement_newlines = static_cast<std::size_t>(
+        std::count(replacement_text.begin(), replacement_text.end(), '\n'));
+    if (replacement_newlines > original_newlines) {
+      error = "generated call-site replacement cannot preserve source line "
+              "mapping";
+      return false;
+    }
+    replacement_text.insert(replacement_text.size(),
+                            original_newlines - replacement_newlines, '\n');
     rewritten.replace(
         static_cast<std::size_t>(operation.call_range.begin),
         static_cast<std::size_t>(operation.call_range.end -
                                  operation.call_range.begin),
-        replacement.str());
+        replacement_text);
   }
 
   if (module.operations.empty()) {
     artifacts.rewritten_host = std::move(rewritten);
   } else {
-    const std::vector<std::size_t> insertions =
-        publicHeaderInsertionOffsets(rewritten);
-    if (insertions.size() != 1) {
-      error = "Matcore translation units must contain exactly one direct "
-              "#include <matcore/mdsl.h>; ambiguous preprocessor locations "
-              "cannot be rewritten by bootstrap v0";
-      return false;
+    const std::string preamble = generateHostPreamble(module);
+    const std::string line_directive =
+        "#line 1 \"" + escapeCppString(module.source_file) + "\"\n";
+    constexpr std::string_view utf8_bom{"\xef\xbb\xbf", 3};
+    if (rewritten.starts_with(utf8_bom)) {
+      artifacts.rewritten_host = std::string(utf8_bom) + preamble +
+                                 line_directive +
+                                 rewritten.substr(utf8_bom.size());
+    } else {
+      artifacts.rewritten_host = preamble + line_directive + rewritten;
     }
-    const std::size_t insertion = insertions.front();
-    const std::size_t next_line =
-        1 + static_cast<std::size_t>(std::count(
-                rewritten.begin(), rewritten.begin() + insertion, '\n'));
-    artifacts.rewritten_host = rewritten.substr(0, insertion) +
-                               "#include \"" +
-                               escapeCppString(sites_include) + "\"\n#line " +
-                               std::to_string(next_line) + " \"" +
-                               escapeCppString(module.source_file) + "\"\n" +
-                               rewritten.substr(insertion);
   }
   artifacts.sites_header = generateSites(module);
   artifacts.stubs_source = generateStubs(module, sites_include);

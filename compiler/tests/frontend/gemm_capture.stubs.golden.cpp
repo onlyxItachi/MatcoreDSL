@@ -67,10 +67,9 @@ void throw_on_error(const matcore_status_v0 &status,
 }
 } // namespace
 
-namespace matcore::mdsl::detail {
-void __matcore_call_site_mc_d02b3f5b625dc51ed089ace811832a03(out_arg output, const matrix_view &lhs, const matrix_view &rhs, policy execution_policy) {
-  const matrix_view empty_output{};
-  const matrix_view &output_view =
+void __matcore_call_site_mc_d02b3f5b625dc51ed089ace811832a03(::matcore::mdsl::out_arg output, const ::matcore::mdsl::matrix_view &lhs, const ::matcore::mdsl::matrix_view &rhs, ::matcore::mdsl::policy execution_policy) {
+  const ::matcore::mdsl::matrix_view empty_output{};
+  const ::matcore::mdsl::matrix_view &output_view =
       output.value != nullptr ? *output.value : empty_output;
   matcore_tensor_desc_v0 output_descriptor =
       make_tensor_descriptor(output_view, MATCORE_MUTABILITY_READ_WRITE_V0);
@@ -82,4 +81,3 @@ void __matcore_call_site_mc_d02b3f5b625dc51ed089ace811832a03(out_arg output, con
   const matcore_status_v0 status = matcore_generated_backend_mc_d02b3f5b625dc51ed089ace811832a03_v0(&output_descriptor, &lhs_descriptor, &rhs_descriptor, &runtime_policy);
   throw_on_error(status, "compiler/tests/frontend/gemm_capture.mdsl:21:3");
 }
-} // namespace matcore::mdsl::detail
