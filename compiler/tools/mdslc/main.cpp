@@ -721,6 +721,18 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
                    "input or output\n";
       return 2;
     }
+    for (const fs::path *generated :
+         {&artifacts.host_source, &artifacts.ir, &artifacts.sites_header,
+          &artifacts.stubs_source, &artifacts.backend_source,
+          &artifacts.host_object, &artifacts.stubs_object,
+          &artifacts.backend_object}) {
+      if (PathsReferToSameLocation(*generated, dependency_output)) {
+        std::cerr << "mdslc++: dependency file must not overwrite or alias a "
+                     "generated --save-temps artifact: "
+                  << *generated << '\n';
+        return 2;
+      }
+    }
     raw_dependency = workspace / (stem + ".dependencies.raw.d");
     if (PathsReferToSameLocation(raw_dependency, dependency_output)) {
       raw_dependency = workspace / (stem + ".dependencies.temporary.d");
