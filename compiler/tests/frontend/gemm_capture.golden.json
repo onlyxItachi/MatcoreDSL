@@ -1,0 +1,105 @@
+{
+  "schema": "matcore.ir",
+  "version": 0,
+  "producer": "clang-ast-json-bootstrap-v0",
+  "translation_unit": {
+    "identity": "compiler/tests/frontend/gemm_capture.mdsl",
+    "source_file": "compiler/tests/frontend/gemm_capture.mdsl"
+  },
+  "operations": [
+    {
+      "site_id": "mc_2ed9c564471bcc43",
+      "kind": "gemm",
+      "canonical_callee": "matcore::mdsl::gemm",
+      "source": {
+        "file": "compiler/tests/frontend/gemm_capture.mdsl",
+        "line": 21,
+        "column": 3,
+        "byte_offset": 419
+      },
+      "output": {
+        "role": "output",
+        "expression": "C",
+        "dtype": "f32",
+        "rank": 2,
+        "shape": [
+          "?",
+          "?"
+        ],
+        "strides": [
+          "dynamic-columns",
+          "1"
+        ],
+        "layout": "row_major_contiguous",
+        "mutability": "write",
+        "memory_space": "host"
+      },
+      "operands": [
+        {
+          "role": "lhs",
+          "expression": "A",
+          "dtype": "f32",
+          "rank": 2,
+          "shape": [
+            "?",
+            "?"
+          ],
+          "strides": [
+            "dynamic-columns",
+            "1"
+          ],
+          "layout": "row_major_contiguous",
+          "mutability": "read",
+          "memory_space": "host"
+        },
+        {
+          "role": "rhs",
+          "expression": "B",
+          "dtype": "f32",
+          "rank": 2,
+          "shape": [
+            "?",
+            "?"
+          ],
+          "strides": [
+            "dynamic-columns",
+            "1"
+          ],
+          "layout": "row_major_contiguous",
+          "mutability": "read",
+          "memory_space": "host"
+        }
+      ],
+      "alias_requirements": [
+        {
+          "relation": "no_alias",
+          "between": [
+            "output",
+            "lhs"
+          ]
+        },
+        {
+          "relation": "no_alias",
+          "between": [
+            "output",
+            "rhs"
+          ]
+        }
+      ],
+      "effects": {
+        "reads": [
+          "lhs",
+          "rhs"
+        ],
+        "writes": [
+          "output"
+        ],
+        "synchronization": "synchronous"
+      },
+      "policy": {
+        "target": "cpu",
+        "fallback": "error"
+      }
+    }
+  ]
+}
