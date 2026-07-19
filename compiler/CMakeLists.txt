@@ -49,4 +49,10 @@ target_include_directories(
   mdslc_driver
   PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated"
 )
-
+target_compile_options(
+  mdslc_driver
+  PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
