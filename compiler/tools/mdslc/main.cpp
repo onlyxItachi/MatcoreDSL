@@ -76,9 +76,21 @@ struct SourceSnapshot {
   std::string contents;
 };
 
+struct PathComponentSnapshot {
+  fs::path path;
+  dev_t device = 0;
+  ino_t inode = 0;
+  mode_t type = 0;
+  off_t size = 0;
+  timespec modified{};
+  timespec changed{};
+  std::string symlink_target;
+};
+
 struct DependencySnapshot {
   fs::path path;
   SourceSnapshot snapshot;
+  std::vector<PathComponentSnapshot> path_identity;
 };
 
 class ScopedDirectoryCleanup {
@@ -152,6 +164,109 @@ bool SameFileMetadata(const struct stat &left, const struct stat &right) {
          left.st_size == right.st_size &&
          SameTimespec(left.st_mtim, right.st_mtim) &&
          SameTimespec(left.st_ctim, right.st_ctim);
+}
+
+std::optional<std::string> ReadSymlinkTarget(const fs::path &path,
+                                             off_t expected_size,
+                                             std::string &error_message) {
+  std::size_t capacity = expected_size > 0
+                             ? static_cast<std::size_t>(expected_size) + 1
+                             : 256;
+  constexpr std::size_t maximum_capacity = 1024 * 1024;
+  while (capacity <= maximum_capacity) {
+    std::string target(capacity, '\0');
+    const ssize_t count = ::readlink(path.c_str(), target.data(), target.size());
+    if (count < 0) {
+      error_message = "cannot read symlink identity: " +
+                      std::string(std::strerror(errno));
+      return std::nullopt;
+    }
+    if (static_cast<std::size_t>(count) < target.size()) {
+      target.resize(static_cast<std::size_t>(count));
+      return target;
+    }
+    capacity *= 2;
+  }
+  error_message = "symlink target is too large to snapshot safely";
+  return std::nullopt;
+}
+
+std::optional<std::vector<PathComponentSnapshot>>
+ReadPathIdentity(const fs::path &absolute_path, std::string &error_message) {
+  std::vector<PathComponentSnapshot> identity;
+  fs::path current = absolute_path.root_path();
+  for (const fs::path &component : absolute_path.relative_path()) {
+    if (component == ".") {
+      continue;
+    }
+    current /= component;
+    struct stat before {};
+    if (::lstat(current.c_str(), &before) != 0) {
+      error_message = "cannot inspect dependency path identity: " +
+                      std::string(std::strerror(errno));
+      return std::nullopt;
+    }
+    PathComponentSnapshot snapshot{
+        .path = current,
+        .device = before.st_dev,
+        .inode = before.st_ino,
+        .type = static_cast<mode_t>(before.st_mode & S_IFMT),
+        .size = before.st_size,
+        .modified = before.st_mtim,
+        .changed = before.st_ctim,
+        .symlink_target = {}};
+    if (S_ISLNK(before.st_mode)) {
+      std::optional<std::string> target =
+          ReadSymlinkTarget(current, before.st_size, error_message);
+      if (!target) {
+        return std::nullopt;
+      }
+      struct stat after {};
+      if (::lstat(current.c_str(), &after) != 0 ||
+          !SameFileMetadata(before, after)) {
+        error_message = "dependency symlink changed while it was being read";
+        return std::nullopt;
+      }
+      snapshot.symlink_target = std::move(*target);
+    }
+    identity.emplace_back(std::move(snapshot));
+  }
+  return identity;
+}
+
+bool PathIdentityMatches(const std::vector<PathComponentSnapshot> &expected,
+                         std::string &error_message) {
+  for (const PathComponentSnapshot &component : expected) {
+    struct stat current {};
+    if (::lstat(component.path.c_str(), &current) != 0) {
+      error_message = "cannot inspect dependency path identity: " +
+                      std::string(std::strerror(errno));
+      return false;
+    }
+    if (current.st_dev != component.device ||
+        current.st_ino != component.inode ||
+        (current.st_mode & S_IFMT) != component.type) {
+      error_message = "dependency path identity changed";
+      return false;
+    }
+    if (S_ISLNK(current.st_mode)) {
+      if (current.st_size != component.size ||
+          !SameTimespec(current.st_mtim, component.modified) ||
+          !SameTimespec(current.st_ctim, component.changed)) {
+        error_message = "dependency symlink identity changed";
+        return false;
+      }
+      std::optional<std::string> target =
+          ReadSymlinkTarget(component.path, current.st_size, error_message);
+      if (!target || *target != component.symlink_target) {
+        if (target) {
+          error_message = "dependency symlink target changed";
+        }
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 std::optional<SourceSnapshot> ReadSourceSnapshot(const fs::path &source,
@@ -369,10 +484,21 @@ CaptureDependencyClosure(const fs::path &dependency_file,
         return std::nullopt;
       }
     }
-    absolute = NormalizedPath(absolute);
+    // Preserve the lexical dependency path. Canonicalizing here would erase
+    // symlink identity and allow a link to be retargeted between extraction
+    // and compilation without invalidating the captured closure.
+    absolute = absolute.lexically_normal();
     if (std::find(captured_paths.begin(), captured_paths.end(), absolute) !=
         captured_paths.end()) {
       continue;
+    }
+    std::string identity_error;
+    std::optional<std::vector<PathComponentSnapshot>> path_identity =
+        ReadPathIdentity(absolute, identity_error);
+    if (!path_identity) {
+      error_message = "cannot snapshot dependency path " + absolute.string() +
+                      ": " + identity_error;
+      return std::nullopt;
     }
     std::string snapshot_error;
     std::optional<SourceSnapshot> snapshot =
@@ -383,16 +509,39 @@ CaptureDependencyClosure(const fs::path &dependency_file,
       return std::nullopt;
     }
     captured_paths.emplace_back(absolute);
-    closure.push_back(
-        DependencySnapshot{absolute, std::move(*snapshot)});
+    closure.push_back(DependencySnapshot{absolute, std::move(*snapshot),
+                                         std::move(*path_identity)});
   }
   return closure;
+}
+
+void AppendDependencyClosure(
+    std::vector<DependencySnapshot> &destination,
+    std::vector<DependencySnapshot> additional) {
+  for (DependencySnapshot &dependency : additional) {
+    const bool already_captured =
+        std::any_of(destination.begin(), destination.end(),
+                    [&](const DependencySnapshot &existing) {
+                      return existing.path == dependency.path;
+                    });
+    if (!already_captured) {
+      destination.emplace_back(std::move(dependency));
+    }
+  }
 }
 
 bool DependencyClosureMatches(
     const std::vector<DependencySnapshot> &expected,
     std::string_view phase) {
   for (const DependencySnapshot &dependency : expected) {
+    std::string identity_error;
+    if (!PathIdentityMatches(dependency.path_identity, identity_error)) {
+      std::cerr << "mdslc++: dependency changed during compilation after "
+                << phase << ": " << dependency.path << ": "
+                << identity_error
+                << "; refusing to emit an object from stale generated code\n";
+      return false;
+    }
     std::string error_message;
     const std::optional<SourceSnapshot> current =
         ReadSourceSnapshot(dependency.path, error_message);
@@ -481,7 +630,8 @@ bool IsExtractionIncompatibleArgument(std::string_view argument) {
          argument == "-emit-llvm" || argument == "-fsyntax-only" ||
          argument == "-M" || argument == "-MM" || argument == "-MD" ||
          argument == "-MMD" || argument == "-MJ" || argument == "-MF" ||
-         argument == "-MT" || argument == "-MQ" || argument == "-###" ||
+         argument == "-MT" || argument == "-MQ" || argument == "-MP" ||
+         argument == "-###" ||
          argument == "-Xclang" || argument == "-load" ||
          argument == "-fplugin" || argument == "--config" ||
          argument.starts_with("--config=") || argument.starts_with('@') ||
@@ -1279,6 +1429,107 @@ int GenerateDependencyFile(const CpuInvocation &invocation,
   return RunCommand(std::move(command), verbose);
 }
 
+int GenerateRewrittenHostDependencyFile(
+    const CpuInvocation &invocation, std::string_view dependency_mode,
+    const ToolLayout &layout, const fs::path &source_directory,
+    const fs::path &virtual_source, const fs::path &overlay,
+    const fs::path &object_target, const fs::path &dependency_output,
+    bool verbose) {
+  std::vector<std::string> command{MDSLC_DEFAULT_CLANGXX};
+  AppendCompileEnvironment(command, invocation, layout, source_directory);
+  command.insert(command.end(),
+                 {"-ivfsoverlay", overlay.string(), "-x", "c++",
+                  std::string(dependency_mode), "-MF",
+                  dependency_output.string(), "-MQ", object_target.string(),
+                  "-fsyntax-only", virtual_source.string()});
+  return RunCommand(std::move(command), verbose);
+}
+
+std::string EscapeMakePath(std::string_view path) {
+  std::string escaped;
+  escaped.reserve(path.size());
+  for (const char character : path) {
+    if (character == '$') {
+      escaped += "$$";
+      continue;
+    }
+    if (character == ' ' || character == '\t' || character == '#' ||
+        character == '\\') {
+      escaped += '\\';
+    }
+    escaped += character;
+  }
+  return escaped;
+}
+
+bool MergeDependencyFiles(const std::vector<fs::path> &dependency_files,
+                          const fs::path &object_target,
+                          const std::vector<fs::path> &excluded_paths,
+                          const fs::path &output) {
+  std::vector<fs::path> dependencies;
+  std::vector<fs::path> dependency_identities;
+  for (const fs::path &dependency_file : dependency_files) {
+    std::string parse_error;
+    const std::optional<std::vector<fs::path>> parsed =
+        ReadMakeDependencyPaths(dependency_file, parse_error);
+    if (!parsed) {
+      std::cerr << "mdslc++: cannot merge dependency output "
+                << dependency_file << ": " << parse_error << '\n';
+      return false;
+    }
+    for (const fs::path &dependency : *parsed) {
+      std::error_code path_error;
+      fs::path identity = dependency;
+      if (identity.is_relative()) {
+        identity = fs::absolute(identity, path_error);
+      }
+      if (path_error) {
+        std::cerr << "mdslc++: cannot resolve published dependency "
+                  << dependency << ": " << path_error.message() << '\n';
+        return false;
+      }
+      identity = identity.lexically_normal();
+      const bool generated =
+          std::any_of(excluded_paths.begin(), excluded_paths.end(),
+                      [&](const fs::path &excluded) {
+                        std::error_code excluded_error;
+                        fs::path excluded_identity = excluded;
+                        if (excluded_identity.is_relative()) {
+                          excluded_identity =
+                              fs::absolute(excluded_identity, excluded_error);
+                        }
+                        return !excluded_error &&
+                               excluded_identity.lexically_normal() == identity;
+                      });
+      if (generated ||
+          std::find(dependency_identities.begin(), dependency_identities.end(),
+                    identity) != dependency_identities.end()) {
+        continue;
+      }
+      dependency_identities.emplace_back(std::move(identity));
+      dependencies.emplace_back(dependency);
+    }
+  }
+
+  std::ofstream merged(output, std::ios::binary | std::ios::trunc);
+  if (!merged) {
+    std::cerr << "mdslc++: cannot create merged dependency output: " << output
+              << '\n';
+    return false;
+  }
+  merged << EscapeMakePath(object_target.string()) << ':';
+  for (const fs::path &dependency : dependencies) {
+    merged << " \\\n  " << EscapeMakePath(dependency.string());
+  }
+  merged << '\n';
+  if (!merged) {
+    std::cerr << "mdslc++: failed to write merged dependency output: "
+              << output << '\n';
+    return false;
+  }
+  return true;
+}
+
 bool PublishFileAtomically(const fs::path &source,
                            const fs::path &destination) {
   std::ifstream input(source, std::ios::binary);
@@ -1382,8 +1633,12 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   }
   const fs::path source_directory = source_absolute.parent_path();
   fs::path dependency_output;
-  const fs::path raw_dependency =
-      *dependency_workspace / "source-closure.d";
+  const fs::path private_source_dependency =
+      *dependency_workspace / "private-source-closure.d";
+  const fs::path public_source_dependency =
+      *dependency_workspace / "public-source.d";
+  const fs::path merged_public_dependency =
+      *dependency_workspace / "public-combined.d";
   if (!invocation.dependency_mode.empty()) {
     dependency_output = fs::absolute(invocation.dependency_file, error);
     if (error || dependency_output.filename().empty() ||
@@ -1412,13 +1667,12 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     }
   }
 
-  const std::string_view dependency_scan_mode =
-      invocation.dependency_mode.empty()
-          ? std::string_view("-MMD")
-          : std::string_view(invocation.dependency_mode);
+  // The private consistency closure is intentionally independent of the
+  // user's public depfile mode. In particular, -MD is required here so an
+  // -isystem header cannot change between extraction and compilation.
   int result = GenerateDependencyFile(
-      invocation, dependency_scan_mode, *layout, source_directory,
-      source_absolute, output, raw_dependency, wrapper.verbose);
+      invocation, "-MD", *layout, source_directory, source_absolute, output,
+      private_source_dependency, wrapper.verbose);
   if (!SourceMatchesSnapshot(source_absolute, *source_snapshot,
                              "dependency scanning")) {
     return 1;
@@ -1427,17 +1681,35 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     return result;
   }
   std::string closure_error;
-  const std::optional<std::vector<DependencySnapshot>> dependency_closure =
-      CaptureDependencyClosure(raw_dependency, closure_error);
-  if (!dependency_closure) {
+  std::optional<std::vector<DependencySnapshot>> captured_source_closure =
+      CaptureDependencyClosure(private_source_dependency, closure_error);
+  if (!captured_source_closure) {
     std::cerr << "mdslc++: cannot establish dependency consistency from "
-              << raw_dependency << ": " << closure_error << '\n';
+              << private_source_dependency << ": " << closure_error << '\n';
     return 1;
   }
+  std::vector<DependencySnapshot> dependency_closure =
+      std::move(*captured_source_closure);
   if (!CompilationInputsMatch(source_absolute, *source_snapshot,
-                              *dependency_closure,
+                              dependency_closure,
                               "dependency snapshotting")) {
     return 1;
+  }
+
+  std::vector<fs::path> public_dependency_files;
+  if (!invocation.dependency_mode.empty()) {
+    result = GenerateDependencyFile(
+        invocation, invocation.dependency_mode, *layout, source_directory,
+        source_absolute, output, public_source_dependency, wrapper.verbose);
+    if (!CompilationInputsMatch(source_absolute, *source_snapshot,
+                                dependency_closure,
+                                "public dependency scanning")) {
+      return 1;
+    }
+    if (result != 0) {
+      return result;
+    }
+    public_dependency_files.emplace_back(public_source_dependency);
   }
 
   std::vector<std::string> extract_command{
@@ -1466,7 +1738,7 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
 
   result = RunCommand(std::move(extract_command), wrapper.verbose);
   if (!CompilationInputsMatch(source_absolute, *source_snapshot,
-                              *dependency_closure, "frontend extraction")) {
+                              dependency_closure, "frontend extraction")) {
     return 1;
   }
   if (result != 0) {
@@ -1484,11 +1756,112 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     return 1;
   }
 
+  const fs::path private_host_dependency =
+      *dependency_workspace / "private-host-closure.d";
+  const fs::path private_stubs_dependency =
+      *dependency_workspace / "private-stubs-closure.d";
+  const fs::path private_backend_dependency =
+      *dependency_workspace / "private-backend-closure.d";
+  const fs::path public_host_dependency =
+      *dependency_workspace / "public-host.d";
+  const fs::path public_stubs_dependency =
+      *dependency_workspace / "public-stubs.d";
+  const fs::path public_backend_dependency =
+      *dependency_workspace / "public-backend.d";
+
+  const auto capture_generated_closure = [&](const fs::path &depfile,
+                                             std::string_view phase) {
+    if (!CompilationInputsMatch(source_absolute, *source_snapshot,
+                                dependency_closure, phase)) {
+      return false;
+    }
+    std::string generated_closure_error;
+    std::optional<std::vector<DependencySnapshot>> generated_closure =
+        CaptureDependencyClosure(depfile, generated_closure_error);
+    if (!generated_closure) {
+      std::cerr << "mdslc++: cannot establish generated dependency "
+                   "consistency from "
+                << depfile << ": " << generated_closure_error << '\n';
+      return false;
+    }
+    AppendDependencyClosure(dependency_closure,
+                            std::move(*generated_closure));
+    return CompilationInputsMatch(source_absolute, *source_snapshot,
+                                  dependency_closure, phase);
+  };
+
+  result = GenerateRewrittenHostDependencyFile(
+      invocation, "-MD", *layout, source_directory, source_absolute,
+      artifacts.host_overlay, output, private_host_dependency,
+      wrapper.verbose);
+  if (result != 0 ||
+      !capture_generated_closure(private_host_dependency,
+                                 "generated host dependency scanning")) {
+    return result != 0 ? result : 1;
+  }
+  result = GenerateDependencyFile(
+      invocation, "-MD", *layout, source_directory, artifacts.stubs_source,
+      output, private_stubs_dependency, wrapper.verbose);
+  if (result != 0 ||
+      !capture_generated_closure(private_stubs_dependency,
+                                 "generated stub dependency scanning")) {
+    return result != 0 ? result : 1;
+  }
+  result = GenerateDependencyFile(
+      invocation, "-MD", *layout, source_directory, artifacts.backend_source,
+      output, private_backend_dependency, wrapper.verbose);
+  if (result != 0 ||
+      !capture_generated_closure(private_backend_dependency,
+                                 "generated backend dependency scanning")) {
+    return result != 0 ? result : 1;
+  }
+
+  if (!invocation.dependency_mode.empty()) {
+    const auto scan_public_generated = [&](const fs::path &source,
+                                           const fs::path &depfile,
+                                           bool rewritten_host) {
+      const int scan_result =
+          rewritten_host
+              ? GenerateRewrittenHostDependencyFile(
+                    invocation, invocation.dependency_mode, *layout,
+                    source_directory, source_absolute, artifacts.host_overlay,
+                    output, depfile, wrapper.verbose)
+              : GenerateDependencyFile(
+                    invocation, invocation.dependency_mode, *layout,
+                    source_directory, source, output, depfile,
+                    wrapper.verbose);
+      if (!CompilationInputsMatch(source_absolute, *source_snapshot,
+                                  dependency_closure,
+                                  "public generated dependency scanning")) {
+        return 1;
+      }
+      return scan_result;
+    };
+    result = scan_public_generated(artifacts.host_source,
+                                   public_host_dependency, true);
+    if (result != 0) {
+      return result;
+    }
+    public_dependency_files.emplace_back(public_host_dependency);
+    result = scan_public_generated(artifacts.stubs_source,
+                                   public_stubs_dependency, false);
+    if (result != 0) {
+      return result;
+    }
+    public_dependency_files.emplace_back(public_stubs_dependency);
+    result = scan_public_generated(artifacts.backend_source,
+                                   public_backend_dependency, false);
+    if (result != 0) {
+      return result;
+    }
+    public_dependency_files.emplace_back(public_backend_dependency);
+  }
+
   result = CompileRewrittenHost(source_absolute, artifacts.host_overlay,
                                 artifacts.host_object, invocation, *layout,
                                 source_directory, wrapper.verbose);
   if (!CompilationInputsMatch(source_absolute, *source_snapshot,
-                              *dependency_closure,
+                              dependency_closure,
                               "generated host compilation")) {
     return 1;
   }
@@ -1499,7 +1872,7 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
                                   artifacts.stubs_object, invocation, *layout,
                                   source_directory, wrapper.verbose);
   if (!CompilationInputsMatch(source_absolute, *source_snapshot,
-                              *dependency_closure,
+                              dependency_closure,
                               "generated stub compilation")) {
     return 1;
   }
@@ -1510,7 +1883,7 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
                                   artifacts.backend_object, invocation,
                                   *layout, source_directory, wrapper.verbose);
   if (!CompilationInputsMatch(source_absolute, *source_snapshot,
-                              *dependency_closure,
+                              dependency_closure,
                               "generated backend compilation")) {
     return 1;
   }
@@ -1543,7 +1916,7 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   }
   result = RunCommand(std::move(link_command), wrapper.verbose);
   if (!CompilationInputsMatch(source_absolute, *source_snapshot,
-                              *dependency_closure, "linking")) {
+                              dependency_closure, "linking")) {
     fs::remove(output, error);
     return 1;
   }
@@ -1551,13 +1924,24 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     fs::remove(output, error);
     return result;
   }
-  if (!invocation.dependency_mode.empty() &&
-      !PublishFileAtomically(raw_dependency, dependency_output)) {
-    fs::remove(output, error);
-    return 1;
+  if (!invocation.dependency_mode.empty()) {
+    const std::vector<fs::path> generated_dependencies{
+        artifacts.host_source,   artifacts.host_overlay,
+        artifacts.ir,            artifacts.sites_header,
+        artifacts.stubs_source,  artifacts.backend_source,
+        artifacts.host_object,   artifacts.stubs_object,
+        artifacts.backend_object};
+    if (!MergeDependencyFiles(public_dependency_files, output,
+                              generated_dependencies,
+                              merged_public_dependency) ||
+        !PublishFileAtomically(merged_public_dependency,
+                               dependency_output)) {
+      fs::remove(output, error);
+      return 1;
+    }
   }
   if (!CompilationInputsMatch(source_absolute, *source_snapshot,
-                              *dependency_closure,
+                              dependency_closure,
                               "dependency publication")) {
     fs::remove(output, error);
     if (!invocation.dependency_mode.empty()) {

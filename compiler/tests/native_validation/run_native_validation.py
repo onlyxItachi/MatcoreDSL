@@ -1227,6 +1227,125 @@ def driver_suite(checks: Checks, extractor: Path, driver: Path, clang: Path) -> 
             f"included-header race diagnostic was unclear:\n{header_race.stderr}",
         )
 
+        isystem_race_root = temporary / "isystem-race-prefix"
+        isystem_race_driver, isystem_race_extractor = copy_driver_layout(
+            driver, extractor, isystem_race_root
+        )
+        isystem_directory = temporary / "isystem-headers"
+        isystem_directory.mkdir()
+        isystem_header = isystem_directory / "system_mode.h"
+        isystem_header.write_text(
+            "#pragma once\n#define MDSLC_SYSTEM_MODE 17\n", encoding="utf-8"
+        )
+        isystem_source = temporary / "isystem_race.mdsl"
+        isystem_source.write_text(
+            "#include <system_mode.h>\n"
+            + (FIXTURES / "positive/namespace_alias.mdsl").read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+        isystem_race_extractor.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib, subprocess, sys\n"
+            f"command = [{str(extractor.resolve())!r}, *sys.argv[1:]]\n"
+            "completed = subprocess.run(command, check=False)\n"
+            "if completed.returncode == 0:\n"
+            f"    pathlib.Path({str(isystem_header)!r}).write_text("
+            "'#pragma once\\n#define MDSLC_SYSTEM_MODE 91\\n', encoding='utf-8')\n"
+            "raise SystemExit(completed.returncode)\n",
+            encoding="utf-8",
+        )
+        isystem_race_extractor.chmod(0o755)
+        isystem_output = temporary / "isystem-race.o"
+        isystem_race = run(
+            [
+                str(isystem_race_driver),
+                "--frontend=native",
+                "--matcore-target=cpu",
+                "-std=c++20",
+                "-isystem",
+                str(isystem_directory),
+                "-c",
+                str(isystem_source),
+                "-o",
+                str(isystem_output),
+            ]
+        )
+        checks.require(
+            isystem_race.returncode != 0,
+            "private consistency scan omitted a changed -isystem header",
+        )
+        checks.require(
+            not isystem_output.exists(),
+            "changed -isystem header still produced an object",
+        )
+        checks.require(
+            "dependency changed" in isystem_race.stderr.lower()
+            and str(isystem_header) in isystem_race.stderr,
+            f"-isystem race diagnostic was unclear:\n{isystem_race.stderr}",
+        )
+
+        symlink_race_root = temporary / "symlink-race-prefix"
+        symlink_race_driver, symlink_race_extractor = copy_driver_layout(
+            driver, extractor, symlink_race_root
+        )
+        symlink_directory = temporary / "symlink-source"
+        symlink_directory.mkdir()
+        symlink_target_a = symlink_directory / "target-a.h"
+        symlink_target_b = symlink_directory / "target-b.h"
+        symlink_target_a.write_text("#pragma once\n", encoding="utf-8")
+        os.link(symlink_target_a, symlink_target_b)
+        symlink_header = symlink_directory / "mode.h"
+        symlink_header.symlink_to(symlink_target_a.name)
+        symlink_source = symlink_directory / "symlink_race.mdsl"
+        symlink_source.write_text(
+            '#include "mode.h"\n'
+            + (FIXTURES / "positive/namespace_alias.mdsl").read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+        symlink_race_extractor.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, pathlib, subprocess, sys\n"
+            f"command = [{str(extractor.resolve())!r}, *sys.argv[1:]]\n"
+            "completed = subprocess.run(command, check=False)\n"
+            "if completed.returncode == 0:\n"
+            f"    link = pathlib.Path({str(symlink_header)!r})\n"
+            "    link.unlink()\n"
+            f"    link.symlink_to({symlink_target_b.name!r})\n"
+            "raise SystemExit(completed.returncode)\n",
+            encoding="utf-8",
+        )
+        symlink_race_extractor.chmod(0o755)
+        symlink_output = temporary / "symlink-race.o"
+        symlink_race = run(
+            [
+                str(symlink_race_driver),
+                "--frontend=native",
+                "--matcore-target=cpu",
+                "-std=c++20",
+                "-c",
+                str(symlink_source),
+                "-o",
+                str(symlink_output),
+            ]
+        )
+        checks.require(
+            symlink_race.returncode != 0,
+            "driver accepted a dependency symlink retargeted to a hardlink",
+        )
+        checks.require(
+            not symlink_output.exists(),
+            "dependency symlink retarget emitted an inconsistent object",
+        )
+        checks.require(
+            "dependency changed" in symlink_race.stderr.lower()
+            and "identity" in symlink_race.stderr.lower(),
+            f"symlink retarget diagnostic was unclear:\n{symlink_race.stderr}",
+        )
+
         include_parity = temporary / "include-parity"
         include_source = include_parity / "source"
         include_output = include_parity / "output"
@@ -1306,12 +1425,16 @@ def driver_suite(checks: Checks, extractor: Path, driver: Path, clang: Path) -> 
             encoding="utf-8",
         )
         escaped_output = escaped_dependency_directory / "escaped:result.o"
+        escaped_depfile = escaped_dependency_directory / "escaped $ dep#.d"
         escaped_compile = run(
             [
                 str(driver),
                 "--frontend=native",
                 "--matcore-target=cpu",
                 "-std=c++20",
+                "-MMD",
+                "-MF",
+                str(escaped_depfile),
                 "-c",
                 str(escaped_source),
                 "-o",
@@ -1323,6 +1446,16 @@ def driver_suite(checks: Checks, extractor: Path, driver: Path, clang: Path) -> 
             "driver could not decode escaped Make dependency paths or a "
             f"colon-bearing target:\n{escaped_compile.stderr}",
         )
+        if escaped_depfile.is_file():
+            escaped_depfile_text = escaped_depfile.read_text(encoding="utf-8")
+            checks.require(
+                "escaped:result.o:" in escaped_depfile_text
+                and "value\\ $$\\ hash\\#.h" in escaped_depfile_text,
+                "merged public depfile did not preserve Make escaping for "
+                f"colon, space, dollar, and hash paths:\n{escaped_depfile_text}",
+            )
+        else:
+            checks.require(False, "escaped dependency build emitted no depfile")
 
         pic_parity = temporary / "pic-parity"
         pic_source_directory = pic_parity / "source"
@@ -1392,12 +1525,84 @@ def driver_suite(checks: Checks, extractor: Path, driver: Path, clang: Path) -> 
             )
         if pic_dependency.is_file():
             dependency_text = pic_dependency.read_text(encoding="utf-8")
+            runtime_header = (
+                driver.resolve().parent.parent / "include/matcore/runtime_c.h"
+            )
             checks.require(
                 "pie_value.h" in dependency_text and "pic_value.h" not in dependency_text,
                 "dependency scan and host compilation selected different macro branches",
             )
+            checks.require(
+                str(runtime_header) in dependency_text,
+                "public -MMD depfile omitted runtime_c.h used by generated sources",
+            )
+            checks.require(
+                not any(
+                    generated in dependency_text
+                    for generated in (".host.cpp", ".sites.h", ".stubs.cpp", ".backend.cpp")
+                ),
+                "public depfile leaked temporary generated artifacts",
+            )
+            checks.require(
+                "/usr/include/" not in dependency_text
+                and "/lib/clang/21/include/" not in dependency_text,
+                "public -MMD depfile unexpectedly included system headers",
+            )
         else:
             checks.require(False, "PIC parity build emitted no dependency file")
+
+        md_output = pic_output_directory / "public-md.o"
+        md_dependency = pic_output_directory / "public-md.d"
+        md_compile = run(
+            [
+                str(driver),
+                "--frontend=native",
+                "--matcore-target=cpu",
+                "-std=c++20",
+                "-MD",
+                "-MF",
+                str(md_dependency),
+                "-c",
+                str(pic_source),
+                "-o",
+                str(md_output),
+            ]
+        )
+        checks.require(
+            md_compile.returncode == 0 and md_output.is_file(),
+            f"public -MD build failed:\n{md_compile.stderr}",
+        )
+        if md_dependency.is_file():
+            md_dependency_text = md_dependency.read_text(encoding="utf-8")
+            checks.require(
+                "/usr/include/" in md_dependency_text
+                or "/lib/clang/21/include/" in md_dependency_text,
+                "public -MD depfile omitted system headers",
+            )
+        else:
+            checks.require(False, "public -MD build emitted no dependency file")
+
+        mp_output = temporary / "unsupported-mp.o"
+        mp_compile = run(
+            [
+                str(driver),
+                "--frontend=native",
+                "--matcore-target=cpu",
+                "-MMD",
+                "-MP",
+                "-c",
+                source_argument(FIXTURES / "positive/namespace_alias.mdsl"),
+                "-o",
+                str(mp_output),
+            ]
+        )
+        checks.require(
+            mp_compile.returncode != 0 and "incompatible" in mp_compile.stderr.lower(),
+            f"driver did not reject unsupported multi-rule -MP depfiles:\n{mp_compile.stderr}",
+        )
+        checks.require(
+            not mp_output.exists(), "unsupported -MP mode emitted an object"
+        )
 
         m32_output = temporary / "target-context-32.o"
         m32_compile = run(
