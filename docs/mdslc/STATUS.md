@@ -6,7 +6,7 @@ Verified baseline: `351075e4d8af1880330b7c0474d701ca76776dfa`
 
 Integration branch: `mdslc/bootstrap-v0`
 
-Final validation code head: `9d6b4dae127d745a7abcdbb708a158cb520343d9`
+Final validation code head: `a09e21533e7927f9448e268ee4a96048eefe1308`
 
 ## Current verdict
 
@@ -32,8 +32,8 @@ in the standalone compiler's normal execution path.
 | Goal 2 valid-C++ `.mdsl` proof | Complete | `hello_host.mdsl` prints `5`; executable and ELF64 x86-64 relocatable modes pass through `mdslc++ -x c++` |
 | Goal 3 post-Sema extraction | Partial | Clang 21 parsing/Sema, canonical AST declaration IDs, trusted-header equality, deterministic JSON and source diagnostics pass; exact annotation-payload authentication remains blocked on LibTooling development files |
 | Goal 4 CPU GEMM vertical slice | Complete | Rewrite, JSON, sites, stubs, backend, three objects, `clang++ -r`, external ordinary link, runtime resolution, and independent-oracle execution pass |
-| Goal 5 install/consumer | Complete | Installed tools/headers/runtime/CMake package and external `find_package` consumer configure, build, run, regenerate, and no-op rebuild pass |
-| Goal 6 validation and review | Complete for implemented scope | Fresh Release and Debug suites pass; sanitizer proofs pass; all high/medium review findings in the bootstrap implementation are resolved |
+| Goal 5 install/consumer | Complete | Installed tools/headers/runtime/CMake package and external `find_package` consumer configure, build, run, regenerate on `.mdsl` or included-header edits through a stable Ninja depfile, and return to a no-op build |
+| Goal 6 validation and review | Complete for implemented scope | Release and Debug suites pass; sanitizer proofs pass; all independently reported high/medium implementation findings are fixed and covered by regressions |
 | Goal 7 CUDA/cuBLAS | Not attempted | Optional GPU implementation was not started because the exact LibTooling frontend gate remains partial |
 
 ## Implemented pipeline
@@ -46,6 +46,7 @@ valid C++ foo.mdsl
   -> verified deterministic Matcore JSON IR v0
   -> exact main-file CallExpr rewrite from one stable source snapshot
   -> foo.host.cpp + foo.sites.h + foo.stubs.cpp + foo.backend.cpp
+  -> original-source dependency scan and stable Ninja depfile when requested
   -> three ordinary Clang C++ objects
   -> clang++ -r combined relocatable object
   -> ordinary external clang++ link against libmatcore_runtime
@@ -60,20 +61,21 @@ directories, and multi-TU relocatable co-linking.
 
 ## Final validation evidence
 
-Fresh Release build: `/tmp/matcoredsl-final-release.ZQTocW`
+Release validation tree: `/tmp/matcoredsl-final-clean-release.7Mtksg`
 
 - Ninja: 15/15 steps.
-- CTest: 4/4 targets passed in 39.53 seconds.
+- CTest at the final code head: 4/4 targets passed in 24.29 seconds.
 - Frontend suite: 44/44 checks.
-- Integration matrix: 46/46 active cases, 0 failures, 6 future capabilities
+- Integration matrix: 60/60 active cases, 0 failures, 6 future capabilities
   explicitly not counted as passes.
-- Installed consumer: configure/build/run/rebuild/no-op passed.
+- Installed consumer: configure/build/run, `.mdsl` rebuild, included-header
+  semantic rebuild, stable depfile inspection, and no-op checks passed.
 - Runtime suite: three GEMM shapes plus descriptor/policy failure contracts.
 
-Fresh Debug build: `/tmp/matcoredsl-final-debug.ohqv7h`
+Debug validation tree: `/tmp/matcoredsl-handoff-debug.2WOLkv`
 
-- Ninja: 15/15 steps.
-- CTest: 4/4 targets passed in 80.52 seconds.
+- Ninja: initial 15/15 steps and final-head incremental rebuild passed.
+- CTest at the final code head: 4/4 targets passed in 49.87 seconds.
 - Runtime dynamic exports: only `matcore_runtime_gemm_f32_v0`.
 
 Sanitizer build: `/tmp/matcoredsl-final-sanitize.Preeps`
@@ -171,12 +173,21 @@ clean.
 
 - The frontend is the documented AST-JSON bootstrap, not LibTooling. Exact
   annotation payload authentication remains the primary blocker.
+- Captured translation units must contain exactly one direct
+  `#include <matcore/mdsl.h>`. Duplicate direct spellings are rejected because
+  the bootstrap has no preprocessor callback location; the LibTooling frontend
+  will replace this conservative rewrite boundary.
 - Linux, Ninja, Clang 21, one `.mdsl` input, CPU, synchronous rank-2
   row-major-contiguous `f32` GEMM only.
 - Public `matrix_view` is deliberately minimal and represents host f32 storage;
   no general tensor framework exists.
-- Driver-managed shared/static/PIE modes are rejected with an instruction to
-  emit `-c` and perform the desired ordinary Clang link explicitly.
+- Driver-managed shared/static/PIE modes and opaque `-Wl`/`-Xlinker`
+  forwarding are rejected with an instruction to emit `-c` and perform the
+  desired ordinary Clang link explicitly.
+- Installed CMake integration performs one controlled Clang dependency scan
+  over the original `.mdsl` and publishes a stable `-MD` depfile only after
+  the native object succeeds. Generated temporary files are excluded from the
+  depfile and protected from dependency-output collisions.
 - `gemv`, `gevm`, `relu_gemm`, CUDA/cuBLAS, HIP, Metal, MLIR lowering, cost
   planning, fusion, and autotuning are not implemented.
 - Generated multi-file publication is per-file atomic; a publication error can
