@@ -65,6 +65,7 @@ bool verify(const Module &module, std::string &error) {
   }
 
   std::unordered_set<std::string> site_ids;
+  std::uint64_t previous_call_end = 0;
   for (const Operation &operation : module.operations) {
     if (operation.site_id.empty() || !site_ids.insert(operation.site_id).second) {
       error = "operation site IDs must be nonempty and unique";
@@ -79,6 +80,30 @@ bool verify(const Module &module, std::string &error) {
         operation.source.line == 0 || operation.source.column == 0) {
       error = "operation source location must refer to the input .mdsl file";
       return false;
+    }
+    if (operation.call_range.begin != operation.source.offset ||
+        operation.call_range.end <= operation.call_range.begin) {
+      error = "operation call range must be a nonempty half-open source range";
+      return false;
+    }
+    if (operation.call_range.begin < previous_call_end) {
+      error = "operation call ranges must be sorted and non-overlapping";
+      return false;
+    }
+    previous_call_end = operation.call_range.end;
+    if (operation.argument_ranges.size() != 3 &&
+        operation.argument_ranges.size() != 4) {
+      error = "gemm requires three or four explicit source argument ranges";
+      return false;
+    }
+    std::uint64_t previous_argument_end = operation.call_range.begin;
+    for (const SourceRange &range : operation.argument_ranges) {
+      if (range.begin < previous_argument_end || range.end <= range.begin ||
+          range.end > operation.call_range.end) {
+        error = "argument ranges must be ordered, nonempty, and inside the call";
+        return false;
+      }
+      previous_argument_end = range.end;
     }
     if (operation.output.role != "output" ||
         operation.output.mutability != "write" ||
@@ -150,7 +175,25 @@ std::string serializeDeterministicJson(const Module &module) {
     writer.Uint(operation.source.column);
     writer.Key("byte_offset");
     writer.Uint64(operation.source.offset);
+    writer.Key("byte_range");
+    writer.StartObject();
+    writer.Key("begin");
+    writer.Uint64(operation.call_range.begin);
+    writer.Key("end");
+    writer.Uint64(operation.call_range.end);
     writer.EndObject();
+    writer.EndObject();
+    writer.Key("source_argument_ranges");
+    writer.StartArray();
+    for (const SourceRange &range : operation.argument_ranges) {
+      writer.StartObject();
+      writer.Key("begin");
+      writer.Uint64(range.begin);
+      writer.Key("end");
+      writer.Uint64(range.end);
+      writer.EndObject();
+    }
+    writer.EndArray();
     writer.Key("output");
     writeMatrixValue(writer, operation.output);
     writer.Key("operands");
