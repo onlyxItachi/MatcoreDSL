@@ -1475,6 +1475,180 @@ def driver_suite(checks: Checks, extractor: Path, driver: Path, clang: Path) -> 
             f"include-shadow race diagnostic was unclear:\n{shadow_race.stderr}",
         )
 
+        postscan_race_root = temporary / "postscan-shadow-race-prefix"
+        postscan_race_driver, postscan_race_extractor = copy_driver_layout(
+            driver, extractor, postscan_race_root
+        )
+        postscan_directory = temporary / "postscan-shadow-source"
+        postscan_early_include = postscan_directory / "early"
+        postscan_late_include = postscan_directory / "late"
+        postscan_early_include.mkdir(parents=True)
+        postscan_late_include.mkdir()
+        postscan_late_header = postscan_late_include / "mode.h"
+        postscan_late_header.write_text(
+            "#pragma once\n#define MDSLC_POSTSCAN_MODE 17\n", encoding="utf-8"
+        )
+        postscan_early_header = postscan_early_include / "mode.h"
+        postscan_source = postscan_directory / "postscan_shadow_race.mdsl"
+        postscan_source.write_text(
+            "#include <mode.h>\n"
+            + (FIXTURES / "positive/namespace_alias.mdsl").read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+        postscan_watcher = postscan_directory / "watch_private_stubs.py"
+        postscan_watcher.write_text(
+            "import pathlib, sys, time\n"
+            "trigger = pathlib.Path(sys.argv[1])\n"
+            "header = pathlib.Path(sys.argv[2])\n"
+            "deadline = time.monotonic() + 10.0\n"
+            "while time.monotonic() < deadline:\n"
+            "    if trigger.exists():\n"
+            "        header.write_text("
+            "'#pragma once\\n#define MDSLC_POSTSCAN_MODE 91\\n', encoding='utf-8')\n"
+            "        raise SystemExit(0)\n"
+            "    time.sleep(0.001)\n"
+            "raise SystemExit(2)\n",
+            encoding="utf-8",
+        )
+        postscan_race_extractor.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib, subprocess, sys, tempfile\n"
+            f"command = [{str(extractor.resolve())!r}, *sys.argv[1:]]\n"
+            "completed = subprocess.run(command, check=False)\n"
+            "if completed.returncode == 0 and '--input' in sys.argv:\n"
+            "    source = pathlib.Path(sys.argv[sys.argv.index('--input') + 1]).resolve()\n"
+            "    candidates = []\n"
+            "    for depfile in pathlib.Path(tempfile.gettempdir()).glob("
+            "'mdslc-*/private-source-closure.d'):\n"
+            "        try:\n"
+            "            if str(source) in depfile.read_text(encoding='utf-8'):\n"
+            "                candidates.append(depfile.parent)\n"
+            "        except OSError:\n"
+            "            pass\n"
+            "    if not candidates:\n"
+            "        raise SystemExit(92)\n"
+            "    dependency_root = max(candidates, key=lambda path: path.stat().st_mtime_ns)\n"
+            f"    subprocess.Popen([sys.executable, {str(postscan_watcher)!r}, "
+            "str(dependency_root / 'private-stubs-closure.d'), "
+            f"{str(postscan_early_header)!r}], stdout=subprocess.DEVNULL, "
+            "stderr=subprocess.DEVNULL, start_new_session=True)\n"
+            "raise SystemExit(completed.returncode)\n",
+            encoding="utf-8",
+        )
+        postscan_race_extractor.chmod(0o755)
+        postscan_output = temporary / "postscan-shadow-race.o"
+        postscan_race = run(
+            [
+                str(postscan_race_driver),
+                "--frontend=native",
+                "--matcore-target=cpu",
+                "-std=c++20",
+                "-I",
+                str(postscan_early_include),
+                "-I",
+                str(postscan_late_include),
+                "-c",
+                str(postscan_source),
+                "-o",
+                str(postscan_output),
+            ]
+        )
+        checks.require(
+            postscan_race.returncode != 0,
+            "driver accepted include shadowing introduced after its pre-host scan",
+        )
+        checks.require(
+            not postscan_output.exists(),
+            "postscan include shadowing still produced a final object",
+        )
+        checks.require(
+            "dependency resolution changed" in postscan_race.stderr.lower()
+            and str(postscan_early_header) in postscan_race.stderr
+            and str(postscan_late_header) in postscan_race.stderr,
+            f"postscan include-shadow diagnostic was unclear:\n{postscan_race.stderr}",
+        )
+
+        host_artifact_root = temporary / "host-artifact-race-prefix"
+        host_artifact_driver, host_artifact_extractor = copy_driver_layout(
+            driver, extractor, host_artifact_root
+        )
+        host_artifact_source = temporary / "host_artifact_race.mdsl"
+        host_artifact_source.write_text(
+            "int main() { return 0; }\n", encoding="utf-8"
+        )
+        host_artifact_watcher = temporary / "watch_private_host.py"
+        host_artifact_watcher.write_text(
+            "import pathlib, sys, time\n"
+            "trigger = pathlib.Path(sys.argv[1])\n"
+            "host = pathlib.Path(sys.argv[2])\n"
+            "deadline = time.monotonic() + 10.0\n"
+            "while time.monotonic() < deadline:\n"
+            "    if trigger.exists():\n"
+            "        contents = host.read_text(encoding='utf-8')\n"
+            "        host.write_text(contents.replace('return 0;', 'return 73;'), "
+            "encoding='utf-8')\n"
+            "        raise SystemExit(0)\n"
+            "    time.sleep(0.001)\n"
+            "raise SystemExit(2)\n",
+            encoding="utf-8",
+        )
+        host_artifact_extractor.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib, subprocess, sys, tempfile\n"
+            f"command = [{str(extractor.resolve())!r}, *sys.argv[1:]]\n"
+            "completed = subprocess.run(command, check=False)\n"
+            "if completed.returncode == 0 and '--input' in sys.argv:\n"
+            "    source = pathlib.Path(sys.argv[sys.argv.index('--input') + 1]).resolve()\n"
+            "    host = pathlib.Path(sys.argv[sys.argv.index('--rewrite-out') + 1])\n"
+            "    candidates = []\n"
+            "    for depfile in pathlib.Path(tempfile.gettempdir()).glob("
+            "'mdslc-*/private-source-closure.d'):\n"
+            "        try:\n"
+            "            if str(source) in depfile.read_text(encoding='utf-8'):\n"
+            "                candidates.append(depfile.parent)\n"
+            "        except OSError:\n"
+            "            pass\n"
+            "    if not candidates:\n"
+            "        raise SystemExit(93)\n"
+            "    dependency_root = max(candidates, key=lambda path: path.stat().st_mtime_ns)\n"
+            f"    subprocess.Popen([sys.executable, {str(host_artifact_watcher)!r}, "
+            "str(dependency_root / 'private-host-closure.d'), str(host)], "
+            "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, "
+            "start_new_session=True)\n"
+            "raise SystemExit(completed.returncode)\n",
+            encoding="utf-8",
+        )
+        host_artifact_extractor.chmod(0o755)
+        host_artifact_output = temporary / "host-artifact-race"
+        host_artifact_race = run(
+            [
+                str(host_artifact_driver),
+                "--frontend=native",
+                "--save-temps",
+                "--matcore-target=cpu",
+                "-std=c++20",
+                str(host_artifact_source),
+                "-o",
+                str(host_artifact_output),
+            ]
+        )
+        checks.require(
+            host_artifact_race.returncode != 0,
+            "driver accepted a generated host source changed after its scan",
+        )
+        checks.require(
+            not host_artifact_output.exists(),
+            "generated host source mutation still produced a final executable",
+        )
+        expected_host_artifact = temporary / "host-artifact-race.host.cpp"
+        checks.require(
+            "dependency changed" in host_artifact_race.stderr.lower()
+            and str(expected_host_artifact) in host_artifact_race.stderr,
+            f"generated host mutation diagnostic was unclear:\n{host_artifact_race.stderr}",
+        )
+
         include_parity = temporary / "include-parity"
         include_source = include_parity / "source"
         include_output = include_parity / "output"
@@ -1578,11 +1752,18 @@ def driver_suite(checks: Checks, extractor: Path, driver: Path, clang: Path) -> 
         if escaped_depfile.is_file():
             escaped_depfile_text = escaped_depfile.read_text(encoding="utf-8")
             checks.require(
-                "escaped:result.o:" in escaped_depfile_text
+                "escaped\\:result.o:" in escaped_depfile_text
                 and "value\\ $$\\ hash\\#.h" in escaped_depfile_text,
                 "merged public depfile did not preserve Make escaping for "
                 f"colon, space, dollar, and hash paths:\n{escaped_depfile_text}",
             )
+            make = shutil.which("make")
+            if make is not None:
+                make_parse = run([make, "-f", str(escaped_depfile), "-n"])
+                checks.require(
+                    make_parse.returncode == 0,
+                    f"GNU make rejected the merged depfile:\n{make_parse.stderr}",
+                )
         else:
             checks.require(False, "escaped dependency build emitted no depfile")
 

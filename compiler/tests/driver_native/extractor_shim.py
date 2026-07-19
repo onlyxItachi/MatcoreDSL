@@ -37,15 +37,20 @@ def main() -> int:
         generated_contents = {
             "--ir-out": "{}\n",
             "--rewrite-out": (
-                "#include <matcore/runtime_c.h>\n"
+                'extern "C" int mdslc_driver_fixture_status();\n'
                 "int main() {\n"
+                "  return mdslc_driver_fixture_status();\n"
+                "}\n"
+            ),
+            "--sites-out": "#pragma once\n",
+            "--stubs-out": (
+                "#include <matcore/runtime_c.h>\n"
+                'extern "C" int mdslc_driver_fixture_status() {\n'
                 "  const auto status = matcore_runtime_gemm_f32_v0(\n"
                 "      nullptr, nullptr, nullptr, nullptr);\n"
                 "  return status.code == MATCORE_STATUS_INVALID_ARGUMENT_V0 ? 0 : 1;\n"
                 "}\n"
             ),
-            "--sites-out": "#pragma once\n",
-            "--stubs-out": "// generated stub fixture\n",
             "--backend-out": "// generated backend fixture\n",
         }
         for option, contents in generated_contents.items():
