@@ -647,6 +647,7 @@ def core_suite(checks: Checks, extractor: Path, clang: Path) -> None:
             ("macro_callee", ("macro",), "mdsl"),
             ("abi_macro", ("abi", "macro"), "mdsl"),
             ("unevaluated_noexcept", ("unevaluated",), "mdsl"),
+            ("unevaluated_builtin", ("unevaluated",), "mdsl"),
             ("unevaluated_requires", ("unevaluated",), "mdsl"),
             ("unevaluated_typeid", ("unevaluated",), "mdsl"),
             ("unevaluated_decltype", ("unevaluated",), "mdsl"),
