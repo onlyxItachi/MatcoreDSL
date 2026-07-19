@@ -6,7 +6,9 @@ Verified baseline: `351075e4d8af1880330b7c0474d701ca76776dfa`
 
 Integration branch: `mdslc/bootstrap-v0`
 
-Final validation code head: `a09e21533e7927f9448e268ee4a96048eefe1308`
+Final validated implementation head: `b2b4706c44009a51ebb743e09e2b973fb1fcb796`
+
+Independent review report commit: `be687f6f26812fdab6af22ee244061899fcf09d6`
 
 ## Current verdict
 
@@ -33,7 +35,7 @@ in the standalone compiler's normal execution path.
 | Goal 3 post-Sema extraction | Partial | Clang 21 parsing/Sema, canonical AST declaration IDs, trusted-header equality, deterministic JSON and source diagnostics pass; exact annotation-payload authentication remains blocked on LibTooling development files |
 | Goal 4 CPU GEMM vertical slice | Complete | Rewrite, JSON, sites, stubs, backend, three objects, `clang++ -r`, external ordinary link, runtime resolution, and independent-oracle execution pass |
 | Goal 5 install/consumer | Complete | Installed tools/headers/runtime/CMake package and external `find_package` consumer configure, build, run, regenerate on `.mdsl` or included-header edits through a stable Ninja depfile, and return to a no-op build |
-| Goal 6 validation and review | Complete for implemented scope | Release and Debug suites pass; sanitizer proofs pass; all independently reported high/medium implementation findings are fixed and covered by regressions |
+| Goal 6 validation and review | Complete for implemented scope | Release and Debug suites pass; generated-host/runtime sanitizer proofs pass; all independently reported high/medium implementation findings are fixed and covered by regressions |
 | Goal 7 CUDA/cuBLAS | Not attempted | Optional GPU implementation was not started because the exact LibTooling frontend gate remains partial |
 
 ## Implemented pipeline
@@ -61,28 +63,33 @@ directories, and multi-TU relocatable co-linking.
 
 ## Final validation evidence
 
-Fresh final Release build: `/tmp/matcoredsl-review-ready-release.LY9Jyr`
+Fresh final Release build: `/tmp/matcoredsl-final-release.u4Iyvv`
 
 - Ninja: 15/15 steps.
-- CTest at the final code head: 4/4 targets passed in 24.16 seconds.
+- CTest at the final implementation head: 4/4 targets passed in 31.16 seconds.
 - Frontend suite: 44/44 checks.
-- Integration matrix: 60/60 active cases, 0 failures, 6 future capabilities
+- Integration matrix: 63/63 active cases, 0 failures, 6 future capabilities
   explicitly not counted as passes.
 - Installed consumer: configure/build/run, `.mdsl` rebuild, included-header
   semantic rebuild, stable depfile inspection, and no-op checks passed.
 - Runtime suite: three GEMM shapes plus descriptor/policy failure contracts.
 
-Debug validation tree: `/tmp/matcoredsl-handoff-debug.2WOLkv`
+Debug validation tree: `/tmp/matcoredsl-final-debug.a2lVLg`
 
-- Ninja: initial 15/15 steps and final-head incremental rebuild passed.
-- CTest at the final code head: 4/4 targets passed in 49.87 seconds.
+- Ninja: fresh 15/15 steps passed.
+- CTest at the final implementation head: 4/4 targets passed in 60.13 seconds.
 - Runtime dynamic exports: only `matcore_runtime_gemm_f32_v0`.
 
-Sanitizer build: `/tmp/matcoredsl-final-sanitize.Preeps`
+Sanitizer build: `/tmp/matcoredsl-final-sanitize.eqB21D`
 
 - ASan+UBSan runtime build and test: 1/1 passed with leak detection enabled.
-- Sanitizer-instrumented generated host/stub/backend pipeline ran the GEMM
+- Release extraction followed by sanitizer-instrumented generated
+  host/stub/backend objects and the sanitizer-built runtime ran the GEMM
   example with no reported sanitizer finding.
+- Instrumenting the bootstrap extractor itself reports pointer-arithmetic UB in
+  Ubuntu's RapidJSON 1.1.0 header at `rapidjson/internal/stack.h:117`. This is
+  recorded rather than counted as a clean full-frontend sanitizer result; it
+  does not occur in the generated host/runtime acceptance path.
 
 CPU result for `gemm_v0.mdsl`:
 
@@ -156,11 +163,11 @@ cmake --build /tmp/matcoredsl-consumer -- -j2
 
 The standalone diff changes only `AGENTS.md`, `compiler/**`, `docs/mdslc/**`,
 and ADR 0001; no legacy production source is modified. Pure-Python legacy
-smoke tests passed 22 selected cases. Three additional tests failed only at the
-known import boundary because `_matcore_native` is not built. A root legacy
-CMake probe cannot configure: it requests MLIR 18.1.3 while only MLIR 22.1.2
-configuration is installed. The full legacy extension was therefore not
-rebuilt or claimed green.
+smoke tests passed 22 selected cases. Two additional selected tests failed
+only at the known import boundary because `_matcore_native` is not built. A
+root legacy CMake probe cannot configure: it requests MLIR 18.1.3 while only
+MLIR 22.1.2 configuration is installed. The full legacy extension was
+therefore not rebuilt or claimed green.
 
 The original `feature/device-resident-tensors` checkout remains at the baseline
 SHA with its 50 tracked deletions untouched. Final inspection also found an
@@ -173,10 +180,11 @@ clean.
 
 - The frontend is the documented AST-JSON bootstrap, not LibTooling. Exact
   annotation payload authentication remains the primary blocker.
-- Captured translation units must contain exactly one direct
-  `#include <matcore/mdsl.h>`. Duplicate direct spellings are rejected because
-  the bootstrap has no preprocessor callback location; the LibTooling frontend
-  will replace this conservative rewrite boundary.
+- Rewritten calls use stable global site wrappers declared by a generated,
+  include-free forward-declaration preamble followed by a `#line` reset. The
+  rewrite therefore does not guess at textual include locations or reorder user
+  includes/macros; named namespaces, active macro includes, inert duplicate/raw
+  spellings, and multiline `__LINE__` preservation are regression-tested.
 - Linux, Ninja, Clang 21, one `.mdsl` input, CPU, synchronous rank-2
   row-major-contiguous `f32` GEMM only.
 - Public `matrix_view` is deliberately minimal and represents host f32 storage;
