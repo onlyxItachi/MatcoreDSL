@@ -5,6 +5,9 @@
 #include <rapidjson/prettywriter.h>
 #include <rapidjson/stringbuffer.h>
 
+#include <algorithm>
+#include <cctype>
+#include <initializer_list>
 #include <string_view>
 #include <unordered_set>
 
@@ -62,6 +65,22 @@ const rapidjson::Value *requiredMember(const rapidjson::Value &object,
   return &iterator->value;
 }
 
+bool exactMembers(const rapidjson::Value &object,
+                  std::initializer_list<const char *> names,
+                  std::string_view context, std::string &error) {
+  if (!object.IsObject() || object.MemberCount() != names.size()) {
+    error = std::string(context) + " has unexpected or missing fields";
+    return false;
+  }
+  for (const char *name : names) {
+    if (!object.HasMember(name)) {
+      error = std::string(context) + " is missing field: " + name;
+      return false;
+    }
+  }
+  return true;
+}
+
 bool readString(const rapidjson::Value &object, const char *name,
                 std::string &value, std::string &error) {
   const rapidjson::Value *encoded =
@@ -88,13 +107,41 @@ bool readUint64(const rapidjson::Value &object, const char *name,
 
 bool parseRange(const rapidjson::Value &encoded, SourceRange &range,
                 std::string &error) {
-  return readUint64(encoded, "begin", range.begin, error) &&
+  return exactMembers(encoded, {"begin", "end"}, "source range", error) &&
+         readUint64(encoded, "begin", range.begin, error) &&
          readUint64(encoded, "end", range.end, error);
+}
+
+bool exactStringArray(const rapidjson::Value &object, const char *name,
+                      std::initializer_list<std::string_view> expected,
+                      std::string &error) {
+  const rapidjson::Value *encoded =
+      requiredMember(object, name, rapidjson::kArrayType, error);
+  if (encoded == nullptr || encoded->Size() != expected.size()) {
+    if (encoded != nullptr) {
+      error = "Matcore IR field has wrong cardinality: " + std::string(name);
+    }
+    return false;
+  }
+  rapidjson::SizeType index = 0;
+  for (const std::string_view value : expected) {
+    const rapidjson::Value &element = (*encoded)[index++];
+    if (!element.IsString() ||
+        std::string_view(element.GetString(), element.GetStringLength()) != value) {
+      error = "Matcore IR field has invalid value: " + std::string(name);
+      return false;
+    }
+  }
+  return true;
 }
 
 bool parseMatrix(const rapidjson::Value &encoded, MatrixValue &matrix,
                  std::string &error) {
-  if (!readString(encoded, "role", matrix.role, error) ||
+  if (!exactMembers(encoded,
+                    {"role", "expression", "dtype", "rank", "shape",
+                     "strides", "layout", "mutability", "memory_space"},
+                    "matrix value", error) ||
+      !readString(encoded, "role", matrix.role, error) ||
       !readString(encoded, "expression", matrix.expression, error) ||
       !readString(encoded, "mutability", matrix.mutability, error)) {
     return false;
@@ -111,11 +158,71 @@ bool parseMatrix(const rapidjson::Value &encoded, MatrixValue &matrix,
       encoded.IsObject() && encoded.HasMember("rank") ? &encoded["rank"] : nullptr;
   if (dtype != "f32" || rank == nullptr || !rank->IsUint() ||
       rank->GetUint() != 2 || layout != "row_major_contiguous" ||
-      memory_space != "host") {
+      memory_space != "host" ||
+      !exactStringArray(encoded, "shape", {"?", "?"}, error) ||
+      !exactStringArray(encoded, "strides", {"dynamic-columns", "1"}, error)) {
+    if (!error.empty()) {
+      return false;
+    }
     error = "Matcore IR v0 matrix metadata must be host f32 rank-2 contiguous";
     return false;
   }
   return true;
+}
+
+bool parseAliasRequirements(const rapidjson::Value &operation,
+                            std::string &error) {
+  const rapidjson::Value *aliases = requiredMember(
+      operation, "alias_requirements", rapidjson::kArrayType, error);
+  if (aliases == nullptr || aliases->Size() != 2) {
+    if (aliases != nullptr) {
+      error = "gemm requires exactly two no-alias requirements";
+    }
+    return false;
+  }
+  const std::string_view peers[] = {"lhs", "rhs"};
+  for (rapidjson::SizeType index = 0; index < aliases->Size(); ++index) {
+    const rapidjson::Value &alias = (*aliases)[index];
+    std::string relation;
+    if (!exactMembers(alias, {"relation", "between"}, "alias requirement",
+                      error) ||
+        !readString(alias, "relation", relation, error) ||
+        relation != "no_alias" ||
+        !exactStringArray(alias, "between", {"output", peers[index]}, error)) {
+      if (error.empty()) {
+        error = "gemm alias requirements must be output/lhs and output/rhs";
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
+bool parseEffects(const rapidjson::Value &operation, std::string &error) {
+  const rapidjson::Value *effects =
+      requiredMember(operation, "effects", rapidjson::kObjectType, error);
+  std::string synchronization;
+  if (effects == nullptr ||
+      !exactMembers(*effects, {"reads", "writes", "synchronization"},
+                    "effects", error) ||
+      !exactStringArray(*effects, "reads", {"lhs", "rhs"}, error) ||
+      !exactStringArray(*effects, "writes", {"output"}, error) ||
+      !readString(*effects, "synchronization", synchronization, error) ||
+      synchronization != "synchronous") {
+    if (error.empty()) {
+      error = "gemm effects must be synchronous reads(lhs,rhs)/writes(output)";
+    }
+    return false;
+  }
+  return true;
+}
+
+bool validSiteId(std::string_view identifier) {
+  return identifier.size() == 35 && identifier.starts_with("mc_") &&
+         std::all_of(identifier.begin() + 3, identifier.end(), [](char value) {
+           return (value >= '0' && value <= '9') ||
+                  (value >= 'a' && value <= 'f');
+         });
 }
 
 } // namespace
@@ -141,8 +248,9 @@ bool verify(const Module &module, std::string &error) {
   std::unordered_set<std::string> site_ids;
   std::uint64_t previous_call_end = 0;
   for (const Operation &operation : module.operations) {
-    if (operation.site_id.empty() || !site_ids.insert(operation.site_id).second) {
-      error = "operation site IDs must be nonempty and unique";
+    if (!validSiteId(operation.site_id) ||
+        !site_ids.insert(operation.site_id).second) {
+      error = "operation site IDs must be canonical, lowercase, and unique";
       return false;
     }
     if (operation.kind != "gemm" ||
@@ -342,6 +450,12 @@ bool parseAndVerifyJson(std::string_view json, Module &module,
     error = "Matcore IR root must be a JSON object";
     return false;
   }
+  if (!exactMembers(document,
+                    {"schema", "version", "producer", "translation_unit",
+                     "operations"},
+                    "Matcore IR root", error)) {
+    return false;
+  }
   std::string schema;
   if (!readString(document, "schema", schema, error) || schema != "matcore.ir") {
     if (error.empty()) {
@@ -362,6 +476,8 @@ bool parseAndVerifyJson(std::string_view json, Module &module,
   const rapidjson::Value *translation_unit = requiredMember(
       document, "translation_unit", rapidjson::kObjectType, error);
   if (translation_unit == nullptr ||
+      !exactMembers(*translation_unit, {"identity", "source_file"},
+                    "translation unit", error) ||
       !readString(*translation_unit, "identity", module.translation_unit,
                   error) ||
       !readString(*translation_unit, "source_file", module.source_file,
@@ -379,6 +495,14 @@ bool parseAndVerifyJson(std::string_view json, Module &module,
       error = "Matcore IR operation must be an object";
       return false;
     }
+    if (!exactMembers(
+            encoded,
+            {"site_id", "kind", "canonical_callee", "source",
+             "source_argument_ranges", "output", "operands",
+             "alias_requirements", "effects", "policy"},
+            "operation", error)) {
+      return false;
+    }
     Operation operation;
     if (!readString(encoded, "site_id", operation.site_id, error) ||
         !readString(encoded, "kind", operation.kind, error) ||
@@ -389,6 +513,10 @@ bool parseAndVerifyJson(std::string_view json, Module &module,
     const rapidjson::Value *source =
         requiredMember(encoded, "source", rapidjson::kObjectType, error);
     if (source == nullptr ||
+        !exactMembers(*source,
+                      {"file", "line", "column", "byte_offset",
+                       "byte_range"},
+                      "source location", error) ||
         !readString(*source, "file", operation.source.file, error) ||
         !readUint64(*source, "byte_offset", operation.source.offset, error)) {
       return false;
@@ -440,9 +568,14 @@ bool parseAndVerifyJson(std::string_view json, Module &module,
       }
       operation.operands.push_back(std::move(parsed));
     }
+    if (!parseAliasRequirements(encoded, error) ||
+        !parseEffects(encoded, error)) {
+      return false;
+    }
     const rapidjson::Value *policy =
         requiredMember(encoded, "policy", rapidjson::kObjectType, error);
     if (policy == nullptr ||
+        !exactMembers(*policy, {"target", "fallback"}, "policy", error) ||
         !readString(*policy, "target", operation.target, error) ||
         !readString(*policy, "fallback", operation.fallback, error)) {
       return false;
