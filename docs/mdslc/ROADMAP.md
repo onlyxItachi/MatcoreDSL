@@ -1,129 +1,66 @@
-# MDSLC bootstrap roadmap
+# MDSLC roadmap
 
-The roadmap is gate-driven. Higher layers do not proceed on unverified lower
-layers, and every implementation milestone remains additive to the legacy
-Python/JIT path.
+The roadmap remains gate-driven and additive to the legacy Python/JIT path.
 
-## 1. Standalone build skeleton
+## Completed bootstrap gates
 
-Create `compiler/` with independent CMake targets for `mdslc++`,
-`matcore-extract`, IR support, runtime support, examples, and tests. The first
-configure must not import Python, find nanobind, require MLIR, or modify root
-CMake.
-
-Gate:
-
-- clean standalone CMake configure;
-- skeleton targets compile with Ninja `-j2`;
-- no legacy source changes;
-- generated files remain in `build-mdslc/`.
-
-## 2. Valid-C++ driver proof
-
-Implement the small C++ `mdslc++` process driver. It accepts normal compiler
-arguments, forces `.mdsl` inputs through `-x c++`, invokes the selected Clang
-without a shell, preserves exit status and output, and supports `-c`, final
-link, `--verbose`, and `--save-temps`.
-
-Gate:
-
-- `hello_host.mdsl` prints `5` through `mdslc++`;
-- the same source produces an ELF relocatable object;
-- `file`, `readelf`, and `nm` confirm ordinary object shape;
-- no Python, nanobind, Matcore operation, or legacy build is involved.
-
-This work can use `/usr/bin/clang++-21` now.
-
-## 3. Public header and post-Sema capture
-
-After matching Clang 21 development headers are available, add the minimal
-`<matcore/mdsl.h>` API and LibTooling extractor. Recognition uses only direct
-canonical annotated declarations after Sema. Emit deterministic, verified
-Matcore JSON IR v0 with complete source and descriptor information.
-
-Gate:
-
-- qualified and namespace-alias GEMM calls resolve to one canonical operation;
-- unrelated calls are ignored;
-- deterministic JSON matches a reviewed golden fixture;
-- unsupported indirect, template, lambda, macro, header, and constexpr sites
-  fail with original-source diagnostics;
-- extraction does not rewrite source.
-
-## 4. C ABI, rewrite, and CPU GEMM
-
-Define the stable v0 C descriptors and status model. Add exact-source-range
-rewrite, deterministic call-site symbols, generated C ABI stubs, and a
-synchronous reference `f32` GEMM for rank-2 contiguous row-major host views.
-Reject shape, alias, lifetime, dtype, layout, and residency violations without
-hidden allocation, copy, migration, or fallback.
-
-Gate:
-
-- `gemm_v0.mdsl` produces saved host/IR/site/stub/backend artifacts;
-- generated objects are partially linked into a normal relocatable `.o`;
-- ordinary `clang++` links the object against `libmatcore_runtime`;
-- execution matches an independent GEMM oracle for multiple small shapes;
-- diagnostics still point to the original `.mdsl` source.
-
-## 5. Installation and external consumer
-
-Install the drivers, public headers, runtime library, and relocatable CMake
-package. Provide an external `find_package(MatcoreDSL REQUIRED)` consumer with
-a helper that models `.mdsl` generation dependencies explicitly.
-
-Gate:
-
-- clean install tree contains no repository-local absolute paths;
-- clean external configure/build/link/run succeeds;
-- editing one `.mdsl` source regenerates only its necessary artifacts.
-
-## 6. Adversarial validation
-
-Implement the full positive and negative compile/runtime matrix. Include two
-stable call-site IDs, ordinary C++ around calls, non-template functions and
-methods, safe host templates, malformed/version-mismatched IR, all initially
-forbidden contexts, clean Debug and Release builds, and ASan/UBSan where
-supported.
-
-Independently review the integrated diff for textual matching, source-range
-loss, ABI leakage, unstable names, multi-TU collisions, hidden allocation or
-copy, silent fallback, local paths, LLVM-version mixing, Python leakage,
-generated artifacts, and legacy regression.
-
-Gate:
-
-- all declared tests pass from a fresh build directory;
-- runtime and artifact checks pass, not compilation alone;
-- every high-severity review finding is resolved.
-
-## 7. Optional CUDA/cuBLAS library backend
-
-Only after Goals 1-6 pass, add explicit device-resident descriptors and a
-synchronous `target=cuda`, `backend=cublas` path. It must reject host/mixed
-residency and unavailable runtime/backend requests when fallback is `error`.
-
-No custom PTX, WGMMA, HIP, ROCm, or Metal implementation belongs in this
-milestone. Compile-only results must remain labeled compile-only.
-
-## Future structured compiler bridge
-
-After the bootstrap contract is stable, define one explicit conversion from
-Matcore JSON IR v0 into the high-level Matcore IR/MLIR dialect. Adapt useful
-legacy verifier, capability, lowering, and runtime concepts behind new
-interfaces rather than coupling the frontend to JIT or Python details.
-
-Then implement capability-aware planners and legalizers independently for CPU,
-NVIDIA, AMD, and future targets. A backend becomes supported only after normal
-artifact production, runtime execution, correctness validation, and declared
-performance tests pass on a device covered by its capability model.
+1. **Standalone build skeleton — complete.** `compiler/` configures and builds
+   independently of Python, nanobind, MLIR, and root CMake.
+2. **Valid-C++ driver proof — complete.** `mdslc++` forces `.mdsl` through
+   Clang as C++, supports host executable/object modes, is shell-free, and
+   preserves compiler diagnostics/status.
+3. **Public API and bootstrap capture — partial by dependency.** The public
+   `matcore::mdsl` header, exact trusted-declaration recognition, Clang
+   parsing/Sema, deterministic JSON, verifier, and negative context diagnostics
+   pass. The AST-JSON implementation must still be replaced by LibTooling to
+   authenticate the annotation payload and use native Clang AST APIs.
+4. **C ABI, rewrite, and CPU GEMM — complete.** Exact source rewrite, stable
+   multi-TU site symbols, generated stubs/backend, synchronous checked f32 GEMM,
+   combined `.o`, ordinary external link, and independent-oracle execution pass.
+5. **Installation and external consumer — complete.** Tools, headers, runtime,
+   exported CMake targets, helper, external `find_package`, incremental rebuild,
+   and clean installed-path checks pass.
+6. **Adversarial validation — complete for implemented scope.** Fresh Release,
+   Debug, ASan/UBSan, artifact, runtime, negative-source, IR-mutation, install,
+   and independent review gates pass.
+7. **CUDA/cuBLAS — not attempted.** It remains optional after the exact
+   LibTooling frontend gate is closed.
 
 ## Next three exact engineering tasks
 
-1. Add `compiler/CMakeLists.txt`, empty standalone targets, and one configure
-   test that proves Python, nanobind, and MLIR are absent from the new build.
-2. Implement the C++ `mdslc++` process driver around `/usr/bin/clang++-21` and
-   pass executable plus relocatable-object tests for `hello_host.mdsl`.
-3. Obtain explicit approval for matching `libclang-21-dev`, verify its installed
-   version and headers, then configure a minimal LibTooling executable before
-   writing operation extraction logic.
+1. With explicit package-install approval, install the matching Clang 21.1.8
+   development package, verify `clangTooling`, ASTMatcher, Rewriter, LLVM, and
+   compiler versions as one coherent tuple, then implement the existing
+   frontend interface with `getDirectCallee()`, canonical `FunctionDecl`,
+   `AnnotateAttr` payload checks, and `SourceManager` ranges. Run the current 44
+   frontend checks unchanged against it.
+2. Make the LibTooling frontend the default and retain AST JSON only as an
+   explicitly selected diagnostic fallback until parity is proven. Add
+   compile-database support, include/source-manager tests, and remove the
+   trusted-path inference workaround once annotation identity is native.
+3. Define and test the single versioned JSON-v0-to-high-level-Matcore-IR bridge,
+   including capability requirements and a CPU planner choice between the
+   reference loop, structured/vector lowering, and an external optimized
+   library. Do not begin custom GPU kernels in this step.
+
+## Subsequent lowering milestones
+
+- Expand the typed high-level IR only through versioned fields and verifier
+  tests; do not introduce an overlapping undocumented IR.
+- Add `gemv`, `gevm`, and then `relu_gemm` one operation at a time with explicit
+  legality, effects, ABI, runtime, and negative tests.
+- Add a CPU capability record and vector/library selection with correctness and
+  bounded performance evidence.
+- Add NVIDIA capability discovery and a synchronous, explicit
+  device-resident cuBLAS library-call backend. No hidden migration or CPU
+  fallback is allowed.
+- Only after the library backend passes may scheduled GPU/Vector/NVGPU/NVVM
+  experiments begin. WGMMA requires a detected legal architecture and actual
+  runtime validation.
+- AMD, HIP, and other accelerators require their own capability contract,
+  legalizer, lowering, runtime, artifact, correctness, and performance gates.
+
+A backend is supported only after it compiles, links, executes, validates
+correctness, and passes its declared acceptance suite. The performance promise
+remains: choose and validate the best implementation available within the
+supported device capability model and implemented search space.
