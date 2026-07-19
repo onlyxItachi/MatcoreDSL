@@ -28,6 +28,7 @@ NEGATIVE_CASES = {
     "side_effect": "lhs must be a stable matrix lvalue",
     "output_alias": "output must not alias",
     "cuda_policy": "supports only target=cpu",
+    "policy_cast": "policy must be the default or an inline policy aggregate",
     "const_output": "deleted function 'out'",
     "temporary_output": "deleted function 'out'",
     "constexpr_call": "constexpr Matcore execution is not supported",

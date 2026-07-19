@@ -1,0 +1,10 @@
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+
+void rejected_policy_cast(md::matrix_view &output, md::matrix_view &lhs,
+                          md::matrix_view &rhs) {
+  md::gemm(md::out(output), lhs, rhs,
+           md::policy{.target = static_cast<md::target>(1),
+                      .fallback = md::fallback::error});
+}

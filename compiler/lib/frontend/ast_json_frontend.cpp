@@ -446,14 +446,28 @@ bool parsePolicy(const JsonValue &expression, std::string &target,
   }
   std::vector<std::pair<std::string, std::string>> constants;
   collectEnumConstants(expression, constants);
+  bool saw_target = false;
+  bool saw_fallback = false;
   for (const auto &[type, value] : constants) {
     if (type == "matcore::mdsl::target") {
+      if (saw_target) {
+        return false;
+      }
+      saw_target = true;
       target = value;
     } else if (type == "matcore::mdsl::fallback") {
+      if (saw_fallback) {
+        return false;
+      }
+      saw_fallback = true;
       fallback = value;
     }
   }
-  return true;
+  // Clang materializes the public policy's default member initializers in an
+  // InitListExpr, including for `policy{}`. Requiring one canonical enumerator
+  // for each field prevents an opaque enum cast (for example target(1)) from
+  // being silently interpreted as the CPU default.
+  return saw_target && saw_fallback;
 }
 
 std::pair<unsigned, unsigned> lineAndColumn(std::string_view source,
