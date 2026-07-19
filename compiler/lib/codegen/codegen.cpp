@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <optional>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -47,9 +46,10 @@ std::string escapeCppString(std::string_view value) {
   return escaped;
 }
 
-std::optional<std::size_t>
-publicHeaderInsertionOffset(std::string_view source) {
+std::vector<std::size_t>
+publicHeaderInsertionOffsets(std::string_view source) {
   constexpr std::string_view required = "#include <matcore/mdsl.h>";
+  std::vector<std::size_t> offsets;
   std::size_t line_begin = 0;
   while (line_begin <= source.size()) {
     const std::size_t newline = source.find('\n', line_begin);
@@ -64,14 +64,15 @@ publicHeaderInsertionOffset(std::string_view source) {
       line.remove_suffix(1);
     }
     if (line == required) {
-      return newline == std::string_view::npos ? source.size() : newline + 1;
+      offsets.push_back(newline == std::string_view::npos ? source.size()
+                                                          : newline + 1);
     }
     if (newline == std::string_view::npos) {
       break;
     }
     line_begin = newline + 1;
   }
-  return std::nullopt;
+  return offsets;
 }
 
 std::string declaration(const ir::Operation &operation, bool with_default) {
@@ -288,22 +289,24 @@ bool generate(const ir::Module &module, std::string_view original_source,
   if (module.operations.empty()) {
     artifacts.rewritten_host = std::move(rewritten);
   } else {
-    const std::optional<std::size_t> insertion =
-        publicHeaderInsertionOffset(rewritten);
-    if (!insertion) {
-      error = "Matcore translation units must contain the direct opt-in "
-              "#include <matcore/mdsl.h> before generated declarations";
+    const std::vector<std::size_t> insertions =
+        publicHeaderInsertionOffsets(rewritten);
+    if (insertions.size() != 1) {
+      error = "Matcore translation units must contain exactly one direct "
+              "#include <matcore/mdsl.h>; ambiguous preprocessor locations "
+              "cannot be rewritten by bootstrap v0";
       return false;
     }
+    const std::size_t insertion = insertions.front();
     const std::size_t next_line =
         1 + static_cast<std::size_t>(std::count(
-                rewritten.begin(), rewritten.begin() + *insertion, '\n'));
-    artifacts.rewritten_host = rewritten.substr(0, *insertion) +
+                rewritten.begin(), rewritten.begin() + insertion, '\n'));
+    artifacts.rewritten_host = rewritten.substr(0, insertion) +
                                "#include \"" +
                                escapeCppString(sites_include) + "\"\n#line " +
                                std::to_string(next_line) + " \"" +
                                escapeCppString(module.source_file) + "\"\n" +
-                               rewritten.substr(*insertion);
+                               rewritten.substr(insertion);
   }
   artifacts.sites_header = generateSites(module);
   artifacts.stubs_source = generateStubs(module, sites_include);

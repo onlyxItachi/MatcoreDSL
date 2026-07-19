@@ -503,6 +503,37 @@ std::pair<unsigned, unsigned> lineAndColumn(std::string_view source,
   return {line, column};
 }
 
+std::vector<std::uint64_t>
+directPublicHeaderOffsets(std::string_view source) {
+  constexpr std::string_view required = "#include <matcore/mdsl.h>";
+  std::vector<std::uint64_t> offsets;
+  std::size_t line_begin = 0;
+  while (line_begin <= source.size()) {
+    const std::size_t newline = source.find('\n', line_begin);
+    const std::size_t line_end =
+        newline == std::string_view::npos ? source.size() : newline;
+    std::string_view line = source.substr(line_begin, line_end - line_begin);
+    std::size_t leading = 0;
+    while (leading < line.size() &&
+           (line[leading] == ' ' || line[leading] == '\t')) {
+      ++leading;
+    }
+    line.remove_prefix(leading);
+    while (!line.empty() && (line.back() == ' ' || line.back() == '\t' ||
+                             line.back() == '\r')) {
+      line.remove_suffix(1);
+    }
+    if (line == required) {
+      offsets.push_back(static_cast<std::uint64_t>(line_begin + leading));
+    }
+    if (newline == std::string_view::npos) {
+      break;
+    }
+    line_begin = newline + 1;
+  }
+  return offsets;
+}
+
 std::string sourceText(const JsonValue &node, std::string_view source) {
   const auto range = sourceRange(node);
   if (!range || range->first > range->second || range->second > source.size()) {
@@ -1088,6 +1119,25 @@ bool AstJsonBootstrapFrontend::extract(const Options &options, Result &result) {
   scan(document, WalkContext{.source_file = display_path}, scan_source_file,
        declarations, canonicalPath(options.input_path), display_path, source,
        result, allowed_operation_references);
+  if (!result.module.operations.empty()) {
+    const std::vector<std::uint64_t> include_offsets =
+        directPublicHeaderOffsets(source);
+    if (include_offsets.size() != 1) {
+      const std::uint64_t offset = include_offsets.size() > 1
+                                       ? include_offsets[1]
+                                       : result.module.operations.front()
+                                             .source.offset;
+      const auto [line, column] = lineAndColumn(source, offset);
+      result.diagnostics.push_back(Diagnostic{
+          .file = display_path,
+          .line = line,
+          .column = column,
+          .message =
+              "bootstrap rewrite requires exactly one direct #include "
+              "<matcore/mdsl.h>; duplicate or indirect opt-in includes are "
+              "not supported"});
+    }
+  }
   std::sort(result.module.operations.begin(), result.module.operations.end(),
             [](const ir::Operation &left, const ir::Operation &right) {
               return left.source.offset < right.source.offset;
