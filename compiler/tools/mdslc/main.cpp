@@ -484,10 +484,11 @@ CaptureDependencyClosure(const fs::path &dependency_file,
         return std::nullopt;
       }
     }
-    // Preserve the lexical dependency path. Canonicalizing here would erase
-    // symlink identity and allow a link to be retargeted between extraction
-    // and compilation without invalidating the captured closure.
-    absolute = absolute.lexically_normal();
+    // Preserve the dependency path exactly as the compiler reported it after
+    // making it absolute. Canonicalization and lexical normalization are both
+    // unsafe here: `link/../header` is resolved by the kernel relative to the
+    // symlink target, while lexically_normal() incorrectly collapses it before
+    // the symlink is traversed.
     if (std::find(captured_paths.begin(), captured_paths.end(), absolute) !=
         captured_paths.end()) {
       continue;
@@ -513,6 +514,104 @@ CaptureDependencyClosure(const fs::path &dependency_file,
                                          std::move(*path_identity)});
   }
   return closure;
+}
+
+std::optional<std::vector<fs::path>>
+ReadDependencyPathSet(const fs::path &dependency_file,
+                      const std::vector<fs::path> &excluded_paths,
+                      std::string &error_message) {
+  const std::optional<std::vector<fs::path>> parsed =
+      ReadMakeDependencyPaths(dependency_file, error_message);
+  if (!parsed) {
+    return std::nullopt;
+  }
+
+  std::vector<fs::path> excluded_absolute;
+  for (const fs::path &excluded : excluded_paths) {
+    std::error_code path_error;
+    fs::path absolute = excluded;
+    if (absolute.is_relative()) {
+      absolute = fs::absolute(absolute, path_error);
+    }
+    if (path_error) {
+      error_message = "cannot resolve generated dependency path " +
+                      excluded.string() + ": " + path_error.message();
+      return std::nullopt;
+    }
+    excluded_absolute.emplace_back(std::move(absolute));
+  }
+
+  std::vector<fs::path> paths;
+  for (const fs::path &dependency : *parsed) {
+    std::error_code path_error;
+    fs::path absolute = dependency;
+    if (absolute.is_relative()) {
+      absolute = fs::absolute(absolute, path_error);
+    }
+    if (path_error) {
+      error_message = "cannot resolve dependency path " +
+                      dependency.string() + ": " + path_error.message();
+      return std::nullopt;
+    }
+    if (std::find(excluded_absolute.begin(), excluded_absolute.end(),
+                  absolute) != excluded_absolute.end() ||
+        std::find(paths.begin(), paths.end(), absolute) != paths.end()) {
+      continue;
+    }
+    paths.emplace_back(std::move(absolute));
+  }
+  std::sort(paths.begin(), paths.end(),
+            [](const fs::path &left, const fs::path &right) {
+              return left.native() < right.native();
+            });
+  return paths;
+}
+
+bool RequireSameDependencyResolution(
+    const fs::path &original_dependency_file,
+    const fs::path &rewritten_dependency_file,
+    const std::vector<fs::path> &excluded_paths) {
+  std::string original_error;
+  const std::optional<std::vector<fs::path>> original =
+      ReadDependencyPathSet(original_dependency_file, {}, original_error);
+  if (!original) {
+    std::cerr << "mdslc++: cannot compare original source dependency "
+                 "resolution: "
+              << original_error << '\n';
+    return false;
+  }
+  std::string rewritten_error;
+  const std::optional<std::vector<fs::path>> rewritten =
+      ReadDependencyPathSet(rewritten_dependency_file, excluded_paths,
+                            rewritten_error);
+  if (!rewritten) {
+    std::cerr << "mdslc++: cannot compare rewritten host dependency "
+                 "resolution: "
+              << rewritten_error << '\n';
+    return false;
+  }
+  if (*original == *rewritten) {
+    return true;
+  }
+
+  const auto first_difference = [](const std::vector<fs::path> &left,
+                                   const std::vector<fs::path> &right) {
+    return std::find_if(left.begin(), left.end(), [&](const fs::path &path) {
+      return std::find(right.begin(), right.end(), path) == right.end();
+    });
+  };
+  const auto removed = first_difference(*original, *rewritten);
+  const auto added = first_difference(*rewritten, *original);
+  std::cerr << "mdslc++: dependency resolution changed between the original "
+               "source and rewritten host";
+  if (removed != original->end()) {
+    std::cerr << "; no longer resolved: " << *removed;
+  }
+  if (added != rewritten->end()) {
+    std::cerr << "; newly resolved: " << *added;
+  }
+  std::cerr << "; refusing to compile against a different header closure\n";
+  return false;
 }
 
 void AppendDependencyClosure(
@@ -1488,7 +1587,6 @@ bool MergeDependencyFiles(const std::vector<fs::path> &dependency_files,
                   << dependency << ": " << path_error.message() << '\n';
         return false;
       }
-      identity = identity.lexically_normal();
       const bool generated =
           std::any_of(excluded_paths.begin(), excluded_paths.end(),
                       [&](const fs::path &excluded) {
@@ -1498,8 +1596,7 @@ bool MergeDependencyFiles(const std::vector<fs::path> &dependency_files,
                           excluded_identity =
                               fs::absolute(excluded_identity, excluded_error);
                         }
-                        return !excluded_error &&
-                               excluded_identity.lexically_normal() == identity;
+                        return !excluded_error && excluded_identity == identity;
                       });
       if (generated ||
           std::find(dependency_identities.begin(), dependency_identities.end(),
@@ -1794,10 +1891,20 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
       invocation, "-MD", *layout, source_directory, source_absolute,
       artifacts.host_overlay, output, private_host_dependency,
       wrapper.verbose);
-  if (result != 0 ||
+  if (result != 0) {
+    return result;
+  }
+  const std::vector<fs::path> generated_host_paths{
+      artifacts.host_source, artifacts.host_overlay, artifacts.ir,
+      artifacts.sites_header, artifacts.stubs_source,
+      artifacts.backend_source, artifacts.host_object,
+      artifacts.stubs_object, artifacts.backend_object};
+  if (!RequireSameDependencyResolution(private_source_dependency,
+                                       private_host_dependency,
+                                       generated_host_paths) ||
       !capture_generated_closure(private_host_dependency,
                                  "generated host dependency scanning")) {
-    return result != 0 ? result : 1;
+    return 1;
   }
   result = GenerateDependencyFile(
       invocation, "-MD", *layout, source_directory, artifacts.stubs_source,
