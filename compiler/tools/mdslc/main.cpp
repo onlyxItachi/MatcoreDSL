@@ -1177,8 +1177,10 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     link_command.insert(link_command.end(), invocation.link_arguments.begin(),
                         invocation.link_arguments.end());
     link_command.emplace_back("-L" + layout->runtime_directory.string());
-    link_command.emplace_back("-Wl,-rpath," +
-                              layout->runtime_directory.string());
+    link_command.emplace_back("-Xlinker");
+    link_command.emplace_back("-rpath");
+    link_command.emplace_back("-Xlinker");
+    link_command.emplace_back(layout->runtime_directory.string());
     link_command.emplace_back("-lmatcore_runtime");
     link_command.emplace_back("-o");
     link_command.emplace_back(output.string());

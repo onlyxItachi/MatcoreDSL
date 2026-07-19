@@ -59,7 +59,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="matcore-driver-native-") as temporary:
         root = Path(temporary)
-        prefix = root / "relocated prefix"
+        prefix = root / "relocated prefix,with comma"
         binary_directory = prefix / args.bindir
         include_root = prefix / args.includedir
         include_directory = include_root / "matcore"
