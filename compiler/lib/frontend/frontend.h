@@ -21,6 +21,7 @@ struct Options {
   std::string input_path;
   std::string clang_path = "/usr/bin/clang++-21";
   std::vector<std::string> compiler_arguments;
+  std::vector<std::string> trusted_public_headers;
   std::size_t maximum_ast_bytes = 512U * 1024U * 1024U;
   bool verbose = false;
 };

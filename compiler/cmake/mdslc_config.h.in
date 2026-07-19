@@ -1,4 +1,4 @@
 #pragma once
 
 #define MDSLC_DEFAULT_CLANGXX "@MDSLC_CLANGXX_EXECUTABLE@"
-
+#define MDSLC_SOURCE_PUBLIC_HEADER "@CMAKE_CURRENT_SOURCE_DIR@/include/matcore/mdsl.h"
