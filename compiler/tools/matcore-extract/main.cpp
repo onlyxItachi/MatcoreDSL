@@ -1,5 +1,6 @@
 #include "../../lib/frontend/frontend.h"
 #include "../../lib/codegen/codegen.h"
+#include "mdslc_config.h"
 
 #include <unistd.h>
 
@@ -61,6 +62,17 @@ bool takeValue(int argc, char **argv, int &index, std::string &destination,
 
 std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
   CommandLine command;
+  command.frontend.trusted_public_headers.emplace_back(
+      MDSLC_SOURCE_PUBLIC_HEADER);
+  std::error_code executable_error;
+  const std::filesystem::path executable =
+      std::filesystem::canonical("/proc/self/exe", executable_error);
+  if (!executable_error) {
+    command.frontend.trusted_public_headers.push_back(
+        (executable.parent_path().parent_path() / "include" / "matcore" /
+         "mdsl.h")
+            .string());
+  }
   bool after_separator = false;
   for (int index = 1; index < argc; ++index) {
     const std::string argument = argv[index];

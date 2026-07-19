@@ -29,6 +29,7 @@ NEGATIVE_CASES = {
     "output_alias": "output must not alias",
     "cuda_policy": "supports only target=cpu",
     "policy_cast": "policy must be the default or an inline policy aggregate",
+    "untrusted_header": "compiler's trusted <matcore/mdsl.h> header",
     "const_output": "deleted function 'out'",
     "temporary_output": "deleted function 'out'",
     "constexpr_call": "constexpr Matcore execution is not supported",
