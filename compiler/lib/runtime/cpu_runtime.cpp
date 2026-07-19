@@ -29,12 +29,26 @@ bool valid_mutability(matcore_mutability_v0 mutability) noexcept {
          mutability == MATCORE_MUTABILITY_READ_WRITE_V0;
 }
 
+template <std::size_t Size>
+bool reserved_is_zero(const std::uint64_t (&reserved)[Size]) noexcept {
+  for (const std::uint64_t value : reserved) {
+    if (value != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
 matcore_status_v0 validate_tensor(const matcore_tensor_desc_v0 &tensor,
                                   const char *null_message) noexcept {
   if (!valid_header(tensor.abi_version, tensor.struct_size,
                     sizeof(matcore_tensor_desc_v0))) {
     return status(MATCORE_STATUS_ABI_MISMATCH_V0,
                   "tensor descriptor ABI version or size mismatch");
+  }
+  if (!reserved_is_zero(tensor.reserved)) {
+    return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
+                  "tensor descriptor reserved fields must be zero");
   }
   if (tensor.data == nullptr) {
     return status(MATCORE_STATUS_INVALID_ARGUMENT_V0, null_message);
@@ -112,6 +126,10 @@ matcore_runtime_gemm_f32_v0(const matcore_tensor_desc_v0 *out,
                     sizeof(matcore_policy_v0))) {
     return status(MATCORE_STATUS_ABI_MISMATCH_V0,
                   "policy ABI version or size mismatch");
+  }
+  if (!reserved_is_zero(policy->reserved)) {
+    return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
+                  "policy reserved fields must be zero");
   }
   if (policy->target != MATCORE_TARGET_CPU_V0) {
     return status(MATCORE_STATUS_UNSUPPORTED_TARGET_V0,
