@@ -104,6 +104,14 @@ bool IsExtractionIncompatibleArgument(std::string_view argument) {
          argument.starts_with("-fplugin=");
 }
 
+bool IsUnsupportedFinalLinkMode(std::string_view argument) {
+  return argument == "-shared" || argument == "-static" ||
+         argument == "-static-pie" || argument == "-pie" ||
+         argument == "-no-pie" || argument == "-r" ||
+         argument == "--relocatable" || argument == "-nostdlib" ||
+         argument == "-nodefaultlibs" || argument == "-Wl,-r";
+}
+
 bool IsLinkOptionWithValue(std::string_view argument) {
   return argument == "-L" || argument == "-l" ||
          argument == "-Xlinker";
@@ -362,6 +370,12 @@ ParseCpuInvocation(const WrapperArguments &arguments) {
       std::cerr << "mdslc++: compiler argument is incompatible with the CPU "
                    "extraction pipeline: "
                 << argument << '\n';
+      return std::nullopt;
+    }
+    if (IsUnsupportedFinalLinkMode(argument)) {
+      std::cerr << "mdslc++: final link mode " << argument
+                << " is not implemented by the CPU bootstrap; use -c and "
+                   "perform that link explicitly with clang++\n";
       return std::nullopt;
     }
     if (argument == "-x") {

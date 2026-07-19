@@ -510,6 +510,26 @@ def execute_case(context: Context, case: dict[str, object], work: Path) -> None:
         require(not output.exists(), "unsupported target emitted an artifact")
         return
 
+    if mode == "driver_link_mode_reject":
+        source = source_argument(context, case)
+        output = work / "unsupported-output.so"
+        completed = run(
+            [
+                str(context.driver),
+                "--matcore-target=cpu",
+                "-std=c++20",
+                str(case["link_mode"]),
+                source,
+                "-o",
+                str(output),
+            ],
+            context.repository,
+        )
+        require(completed.returncode == 2, "unsupported link mode was not rejected")
+        require(str(case["diagnostic"]) in completed.stderr, "link-mode diagnostic missing")
+        require(not output.exists(), "unsupported link mode emitted an artifact")
+        return
+
     if mode == "driver_overwrite_guard":
         fixture = context.repository / source_argument(context, case)
         source = work / "guard.mdsl"
