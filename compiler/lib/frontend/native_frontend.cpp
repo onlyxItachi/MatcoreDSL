@@ -216,8 +216,8 @@ public:
 
   void InclusionDirective(
       clang::SourceLocation hash_location, const clang::Token &,
-      llvm::StringRef file_name, bool is_angled,
-      clang::CharSourceRange filename_range,
+      llvm::StringRef file_name, bool,
+      clang::CharSourceRange,
       clang::OptionalFileEntryRef file, llvm::StringRef, llvm::StringRef,
       const clang::Module *, bool,
       clang::SrcMgr::CharacteristicKind) override {
@@ -228,10 +228,11 @@ public:
       return;
     }
     state_.saw_direct_expected_include = true;
-    if (is_angled && filename_range.isValid() &&
-        !filename_range.getBegin().isMacroID() &&
-        !filename_range.getEnd().isMacroID() && file &&
-        isTrustedFile(&file->getFileEntry(), state_)) {
+    // PPCallbacks has already resolved macro-expanded include operands here.
+    // Authenticate the resulting FileEntry rather than the token spelling so
+    // an active main-file include macro remains valid without trusting a
+    // shadow or copied header.
+    if (file && isTrustedFile(&file->getFileEntry(), state_)) {
       state_.saw_direct_trusted_include = true;
     }
   }
