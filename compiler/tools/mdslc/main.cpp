@@ -95,12 +95,35 @@ int RunCompiler(std::vector<std::string> command) {
 
 int main(int argc, char **argv) {
   bool verbose = false;
+  bool after_option_terminator = false;
   bool previous_option_consumes_argument = false;
   bool injected_cpp_language_is_active = false;
   std::vector<std::string> command{MDSLC_DEFAULT_CLANGXX};
 
   for (int index = 1; index < argc; ++index) {
     const std::string_view argument = argv[index];
+
+    if (after_option_terminator) {
+      command.emplace_back(argument);
+      continue;
+    }
+
+    if (!previous_option_consumes_argument && argument == "--") {
+      bool has_mdsl_input_after_terminator = false;
+      for (int candidate = index + 1; candidate < argc; ++candidate) {
+        if (HasMdslExtension(argv[candidate])) {
+          has_mdsl_input_after_terminator = true;
+          break;
+        }
+      }
+      if (has_mdsl_input_after_terminator) {
+        command.emplace_back("-x");
+        command.emplace_back("c++");
+      }
+      command.emplace_back(argument);
+      after_option_terminator = true;
+      continue;
+    }
 
     if (!previous_option_consumes_argument && argument == "--verbose") {
       verbose = true;
