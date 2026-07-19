@@ -153,5 +153,16 @@ if(BUILD_TESTING)
       PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
     )
 
+    add_test(
+      NAME consumer.installed
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/consumer/run_installed_consumer_test.py"
+        --cmake "${CMAKE_COMMAND}"
+        --source-dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/consumer"
+        --producer-build-dir "${CMAKE_BINARY_DIR}"
+        --test-root "${CMAKE_BINARY_DIR}/tests/installed-consumer"
+        --cxx-compiler "${CMAKE_CXX_COMPILER}"
+    )
   endif()
 endif()
