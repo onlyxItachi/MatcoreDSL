@@ -20,6 +20,6 @@ void capture_gemm() {
   const int ordinary_host_value = host_add(2, 3);
   (void)ordinary_host_value;
 
-  ::matcore::mdsl::detail::__matcore_call_site_mc_2ed9c564471bcc43(md::out(C), A, B, md::policy{.target = md::target::cpu,
+  ::matcore::mdsl::detail::__matcore_call_site_mc_d02b3f5b625dc51ed089ace811832a03(md::out(C), A, B, md::policy{.target = md::target::cpu,
                       .fallback = md::fallback::error});
 }
