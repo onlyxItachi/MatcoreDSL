@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <string>
 
-extern "C" matcore_status_v0 matcore_generated_backend_mc_d02b3f5b625dc51ed089ace811832a03_v0(const matcore_tensor_desc_v0 *, const matcore_tensor_desc_v0 *, const matcore_tensor_desc_v0 *, const matcore_policy_v0 *) noexcept;
+extern "C" matcore_status_v0 matcore_generated_backend_mc_3c5b6d5e7992fb7b249de44210c6415d_v0(const matcore_tensor_desc_v0 *, const matcore_tensor_desc_v0 *, const matcore_tensor_desc_v0 *, const matcore_policy_v0 *) noexcept;
 
 namespace {
 matcore_tensor_desc_v0 make_tensor_descriptor(
@@ -67,7 +67,7 @@ void throw_on_error(const matcore_status_v0 &status,
 }
 } // namespace
 
-void __matcore_call_site_mc_d02b3f5b625dc51ed089ace811832a03(::matcore::mdsl::out_arg output, const ::matcore::mdsl::matrix_view &lhs, const ::matcore::mdsl::matrix_view &rhs, ::matcore::mdsl::policy execution_policy) {
+void __matcore_call_site_mc_3c5b6d5e7992fb7b249de44210c6415d(::matcore::mdsl::out_arg output, const ::matcore::mdsl::matrix_view &lhs, const ::matcore::mdsl::matrix_view &rhs, ::matcore::mdsl::policy execution_policy) {
   const ::matcore::mdsl::matrix_view empty_output{};
   const ::matcore::mdsl::matrix_view &output_view =
       output.value != nullptr ? *output.value : empty_output;
@@ -78,6 +78,6 @@ void __matcore_call_site_mc_d02b3f5b625dc51ed089ace811832a03(::matcore::mdsl::ou
   matcore_tensor_desc_v0 rhs_descriptor =
       make_tensor_descriptor(rhs, MATCORE_MUTABILITY_READ_ONLY_V0);
   matcore_policy_v0 runtime_policy = make_policy(execution_policy);
-  const matcore_status_v0 status = matcore_generated_backend_mc_d02b3f5b625dc51ed089ace811832a03_v0(&output_descriptor, &lhs_descriptor, &rhs_descriptor, &runtime_policy);
+  const matcore_status_v0 status = matcore_generated_backend_mc_3c5b6d5e7992fb7b249de44210c6415d_v0(&output_descriptor, &lhs_descriptor, &rhs_descriptor, &runtime_policy);
   throw_on_error(status, "compiler/tests/frontend/gemm_capture.mdsl:21:3");
 }

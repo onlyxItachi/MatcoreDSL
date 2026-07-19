@@ -27,6 +27,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -79,6 +80,12 @@ bool forbiddenCompilerArgument(const std::string &argument) {
          argument == "-load" || argument == "-###" ||
          argument == "-fplugin" || argument == "--config" ||
          argument.starts_with("--config=") || argument.starts_with('@') ||
+         argument == "-ivfsoverlay" || argument.starts_with("-ivfsoverlay") ||
+         argument == "-vfsoverlay" || argument.starts_with("-vfsoverlay") ||
+         argument.starts_with("-include-pch") ||
+         argument.starts_with("-include-pth") ||
+         argument.starts_with("-fmodule-file") ||
+         argument.starts_with("-fprebuilt-module-path") ||
          argument.starts_with("-fplugin=") ||
          (argument.starts_with("-o") && argument.size() > 2) ||
          (argument.starts_with("-MF") && argument.size() > 3) ||
@@ -170,16 +177,21 @@ FileIdentity identityOf(const llvm::sys::fs::UniqueID &identity) {
 
 struct NativeState {
   NativeState(Result &frontend_result, std::string source_display_path,
-              std::string source_canonical_path, std::string source_snapshot)
+              std::string source_canonical_path,
+              std::string compilation_identity_value,
+              std::string source_snapshot)
       : result(frontend_result), display_path(std::move(source_display_path)),
         canonical_input(std::move(source_canonical_path)),
+        compilation_identity(std::move(compilation_identity_value)),
         source(std::move(source_snapshot)) {}
 
   Result &result;
   std::string display_path;
   std::string canonical_input;
+  std::string compilation_identity;
   std::string source;
   std::set<FileIdentity> trusted_header_ids;
+  std::map<FileIdentity, std::string> trusted_header_contents;
   bool saw_direct_expected_include = false;
   bool saw_direct_trusted_include = false;
   bool saw_candidate = false;
@@ -201,9 +213,19 @@ bool declarationIsTrusted(const clang::FunctionDecl &declaration,
   if (location.isInvalid()) {
     return false;
   }
-  return isTrustedFile(
-      source_manager.getFileEntryForID(source_manager.getFileID(location)),
-      state);
+  const clang::FileID file_id = source_manager.getFileID(location);
+  const clang::FileEntry *entry = source_manager.getFileEntryForID(file_id);
+  if (!isTrustedFile(entry, state)) {
+    return false;
+  }
+  const auto snapshot =
+      state.trusted_header_contents.find(identityOf(entry->getUniqueID()));
+  if (snapshot == state.trusted_header_contents.end()) {
+    return false;
+  }
+  bool invalid = false;
+  const llvm::StringRef parsed = source_manager.getBufferData(file_id, &invalid);
+  return !invalid && parsed == llvm::StringRef(snapshot->second);
 }
 
 Diagnostic diagnosticAt(const clang::SourceManager &source_manager,
@@ -804,8 +826,8 @@ private:
     const std::uint64_t offset = source_manager.getFileOffset(begin);
     ir::Operation operation;
     operation.site_id = makeStableSiteId(
-        stableSourceIdentity(state_.canonical_input), state_.source, offset,
-        "gemm");
+        stableSourceIdentity(state_.canonical_input),
+        state_.compilation_identity, state_.source, offset, "gemm");
     operation.kind = "gemm";
     operation.canonical_callee = std::string(kGemmName);
     operation.source = ir::SourceLocation{
@@ -961,12 +983,16 @@ public:
     result.source_snapshot = *source;
 
     NativeState state(result, display_path, canonicalPath(options.input_path),
-                      *source);
+                      stableCompilationIdentity(options), *source);
     for (const std::string &trusted_header : options.trusted_public_headers) {
       llvm::sys::fs::UniqueID identity;
-      if (!trusted_header.empty() &&
+      const std::optional<std::string> contents = readFile(trusted_header);
+      if (!trusted_header.empty() && contents &&
           !llvm::sys::fs::getUniqueID(trusted_header, identity)) {
-        state.trusted_header_ids.insert(identityOf(identity));
+        const FileIdentity file_identity = identityOf(identity);
+        state.trusted_header_ids.insert(file_identity);
+        state.trusted_header_contents.insert_or_assign(file_identity,
+                                                       *contents);
       }
     }
     if (state.trusted_header_ids.empty()) {
