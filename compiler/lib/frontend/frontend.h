@@ -50,7 +50,9 @@ std::unique_ptr<Frontend> createClangLibToolingFrontend();
 
 // Shared naming contract used by every frontend producer.
 std::string stableSourceIdentity(const std::string &canonical_input);
+std::string stableCompilationIdentity(const Options &options);
 std::string makeStableSiteId(std::string_view source_identity,
+                             std::string_view compilation_identity,
                              std::string_view source, std::uint64_t offset,
                              std::string_view kind);
 

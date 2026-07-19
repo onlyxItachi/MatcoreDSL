@@ -5,7 +5,7 @@ struct out_arg;
 struct policy;
 } // namespace matcore::mdsl
 
-void __matcore_call_site_mc_d02b3f5b625dc51ed089ace811832a03(::matcore::mdsl::out_arg output, const ::matcore::mdsl::matrix_view &lhs, const ::matcore::mdsl::matrix_view &rhs, ::matcore::mdsl::policy execution_policy);
+void __matcore_call_site_mc_3c5b6d5e7992fb7b249de44210c6415d(::matcore::mdsl::out_arg output, const ::matcore::mdsl::matrix_view &lhs, const ::matcore::mdsl::matrix_view &rhs, ::matcore::mdsl::policy execution_policy);
 
 #line 1 "compiler/tests/frontend/gemm_capture.mdsl"
 #include <matcore/mdsl.h>
@@ -28,7 +28,7 @@ void capture_gemm() {
   const int ordinary_host_value = host_add(2, 3);
   (void)ordinary_host_value;
 
-  ::__matcore_call_site_mc_d02b3f5b625dc51ed089ace811832a03(md::out(C), A, B,
+  ::__matcore_call_site_mc_3c5b6d5e7992fb7b249de44210c6415d(md::out(C), A, B,
            md::policy{.target = md::target::cpu,
                       .fallback = md::fallback::error});
 }

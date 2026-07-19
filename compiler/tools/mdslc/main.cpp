@@ -54,6 +54,7 @@ struct ToolLayout {
 
 struct GeneratedArtifacts {
   fs::path host_source;
+  fs::path host_overlay;
   fs::path ir;
   fs::path sites_header;
   fs::path stubs_source;
@@ -271,6 +272,14 @@ bool IsExtractionIncompatibleArgument(std::string_view argument) {
          argument == "-MMD" || argument == "-MJ" || argument == "-MF" ||
          argument == "-MT" || argument == "-MQ" || argument == "-###" ||
          argument == "-Xclang" || argument == "-load" ||
+         argument == "-fplugin" || argument == "--config" ||
+         argument.starts_with("--config=") || argument.starts_with('@') ||
+         argument == "-ivfsoverlay" || argument.starts_with("-ivfsoverlay") ||
+         argument == "-vfsoverlay" || argument.starts_with("-vfsoverlay") ||
+         argument.starts_with("-include-pch") ||
+         argument.starts_with("-include-pth") ||
+         argument.starts_with("-fmodule-file") ||
+         argument.starts_with("-fprebuilt-module-path") ||
          argument.starts_with("-fplugin=");
 }
 
@@ -897,6 +906,7 @@ GeneratedArtifacts MakeArtifactPaths(const fs::path &directory,
                                      std::string_view stem) {
   const std::string prefix(stem);
   return {.host_source = directory / (prefix + ".host.cpp"),
+          .host_overlay = directory / (prefix + ".host-overlay.yaml"),
           .ir = directory / (prefix + ".matcore.json"),
           .sites_header = directory / (prefix + ".sites.h"),
           .stubs_source = directory / (prefix + ".stubs.cpp"),
@@ -904,6 +914,81 @@ GeneratedArtifacts MakeArtifactPaths(const fs::path &directory,
           .host_object = directory / (prefix + ".host.o"),
           .stubs_object = directory / (prefix + ".stubs.o"),
           .backend_object = directory / (prefix + ".backend.o")};
+}
+
+std::string JsonString(std::string_view value) {
+  constexpr char hexadecimal[] = "0123456789abcdef";
+  std::string encoded{"\""};
+  for (const unsigned char character : value) {
+    switch (character) {
+    case '\"':
+      encoded += "\\\"";
+      break;
+    case '\\':
+      encoded += "\\\\";
+      break;
+    case '\b':
+      encoded += "\\b";
+      break;
+    case '\f':
+      encoded += "\\f";
+      break;
+    case '\n':
+      encoded += "\\n";
+      break;
+    case '\r':
+      encoded += "\\r";
+      break;
+    case '\t':
+      encoded += "\\t";
+      break;
+    default:
+      if (character < 0x20) {
+        encoded += "\\u00";
+        encoded += hexadecimal[(character >> 4) & 0x0f];
+        encoded += hexadecimal[character & 0x0f];
+      } else {
+        encoded += static_cast<char>(character);
+      }
+      break;
+    }
+  }
+  encoded += '\"';
+  return encoded;
+}
+
+bool WriteHostOverlay(const fs::path &overlay,
+                      const fs::path &virtual_source,
+                      const fs::path &rewritten_source) {
+  std::ofstream output(overlay, std::ios::binary | std::ios::trunc);
+  if (!output) {
+    std::cerr << "mdslc++: cannot create host VFS overlay: " << overlay
+              << '\n';
+    return false;
+  }
+  output << "{\n"
+            "  \"version\": 0,\n"
+            "  \"case-sensitive\": true,\n"
+            "  \"use-external-names\": false,\n"
+            "  \"roots\": [\n"
+            "    {\n"
+            "      \"type\": \"file\",\n"
+            "      \"name\": "
+         << JsonString(virtual_source.string())
+         << ",\n"
+            "      \"use-external-name\": false,\n"
+            "      \"external-contents\": "
+         << JsonString(rewritten_source.string())
+         << "\n"
+            "    }\n"
+            "  ]\n"
+            "}\n";
+  if (!output) {
+    std::cerr << "mdslc++: failed to write host VFS overlay: " << overlay
+              << '\n';
+    return false;
+  }
+  return true;
 }
 
 void AppendCompileEnvironment(std::vector<std::string> &command,
@@ -933,8 +1018,22 @@ int CompileGeneratedSource(const fs::path &source, const fs::path &object,
                            const fs::path &source_directory, bool verbose) {
   std::vector<std::string> command{MDSLC_DEFAULT_CLANGXX};
   AppendCompileEnvironment(command, invocation, layout, source_directory);
-  command.insert(command.end(), {"-fPIC", "-x", "c++", "-c",
-                                 source.string(), "-o", object.string()});
+  command.insert(command.end(), {"-x", "c++", "-c", source.string(), "-o",
+                                 object.string()});
+  return RunCommand(std::move(command), verbose);
+}
+
+int CompileRewrittenHost(const fs::path &virtual_source,
+                         const fs::path &overlay,
+                         const fs::path &object,
+                         const CpuInvocation &invocation,
+                         const ToolLayout &layout,
+                         const fs::path &source_directory, bool verbose) {
+  std::vector<std::string> command{MDSLC_DEFAULT_CLANGXX};
+  AppendCompileEnvironment(command, invocation, layout, source_directory);
+  command.insert(command.end(),
+                 {"-ivfsoverlay", overlay.string(), "-x", "c++", "-c",
+                  virtual_source.string(), "-o", object.string()});
   return RunCommand(std::move(command), verbose);
 }
 
@@ -1066,10 +1165,10 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
       return 2;
     }
     for (const fs::path *generated :
-         {&artifacts.host_source, &artifacts.ir, &artifacts.sites_header,
-          &artifacts.stubs_source, &artifacts.backend_source,
-          &artifacts.host_object, &artifacts.stubs_object,
-          &artifacts.backend_object}) {
+         {&artifacts.host_source, &artifacts.host_overlay, &artifacts.ir,
+          &artifacts.sites_header, &artifacts.stubs_source,
+          &artifacts.backend_source, &artifacts.host_object,
+          &artifacts.stubs_object, &artifacts.backend_object}) {
       if (PathsReferToSameLocation(*generated, dependency_output)) {
         std::cerr << "mdslc++: dependency file must not overwrite or alias a "
                      "generated --save-temps artifact: "
@@ -1122,6 +1221,10 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
       !RequireGeneratedFile(artifacts.backend_source)) {
     return 1;
   }
+  if (!WriteHostOverlay(artifacts.host_overlay, source_absolute,
+                        fs::absolute(artifacts.host_source))) {
+    return 1;
+  }
 
   if (!invocation.dependency_mode.empty()) {
     result = GenerateDependencyFile(invocation, *layout, source_directory,
@@ -1136,9 +1239,9 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     }
   }
 
-  result = CompileGeneratedSource(artifacts.host_source, artifacts.host_object,
-                                  invocation, *layout, source_directory,
-                                  wrapper.verbose);
+  result = CompileRewrittenHost(source_absolute, artifacts.host_overlay,
+                                artifacts.host_object, invocation, *layout,
+                                source_directory, wrapper.verbose);
   if (!SourceMatchesSnapshot(source_absolute, *source_snapshot,
                              "generated host compilation")) {
     return 1;

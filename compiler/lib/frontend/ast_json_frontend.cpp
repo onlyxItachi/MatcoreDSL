@@ -681,6 +681,12 @@ bool forbiddenCompilerArgument(const std::string &argument) {
          argument == "-###" || argument == "-fplugin" ||
          argument == "--config" || argument.starts_with("--config=") ||
          argument.starts_with('@') ||
+         argument == "-ivfsoverlay" || argument.starts_with("-ivfsoverlay") ||
+         argument == "-vfsoverlay" || argument.starts_with("-vfsoverlay") ||
+         argument.starts_with("-include-pch") ||
+         argument.starts_with("-include-pth") ||
+         argument.starts_with("-fmodule-file") ||
+         argument.starts_with("-fprebuilt-module-path") ||
          argument.starts_with("-fplugin=") ||
          (argument.starts_with("-o") && argument.size() > 2) ||
          (argument.starts_with("-MF") && argument.size() > 3) ||
@@ -731,6 +737,7 @@ public:
   bool extract(const Options &options, Result &result) override;
 
 private:
+  std::string compilation_identity_;
   void diagnose(Result &result, const AstLocation &location,
                 std::string message) const;
   bool processCall(
@@ -919,8 +926,9 @@ bool AstJsonBootstrapFrontend::processCall(
   }
   ir::Operation operation;
   operation.site_id =
-      makeStableSiteId(stableSourceIdentity(input_canonical), source,
-                       location.offset, "gemm");
+      makeStableSiteId(stableSourceIdentity(input_canonical),
+                       compilation_identity_, source, location.offset,
+                       "gemm");
   operation.kind = "gemm";
   operation.canonical_callee = "matcore::mdsl::gemm";
   operation.source = ir::SourceLocation{.file = display_path,
@@ -1011,6 +1019,7 @@ void AstJsonBootstrapFrontend::scan(
 
 bool AstJsonBootstrapFrontend::extract(const Options &options, Result &result) {
   result = Result{};
+  compilation_identity_ = stableCompilationIdentity(options);
   const std::string display_path = normalizeDisplayPath(options.input_path);
   result.module.translation_unit = display_path;
   result.module.source_file = display_path;

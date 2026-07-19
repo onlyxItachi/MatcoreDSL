@@ -705,12 +705,42 @@ def core_suite(checks: Checks, extractor: Path, clang: Path) -> None:
         extra_source = temporary / "compiler-arguments/extra-source.cpp"
         extra_source.parent.mkdir(parents=True, exist_ok=True)
         extra_source.write_text("int unrelated_translation_unit;\n", encoding="utf-8")
+        trusted_header = extractor.resolve().parent.parent / "include/matcore/mdsl.h"
+        replacement_header = negative / "copied/matcore/mdsl.h"
+        overlay = temporary / "compiler-arguments/header-replacement.yaml"
+        overlay.write_text(
+            json.dumps(
+                {
+                    "version": 0,
+                    "case-sensitive": True,
+                    "use-external-names": False,
+                    "roots": [
+                        {
+                            "type": "file",
+                            "name": str(trusted_header),
+                            "use-external-name": False,
+                            "external-contents": str(replacement_header),
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
         invalid_compiler_arguments = (
             ("unknown_clang_option", ("-fdefinitely-not-a-clang-option",)),
             ("invalid_language_standard", ("-std=c++99",)),
             ("missing_clang_config", ("--config=/definitely/missing.cfg",)),
             ("bare_clang_plugin", ("-fplugin", "/definitely/missing.so")),
             ("response_file", ("@/definitely/missing.rsp",)),
+            ("header_vfs_overlay", ("-ivfsoverlay", str(overlay))),
+            ("joined_header_vfs_overlay", (f"-ivfsoverlay{overlay}",)),
+            ("cc1_header_vfs_overlay", (f"-vfsoverlay{overlay}",)),
+            ("precompiled_header", ("-include-pch", "/definitely/missing.pch")),
+            ("module_file", ("-fmodule-file=/definitely/missing.pcm",)),
+            (
+                "prebuilt_module_path",
+                ("-fprebuilt-module-path=/definitely/missing-modules",),
+            ),
             ("extra_source", (str(extra_source),)),
         )
         for name, arguments in invalid_compiler_arguments:
@@ -970,7 +1000,6 @@ def copy_driver_layout(driver: Path, extractor: Path, root: Path) -> tuple[Path,
 
 
 def driver_suite(checks: Checks, extractor: Path, driver: Path, clang: Path) -> None:
-    del clang  # the configured driver owns the coherent host compiler tuple
     with tempfile.TemporaryDirectory(prefix="matcore-native-driver-") as encoded:
         temporary = Path(encoded)
         source = FIXTURES / "positive/flag_forwarding.mdsl"
@@ -1041,6 +1070,54 @@ def driver_suite(checks: Checks, extractor: Path, driver: Path, clang: Path) -> 
             "driver emitted object after semantic flag failure",
         )
 
+        driver_overlay = temporary / "driver-header-replacement.yaml"
+        driver_overlay.write_text(
+            json.dumps(
+                {
+                    "version": 0,
+                    "roots": [
+                        {
+                            "type": "file",
+                            "name": str(
+                                extractor.resolve().parent.parent
+                                / "include/matcore/mdsl.h"
+                            ),
+                            "external-contents": str(
+                                FIXTURES / "negative/copied/matcore/mdsl.h"
+                            ),
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        overlay_output = temporary / "driver-overlay.o"
+        overlay_attempt = run(
+            [
+                str(driver),
+                "--frontend=native",
+                "--matcore-target=cpu",
+                f"-ivfsoverlay{driver_overlay}",
+                "-c",
+                source_argument(FIXTURES / "positive/namespace_alias.mdsl"),
+                "-o",
+                str(overlay_output),
+            ]
+        )
+        checks.require(
+            overlay_attempt.returncode != 0,
+            "driver accepted a user-controlled Clang VFS overlay",
+        )
+        checks.require(
+            not overlay_output.exists(),
+            "driver VFS overlay rejection still emitted an object",
+        )
+        checks.require(
+            "incompatible" in overlay_attempt.stderr.lower(),
+            "driver VFS overlay rejection was not actionable:\n"
+            f"{overlay_attempt.stderr}",
+        )
+
         race_root = temporary / "race-prefix"
         race_driver, _ = copy_driver_layout(driver, extractor, race_root)
         race_source = temporary / "race.mdsl"
@@ -1075,6 +1152,242 @@ def driver_suite(checks: Checks, extractor: Path, driver: Path, clang: Path) -> 
             f"source-change race diagnostic was unclear:\n{raced.stderr}",
         )
 
+        include_parity = temporary / "include-parity"
+        include_source = include_parity / "source"
+        include_output = include_parity / "output"
+        include_source.mkdir(parents=True)
+        include_output.mkdir()
+        (include_source / "config.h").write_text(
+            "#pragma once\ninline constexpr int selected_header_value = 17;\n",
+            encoding="utf-8",
+        )
+        (include_output / "config.h").write_text(
+            "#pragma once\ninline constexpr int selected_header_value = 91;\n",
+            encoding="utf-8",
+        )
+        parity_source = include_source / "parity.mdsl"
+        parity_source.write_text(
+            '#include "config.h"\n'
+            "#include <matcore/mdsl.h>\n\n"
+            "namespace md = matcore::mdsl;\n\n"
+            "int main() {\n"
+            "  float lhs_data[1] = {2.0F};\n"
+            "  float rhs_data[1] = {3.0F};\n"
+            "  float output_data[1] = {};\n"
+            "  md::matrix_view lhs{lhs_data, 1, 1};\n"
+            "  md::matrix_view rhs{rhs_data, 1, 1};\n"
+            "  md::matrix_view output{output_data, 1, 1};\n"
+            "  md::gemm(md::out(output), lhs, rhs);\n"
+            "  return selected_header_value == 17 && output_data[0] == 6.0F"
+            " ? 0 : 7;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        parity_executable = include_output / "parity"
+        parity_compile = run(
+            [
+                str(driver),
+                "--verbose",
+                "--save-temps",
+                "--frontend=native",
+                "--matcore-target=cpu",
+                "-std=c++20",
+                str(parity_source),
+                "-o",
+                str(parity_executable),
+            ]
+        )
+        checks.require(
+            parity_compile.returncode == 0,
+            "driver quote-include parity build failed:\n"
+            f"{parity_compile.stderr}",
+        )
+        checks.require(
+            (include_output / "parity.host-overlay.yaml").is_file(),
+            "driver did not preserve the host VFS overlay with --save-temps",
+        )
+        checks.require(
+            "-ivfsoverlay" in parity_compile.stderr,
+            "driver host compilation did not use the original source virtual path",
+        )
+        if parity_compile.returncode == 0:
+            parity_run = run([str(parity_executable)])
+            checks.require(
+                parity_run.returncode == 0,
+                "rewritten host resolved a quote-include from the generated "
+                "artifact directory instead of the original source directory",
+            )
+
+        pic_parity = temporary / "pic-parity"
+        pic_source_directory = pic_parity / "source"
+        pic_output_directory = pic_parity / "output"
+        pic_source_directory.mkdir(parents=True)
+        pic_output_directory.mkdir()
+        (pic_source_directory / "pie_value.h").write_text(
+            "#pragma once\ninline constexpr int selected_pic_value = 17;\n",
+            encoding="utf-8",
+        )
+        (pic_source_directory / "pic_value.h").write_text(
+            "#pragma once\ninline constexpr int selected_pic_value = 91;\n",
+            encoding="utf-8",
+        )
+        pic_source = pic_source_directory / "pic_parity.mdsl"
+        pic_source.write_text(
+            "#if defined(__PIE__)\n"
+            '#include "pie_value.h"\n'
+            "#else\n"
+            '#include "pic_value.h"\n'
+            "#endif\n"
+            "#include <matcore/mdsl.h>\n\n"
+            "namespace md = matcore::mdsl;\n\n"
+            "int main() {\n"
+            "  float lhs_data[1] = {2.0F};\n"
+            "  float rhs_data[1] = {3.0F};\n"
+            "  float output_data[1] = {};\n"
+            "  md::matrix_view lhs{lhs_data, 1, 1};\n"
+            "  md::matrix_view rhs{rhs_data, 1, 1};\n"
+            "  md::matrix_view output{output_data, 1, 1};\n"
+            "  md::gemm(md::out(output), lhs, rhs);\n"
+            "  return selected_pic_value == 17 && output_data[0] == 6.0F"
+            " ? 0 : 9;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        pic_executable = pic_output_directory / "pic_parity"
+        pic_dependency = pic_output_directory / "pic_parity.d"
+        pic_compile = run(
+            [
+                str(driver),
+                "--verbose",
+                "--frontend=native",
+                "--matcore-target=cpu",
+                "-std=c++20",
+                "-MMD",
+                "-MF",
+                str(pic_dependency),
+                str(pic_source),
+                "-o",
+                str(pic_executable),
+            ]
+        )
+        checks.require(
+            pic_compile.returncode == 0,
+            "driver changed predefined position-independent-code macros "
+            f"between phases:\n{pic_compile.stderr}",
+        )
+        checks.require(
+            "'-fPIC'" not in pic_compile.stderr,
+            "driver forced -fPIC instead of preserving the user's compiler flags",
+        )
+        if pic_compile.returncode == 0:
+            checks.require(
+                run([str(pic_executable)]).returncode == 0,
+                "generated host observed different predefined macros than extraction",
+            )
+        if pic_dependency.is_file():
+            dependency_text = pic_dependency.read_text(encoding="utf-8")
+            checks.require(
+                "pie_value.h" in dependency_text and "pic_value.h" not in dependency_text,
+                "dependency scan and host compilation selected different macro branches",
+            )
+        else:
+            checks.require(False, "PIC parity build emitted no dependency file")
+
+        multi_tu = temporary / "multi-tu"
+        multi_tu.mkdir()
+        multi_source = multi_tu / "variant.mdsl"
+        multi_source.write_text(
+            "#include <matcore/mdsl.h>\n\n"
+            "#ifndef REVIEW_ENTRY\n"
+            '#error "REVIEW_ENTRY is required"\n'
+            "#endif\n\n"
+            "namespace md = matcore::mdsl;\n\n"
+            "int REVIEW_ENTRY() {\n"
+            "  float lhs_data[1] = {2.0F};\n"
+            "  float rhs_data[1] = {3.0F};\n"
+            "  float output_data[1] = {};\n"
+            "  md::matrix_view lhs{lhs_data, 1, 1};\n"
+            "  md::matrix_view rhs{rhs_data, 1, 1};\n"
+            "  md::matrix_view output{output_data, 1, 1};\n"
+            "  md::gemm(md::out(output), lhs, rhs);\n"
+            "  return output_data[0] == 6.0F ? 0 : 1;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        variant_objects: list[Path] = []
+        variant_site_ids: list[str] = []
+        for entry in ("first_entry", "second_entry"):
+            variant_directory = multi_tu / entry
+            variant_directory.mkdir()
+            variant_object = variant_directory / f"{entry}.o"
+            variant_compile = run(
+                [
+                    str(driver),
+                    "--save-temps",
+                    "--frontend=native",
+                    "--matcore-target=cpu",
+                    "-std=c++20",
+                    f"-DREVIEW_ENTRY={entry}",
+                    "-c",
+                    str(multi_source),
+                    "-o",
+                    str(variant_object),
+                ]
+            )
+            checks.require(
+                variant_compile.returncode == 0,
+                f"multi-TU variant {entry} failed:\n{variant_compile.stderr}",
+            )
+            variant_objects.append(variant_object)
+            variant_ir = variant_directory / f"{entry}.matcore.json"
+            if variant_ir.is_file():
+                variant_site_ids.append(
+                    json.loads(variant_ir.read_text(encoding="utf-8"))["operations"][
+                        0
+                    ]["site_id"]
+                )
+            else:
+                checks.require(False, f"multi-TU variant {entry} emitted no IR")
+        checks.require(
+            len(variant_site_ids) == 2 and len(set(variant_site_ids)) == 2,
+            "compile-context variants reused a generated site ID",
+        )
+        multi_main = multi_tu / "main.cpp"
+        multi_main.write_text(
+            "int first_entry();\n"
+            "int second_entry();\n"
+            "int main() { return first_entry() || second_entry(); }\n",
+            encoding="utf-8",
+        )
+        runtime_directory = driver.resolve().parent.parent / "lib"
+        multi_executable = multi_tu / "multi-tu"
+        multi_link = run(
+            [
+                str(clang),
+                "-std=c++20",
+                str(multi_main),
+                *(str(path) for path in variant_objects),
+                f"-L{runtime_directory}",
+                "-lmatcore_runtime",
+                "-Xlinker",
+                "-rpath",
+                "-Xlinker",
+                str(runtime_directory),
+                "-o",
+                str(multi_executable),
+            ]
+        )
+        checks.require(
+            multi_link.returncode == 0,
+            "compile-context variants had colliding generated symbols:\n"
+            f"{multi_link.stderr}",
+        )
+        if multi_link.returncode == 0:
+            checks.require(
+                run([str(multi_executable)]).returncode == 0,
+                "linked compile-context variants did not both execute correctly",
+            )
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -1089,7 +1402,9 @@ def main() -> int:
     arguments = parser.parse_args()
 
     extractor = arguments.extractor.resolve()
-    clang = arguments.clang.resolve()
+    # Preserve the clang++ argv[0] spelling: resolving its symlink to `clang`
+    # changes final-link driver behavior and omits the C++ standard library.
+    clang = arguments.clang.absolute()
     if not extractor.is_file():
         parser.error(f"extractor does not exist: {extractor}")
     if not clang.is_file():
