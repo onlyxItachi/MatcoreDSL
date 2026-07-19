@@ -1,114 +1,54 @@
 # MDSLC preflight
 
 Audit date: 2026-07-19
-Audit mode: read-only against the original checkout
 
-## Repository baseline
+## Repository state
 
-- Remote: `git@github.com:onlyxItachi/MatcoreDSL.git`
-- Actual branch: `feature/device-resident-tensors`
-- Actual SHA: `351075e4d8af1880330b7c0474d701ca76776dfa`
-- Prompt baseline discrepancy: none for branch or SHA.
-- Original checkout: `/home/hamza-usta/MatcoreDSL`
-- Audit worktree: `/home/hamza-usta/MatcoreDSL-wt-audit`
-- Audit branch: `mdslc/audit-and-adr`
-- Submodules: none reported by `git submodule status --recursive`.
+The original repository audit observed:
 
-The original checkout was not clean. `git status --porcelain=v1` reported 50
-tracked deletions and no other status class. `git diff --stat` reported 50 files
-and 15,466 deleted lines. Deleted paths included benchmark reports, cache
-metadata, and the tracked `build-review` CMake/Ninja output. The deletions were
-not altered, restored, staged, or copied by this audit. The isolated worktree
-started clean from the recorded SHA.
+- remote: `git@github.com:onlyxItachi/MatcoreDSL.git`;
+- original branch/SHA: `feature/device-resident-tensors` at
+  `351075e4d8af1880330b7c0474d701ca76776dfa`;
+- no submodules;
+- the original checkout had 50 pre-existing tracked deletions, later also an
+  untracked top-level `CMakeFiles/`; neither was modified by MDSLC work.
 
-Existing worktrees observed before mutation:
+Bootstrap v0 completed on `mdslc/bootstrap-v0`. The native frontend milestone
+started from its clean head
+`3e3fa5b2d1990e1c37870f8b2096fbda6128716b` and uses integration branch
+`mdslc/native-libtooling-v1`. The independently reviewed native implementation
+evidence head is `f71f1800a1ba70f2b363ff68ecd6632c7ae8fad1`.
 
-- `/home/hamza-usta/MatcoreDSL` at the baseline SHA;
-- `/home/hamza-usta/MatcoreDSL_safe_1d50723`, detached and prunable;
-- `/tmp/matcore_commit_check`, detached and prunable.
+All implementation is additive under `compiler/`, `docs/`, and repository
+guidance. Legacy Python/JIT production sources were not migrated or rewritten.
 
-No pre-existing `mdslc/*` branch was found. The repository had no `AGENTS.md`.
-The requested depth-three build-file scan found only `context.md` and the root
-`CMakeLists.txt`. `git clean -ndX` emitted no ignored-file candidates, the
-checkout occupied 7.0 MiB, and no extant `build*` directory was available for
-size reporting because `build-review` was among the tracked deletions.
+## Host resources
 
-## Operating system and resources
+- Ubuntu 26.04 LTS, kernel `7.0.0-27-generic`, x86-64, 64-bit.
+- AMD Ryzen AI 9 HX 370, 12 cores/24 threads, one NUMA node.
+- 14 GiB RAM and 32 GiB swap at audit time.
+- CMake 4.3.2, Ninja 1.13.2, ccache 4.12.3, binutils 2.46.
+- Python 3.14.3 was present for tests only; no Python is used by the installed
+  compiler/runtime execution path.
 
-- OS: Ubuntu 26.04 LTS (Resolute Raccoon)
-- Kernel: `7.0.0-27-generic`, x86_64, 64-bit
-- CPU: AMD Ryzen AI 9 HX 370 with Radeon 890M
-- CPU topology: 12 cores, 24 online hardware threads, one NUMA node
-- Relevant CPU features: AVX2 and AVX-512 families are advertised by `lscpu`
-- Memory at audit: 14 GiB total, 6.9 GiB available
-- Swap: 32 GiB total, approximately 319 MiB used
-- Root filesystem: 937 GiB total, 303 GiB available
-- `/tmp`: 7.2 GiB total, 6.2 GiB available
-- Open-file limit: 524,288
-- Stack limit: 8 MiB
+Memory pressure remains a practical constraint. Use Ninja `-j2` for builds and
+CTest `-j1`; use `-j1` for unusually large links. Do not build LLVM from source
+for this project.
 
-Because this host has 14 GiB of RAM and previous repository builds experienced
-memory pressure, standalone builds default to Ninja `-j2`. Large link steps and
-tests use `-j1`. ccache is already installed and should be used when detected.
-Do not start a full LLVM source build.
+## Coherent Clang/LLVM 21 selection
 
-## Compiler and build tools
+The exact selected tuple is:
 
-| Tool | Observed version |
-| --- | --- |
-| Default `clang`, `clang++` | Ubuntu Clang 22.1.6 |
-| `gcc`, `g++` | Ubuntu GCC 15.2.0 |
-| Default `llvm-config` | 22.1.6 |
-| CMake | 4.3.2 |
-| Ninja | 1.13.2 |
-| ccache | 4.12.3 |
-| LLD | 22.1.6 |
-| GNU `ld`, `ar`, `nm`, `readelf` | binutils 2.46 |
-| Python | 3.14.3 |
-
-LLVMConfig and ClangConfig packages were found for versions 17, 18, 20, 21,
-and 22. MLIRConfig was found only under `/usr/lib/llvm-22`.
-
-## Coherent Clang/LibTooling selection
-
-The initial read-only audit found the Clang C++ development surface absent.
-After the user explicitly approved the exact simulated APT transaction,
-`libclang-21-dev` and `libclang-cpp21-dev` were installed at package revision
-`1:21.1.8-6ubuntu1`. The selected coherent tuple is now:
-
-- `/usr/bin/clang-21` and `/usr/bin/clang++-21`: 21.1.8;
+- `/usr/bin/clang-21`, `/usr/bin/clang++-21`: 21.1.8;
 - `/usr/bin/llvm-config-21`: 21.1.8;
-- `/usr/lib/llvm-21/include`: LLVM and Clang 21.1.8 headers;
-- `/usr/lib/llvm-21/lib`: `libclang-cpp.so.21.1` and Clang component archives;
-- `/usr/lib/llvm-21/lib/cmake/llvm/LLVMConfig.cmake`: 21.1.8;
-- `/usr/lib/llvm-21/lib/cmake/clang/ClangConfig.cmake`, which requires LLVM
-  21.1.8 exactly.
+- headers: `/usr/lib/llvm-21/include`;
+- libraries: `/usr/lib/llvm-21/lib`, including
+  `libclang-cpp.so.21.1` and Clang component archives;
+- LLVM CMake package: `/usr/lib/llvm-21/lib/cmake/llvm/LLVMConfig.cmake`;
+- Clang CMake package: `/usr/lib/llvm-21/lib/cmake/clang/ClangConfig.cmake`;
+- Ubuntu package revision: `1:21.1.8-6ubuntu1`.
 
-The post-install audit verified these required headers:
-
-- `clang/Tooling/Tooling.h`
-- `clang/ASTMatchers/ASTMatchers.h`
-- `clang/Rewrite/Core/Rewriter.h`
-
-- `clang/Tooling/CommonOptionsParser.h`
-- `clang/Frontend/FrontendActions.h`
-- `clang/Lex/Lexer.h`
-- `clang/AST/Attr.h`
-- `clang/Frontend/CompilerInstance.h`
-
-It also verified the matching `clang-cpp`, `clangTooling`,
-`clangASTMatchers`, `clangRewrite`, and `clangBasic` libraries. Native frontend
-implementation is therefore unblocked without MLIR.
-
-For driver-only Goal 2 work, select `/usr/bin/clang-21` and
-`/usr/bin/clang++-21`, version 21.1.8. A read-only syntax proof passed:
-
-```sh
-printf '%s\n' 'int main() { return 0; }' \
-  | /usr/bin/clang++-21 -x c++ -std=c++20 -fsyntax-only -
-```
-
-The approved command was:
+The user explicitly approved:
 
 ```sh
 sudo apt-get install --no-install-recommends \
@@ -116,23 +56,32 @@ sudo apt-get install --no-install-recommends \
   libclang-cpp21-dev
 ```
 
-The preceding simulation predicted two new packages, 28.81 MiB download and
-285.53 MiB installed size. At execution time APT reported both packages
-already at the requested version and made no further package changes.
+The preceding APT simulation estimated a 28.81 MiB download and approximately
+285.53 MiB installed size. At execution, APT reported both packages already at
+the newest 21.1.8 revision and made **zero package changes**.
 
-Do not use the default LLVM/Clang 22 tuple for LibTooling now. The installed
-Clang/LLVM packages and ClangConfig are 22.1.6, while the available
-`libclang-22-dev` candidate and installed MLIR package are 22.1.2. Combining
-them would violate the same-version rule.
+The post-command audit found the matching required surface:
 
-The legacy root CMake requests MLIR 18.1.3, but
-`/usr/lib/llvm-18/lib/cmake/mlir/MLIRConfig.cmake` is absent. The only installed
-MLIRConfig identifies MLIR 22.1.2 and requests LLVM 22.1.2 exactly, whereas the
-installed LLVMConfig is 22.1.6. The legacy project therefore cannot be assumed
-to reconfigure successfully. MDSLC bootstrap v0 avoids this issue by not
-requiring MLIR.
+- `clang/Tooling/Tooling.h`;
+- `clang/Tooling/CommonOptionsParser.h`;
+- `clang/ASTMatchers/ASTMatchFinder.h`;
+- `clang/Rewrite/Core/Rewriter.h`;
+- `clang/Frontend/FrontendActions.h`;
+- `clang/Frontend/CompilerInstance.h`;
+- `clang/Lex/Lexer.h`;
+- `clang/AST/Attr.h`;
+- `clang-cpp`, Tooling, ASTMatchers, Rewrite, AST, Lex, Frontend, and LLVM
+  libraries/imported targets.
 
-The standalone native configure shape is:
+A native link probe compiled, linked, and ran; `ldd` resolved
+`libclang-cpp.so.21.1` and `libLLVM.so.21.1`. The executable, headers,
+libraries, and CMake package versions are therefore coherent. MLIR is not a
+native frontend dependency.
+
+Do not use PATH defaults for this build: PATH favors LLVM 22. Do not mix the
+selected Clang 21 executable with Clang 22 headers or the legacy MLIR packages.
+
+## Reproducible standalone configure
 
 ```sh
 cmake -S compiler -B build-mdslc -G Ninja \
@@ -142,65 +91,35 @@ cmake -S compiler -B build-mdslc -G Ninja \
   -DMDSLC_ENABLE_NATIVE_FRONTEND=ON \
   -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=ON \
   -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
-  -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang
+  -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang \
+  -DCMAKE_BUILD_TYPE=Release
 cmake --build build-mdslc -- -j2
 ctest --test-dir build-mdslc --output-on-failure -j1
 ```
 
-The exact Release, Debug, sanitizer, install, and consumer results are recorded
-in `STATUS.md` only after they execute successfully.
+CMake requires exact LLVM/Clang 21.1.8 packages and imported `clang-cpp` and
+`LLVM` targets when native support is enabled. Missing native dependencies are
+a configuration/default-invocation error, never a bootstrap fallback.
 
 ## Accelerator inventory
 
-### NVIDIA
+- NVIDIA GeForce RTX 4060 Laptop GPU, compute capability 8.9, 8,188 MiB,
+  driver 610.43.02, CUDA 13.3, nvcc 13.3.73: detected only.
+- AMD `gfx1150`, 16 compute units, wave size 32, HIP/ROCm 7.1: detected only.
+- AMD/Xilinx `aie2p` NPU/DSP agent: detected only.
+- OpenCL reported NVIDIA plus an unavailable Xilinx device.
 
-- Device: NVIDIA GeForce RTX 4060 Laptop GPU
-- Compute capability: 8.9
-- Memory: 8,188 MiB
-- Driver: 610.43.02
-- CUDA UMD: 13.3
-- CUDA compiler: nvcc 13.3.73
-- `/usr/local/cuda` resolves to `/usr/local/cuda-13.3`
+No CUDA, cuBLAS, HIP, Metal, NPU, or other accelerator backend was compiled or
+executed in native frontend v1.
 
-The NVIDIA device and compiler are detected, but no MDSLC CUDA path was
-compiled or executed. CUDA/cuBLAS is optional only after CPU Goals 1-6 pass.
+## Remaining environmental constraints
 
-### AMD and other accelerators
+There is no Clang/LibTooling dependency blocker for the standalone native CPU
+slice. Two unrelated constraints remain:
 
-- `hipcc`: HIP 7.1.52801 using Clang 21.1.8
-- `rocminfo`: functional; ROCk module loaded
-- AMD GPU agent: `gfx1150`, Radeon Graphics, 16 compute units, wave size 32,
-  64 KiB group memory
-- AMD NPU/DSP agent: `aie2p`, marketed as RyzenAI-npu4
-- `rocm-smi`: not installed
-- OpenCL: NVIDIA platform/device available; an Xilinx platform is present but
-  its reported device is unavailable and emits query errors
-
-No AMD, HIP, Metal, Xilinx, or NPU backend is in bootstrap-v0 scope.
-
-## Relevant environment
-
-Only these requested environment classes were populated:
-
-```text
-LD_LIBRARY_PATH=/usr/local/cuda/lib64
-PATH=...:/usr/lib/llvm-22/bin:/usr/lib/llvm-20/bin:/opt/rocm/bin:...:/usr/local/cuda/bin:...
-```
-
-No `CC`, `CXX`, `CMAKE*`, `LLVM*`, `CLANG*`, `MLIR*`, `CUDA_HOME`,
-`ROCM_PATH`, or `HIP*` variable was set. PATH prioritizes LLVM 22, so the
-standalone configuration and spawned compiler command must use explicit
-Clang 21 paths rather than inherit an ambiguous default.
-
-## Blockers requiring user action
-
-1. Acknowledge or resolve the original checkout's 50 tracked deletions before
-   any workflow that could overwrite them. Isolated worktrees preserve them.
-2. Approve installation of the exact matching Clang 21 LibTooling development
-   package before Goal 3 frontend compilation.
-3. Treat legacy MLIR reconfiguration as separately blocked; do not install or
-   change MLIR merely to prove the standalone CPU compiler path.
-
-Goal 1 documentation and Goal 2 driver-only work can proceed in isolated
-worktrees. Goal 3 post-Sema extraction cannot pass until the LibTooling header
-blocker is resolved.
+1. The original checkout's user-owned deletions/untracked output must not be
+   overwritten; isolated worktrees remain required.
+2. Fresh root legacy CMake configuration still fails because the project asks
+   for MLIR 18.1.3 while the available MLIR configuration is 22.1.2. This is a
+   legacy-build issue, not a standalone frontend dependency, and was not
+   repaired in this milestone.
