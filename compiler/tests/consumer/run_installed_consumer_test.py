@@ -60,6 +60,47 @@ def main() -> int:
     missing = [path for path in expected_install_files if not path.exists()]
     if missing:
         raise RuntimeError(f"installed package is incomplete: {missing}")
+
+    repository = Path(__file__).resolve().parents[3]
+    source_public_header = repository / "compiler" / "include" / "matcore" / "mdsl.h"
+    extractor = prefix / "bin" / "matcore-extract"
+    if str(source_public_header).encode() in extractor.read_bytes():
+        raise RuntimeError("installed extractor embeds the source checkout's public-header path")
+
+    untrusted_source = test_root / "untrusted-source-header.mdsl"
+    untrusted_ir = test_root / "untrusted-source-header.json"
+    untrusted_source.write_text(
+        f'#include "{source_public_header}"\n\n'
+        "namespace md = matcore::mdsl;\n"
+        "void capture(md::matrix_view &C, md::matrix_view &A, md::matrix_view &B) {\n"
+        "  md::gemm(md::out(C), A, B);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    untrusted = subprocess.run(
+        [
+            str(extractor),
+            "--input",
+            str(untrusted_source),
+            "--ir-out",
+            str(untrusted_ir),
+            "--",
+            "clang++",
+            "-std=c++20",
+            str(untrusted_source),
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if untrusted.returncode == 0 or "trusted <matcore/mdsl.h> header" not in untrusted.stderr:
+        raise RuntimeError(
+            "installed extractor trusted a checkout-owned public header:\n"
+            f"{untrusted.stderr}"
+        )
+    if untrusted_ir.exists():
+        raise RuntimeError("untrusted checkout header produced Matcore IR")
+
     run([
         args.cmake,
         "-S",

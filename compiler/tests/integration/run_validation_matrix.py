@@ -530,6 +530,35 @@ def execute_case(context: Context, case: dict[str, object], work: Path) -> None:
         require(not output.exists(), "unsupported link mode emitted an artifact")
         return
 
+    if mode == "driver_link_response_reject":
+        source = source_argument(context, case)
+        output = work / "response-output.so"
+        response = work / "linker.rsp"
+        response.write_text("-shared\n", encoding="utf-8")
+        forwarding = str(case["forwarding"])
+        if forwarding == "wl":
+            forwarded = [f"-Wl,@{response}"]
+        elif forwarding == "xlinker":
+            forwarded = ["-Xlinker", f"@{response}"]
+        else:
+            raise ValidationFailure(f"unknown linker response forwarding: {forwarding}")
+        completed = run(
+            [
+                str(context.driver),
+                "--matcore-target=cpu",
+                "-std=c++20",
+                *forwarded,
+                source,
+                "-o",
+                str(output),
+            ],
+            context.repository,
+        )
+        require(completed.returncode == 2, "linker response file was not rejected")
+        require(str(case["diagnostic"]) in completed.stderr, "response-file diagnostic missing")
+        require(not output.exists(), "response-file link mode emitted an artifact")
+        return
+
     if mode == "driver_overwrite_guard":
         fixture = context.repository / source_argument(context, case)
         source = work / "guard.mdsl"
@@ -542,6 +571,37 @@ def execute_case(context: Context, case: dict[str, object], work: Path) -> None:
         require(completed.returncode == 2, "input overwrite was not rejected")
         require(str(case["diagnostic"]) in completed.stderr, "overwrite diagnostic missing")
         require(hashlib.sha256(source.read_bytes()).digest() == before, "input source changed")
+        return
+
+    if mode == "extractor_overwrite_guard":
+        fixture = context.repository / source_argument(context, case)
+        source = work / "guard.mdsl"
+        shutil.copyfile(fixture, source)
+        before = hashlib.sha256(source.read_bytes()).digest()
+        completed = run(
+            extraction_command(context, str(source), source),
+            context.repository,
+        )
+        require(completed.returncode == 2, "extractor input overwrite was not rejected")
+        require(str(case["diagnostic"]) in completed.stderr, "overwrite diagnostic missing")
+        require(hashlib.sha256(source.read_bytes()).digest() == before, "input source changed")
+        return
+
+    if mode == "extractor_generated_alias_guard":
+        fixture = context.repository / source_argument(context, case)
+        source = work / "guard.mdsl"
+        shutil.copyfile(fixture, source)
+        before = hashlib.sha256(source.read_bytes()).digest()
+        paths = generated_paths(work, "guard")
+        paths["host"].hardlink_to(source)
+        completed = run(
+            extraction_command(context, str(source), paths["ir"], paths),
+            context.repository,
+        )
+        require(completed.returncode == 2, "generated input alias was not rejected")
+        require(str(case["diagnostic"]) in completed.stderr, "alias diagnostic missing")
+        require(hashlib.sha256(source.read_bytes()).digest() == before, "input source changed")
+        require(not paths["ir"].exists(), "rejected generation emitted IR")
         return
 
     if mode == "runtime_contract":
