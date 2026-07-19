@@ -97,6 +97,11 @@ function(matcoredsl_add_executable target_name)
   )
   add_executable("${target_name}" "${mdsl_object}")
   set_property(TARGET "${target_name}" PROPERTY LINKER_LANGUAGE CXX)
+  # Linker-generated dependency files do not reliably escape whitespace in
+  # imported shared-library paths. Imported package runtimes have no build
+  # rule in the consumer project, so retain target-level ordering while
+  # avoiding a malformed file dependency and perpetual no-op relinks.
+  set_property(TARGET "${target_name}" PROPERTY LINK_DEPENDS_NO_SHARED TRUE)
   target_link_libraries(
     "${target_name}"
     PRIVATE
