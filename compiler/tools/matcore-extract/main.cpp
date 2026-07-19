@@ -287,15 +287,6 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
               << command.frontend_name << '\n';
     return std::nullopt;
   }
-  if (command.frontend_name == "native" &&
-      !pathsReferToSameLocation(command.frontend.clang_path,
-                                MDSLC_DEFAULT_CLANGXX)) {
-    std::cerr << "matcore-extract: native frontend is linked to the configured "
-                 "Clang 21.1.8 tuple and cannot honor a different --clang "
-                 "executable: "
-              << command.frontend.clang_path << '\n';
-    return std::nullopt;
-  }
   if (command.frontend.input_path.empty() || command.ir_output.empty()) {
     std::cerr << "matcore-extract: --input and --ir-out are required\n";
     return std::nullopt;
@@ -353,10 +344,19 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
       command.frontend.compiler_arguments.erase(
           command.frontend.compiler_arguments.begin());
     } else if (filename.starts_with("g++") || filename.starts_with("c++")) {
-      std::cerr << "matcore-extract: the bootstrap frontend requires Clang; "
+      std::cerr << "matcore-extract: MDSLC extraction requires Clang; "
                    "use --clang with a compatible clang++ executable\n";
       return std::nullopt;
     }
+  }
+  if (command.frontend_name == "native" &&
+      !pathsReferToSameLocation(command.frontend.clang_path,
+                                MDSLC_DEFAULT_CLANGXX)) {
+    std::cerr << "matcore-extract: native frontend is linked to the configured "
+                 "Clang 21.1.8 tuple and cannot honor a different --clang "
+                 "executable: "
+              << command.frontend.clang_path << '\n';
+    return std::nullopt;
   }
   command.frontend.compiler_arguments.insert(
       command.frontend.compiler_arguments.begin(),

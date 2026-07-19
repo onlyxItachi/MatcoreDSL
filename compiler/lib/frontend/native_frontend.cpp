@@ -139,6 +139,12 @@ FileIdentity identityOf(const llvm::sys::fs::UniqueID &identity) {
 }
 
 struct NativeState {
+  NativeState(Result &frontend_result, std::string source_display_path,
+              std::string source_canonical_path, std::string source_snapshot)
+      : result(frontend_result), display_path(std::move(source_display_path)),
+        canonical_input(std::move(source_canonical_path)),
+        source(std::move(source_snapshot)) {}
+
   Result &result;
   std::string display_path;
   std::string canonical_input;
@@ -178,7 +184,10 @@ Diagnostic diagnosticAt(const clang::SourceManager &source_manager,
   } else {
     location = source_manager.getSpellingLoc(location);
   }
-  Diagnostic diagnostic{.message = std::move(message)};
+  Diagnostic diagnostic{.file = {},
+                        .line = 0,
+                        .column = 0,
+                        .message = std::move(message)};
   if (location.isInvalid()) {
     diagnostic.file = state.display_path;
     return diagnostic;
@@ -207,7 +216,8 @@ public:
 
   void InclusionDirective(
       clang::SourceLocation hash_location, const clang::Token &,
-      llvm::StringRef file_name, bool is_angled, clang::CharSourceRange,
+      llvm::StringRef file_name, bool is_angled,
+      clang::CharSourceRange filename_range,
       clang::OptionalFileEntryRef file, llvm::StringRef, llvm::StringRef,
       const clang::Module *, bool,
       clang::SrcMgr::CharacteristicKind) override {
@@ -218,7 +228,10 @@ public:
       return;
     }
     state_.saw_direct_expected_include = true;
-    if (is_angled && file && isTrustedFile(&file->getFileEntry(), state_)) {
+    if (is_angled && filename_range.isValid() &&
+        !filename_range.getBegin().isMacroID() &&
+        !filename_range.getEnd().isMacroID() && file &&
+        isTrustedFile(&file->getFileEntry(), state_)) {
       state_.saw_direct_trusted_include = true;
     }
   }
@@ -878,10 +891,8 @@ public:
     }
     result.source_snapshot = *source;
 
-    NativeState state{.result = result,
-                      .display_path = display_path,
-                      .canonical_input = canonicalPath(options.input_path),
-                      .source = *source};
+    NativeState state(result, display_path, canonicalPath(options.input_path),
+                      *source);
     for (const std::string &trusted_header : options.trusted_public_headers) {
       llvm::sys::fs::UniqueID identity;
       if (!trusted_header.empty() &&

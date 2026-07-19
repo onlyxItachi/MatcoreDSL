@@ -147,11 +147,37 @@ def main() -> int:
         if wrong_compiler.returncode == 0 or "cannot honor a different" not in wrong_compiler.stderr:
             failures.append("native mode did not reject a mismatched --clang executable")
 
+        wrong_placeholder = subprocess.run(
+            [
+                str(extractor),
+                "--frontend=native",
+                "--input",
+                source.as_posix(),
+                "--ir-out",
+                str(output_root / "wrong-placeholder.json"),
+                "--",
+                "/usr/bin/clang++-22",
+                "-std=c++20",
+                source.as_posix(),
+            ],
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if (
+            wrong_placeholder.returncode == 0
+            or "cannot honor a different" not in wrong_placeholder.stderr
+        ):
+            failures.append(
+                "native mode did not reject a mismatched compiler placeholder"
+            )
+
     if failures:
         for failure in failures:
             print(f"FAIL: {failure}", file=sys.stderr)
         return 1
-    print("native frontend focused tests: 15 checks passed")
+    print("native frontend focused tests: 16 checks passed")
     return 0
 
 
