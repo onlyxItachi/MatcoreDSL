@@ -1,6 +1,6 @@
-#include "gemm_capture.sites.h"
-#line 1 "compiler/tests/frontend/gemm_capture.mdsl"
 #include <matcore/mdsl.h>
+#include "gemm_capture.sites.h"
+#line 2 "compiler/tests/frontend/gemm_capture.mdsl"
 
 namespace md = matcore::mdsl;
 
