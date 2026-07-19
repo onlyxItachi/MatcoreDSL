@@ -73,11 +73,24 @@ def main() -> int:
         shutil.copy2(driver_source, driver)
         shutil.copy2(shim_source, extractor)
         extractor.chmod(0o755)
-        (include_directory / "mdsl.h").write_text("#pragma once\n", encoding="utf-8")
-        (include_directory / "runtime_c.h").write_text(
-            "#pragma once\n", encoding="utf-8"
+        build_include_directory = driver_source.parent.parent / "include" / "matcore"
+        for header_name in ("mdsl.h", "runtime_c.h"):
+            header_source = build_include_directory / header_name
+            if not header_source.is_file():
+                raise RuntimeError(
+                    f"driver build has no sibling public header: {header_source}"
+                )
+            shutil.copy2(header_source, include_directory / header_name)
+        runtime_source = (
+            driver_source.parent.parent / "lib" / "libmatcore_runtime.so"
         )
-        (runtime_directory / "libmatcore_runtime.so").write_bytes(b"fixture\n")
+        if not runtime_source.is_file():
+            raise RuntimeError(
+                f"driver build has no sibling CPU runtime: {runtime_source}"
+            )
+        runtime_payload = runtime_source.resolve()
+        shutil.copy2(runtime_payload, runtime_directory / "libmatcore_runtime.so")
+        shutil.copy2(runtime_payload, runtime_directory / "libmatcore_runtime.so.0")
 
         source_directory = root / "source with spaces"
         output_directory = root / "output with spaces"
@@ -98,6 +111,8 @@ def main() -> int:
             frontend: str | None = None,
             environment_updates: dict[str, str] | None = None,
             additional_wrapper_arguments: list[str] | None = None,
+            compile_only: bool = True,
+            forwarding_probes: bool = True,
         ) -> subprocess.CompletedProcess[str]:
             source.write_text(pristine_source, encoding="utf-8")
             output.unlink(missing_ok=True)
@@ -107,21 +122,22 @@ def main() -> int:
                 command.append(f"--frontend={frontend}")
             if additional_wrapper_arguments:
                 command.extend(additional_wrapper_arguments)
-            command.extend(
-                [
-                    "-std=c++20",
+            command.append("-std=c++20")
+            if forwarding_probes:
+                command.extend(
+                    [
                     "-DDRIVER_VALUE=alpha beta",
                     f"-DNO_SHELL=$(touch {shell_marker})",
-                    "-c",
-                    str(source),
-                    "-o",
-                    str(output),
-                ]
-            )
+                    ]
+                )
+            if compile_only:
+                command.append("-c")
+            command.extend([str(source), "-o", str(output)])
             environment = base_environment.copy()
             environment["MDSLC_DRIVER_TEST_EXIT"] = "73"
             environment.pop("MDSLC_DRIVER_TEST_REJECT_NATIVE", None)
             environment.pop("MDSLC_DRIVER_TEST_MUTATE", None)
+            environment.pop("MDSLC_DRIVER_TEST_SUCCESS", None)
             if environment_updates:
                 environment.update(environment_updates)
             return run(command, environment)
@@ -191,6 +207,23 @@ def main() -> int:
                 f"relocated trusted include was not forwarded: {compiler_arguments}"
             )
 
+        successful_link = invoke(
+            environment_updates={"MDSLC_DRIVER_TEST_SUCCESS": "1"},
+            compile_only=False,
+            forwarding_probes=False,
+        )
+        if successful_link.returncode != 0 or not output.is_file():
+            raise RuntimeError(
+                "driver did not compile and link through a punctuated prefix:\n"
+                f"{successful_link.stderr}"
+            )
+        linked_run = run([str(output)], base_environment)
+        if linked_run.returncode != 0:
+            raise RuntimeError(
+                "driver-linked executable did not load the relocated runtime:\n"
+                f"{linked_run.stdout}\n{linked_run.stderr}"
+            )
+
         mutation = invoke(
             environment_updates={
                 "MDSLC_DRIVER_TEST_EXIT": "0",
@@ -231,7 +264,7 @@ def main() -> int:
 
     print(
         "native driver: default/explicit/bootstrap/no-fallback/argv/relocation/"
-        "source-snapshot PASS"
+        "runtime-link/source-snapshot PASS"
     )
     return 0
 
