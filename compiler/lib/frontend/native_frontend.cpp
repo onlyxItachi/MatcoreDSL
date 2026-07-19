@@ -1,0 +1,957 @@
+#include "frontend.h"
+
+#include <clang/AST/ASTContext.h>
+#include <clang/AST/Attr.h>
+#include <clang/AST/Decl.h>
+#include <clang/AST/DeclCXX.h>
+#include <clang/AST/Expr.h>
+#include <clang/AST/ExprCXX.h>
+#include <clang/AST/RecursiveASTVisitor.h>
+#include <clang/ASTMatchers/ASTMatchFinder.h>
+#include <clang/Basic/FileEntry.h>
+#include <clang/Basic/SourceManager.h>
+#include <clang/Frontend/CompilerInstance.h>
+#include <clang/Frontend/FrontendAction.h>
+#include <clang/Lex/Lexer.h>
+#include <clang/Lex/PPCallbacks.h>
+#include <clang/Lex/Preprocessor.h>
+#include <clang/Tooling/CompilationDatabase.h>
+#include <clang/Tooling/Tooling.h>
+#include <llvm/Support/FileSystem.h>
+
+#include <algorithm>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <memory>
+#include <optional>
+#include <set>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+namespace matcore::mdslc::frontend {
+namespace {
+
+constexpr std::string_view kGemmName = "matcore::mdsl::gemm";
+constexpr std::string_view kOutName = "matcore::mdsl::out";
+constexpr std::string_view kGemmAnnotation = "matcore.op.gemm";
+constexpr std::string_view kOutAnnotation = "matcore.wrapper.out";
+
+std::string normalizeDisplayPath(const std::string &path) {
+  return std::filesystem::path(path).lexically_normal().generic_string();
+}
+
+std::string canonicalPath(const std::string &path) {
+  std::error_code error;
+  const std::filesystem::path absolute = std::filesystem::absolute(path, error);
+  const std::filesystem::path candidate = error ? std::filesystem::path(path)
+                                                 : absolute;
+  error.clear();
+  const std::filesystem::path canonical =
+      std::filesystem::weakly_canonical(candidate, error);
+  return (error ? candidate.lexically_normal() : canonical).generic_string();
+}
+
+std::optional<std::string> readFile(const std::string &path) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    return std::nullopt;
+  }
+  return std::string(std::istreambuf_iterator<char>(input),
+                     std::istreambuf_iterator<char>());
+}
+
+bool forbiddenCompilerArgument(const std::string &argument) {
+  return argument == "-c" || argument == "-S" ||
+         argument == "-emit-llvm" || argument == "-save-temps" ||
+         argument == "--save-temps" || argument == "-E" ||
+         argument == "-M" || argument == "-MM" || argument == "-MD" ||
+         argument == "-MMD" || argument == "-MJ" || argument == "-MF" ||
+         argument == "-MT" || argument == "-MQ" || argument == "-Xclang" ||
+         argument == "-load" || argument == "-###" ||
+         argument.starts_with("-fplugin=") ||
+         (argument.starts_with("-o") && argument.size() > 2) ||
+         (argument.starts_with("-MF") && argument.size() > 3) ||
+         (argument.starts_with("-MJ") && argument.size() > 3);
+}
+
+bool makeToolArguments(const Options &options,
+                       std::vector<std::string> &arguments,
+                       std::string &error) {
+  for (std::size_t index = 0; index < options.compiler_arguments.size();
+       ++index) {
+    const std::string &argument = options.compiler_arguments[index];
+    if (argument == options.input_path ||
+        (!argument.starts_with('-') &&
+         canonicalPath(argument) == canonicalPath(options.input_path))) {
+      continue;
+    }
+    if (argument == "-fsyntax-only" || argument == "-fno-color-diagnostics") {
+      continue;
+    }
+    if (argument == "-x") {
+      if (++index == options.compiler_arguments.size()) {
+        error = "-x requires a language argument";
+        return false;
+      }
+      continue;
+    }
+    if (argument == "-o" || argument == "-MF" || argument == "-MT" ||
+        argument == "-MQ" || argument == "-MJ") {
+      error = "output-producing compiler argument is not valid for extraction: " +
+              argument;
+      return false;
+    }
+    if (forbiddenCompilerArgument(argument)) {
+      error = "unsafe or conflicting compiler argument for extraction: " +
+              argument;
+      return false;
+    }
+    arguments.push_back(argument);
+  }
+  arguments.insert(arguments.end(), {"-x", "c++", "-fsyntax-only",
+                                     "-fno-color-diagnostics"});
+  return true;
+}
+
+std::string shellQuoted(std::string_view value) {
+  std::string result = "'";
+  for (const char character : value) {
+    if (character == '\'') {
+      result += "'\\''";
+    } else {
+      result += character;
+    }
+  }
+  result += '\'';
+  return result;
+}
+
+using FileIdentity = std::pair<std::uint64_t, std::uint64_t>;
+
+FileIdentity identityOf(const llvm::sys::fs::UniqueID &identity) {
+  return {identity.getDevice(), identity.getFile()};
+}
+
+struct NativeState {
+  Result &result;
+  std::string display_path;
+  std::string canonical_input;
+  std::string source;
+  std::set<FileIdentity> trusted_header_ids;
+  bool saw_direct_expected_include = false;
+  bool saw_direct_trusted_include = false;
+  bool saw_candidate = false;
+  clang::SourceLocation first_candidate_location;
+  std::vector<const clang::CallExpr *> calls;
+  std::vector<const clang::DeclRefExpr *> function_references;
+};
+
+bool isTrustedFile(const clang::FileEntry *entry, const NativeState &state) {
+  return entry != nullptr &&
+         state.trusted_header_ids.contains(identityOf(entry->getUniqueID()));
+}
+
+bool declarationIsTrusted(const clang::FunctionDecl &declaration,
+                          const clang::SourceManager &source_manager,
+                          const NativeState &state) {
+  const clang::SourceLocation location =
+      source_manager.getSpellingLoc(declaration.getLocation());
+  if (location.isInvalid()) {
+    return false;
+  }
+  return isTrustedFile(
+      source_manager.getFileEntryForID(source_manager.getFileID(location)),
+      state);
+}
+
+Diagnostic diagnosticAt(const clang::SourceManager &source_manager,
+                        clang::SourceLocation location,
+                        const NativeState &state, std::string message) {
+  if (location.isMacroID()) {
+    location = source_manager.getExpansionLoc(location);
+  } else {
+    location = source_manager.getSpellingLoc(location);
+  }
+  Diagnostic diagnostic{.message = std::move(message)};
+  if (location.isInvalid()) {
+    diagnostic.file = state.display_path;
+    return diagnostic;
+  }
+  if (source_manager.isWrittenInMainFile(location)) {
+    diagnostic.file = state.display_path;
+  } else {
+    const clang::PresumedLoc presumed = source_manager.getPresumedLoc(location);
+    if (presumed.isValid()) {
+      diagnostic.file = presumed.getFilename();
+    }
+  }
+  if (diagnostic.file.empty()) {
+    diagnostic.file = source_manager.getFilename(location).str();
+  }
+  diagnostic.line = source_manager.getSpellingLineNumber(location);
+  diagnostic.column = source_manager.getSpellingColumnNumber(location);
+  return diagnostic;
+}
+
+class TrustedHeaderCallbacks final : public clang::PPCallbacks {
+public:
+  TrustedHeaderCallbacks(const clang::SourceManager &source_manager,
+                         NativeState &state)
+      : source_manager_(source_manager), state_(state) {}
+
+  void InclusionDirective(
+      clang::SourceLocation hash_location, const clang::Token &,
+      llvm::StringRef file_name, bool is_angled, clang::CharSourceRange,
+      clang::OptionalFileEntryRef file, llvm::StringRef, llvm::StringRef,
+      const clang::Module *, bool,
+      clang::SrcMgr::CharacteristicKind) override {
+    const clang::SourceLocation spelling =
+        source_manager_.getSpellingLoc(hash_location);
+    if (!source_manager_.isWrittenInMainFile(spelling) ||
+        file_name != "matcore/mdsl.h") {
+      return;
+    }
+    state_.saw_direct_expected_include = true;
+    if (is_angled && file && isTrustedFile(&file->getFileEntry(), state_)) {
+      state_.saw_direct_trusted_include = true;
+    }
+  }
+
+private:
+  const clang::SourceManager &source_manager_;
+  NativeState &state_;
+};
+
+const clang::RecordDecl *recordDeclaration(clang::QualType type) {
+  type = type.getCanonicalType().getUnqualifiedType();
+  const auto *record_type = type->getAs<clang::RecordType>();
+  return record_type == nullptr ? nullptr : record_type->getDecl();
+}
+
+bool isNamedRecord(clang::QualType type, std::string_view name) {
+  const clang::RecordDecl *record = recordDeclaration(type);
+  return record != nullptr && record->getCanonicalDecl()
+                                  ->getQualifiedNameAsString() == name;
+}
+
+bool isConstLvalueReferenceTo(clang::QualType type, std::string_view name) {
+  type = type.getCanonicalType();
+  const auto *reference = type->getAs<clang::LValueReferenceType>();
+  if (reference == nullptr) {
+    return false;
+  }
+  const clang::QualType pointee = reference->getPointeeType();
+  return pointee.isConstQualified() && isNamedRecord(pointee, name);
+}
+
+bool isMutableLvalueReferenceTo(clang::QualType type, std::string_view name) {
+  type = type.getCanonicalType();
+  const auto *reference = type->getAs<clang::LValueReferenceType>();
+  if (reference == nullptr) {
+    return false;
+  }
+  const clang::QualType pointee = reference->getPointeeType();
+  return !pointee.isConstQualified() && isNamedRecord(pointee, name);
+}
+
+bool hasExpectedGemmSignature(const clang::FunctionDecl &declaration) {
+  return declaration.getReturnType()->isVoidType() &&
+         !declaration.isVariadic() && declaration.getNumParams() == 4 &&
+         isNamedRecord(declaration.getParamDecl(0)->getType(),
+                       "matcore::mdsl::out_arg") &&
+         isConstLvalueReferenceTo(declaration.getParamDecl(1)->getType(),
+                                  "matcore::mdsl::matrix_view") &&
+         isConstLvalueReferenceTo(declaration.getParamDecl(2)->getType(),
+                                  "matcore::mdsl::matrix_view") &&
+         isNamedRecord(declaration.getParamDecl(3)->getType(),
+                       "matcore::mdsl::policy") &&
+         declaration.getParamDecl(3)->hasDefaultArg();
+}
+
+bool hasExpectedOutSignature(const clang::FunctionDecl &declaration) {
+  return !declaration.isVariadic() && declaration.getNumParams() == 1 &&
+         isNamedRecord(declaration.getReturnType(),
+                       "matcore::mdsl::out_arg") &&
+         isMutableLvalueReferenceTo(declaration.getParamDecl(0)->getType(),
+                                    "matcore::mdsl::matrix_view");
+}
+
+enum class Authentication { valid, untrusted, wrong_signature, annotation };
+
+Authentication authenticateDeclaration(
+    const clang::FunctionDecl &declaration, std::string_view expected_name,
+    std::string_view expected_annotation,
+    const clang::SourceManager &source_manager, const NativeState &state,
+    std::string &annotation_error) {
+  const clang::FunctionDecl *canonical = declaration.getCanonicalDecl();
+  if (canonical->getQualifiedNameAsString() != expected_name ||
+      !declarationIsTrusted(*canonical, source_manager, state)) {
+    return Authentication::untrusted;
+  }
+  const bool signature_valid =
+      expected_name == kGemmName ? hasExpectedGemmSignature(*canonical)
+                                 : hasExpectedOutSignature(*canonical);
+  if (!signature_valid) {
+    return Authentication::wrong_signature;
+  }
+
+  unsigned annotations = 0;
+  for (const clang::FunctionDecl *redeclaration : canonical->redecls()) {
+    for (const clang::AnnotateAttr *attribute :
+         redeclaration->specific_attrs<clang::AnnotateAttr>()) {
+      if (attribute->isInherited()) {
+        continue;
+      }
+      ++annotations;
+      if (attribute->getAnnotation() !=
+          llvm::StringRef(expected_annotation.data(),
+                          expected_annotation.size())) {
+        annotation_error = "conflicting or unsupported annotation payload '" +
+                           attribute->getAnnotation().str() + "'";
+      }
+    }
+  }
+  if (annotations != 1 || !annotation_error.empty()) {
+    if (annotation_error.empty()) {
+      annotation_error = annotations == 0
+                             ? "required annotation payload is missing"
+                             : "duplicate annotation payloads are not supported";
+    }
+    return Authentication::annotation;
+  }
+  return Authentication::valid;
+}
+
+bool hasReservedOperationAnnotation(const clang::FunctionDecl &declaration) {
+  const clang::FunctionDecl *canonical = declaration.getCanonicalDecl();
+  for (const clang::FunctionDecl *redeclaration : canonical->redecls()) {
+    for (const clang::AnnotateAttr *attribute :
+         redeclaration->specific_attrs<clang::AnnotateAttr>()) {
+      if (!attribute->isInherited() &&
+          attribute->getAnnotation().starts_with("matcore.op.")) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+const clang::DeclRefExpr *directCalleeReference(const clang::CallExpr &call) {
+  const clang::Expr *callee = call.getCallee()->IgnoreParenImpCasts();
+  return llvm::dyn_cast<clang::DeclRefExpr>(callee);
+}
+
+bool simpleLvalue(const clang::Expr &expression, std::string &name) {
+  const clang::Expr *current = expression.IgnoreParenImpCasts();
+  if (const auto *reference = llvm::dyn_cast<clang::DeclRefExpr>(current)) {
+    if (!llvm::isa<clang::VarDecl>(reference->getDecl()) &&
+        !llvm::isa<clang::ParmVarDecl>(reference->getDecl())) {
+      return false;
+    }
+    name = reference->getDecl()->getNameAsString();
+    return !name.empty();
+  }
+  if (const auto *member = llvm::dyn_cast<clang::MemberExpr>(current)) {
+    std::string base_name;
+    const clang::Expr *base = member->getBase()->IgnoreParenImpCasts();
+    if (!llvm::isa<clang::CXXThisExpr>(base) &&
+        !simpleLvalue(*base, base_name)) {
+      return false;
+    }
+    name = member->getMemberDecl()->getNameAsString();
+    if (name.empty()) {
+      return false;
+    }
+    if (!base_name.empty()) {
+      name = base_name + "." + name;
+    }
+    return true;
+  }
+  return false;
+}
+
+class PolicyCollector
+    : public clang::RecursiveASTVisitor<PolicyCollector> {
+public:
+  bool VisitDeclRefExpr(clang::DeclRefExpr *reference) {
+    const auto *constant =
+        llvm::dyn_cast<clang::EnumConstantDecl>(reference->getDecl());
+    if (constant == nullptr) {
+      return true;
+    }
+    const auto *enumeration =
+        llvm::dyn_cast<clang::EnumDecl>(constant->getDeclContext());
+    if (enumeration != nullptr) {
+      constants.emplace_back(enumeration->getQualifiedNameAsString(),
+                             constant->getNameAsString());
+    }
+    return true;
+  }
+
+  std::vector<std::pair<std::string, std::string>> constants;
+};
+
+bool parsePolicy(const clang::Expr &expression, std::string &target,
+                 std::string &fallback) {
+  target = "cpu";
+  fallback = "error";
+  const clang::Expr *current = expression.IgnoreParenImpCasts();
+  if (llvm::isa<clang::CXXDefaultArgExpr>(current)) {
+    return true;
+  }
+  if (!llvm::isa<clang::CXXFunctionalCastExpr>(current) &&
+      !llvm::isa<clang::InitListExpr>(current) &&
+      !llvm::isa<clang::CXXTemporaryObjectExpr>(current)) {
+    return false;
+  }
+  PolicyCollector collector;
+  collector.TraverseStmt(const_cast<clang::Expr *>(current));
+  bool saw_target = false;
+  bool saw_fallback = false;
+  for (const auto &[type, value] : collector.constants) {
+    if (type == "matcore::mdsl::target") {
+      if (saw_target) {
+        return false;
+      }
+      saw_target = true;
+      target = value;
+    } else if (type == "matcore::mdsl::fallback") {
+      if (saw_fallback) {
+        return false;
+      }
+      saw_fallback = true;
+      fallback = value;
+    }
+  }
+  return saw_target && saw_fallback;
+}
+
+std::optional<ir::SourceRange>
+mainFileTokenRange(const clang::Expr &expression,
+                   const clang::SourceManager &source_manager,
+                   const clang::LangOptions &language_options) {
+  clang::SourceLocation begin = expression.getBeginLoc();
+  clang::SourceLocation end = expression.getEndLoc();
+  if (begin.isInvalid() || end.isInvalid() || begin.isMacroID() ||
+      end.isMacroID()) {
+    return std::nullopt;
+  }
+  begin = source_manager.getSpellingLoc(begin);
+  end = source_manager.getSpellingLoc(end);
+  if (!source_manager.isWrittenInMainFile(begin) ||
+      !source_manager.isWrittenInMainFile(end)) {
+    return std::nullopt;
+  }
+  const clang::SourceLocation after_end = clang::Lexer::getLocForEndOfToken(
+      end, 0, source_manager, language_options);
+  if (after_end.isInvalid() ||
+      source_manager.getFileID(begin) != source_manager.getFileID(after_end)) {
+    return std::nullopt;
+  }
+  return ir::SourceRange{
+      .begin = source_manager.getFileOffset(begin),
+      .end = source_manager.getFileOffset(after_end),
+  };
+}
+
+enum class ContextViolation { none, template_context, lambda, constexpr_context };
+
+ContextViolation forbiddenContext(const clang::DynTypedNode &node,
+                                  clang::ASTContext &context,
+                                  unsigned depth = 0) {
+  if (depth > 64) {
+    return ContextViolation::template_context;
+  }
+  for (const clang::DynTypedNode &parent : context.getParents(node)) {
+    if (parent.get<clang::LambdaExpr>() != nullptr) {
+      return ContextViolation::lambda;
+    }
+    if (parent.get<clang::FunctionTemplateDecl>() != nullptr ||
+        parent.get<clang::ClassTemplateDecl>() != nullptr ||
+        parent.get<clang::ClassTemplateSpecializationDecl>() != nullptr) {
+      return ContextViolation::template_context;
+    }
+    if (parent.get<clang::ConstantExpr>() != nullptr ||
+        parent.get<clang::StaticAssertDecl>() != nullptr) {
+      return ContextViolation::constexpr_context;
+    }
+    if (const auto *function = parent.get<clang::FunctionDecl>()) {
+      if (const auto *method = llvm::dyn_cast<clang::CXXMethodDecl>(function)) {
+        if (method->getParent()->isLambda()) {
+          return ContextViolation::lambda;
+        }
+      }
+      if (function->isConstexpr()) {
+        return ContextViolation::constexpr_context;
+      }
+      if (function->getTemplatedKind() !=
+          clang::FunctionDecl::TK_NonTemplate) {
+        return ContextViolation::template_context;
+      }
+    }
+    const ContextViolation nested = forbiddenContext(parent, context, depth + 1);
+    if (nested != ContextViolation::none) {
+      return nested;
+    }
+  }
+  return ContextViolation::none;
+}
+
+class MatchCollector final
+    : public clang::ast_matchers::MatchFinder::MatchCallback {
+public:
+  explicit MatchCollector(NativeState &state) : state_(state) {}
+
+  void run(const clang::ast_matchers::MatchFinder::MatchResult &result) override {
+    if (const auto *call =
+            result.Nodes.getNodeAs<clang::CallExpr>("matcore-call")) {
+      state_.calls.push_back(call);
+    }
+    if (const auto *reference =
+            result.Nodes.getNodeAs<clang::DeclRefExpr>("function-reference")) {
+      state_.function_references.push_back(reference);
+    }
+  }
+
+private:
+  NativeState &state_;
+};
+
+class NativeConsumer final : public clang::ASTConsumer {
+public:
+  explicit NativeConsumer(NativeState &state)
+      : state_(state), collector_(state) {
+    using namespace clang::ast_matchers;
+    finder_.addMatcher(callExpr().bind("matcore-call"), &collector_);
+    finder_.addMatcher(declRefExpr(to(functionDecl())).bind("function-reference"),
+                       &collector_);
+  }
+
+  void HandleTranslationUnit(clang::ASTContext &context) override {
+    finder_.matchAST(context);
+    finalize(context);
+  }
+
+private:
+  void reject(const clang::SourceManager &source_manager,
+              clang::SourceLocation location, std::string message) {
+    state_.result.diagnostics.push_back(diagnosticAt(
+        source_manager, location, state_, std::move(message)));
+  }
+
+  bool authenticate(const clang::FunctionDecl &declaration,
+                    std::string_view expected_name,
+                    std::string_view expected_annotation,
+                    const clang::SourceManager &source_manager,
+                    clang::SourceLocation call_location) {
+    std::string annotation_error;
+    switch (authenticateDeclaration(declaration, expected_name,
+                                    expected_annotation, source_manager, state_,
+                                    annotation_error)) {
+    case Authentication::valid:
+      return true;
+    case Authentication::untrusted:
+      reject(source_manager, call_location,
+             "Matcore operations must resolve to the canonical declaration in "
+             "the compiler's trusted <matcore/mdsl.h> header");
+      return false;
+    case Authentication::wrong_signature:
+      reject(source_manager, call_location,
+             "Matcore declaration has an unsupported canonical signature");
+      return false;
+    case Authentication::annotation:
+      reject(source_manager, call_location,
+             "Matcore declaration annotation authentication failed: " +
+                 annotation_error + "; expected '" +
+                 std::string(expected_annotation) + "'");
+      return false;
+    }
+    return false;
+  }
+
+  void processCall(const clang::CallExpr &call, clang::ASTContext &context,
+                   std::unordered_set<const clang::DeclRefExpr *> &allowed) {
+    const clang::FunctionDecl *direct = call.getDirectCallee();
+    if (direct == nullptr ||
+        (direct->getCanonicalDecl()->getQualifiedNameAsString() != kGemmName &&
+         !hasReservedOperationAnnotation(*direct))) {
+      return;
+    }
+    state_.saw_candidate = true;
+    if (state_.first_candidate_location.isInvalid()) {
+      state_.first_candidate_location = call.getExprLoc();
+    }
+    const clang::DeclRefExpr *callee_reference = directCalleeReference(call);
+    if (callee_reference != nullptr) {
+      allowed.insert(callee_reference);
+    }
+    const clang::SourceManager &source_manager = context.getSourceManager();
+    bool valid = true;
+    auto fail = [&](std::string message) {
+      reject(source_manager, call.getExprLoc(), std::move(message));
+      valid = false;
+    };
+
+    if (!authenticate(*direct, kGemmName, kGemmAnnotation, source_manager,
+                      call.getExprLoc())) {
+      return;
+    }
+    if (callee_reference == nullptr) {
+      fail("indirect or function-pointer calls to Matcore operations are not "
+           "supported");
+    } else if (!callee_reference->hasQualifier()) {
+      fail("Matcore operations must be directly qualified (for example, "
+           "matcore::mdsl::gemm or md::gemm); unqualified and ADL calls are "
+           "rejected");
+    }
+    if (call.getBeginLoc().isMacroID() || call.getEndLoc().isMacroID()) {
+      fail("Matcore calls generated by macros or unsafe source ranges are not "
+           "supported in native v1");
+    } else if (!source_manager.isWrittenInMainFile(
+                   source_manager.getSpellingLoc(call.getBeginLoc()))) {
+      fail("Matcore call sites must be written directly in the input .mdsl "
+           "file");
+    }
+    switch (forbiddenContext(clang::DynTypedNode::create(call), context)) {
+    case ContextViolation::template_context:
+      fail("Matcore calls inside templates are not supported in native v1");
+      break;
+    case ContextViolation::lambda:
+      fail("Matcore calls inside lambdas are not supported in native v1");
+      break;
+    case ContextViolation::constexpr_context:
+      fail("constexpr Matcore execution is not supported in native v1");
+      break;
+    case ContextViolation::none:
+      break;
+    }
+    if (call.getNumArgs() != 4) {
+      fail("native gemm requires explicit output, lhs, rhs, and policy "
+           "arguments after Sema");
+      return;
+    }
+
+    std::string output_name;
+    const clang::Expr *output_expression = call.getArg(0)->IgnoreParenImpCasts();
+    const auto *output_call = llvm::dyn_cast<clang::CallExpr>(output_expression);
+    if (output_call == nullptr || output_call->getDirectCallee() == nullptr ||
+        output_call->getDirectCallee()
+                ->getCanonicalDecl()
+                ->getQualifiedNameAsString() != kOutName) {
+      fail("gemm output must use the canonical matcore::mdsl::out wrapper");
+    } else {
+      const clang::DeclRefExpr *out_reference =
+          directCalleeReference(*output_call);
+      if (!authenticate(*output_call->getDirectCallee(), kOutName,
+                        kOutAnnotation, source_manager,
+                        output_call->getExprLoc())) {
+        valid = false;
+      } else if (out_reference == nullptr || !out_reference->hasQualifier()) {
+        fail("the out wrapper must be directly namespace-qualified");
+      }
+      if (output_call->getNumArgs() != 1 ||
+          !simpleLvalue(*output_call->getArg(0), output_name)) {
+        fail("gemm output must be a stable mutable lvalue with no side effects");
+      }
+    }
+
+    std::string lhs_name;
+    std::string rhs_name;
+    if (!simpleLvalue(*call.getArg(1), lhs_name)) {
+      fail("gemm lhs must be a stable matrix lvalue with no side effects");
+    }
+    if (!simpleLvalue(*call.getArg(2), rhs_name)) {
+      fail("gemm rhs must be a stable matrix lvalue with no side effects");
+    }
+    if (!output_name.empty() &&
+        (output_name == lhs_name || output_name == rhs_name)) {
+      fail("gemm output must not alias lhs or rhs");
+    }
+
+    std::string target;
+    std::string fallback;
+    if (!parsePolicy(*call.getArg(3), target, fallback)) {
+      fail("gemm policy must be the default or an inline policy aggregate so "
+           "target and fallback are compile-time visible");
+    } else if (target != "cpu" || fallback != "error") {
+      fail("native v1 supports only target=cpu with fallback=error; no silent "
+           "fallback is permitted");
+    }
+
+    const auto call_range = mainFileTokenRange(
+        call, source_manager, context.getLangOpts());
+    if (!call_range) {
+      fail("Matcore call does not have a safe main-file SourceManager range");
+      return;
+    }
+    std::vector<ir::SourceRange> argument_ranges;
+    for (unsigned index = 0; index != 3; ++index) {
+      const auto range = mainFileTokenRange(
+          *call.getArg(index), source_manager, context.getLangOpts());
+      if (!range || range->begin < call_range->begin ||
+          range->end > call_range->end) {
+        fail("gemm argument does not have a safe main-file source range");
+        break;
+      }
+      argument_ranges.push_back(*range);
+    }
+    if (!llvm::isa<clang::CXXDefaultArgExpr>(
+            call.getArg(3)->IgnoreParenImpCasts())) {
+      const auto range = mainFileTokenRange(
+          *call.getArg(3), source_manager, context.getLangOpts());
+      if (!range || range->begin < call_range->begin ||
+          range->end > call_range->end) {
+        fail("explicit gemm policy does not have a safe main-file source "
+             "range");
+      } else {
+        argument_ranges.push_back(*range);
+      }
+    }
+    if (!valid) {
+      return;
+    }
+
+    const clang::SourceLocation begin =
+        source_manager.getSpellingLoc(call.getBeginLoc());
+    const std::uint64_t offset = source_manager.getFileOffset(begin);
+    ir::Operation operation;
+    operation.site_id = makeStableSiteId(
+        stableSourceIdentity(state_.canonical_input), state_.source, offset,
+        "gemm");
+    operation.kind = "gemm";
+    operation.canonical_callee = std::string(kGemmName);
+    operation.source = ir::SourceLocation{
+        .file = state_.display_path,
+        .offset = offset,
+        .line = source_manager.getSpellingLineNumber(begin),
+        .column = source_manager.getSpellingColumnNumber(begin),
+    };
+    operation.call_range = *call_range;
+    operation.argument_ranges = std::move(argument_ranges);
+    operation.output = ir::MatrixValue{
+        .role = "output", .expression = output_name, .mutability = "write"};
+    operation.operands = {
+        ir::MatrixValue{.role = "lhs",
+                        .expression = lhs_name,
+                        .mutability = "read"},
+        ir::MatrixValue{.role = "rhs",
+                        .expression = rhs_name,
+                        .mutability = "read"},
+    };
+    operation.target = target;
+    operation.fallback = fallback;
+    state_.result.module.operations.push_back(std::move(operation));
+  }
+
+  void finalize(clang::ASTContext &context) {
+    std::sort(state_.calls.begin(), state_.calls.end(),
+              [&context](const clang::CallExpr *left,
+                         const clang::CallExpr *right) {
+                return context.getSourceManager().isBeforeInTranslationUnit(
+                    left->getBeginLoc(), right->getBeginLoc());
+              });
+    std::unordered_set<const clang::DeclRefExpr *> allowed_references;
+    for (const clang::CallExpr *call : state_.calls) {
+      processCall(*call, context, allowed_references);
+    }
+
+    const clang::SourceManager &source_manager = context.getSourceManager();
+    for (const clang::DeclRefExpr *reference : state_.function_references) {
+      const auto *function =
+          llvm::dyn_cast<clang::FunctionDecl>(reference->getDecl());
+      if (function == nullptr ||
+          (function->getCanonicalDecl()->getQualifiedNameAsString() !=
+               kGemmName &&
+           !hasReservedOperationAnnotation(*function)) ||
+          allowed_references.contains(reference)) {
+        continue;
+      }
+      state_.saw_candidate = true;
+      if (state_.first_candidate_location.isInvalid()) {
+        state_.first_candidate_location = reference->getExprLoc();
+      }
+      reject(source_manager, reference->getExprLoc(),
+             "indirect or function-pointer references to Matcore operations "
+             "are not supported");
+    }
+
+    if (state_.saw_candidate && !state_.saw_direct_trusted_include) {
+      reject(source_manager, state_.first_candidate_location,
+             state_.saw_direct_expected_include
+                 ? "the main .mdsl <matcore/mdsl.h> include did not resolve "
+                   "to the compiler's trusted public header"
+                 : "the main .mdsl file must directly include the compiler's "
+                   "trusted <matcore/mdsl.h> public header");
+    }
+
+    std::sort(state_.result.module.operations.begin(),
+              state_.result.module.operations.end(),
+              [](const ir::Operation &left, const ir::Operation &right) {
+                return left.source.offset < right.source.offset;
+              });
+    std::sort(state_.result.diagnostics.begin(),
+              state_.result.diagnostics.end(),
+              [](const Diagnostic &left, const Diagnostic &right) {
+                if (left.file != right.file) {
+                  return left.file < right.file;
+                }
+                if (left.line != right.line) {
+                  return left.line < right.line;
+                }
+                if (left.column != right.column) {
+                  return left.column < right.column;
+                }
+                return left.message < right.message;
+              });
+    state_.result.diagnostics.erase(
+        std::unique(state_.result.diagnostics.begin(),
+                    state_.result.diagnostics.end(),
+                    [](const Diagnostic &left, const Diagnostic &right) {
+                      return left.file == right.file &&
+                             left.line == right.line &&
+                             left.column == right.column &&
+                             left.message == right.message;
+                    }),
+        state_.result.diagnostics.end());
+  }
+
+  NativeState &state_;
+  MatchCollector collector_;
+  clang::ast_matchers::MatchFinder finder_;
+};
+
+class NativeAction final : public clang::ASTFrontendAction {
+public:
+  explicit NativeAction(NativeState &state) : state_(state) {}
+
+  std::unique_ptr<clang::ASTConsumer>
+  CreateASTConsumer(clang::CompilerInstance &compiler,
+                    llvm::StringRef) override {
+    compiler.getPreprocessor().addPPCallbacks(
+        std::make_unique<TrustedHeaderCallbacks>(compiler.getSourceManager(),
+                                                 state_));
+    return std::make_unique<NativeConsumer>(state_);
+  }
+
+private:
+  NativeState &state_;
+};
+
+class NativeActionFactory final : public clang::tooling::FrontendActionFactory {
+public:
+  explicit NativeActionFactory(NativeState &state) : state_(state) {}
+
+  std::unique_ptr<clang::FrontendAction> create() override {
+    return std::make_unique<NativeAction>(state_);
+  }
+
+private:
+  NativeState &state_;
+};
+
+class ClangLibToolingFrontend final : public Frontend {
+public:
+  bool extract(const Options &options, Result &result) override {
+    result = Result{};
+    const std::string display_path = normalizeDisplayPath(options.input_path);
+    result.module.translation_unit = display_path;
+    result.module.source_file = display_path;
+    result.module.producer = "clang-libtooling-v1";
+    if (!std::string_view(display_path).ends_with(".mdsl")) {
+      result.diagnostics.push_back(
+          Diagnostic{.file = display_path,
+                     .message = "input source must use the .mdsl extension"});
+      return false;
+    }
+    const std::optional<std::string> source = readFile(options.input_path);
+    if (!source) {
+      result.diagnostics.push_back(
+          Diagnostic{.file = display_path,
+                     .message = "unable to open input .mdsl source"});
+      return false;
+    }
+    result.source_snapshot = *source;
+
+    NativeState state{.result = result,
+                      .display_path = display_path,
+                      .canonical_input = canonicalPath(options.input_path),
+                      .source = *source};
+    for (const std::string &trusted_header : options.trusted_public_headers) {
+      llvm::sys::fs::UniqueID identity;
+      if (!trusted_header.empty() &&
+          !llvm::sys::fs::getUniqueID(trusted_header, identity)) {
+        state.trusted_header_ids.insert(identityOf(identity));
+      }
+    }
+    if (state.trusted_header_ids.empty()) {
+      result.diagnostics.push_back(
+          Diagnostic{.file = display_path,
+                     .message =
+                         "compiler has no trusted <matcore/mdsl.h> identity"});
+      return false;
+    }
+
+    std::vector<std::string> tool_arguments;
+    std::string error;
+    if (!makeToolArguments(options, tool_arguments, error)) {
+      result.diagnostics.push_back(
+          Diagnostic{.file = display_path, .message = std::move(error)});
+      return false;
+    }
+    if (options.verbose) {
+      std::cerr << "matcore-extract native Clang 21 arguments:";
+      for (const std::string &argument : tool_arguments) {
+        std::cerr << ' ' << shellQuoted(argument);
+      }
+      std::cerr << ' ' << shellQuoted(options.input_path) << '\n';
+    }
+
+    clang::tooling::FixedCompilationDatabase compilations(
+        std::filesystem::current_path().string(), tool_arguments);
+    clang::tooling::ClangTool tool(compilations, {options.input_path});
+    tool.mapVirtualFile(options.input_path, *source);
+    NativeActionFactory factory(state);
+    const int tool_status = tool.run(&factory);
+
+    const std::optional<std::string> verified_source = readFile(options.input_path);
+    if (!verified_source || *verified_source != *source) {
+      result.diagnostics.push_back(Diagnostic{
+          .file = display_path,
+          .message = "input .mdsl changed while native Clang parsed it; retry "
+                     "from a stable source snapshot"});
+    }
+    if (tool_status != 0) {
+      result.diagnostics.push_back(
+          Diagnostic{.file = display_path,
+                     .message = "Clang parsing/Sema failed with exit code " +
+                                std::to_string(tool_status)});
+    }
+    if (!result.diagnostics.empty()) {
+      result.module.operations.clear();
+      return false;
+    }
+    if (!ir::verify(result.module, error)) {
+      result.diagnostics.push_back(
+          Diagnostic{.file = display_path,
+                     .message = "Matcore IR verifier rejected extraction: " +
+                                error});
+      result.module.operations.clear();
+      return false;
+    }
+    return true;
+  }
+};
+
+} // namespace
+
+std::unique_ptr<Frontend> createClangLibToolingFrontend() {
+  return std::make_unique<ClangLibToolingFrontend>();
+}
+
+} // namespace matcore::mdslc::frontend

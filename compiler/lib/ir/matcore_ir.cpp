@@ -240,7 +240,8 @@ bool verify(const Module &module, std::string &error) {
     error = "source file must use the .mdsl extension";
     return false;
   }
-  if (module.producer != "clang-ast-json-bootstrap-v0") {
+  if (module.producer != "clang-ast-json-bootstrap-v0" &&
+      module.producer != "clang-libtooling-v1") {
     error = "unknown Matcore IR v0 producer";
     return false;
   }
@@ -311,7 +312,7 @@ bool verify(const Module &module, std::string &error) {
       return false;
     }
     if (operation.target != "cpu" || operation.fallback != "error") {
-      error = "bootstrap Matcore IR v0 requires target=cpu and fallback=error";
+      error = "Matcore IR v0 requires target=cpu and fallback=error";
       return false;
     }
   }
