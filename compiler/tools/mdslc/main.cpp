@@ -109,7 +109,18 @@ bool IsUnsupportedFinalLinkMode(std::string_view argument) {
          argument == "-static-pie" || argument == "-pie" ||
          argument == "-no-pie" || argument == "-r" ||
          argument == "--relocatable" || argument == "-nostdlib" ||
-         argument == "-nodefaultlibs" || argument == "-Wl,-r";
+         argument == "-nodefaultlibs" || argument == "-Wl,-r" ||
+         argument == "-Wl,-shared" || argument == "-Wl,--shared" ||
+         argument == "-Wl,-static" || argument == "-Wl,--static" ||
+         argument == "-Wl,-pie" || argument == "-Wl,--pie" ||
+         argument == "-Wl,--relocatable";
+}
+
+bool IsUnsupportedLinkerModeValue(std::string_view argument) {
+  return argument == "-shared" || argument == "--shared" ||
+         argument == "-static" || argument == "--static" ||
+         argument == "-pie" || argument == "--pie" || argument == "-r" ||
+         argument == "--relocatable";
 }
 
 bool IsLinkOptionWithValue(std::string_view argument) {
@@ -396,6 +407,12 @@ ParseCpuInvocation(const WrapperArguments &arguments) {
         return std::nullopt;
       }
       const std::string &value = arguments.compiler_arguments[index];
+      if (argument == "-Xlinker" && IsUnsupportedLinkerModeValue(value)) {
+        std::cerr << "mdslc++: linker mode " << value
+                  << " is not implemented by the CPU bootstrap; use -c and "
+                     "perform that link explicitly with clang++\n";
+        return std::nullopt;
+      }
       if (IsLinkOptionWithValue(argument)) {
         invocation.has_link_only_arguments = true;
         invocation.link_arguments.emplace_back(argument);
