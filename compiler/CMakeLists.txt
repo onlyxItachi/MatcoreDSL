@@ -58,6 +58,7 @@ configure_file(
 
 add_subdirectory(lib/ir)
 add_subdirectory(lib/frontend)
+add_subdirectory(lib/codegen)
 add_subdirectory(tools/matcore-extract)
 add_subdirectory(lib/runtime)
 
