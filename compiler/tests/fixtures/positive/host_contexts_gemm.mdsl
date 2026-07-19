@@ -1,0 +1,26 @@
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+
+void run_free(md::matrix_view &c, const md::matrix_view &a,
+              const md::matrix_view &b) {
+  md::gemm(md::out(c), a, b);
+}
+
+class runner {
+public:
+  void run(md::matrix_view &c, const md::matrix_view &a,
+           const md::matrix_view &b) {
+    md::gemm(md::out(c), a, b);
+  }
+};
+
+int main() {
+  float storage[3] = {2, 5, 0};
+  md::matrix_view a{storage, 1, 1};
+  md::matrix_view b{storage + 1, 1, 1};
+  md::matrix_view c{storage + 2, 1, 1};
+  run_free(c, a, b);
+  runner{}.run(c, a, b);
+  return storage[2] == 10 ? 0 : 1;
+}

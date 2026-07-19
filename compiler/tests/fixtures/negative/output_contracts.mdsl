@@ -1,0 +1,36 @@
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+
+md::matrix_view &select_output(md::matrix_view &value) {
+  static int calls = 0;
+  ++calls;
+  return value;
+}
+
+int main() {
+  float values[3] = {1, 1, 0};
+  md::matrix_view a{values, 1, 1};
+  md::matrix_view b{values + 1, 1, 1};
+  md::matrix_view c{values + 2, 1, 1};
+#if defined(TEST_CONST_OUTPUT)
+  const md::matrix_view const_c = c;
+  md::gemm(md::out(const_c), a, b);
+#elif defined(TEST_TEMPORARY_OUTPUT)
+  md::gemm(md::out(md::matrix_view{values + 2, 1, 1}), a, b);
+#elif defined(TEST_OUTPUT_ALIAS)
+  md::gemm(md::out(a), a, b);
+#elif defined(TEST_SIDE_EFFECT)
+  md::gemm(md::out(select_output(c)), a, b);
+#elif defined(TEST_SHAPE_MISMATCH)
+  b.rows = 2;
+  md::gemm(md::out(c), a, b);
+#elif defined(TEST_CUDA_HOST)
+  md::gemm(md::out(c), a, b,
+           md::policy{.target = md::target::cuda,
+                      .fallback = md::fallback::error});
+#else
+#error "select one negative validation scenario"
+#endif
+  return 0;
+}

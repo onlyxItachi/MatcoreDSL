@@ -1,0 +1,16 @@
+#include <iostream>
+
+template <class T>
+class host_box {
+public:
+  explicit host_box(T value) : value_(value) {}
+  T doubled() const { return value_ + value_; }
+
+private:
+  T value_;
+};
+
+int main() {
+  std::cout << host_box<int>{21}.doubled() << '\n';
+  return 0;
+}
