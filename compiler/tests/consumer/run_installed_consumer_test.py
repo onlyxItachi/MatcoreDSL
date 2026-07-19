@@ -22,6 +22,11 @@ def run(command: list[str], *, capture: bool = False) -> subprocess.CompletedPro
     return result
 
 
+def make_depfile_path(path: Path) -> str:
+    encoded = str(path).replace("\\", "\\\\").replace("$", "$$")
+    return encoded.replace(" ", "\\ ").replace("#", "\\#")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cmake", required=True)
@@ -158,8 +163,12 @@ def main() -> int:
     if len(depfiles) != 1:
         raise RuntimeError(f"expected one MDSLC depfile, found {depfiles}")
     depfile_text = depfiles[0].read_text(encoding="utf-8")
-    for expected_dependency in (source / "consumer.mdsl", source / "consumer_value.h"):
-        if str(expected_dependency) not in depfile_text:
+    for expected_dependency in (
+        source / "consumer.mdsl",
+        source / "consumer_value.h",
+        prefix / "include" / "matcore" / "runtime_c.h",
+    ):
+        if make_depfile_path(expected_dependency) not in depfile_text:
             raise RuntimeError(
                 f"MDSLC depfile does not track {expected_dependency}:\n{depfile_text}"
             )
@@ -244,6 +253,43 @@ def main() -> int:
             f"{header_rebuilt_run.stdout}"
         )
 
+    installed_runtime_header = prefix / "include" / "matcore" / "runtime_c.h"
+    object_before_runtime_header = objects[0].stat().st_mtime_ns
+    installed_runtime_header.write_text(
+        installed_runtime_header.read_text(encoding="utf-8")
+        + "\n/* installed depfile rebuild probe */\n",
+        encoding="utf-8",
+    )
+    runtime_header_rebuild = run(
+        [args.cmake, "--build", str(build), "--", "-j2"], capture=True
+    )
+    if "Compiling MDSLC source consumer.mdsl" not in runtime_header_rebuild.stdout:
+        raise RuntimeError(
+            "editing installed runtime_c.h did not regenerate the MDSLC object:\n"
+            f"{runtime_header_rebuild.stdout}"
+        )
+    runtime_header_steps = [
+        line
+        for line in runtime_header_rebuild.stdout.splitlines()
+        if line.startswith("[")
+    ]
+    if (
+        len(runtime_header_steps) != 2
+        or "Linking CXX executable" not in runtime_header_steps[1]
+    ):
+        raise RuntimeError(
+            "editing installed runtime_c.h should only regenerate the MDSLC "
+            f"object and relink; observed:\n{runtime_header_rebuild.stdout}"
+        )
+    if objects[0].stat().st_mtime_ns <= object_before_runtime_header:
+        raise RuntimeError("runtime_c.h rebuild did not refresh the MDSLC object")
+    runtime_header_run = run([str(executable)], capture=True)
+    if "consumer-header=2" not in runtime_header_run.stdout:
+        raise RuntimeError(
+            "runtime_c.h rebuild executed stale or incorrect code:\n"
+            f"{runtime_header_run.stdout}"
+        )
+
     noop = run([args.cmake, "--build", str(build), "--", "-j2"], capture=True)
     if "no work to do" not in noop.stdout.lower():
         raise RuntimeError(f"second rebuild was not a no-op:\n{noop.stdout}")
@@ -264,7 +310,7 @@ def main() -> int:
 
     print(
         "installed consumer: relocated configure/build/run/source+header "
-        "rebuild/no-op PASS"
+        "runtime-header rebuild/no-op PASS"
     )
     return 0
 
