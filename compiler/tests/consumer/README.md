@@ -1,0 +1,24 @@
+# Installed MatcoreDSL consumer
+
+This project is intentionally outside the producer build graph. It locates an
+installed MatcoreDSL package and uses `matcoredsl_add_executable` to turn one
+valid-C++ `.mdsl` source into a normal generated object. CMake then performs the
+ordinary executable link against `MatcoreDSL::Runtime`.
+
+```sh
+cmake -S compiler -B build-mdslc -G Ninja \
+  -DCMAKE_CXX_COMPILER=/usr/bin/clang++-21
+cmake --build build-mdslc -- -j2
+cmake --install build-mdslc --prefix /tmp/matcoredsl-install
+
+cmake -S compiler/tests/consumer -B /tmp/matcoredsl-consumer -G Ninja \
+  -DCMAKE_PREFIX_PATH=/tmp/matcoredsl-install \
+  -DCMAKE_CXX_COMPILER=/usr/bin/clang++-21
+cmake --build /tmp/matcoredsl-consumer -- -j2
+/tmp/matcoredsl-consumer/matcore_consumer
+```
+
+The helper currently accepts one `SOURCE`, the bootstrap `cpu` target, optional
+`COMPILE_OPTIONS`, and optional `LINK_LIBRARIES`. Editing the `.mdsl` source
+regenerates its object and relinks the consumer; an unchanged subsequent build
+is a Ninja no-op.
