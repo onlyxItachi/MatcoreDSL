@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <optional>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -44,6 +45,33 @@ std::string escapeCppString(std::string_view value) {
     escaped.push_back(character);
   }
   return escaped;
+}
+
+std::optional<std::size_t>
+publicHeaderInsertionOffset(std::string_view source) {
+  constexpr std::string_view required = "#include <matcore/mdsl.h>";
+  std::size_t line_begin = 0;
+  while (line_begin <= source.size()) {
+    const std::size_t newline = source.find('\n', line_begin);
+    const std::size_t line_end =
+        newline == std::string_view::npos ? source.size() : newline;
+    std::string_view line = source.substr(line_begin, line_end - line_begin);
+    while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) {
+      line.remove_prefix(1);
+    }
+    while (!line.empty() && (line.back() == ' ' || line.back() == '\t' ||
+                             line.back() == '\r')) {
+      line.remove_suffix(1);
+    }
+    if (line == required) {
+      return newline == std::string_view::npos ? source.size() : newline + 1;
+    }
+    if (newline == std::string_view::npos) {
+      break;
+    }
+    line_begin = newline + 1;
+  }
+  return std::nullopt;
 }
 
 std::string declaration(const ir::Operation &operation, bool with_default) {
@@ -257,9 +285,26 @@ bool generate(const ir::Module &module, std::string_view original_source,
         replacement.str());
   }
 
-  artifacts.rewritten_host =
-      "#include \"" + escapeCppString(sites_include) + "\"\n#line 1 \"" +
-      escapeCppString(module.source_file) + "\"\n" + rewritten;
+  if (module.operations.empty()) {
+    artifacts.rewritten_host = std::move(rewritten);
+  } else {
+    const std::optional<std::size_t> insertion =
+        publicHeaderInsertionOffset(rewritten);
+    if (!insertion) {
+      error = "Matcore translation units must contain the direct opt-in "
+              "#include <matcore/mdsl.h> before generated declarations";
+      return false;
+    }
+    const std::size_t next_line =
+        1 + static_cast<std::size_t>(std::count(
+                rewritten.begin(), rewritten.begin() + *insertion, '\n'));
+    artifacts.rewritten_host = rewritten.substr(0, *insertion) +
+                               "#include \"" +
+                               escapeCppString(sites_include) + "\"\n#line " +
+                               std::to_string(next_line) + " \"" +
+                               escapeCppString(module.source_file) + "\"\n" +
+                               rewritten.substr(*insertion);
+  }
   artifacts.sites_header = generateSites(module);
   artifacts.stubs_source = generateStubs(module, sites_include);
   artifacts.backend_source = generateBackend(module);

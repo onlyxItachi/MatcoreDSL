@@ -531,6 +531,10 @@ def main() -> int:
             failures.append(f"zero-operation generation failed: {empty.stderr}")
         elif not all(path.exists() and path.stat().st_size > 0 for path in empty_generated.values()):
             failures.append("zero-operation generation did not emit all valid files")
+        elif empty_generated["host"].read_bytes() != (
+            repository / tests / "host_only.mdsl"
+        ).read_bytes():
+            failures.append("zero-operation rewrite changed ordinary host C++")
 
         partial_output = output_root / "partial.host.cpp"
         partial_command = extraction_command(
