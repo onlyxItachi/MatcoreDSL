@@ -71,19 +71,34 @@ and 22. MLIRConfig was found only under `/usr/lib/llvm-22`.
 
 ## Coherent Clang/LibTooling selection
 
-No complete LibTooling development tuple is installed today. For every
-installed Clang version checked (17, 18, 20, 21, and 22), the executable,
-ClangConfig, and monolithic `libclang-cpp` were present, but these required
-development headers were absent:
+The initial read-only audit found the Clang C++ development surface absent.
+After the user explicitly approved the exact simulated APT transaction,
+`libclang-21-dev` and `libclang-cpp21-dev` were installed at package revision
+`1:21.1.8-6ubuntu1`. The selected coherent tuple is now:
+
+- `/usr/bin/clang-21` and `/usr/bin/clang++-21`: 21.1.8;
+- `/usr/bin/llvm-config-21`: 21.1.8;
+- `/usr/lib/llvm-21/include`: LLVM and Clang 21.1.8 headers;
+- `/usr/lib/llvm-21/lib`: `libclang-cpp.so.21.1` and Clang component archives;
+- `/usr/lib/llvm-21/lib/cmake/llvm/LLVMConfig.cmake`: 21.1.8;
+- `/usr/lib/llvm-21/lib/cmake/clang/ClangConfig.cmake`, which requires LLVM
+  21.1.8 exactly.
+
+The post-install audit verified these required headers:
 
 - `clang/Tooling/Tooling.h`
 - `clang/ASTMatchers/ASTMatchers.h`
 - `clang/Rewrite/Core/Rewriter.h`
 
-No `libclang-*-dev` package is installed, and a filesystem search under `/usr`
-and `/opt` found no alternate copies of the required headers. Therefore the
-post-Sema `matcore-extract` frontend cannot honestly be configured or compiled
-yet.
+- `clang/Tooling/CommonOptionsParser.h`
+- `clang/Frontend/FrontendActions.h`
+- `clang/Lex/Lexer.h`
+- `clang/AST/Attr.h`
+- `clang/Frontend/CompilerInstance.h`
+
+It also verified the matching `clang-cpp`, `clangTooling`,
+`clangASTMatchers`, `clangRewrite`, and `clangBasic` libraries. Native frontend
+implementation is therefore unblocked without MLIR.
 
 For driver-only Goal 2 work, select `/usr/bin/clang-21` and
 `/usr/bin/clang++-21`, version 21.1.8. A read-only syntax proof passed:
@@ -93,11 +108,17 @@ printf '%s\n' 'int main() { return 0; }' \
   | /usr/bin/clang++-21 -x c++ -std=c++20 -fsyntax-only -
 ```
 
-LLVM 21.1.8, Clang 21.1.8, `libclang-cpp21` 21.1.8, LLVMConfig, and ClangConfig
-are installed. The package metadata candidate for `libclang-21-dev` is also
-21.1.8, making LLVM/Clang 21 the preferred future coherent frontend tuple if
-the user explicitly approves installation. No package was installed during
-this audit.
+The approved command was:
+
+```sh
+sudo apt-get install --no-install-recommends \
+  libclang-21-dev \
+  libclang-cpp21-dev
+```
+
+The preceding simulation predicted two new packages, 28.81 MiB download and
+285.53 MiB installed size. At execution time APT reported both packages
+already at the requested version and made no further package changes.
 
 Do not use the default LLVM/Clang 22 tuple for LibTooling now. The installed
 Clang/LLVM packages and ClangConfig are 22.1.6, while the available
@@ -111,20 +132,23 @@ installed LLVMConfig is 22.1.6. The legacy project therefore cannot be assumed
 to reconfigure successfully. MDSLC bootstrap v0 avoids this issue by not
 requiring MLIR.
 
-After explicit approval and installation of the matching Clang 21 development
-headers, the expected standalone configure shape is:
+The standalone native configure shape is:
 
 ```sh
 cmake -S compiler -B build-mdslc -G Ninja \
   -DCMAKE_C_COMPILER=/usr/bin/clang-21 \
   -DCMAKE_CXX_COMPILER=/usr/bin/clang++-21 \
+  -DMDSLC_CLANGXX_EXECUTABLE=/usr/bin/clang++-21 \
+  -DMDSLC_ENABLE_NATIVE_FRONTEND=ON \
+  -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=ON \
   -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
   -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang
 cmake --build build-mdslc -- -j2
 ctest --test-dir build-mdslc --output-on-failure -j1
 ```
 
-These are expected commands, not recorded passing frontend-build evidence.
+The exact Release, Debug, sanitizer, install, and consumer results are recorded
+in `STATUS.md` only after they execute successfully.
 
 ## Accelerator inventory
 

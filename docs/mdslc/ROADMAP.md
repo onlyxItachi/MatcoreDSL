@@ -28,11 +28,19 @@ The roadmap remains gate-driven and additive to the legacy Python/JIT path.
 7. **CUDA/cuBLAS — not attempted.** It remains optional after the exact
    LibTooling frontend gate is closed.
 
+## Native LibTooling v1 in progress
+
+The approved matching Clang 21.1.8 development surface is installed and
+verified. The active gate replaces AST-JSON capture with native PPCallbacks,
+post-Sema canonical declaration and `AnnotateAttr` authentication, and
+SourceManager ranges while preserving JSON IR v0 and the validated CPU
+artifact pipeline. Native becomes the default only after parity, install,
+consumer, sanitizer, and adversarial review gates pass. Bootstrap remains an
+explicit comparison mode and never a silent fallback.
+
 ## Next three exact engineering tasks
 
-1. With explicit package-install approval, install the matching Clang 21.1.8
-   development package, verify `clangTooling`, ASTMatcher, Rewriter, LLVM, and
-   compiler versions as one coherent tuple, then implement the existing
+1. Implement the existing
    frontend interface with `getDirectCallee()`, canonical `FunctionDecl`,
    `AnnotateAttr` payload checks, and `SourceManager` ranges. Run the current 44
    frontend checks unchanged against it.
