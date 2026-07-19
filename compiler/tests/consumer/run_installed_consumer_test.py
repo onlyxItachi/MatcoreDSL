@@ -37,7 +37,7 @@ def main() -> int:
     source = test_root / "source"
     build = test_root / "build"
     staging_prefix = test_root / "install-staging"
-    prefix = test_root / "relocated" / "matcoredsl"
+    prefix = test_root / "relocated" / "matcoredsl prefix,with comma"
     shutil.copytree(Path(args.source_dir).resolve(), source)
 
     run([
