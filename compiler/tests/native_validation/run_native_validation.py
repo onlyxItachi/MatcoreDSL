@@ -1158,6 +1158,74 @@ def driver_suite(checks: Checks, extractor: Path, driver: Path, clang: Path) -> 
             f"source-change race diagnostic was unclear:\n{raced.stderr}",
         )
 
+        header_race_root = temporary / "header-race-prefix"
+        header_race_driver, header_race_extractor = copy_driver_layout(
+            driver, extractor, header_race_root
+        )
+        header_race_directory = temporary / "header-race-source"
+        header_race_directory.mkdir()
+        header_race_header = header_race_directory / "mode.h"
+        header_race_header.write_text(
+            "#pragma once\n#define MDSLC_HEADER_MODE 0\n", encoding="utf-8"
+        )
+        header_race_source = header_race_directory / "header_race.mdsl"
+        header_race_source.write_text(
+            '#include "mode.h"\n'
+            "#include <matcore/mdsl.h>\n\n"
+            "namespace md = matcore::mdsl;\n\n"
+            "int header_race_entry() {\n"
+            "  float lhs_data[1] = {2.0F};\n"
+            "  float rhs_data[1] = {3.0F};\n"
+            "  float output_data[1] = {};\n"
+            "  md::matrix_view lhs{lhs_data, 1, 1};\n"
+            "  md::matrix_view rhs{rhs_data, 1, 1};\n"
+            "  md::matrix_view output{output_data, 1, 1};\n"
+            "#if MDSLC_HEADER_MODE\n"
+            "  md::gemm(md::out(output), lhs, rhs);\n"
+            "#endif\n"
+            "  return 0;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        header_race_extractor.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib, subprocess, sys\n"
+            f"command = [{str(extractor.resolve())!r}, *sys.argv[1:]]\n"
+            "completed = subprocess.run(command, check=False)\n"
+            "if completed.returncode == 0:\n"
+            f"    pathlib.Path({str(header_race_header)!r}).write_text("
+            "'#pragma once\\n#define MDSLC_HEADER_MODE 1\\n', encoding='utf-8')\n"
+            "raise SystemExit(completed.returncode)\n",
+            encoding="utf-8",
+        )
+        header_race_extractor.chmod(0o755)
+        header_race_output = temporary / "header-race.o"
+        header_race = run(
+            [
+                str(header_race_driver),
+                "--frontend=native",
+                "--matcore-target=cpu",
+                "-std=c++20",
+                "-c",
+                str(header_race_source),
+                "-o",
+                str(header_race_output),
+            ]
+        )
+        checks.require(
+            header_race.returncode != 0,
+            "driver accepted an included header changed after extraction",
+        )
+        checks.require(
+            not header_race_output.exists(),
+            "included-header race emitted an inconsistent object",
+        )
+        checks.require(
+            "dependency changed" in header_race.stderr.lower()
+            and str(header_race_header) in header_race.stderr,
+            f"included-header race diagnostic was unclear:\n{header_race.stderr}",
+        )
+
         include_parity = temporary / "include-parity"
         include_source = include_parity / "source"
         include_output = include_parity / "output"
@@ -1223,6 +1291,37 @@ def driver_suite(checks: Checks, extractor: Path, driver: Path, clang: Path) -> 
                 "rewritten host resolved a quote-include from the generated "
                 "artifact directory instead of the original source directory",
             )
+
+        escaped_dependency_directory = temporary / "escaped dependency paths"
+        escaped_dependency_directory.mkdir()
+        escaped_header = escaped_dependency_directory / "value $ hash#.h"
+        escaped_header.write_text("#pragma once\n", encoding="utf-8")
+        escaped_source = escaped_dependency_directory / "escaped.mdsl"
+        escaped_source.write_text(
+            '#include "value $ hash#.h"\n'
+            + (FIXTURES / "positive/namespace_alias.mdsl").read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+        escaped_output = escaped_dependency_directory / "escaped:result.o"
+        escaped_compile = run(
+            [
+                str(driver),
+                "--frontend=native",
+                "--matcore-target=cpu",
+                "-std=c++20",
+                "-c",
+                str(escaped_source),
+                "-o",
+                str(escaped_output),
+            ]
+        )
+        checks.require(
+            escaped_compile.returncode == 0 and escaped_output.is_file(),
+            "driver could not decode escaped Make dependency paths or a "
+            f"colon-bearing target:\n{escaped_compile.stderr}",
+        )
 
         pic_parity = temporary / "pic-parity"
         pic_source_directory = pic_parity / "source"
@@ -1298,6 +1397,59 @@ def driver_suite(checks: Checks, extractor: Path, driver: Path, clang: Path) -> 
             )
         else:
             checks.require(False, "PIC parity build emitted no dependency file")
+
+        m32_output = temporary / "target-context-32.o"
+        m32_compile = run(
+            [
+                str(driver),
+                "--verbose",
+                "--frontend=native",
+                "--matcore-target=cpu",
+                "-std=c++20",
+                "-m32",
+                "-c",
+                source_argument(FIXTURES / "positive/namespace_alias.mdsl"),
+                "-o",
+                str(m32_output),
+            ]
+        )
+        checks.require(
+            m32_compile.returncode == 0,
+            "driver did not preserve the 32-bit target context through the "
+            f"relocatable partial link:\n{m32_compile.stderr}",
+        )
+        checks.require(
+            m32_output.is_file()
+            and m32_output.read_bytes()[:5] == b"\x7fELF\x01",
+            "driver -m32 pipeline did not emit an ELF32 relocatable object",
+        )
+        checks.require(
+            m32_compile.stderr.count("'-m32'") >= 5,
+            "driver did not forward -m32 to extraction, generated "
+            "compilation, and partial linking",
+        )
+
+        lto_output = temporary / "unsupported-lto.o"
+        lto_compile = run(
+            [
+                str(driver),
+                "--frontend=native",
+                "--matcore-target=cpu",
+                "-flto=thin",
+                "-c",
+                source_argument(FIXTURES / "positive/namespace_alias.mdsl"),
+                "-o",
+                str(lto_output),
+            ]
+        )
+        checks.require(
+            lto_compile.returncode != 0 and "lto" in lto_compile.stderr.lower(),
+            f"driver did not reject unsupported LTO structurally:\n{lto_compile.stderr}",
+        )
+        checks.require(
+            not lto_output.exists(),
+            "unsupported LTO mode emitted an output object",
+        )
 
         multi_tu = temporary / "multi-tu"
         multi_tu.mkdir()
