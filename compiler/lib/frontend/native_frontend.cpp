@@ -6,18 +6,21 @@
 #include <clang/AST/DeclCXX.h>
 #include <clang/AST/Expr.h>
 #include <clang/AST/ExprCXX.h>
-#include <clang/AST/RecursiveASTVisitor.h>
 #include <clang/ASTMatchers/ASTMatchFinder.h>
+#include <clang/Basic/Diagnostic.h>
+#include <clang/Basic/DiagnosticOptions.h>
 #include <clang/Basic/FileEntry.h>
 #include <clang/Basic/SourceManager.h>
 #include <clang/Frontend/CompilerInstance.h>
 #include <clang/Frontend/FrontendAction.h>
+#include <clang/Frontend/TextDiagnosticPrinter.h>
 #include <clang/Lex/Lexer.h>
 #include <clang/Lex/PPCallbacks.h>
 #include <clang/Lex/Preprocessor.h>
 #include <clang/Tooling/CompilationDatabase.h>
 #include <clang/Tooling/Tooling.h>
 #include <llvm/Support/FileSystem.h>
+#include <llvm/Support/raw_ostream.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -74,11 +77,38 @@ bool forbiddenCompilerArgument(const std::string &argument) {
          argument == "-MMD" || argument == "-MJ" || argument == "-MF" ||
          argument == "-MT" || argument == "-MQ" || argument == "-Xclang" ||
          argument == "-load" || argument == "-###" ||
+         argument == "-fplugin" || argument == "--config" ||
+         argument.starts_with("--config=") || argument.starts_with('@') ||
          argument.starts_with("-fplugin=") ||
          (argument.starts_with("-o") && argument.size() > 2) ||
          (argument.starts_with("-MF") && argument.size() > 3) ||
          (argument.starts_with("-MJ") && argument.size() > 3);
 }
+
+class CountingDiagnosticConsumer final : public clang::DiagnosticConsumer {
+public:
+  CountingDiagnosticConsumer()
+      : printer_(llvm::errs(), diagnostic_options_) {}
+
+  void BeginSourceFile(const clang::LangOptions &language_options,
+                       const clang::Preprocessor *preprocessor) override {
+    printer_.BeginSourceFile(language_options, preprocessor);
+  }
+
+  void EndSourceFile() override { printer_.EndSourceFile(); }
+
+  void finish() override { printer_.finish(); }
+
+  void HandleDiagnostic(clang::DiagnosticsEngine::Level level,
+                        const clang::Diagnostic &diagnostic) override {
+    clang::DiagnosticConsumer::HandleDiagnostic(level, diagnostic);
+    printer_.HandleDiagnostic(level, diagnostic);
+  }
+
+private:
+  clang::DiagnosticOptions diagnostic_options_;
+  clang::TextDiagnosticPrinter printer_;
+};
 
 bool makeToolArguments(const Options &options,
                        std::vector<std::string> &arguments,
@@ -361,6 +391,25 @@ const clang::DeclRefExpr *directCalleeReference(const clang::CallExpr &call) {
   return llvm::dyn_cast<clang::DeclRefExpr>(callee);
 }
 
+bool hasCanonicalMdslQualifier(const clang::DeclRefExpr &reference) {
+  if (!reference.hasQualifier() ||
+      llvm::isa<clang::UsingShadowDecl>(reference.getFoundDecl())) {
+    return false;
+  }
+  const clang::NestedNameSpecifier *qualifier = reference.getQualifier();
+  const clang::NamespaceDecl *resolved = nullptr;
+  if (qualifier->getKind() == clang::NestedNameSpecifier::Namespace) {
+    resolved = qualifier->getAsNamespace();
+  } else if (qualifier->getKind() ==
+             clang::NestedNameSpecifier::NamespaceAlias) {
+    const clang::NamespaceAliasDecl *alias = qualifier->getAsNamespaceAlias();
+    resolved = alias == nullptr ? nullptr : alias->getNamespace();
+  }
+  return resolved != nullptr &&
+         resolved->getCanonicalDecl()->getQualifiedNameAsString() ==
+             "matcore::mdsl";
+}
+
 bool simpleLvalue(const clang::Expr &expression, std::string &name) {
   const clang::Expr *current = expression.IgnoreParenImpCasts();
   if (const auto *reference = llvm::dyn_cast<clang::DeclRefExpr>(current)) {
@@ -390,26 +439,58 @@ bool simpleLvalue(const clang::Expr &expression, std::string &name) {
   return false;
 }
 
-class PolicyCollector
-    : public clang::RecursiveASTVisitor<PolicyCollector> {
-public:
-  bool VisitDeclRefExpr(clang::DeclRefExpr *reference) {
-    const auto *constant =
-        llvm::dyn_cast<clang::EnumConstantDecl>(reference->getDecl());
-    if (constant == nullptr) {
-      return true;
+const clang::EnumConstantDecl *
+directEnumConstant(const clang::Expr &expression) {
+  const clang::Expr *current = &expression;
+  while (true) {
+    current = current->IgnoreParenImpCasts();
+    if (const auto *default_init =
+            llvm::dyn_cast<clang::CXXDefaultInitExpr>(current)) {
+      current = default_init->getExpr();
+      continue;
     }
-    const auto *enumeration =
-        llvm::dyn_cast<clang::EnumDecl>(constant->getDeclContext());
-    if (enumeration != nullptr) {
-      constants.emplace_back(enumeration->getQualifiedNameAsString(),
-                             constant->getNameAsString());
+    if (const auto *constant = llvm::dyn_cast<clang::ConstantExpr>(current)) {
+      current = constant->getSubExpr();
+      continue;
     }
-    return true;
+    break;
   }
+  const auto *reference = llvm::dyn_cast<clang::DeclRefExpr>(current);
+  return reference == nullptr
+             ? nullptr
+             : llvm::dyn_cast<clang::EnumConstantDecl>(reference->getDecl());
+}
 
-  std::vector<std::pair<std::string, std::string>> constants;
-};
+bool directEnumValue(const clang::Expr &expression,
+                     std::string_view expected_type, std::string &value) {
+  const clang::EnumConstantDecl *constant = directEnumConstant(expression);
+  const auto *enumeration =
+      constant == nullptr
+          ? nullptr
+          : llvm::dyn_cast<clang::EnumDecl>(constant->getDeclContext());
+  if (enumeration == nullptr ||
+      enumeration->getCanonicalDecl()->getQualifiedNameAsString() !=
+          expected_type) {
+    return false;
+  }
+  value = constant->getNameAsString();
+  return !value.empty();
+}
+
+const clang::InitListExpr *policyInitializer(const clang::Expr &expression) {
+  const clang::Expr *current = expression.IgnoreParenImpCasts();
+  if (const auto *cast =
+          llvm::dyn_cast<clang::CXXFunctionalCastExpr>(current)) {
+    current = cast->getSubExpr()->IgnoreParenImpCasts();
+  } else if (const auto *temporary =
+                 llvm::dyn_cast<clang::CXXTemporaryObjectExpr>(current)) {
+    if (temporary->getNumArgs() != 1) {
+      return nullptr;
+    }
+    current = temporary->getArg(0)->IgnoreParenImpCasts();
+  }
+  return llvm::dyn_cast<clang::InitListExpr>(current);
+}
 
 bool parsePolicy(const clang::Expr &expression, std::string &target,
                  std::string &fallback) {
@@ -419,31 +500,14 @@ bool parsePolicy(const clang::Expr &expression, std::string &target,
   if (llvm::isa<clang::CXXDefaultArgExpr>(current)) {
     return true;
   }
-  if (!llvm::isa<clang::CXXFunctionalCastExpr>(current) &&
-      !llvm::isa<clang::InitListExpr>(current) &&
-      !llvm::isa<clang::CXXTemporaryObjectExpr>(current)) {
+  const clang::InitListExpr *initializer = policyInitializer(expression);
+  if (initializer == nullptr || initializer->getNumInits() != 2) {
     return false;
   }
-  PolicyCollector collector;
-  collector.TraverseStmt(const_cast<clang::Expr *>(current));
-  bool saw_target = false;
-  bool saw_fallback = false;
-  for (const auto &[type, value] : collector.constants) {
-    if (type == "matcore::mdsl::target") {
-      if (saw_target) {
-        return false;
-      }
-      saw_target = true;
-      target = value;
-    } else if (type == "matcore::mdsl::fallback") {
-      if (saw_fallback) {
-        return false;
-      }
-      saw_fallback = true;
-      fallback = value;
-    }
-  }
-  return saw_target && saw_fallback;
+  return directEnumValue(*initializer->getInit(0), "matcore::mdsl::target",
+                         target) &&
+         directEnumValue(*initializer->getInit(1), "matcore::mdsl::fallback",
+                         fallback);
 }
 
 std::optional<ir::SourceRange>
@@ -619,10 +683,10 @@ private:
     if (callee_reference == nullptr) {
       fail("indirect or function-pointer calls to Matcore operations are not "
            "supported");
-    } else if (!callee_reference->hasQualifier()) {
-      fail("Matcore operations must be directly qualified (for example, "
-           "matcore::mdsl::gemm or md::gemm); unqualified and ADL calls are "
-           "rejected");
+    } else if (!hasCanonicalMdslQualifier(*callee_reference)) {
+      fail("Matcore operations must be directly qualified through "
+           "matcore::mdsl or a namespace alias to it; unqualified, ADL, and "
+           "using-declaration re-exports are rejected");
     }
     if (call.getBeginLoc().isMacroID() || call.getEndLoc().isMacroID()) {
       fail("Matcore calls generated by macros or unsafe source ranges are not "
@@ -666,8 +730,10 @@ private:
                         kOutAnnotation, source_manager,
                         output_call->getExprLoc())) {
         valid = false;
-      } else if (out_reference == nullptr || !out_reference->hasQualifier()) {
-        fail("the out wrapper must be directly namespace-qualified");
+      } else if (out_reference == nullptr ||
+                 !hasCanonicalMdslQualifier(*out_reference)) {
+        fail("the out wrapper must be directly qualified through "
+             "matcore::mdsl or a namespace alias to it");
       }
       if (output_call->getNumArgs() != 1 ||
           !simpleLvalue(*output_call->getArg(0), output_name)) {
@@ -930,6 +996,8 @@ public:
         std::filesystem::current_path().string(), tool_arguments);
     clang::tooling::ClangTool tool(compilations, {options.input_path});
     tool.mapVirtualFile(options.input_path, *source);
+    CountingDiagnosticConsumer clang_diagnostics;
+    tool.setDiagnosticConsumer(&clang_diagnostics);
     NativeActionFactory factory(state);
     const int tool_status = tool.run(&factory);
 
@@ -945,6 +1013,12 @@ public:
           Diagnostic{.file = display_path,
                      .message = "Clang parsing/Sema failed with exit code " +
                                 std::to_string(tool_status)});
+    } else if (clang_diagnostics.getNumErrors() != 0) {
+      result.diagnostics.push_back(Diagnostic{
+          .file = display_path,
+          .message = "Clang parsing/Sema emitted " +
+                     std::to_string(clang_diagnostics.getNumErrors()) +
+                     " error diagnostic(s)"});
     }
     if (!result.diagnostics.empty()) {
       result.module.operations.clear();

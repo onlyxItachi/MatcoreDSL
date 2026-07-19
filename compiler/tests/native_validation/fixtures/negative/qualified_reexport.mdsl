@@ -1,0 +1,15 @@
+#include <matcore/mdsl.h>
+
+namespace user_api {
+using matcore::mdsl::gemm;
+using matcore::mdsl::out;
+}
+
+void qualified_reexport(matcore::mdsl::matrix_view &C,
+                        const matcore::mdsl::matrix_view &A,
+                        const matcore::mdsl::matrix_view &B) {
+  user_api::gemm(user_api::out(C), A, B,
+                 matcore::mdsl::policy{
+                     .target = matcore::mdsl::target::cpu,
+                     .fallback = matcore::mdsl::fallback::error});
+}

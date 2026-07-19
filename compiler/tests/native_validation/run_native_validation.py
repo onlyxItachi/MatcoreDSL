@@ -409,6 +409,37 @@ def negative_case(
     )
 
 
+def compiler_argument_rejection_case(
+    checks: Checks,
+    extractor: Path,
+    clang: Path,
+    temporary: Path,
+    name: str,
+    arguments: Sequence[str],
+) -> None:
+    result = extraction(
+        extractor,
+        FIXTURES / "positive/namespace_alias.mdsl",
+        temporary / "compiler-arguments" / name,
+        name,
+        frontend="native",
+        clang=clang,
+        extra_compile_arguments=arguments,
+    )
+    checks.require(
+        result.completed.returncode != 0,
+        f"{name}: invalid compiler arguments were accepted",
+    )
+    checks.require(
+        not result.ir.exists(), f"{name}: invalid compiler arguments emitted IR"
+    )
+    checks.require(
+        "error" in result.completed.stderr.lower(),
+        f"{name}: invalid compiler argument diagnostic was not actionable:\n"
+        f"{result.completed.stderr}",
+    )
+
+
 def trusted_header_mutation_case(
     checks: Checks,
     extractor: Path,
@@ -614,6 +645,13 @@ def core_suite(checks: Checks, extractor: Path, clang: Path) -> None:
             ("lambda", ("lambda",), "mdsl"),
             ("macro", ("macro",), "mdsl"),
             ("policy_side_effect", ("policy", "side effect"), "mdsl"),
+            ("policy_field_confusion", ("policy",), "mdsl"),
+            ("qualified_reexport", ("qualified", "re-export"), "mdsl"),
+            (
+                "qualified_using_directive",
+                ("qualified", "namespace alias"),
+                "mdsl",
+            ),
             ("header_origin", ("header", "main source", "input .mdsl"), "h"),
         )
         for name, words, location_extension in negative_cases:
@@ -646,6 +684,44 @@ def core_suite(checks: Checks, extractor: Path, clang: Path) -> None:
                 frontend="ast-json-bootstrap",
             ),
         )
+        for name, words in (
+            ("policy_field_confusion", ("policy",)),
+            ("qualified_reexport", ("qualified", "re-export")),
+        ):
+            checks.case(
+                f"negative/{name}_bootstrap",
+                lambda name=name, words=words: negative_case(
+                    checks,
+                    extractor,
+                    clang,
+                    temporary,
+                    f"{name}_bootstrap",
+                    negative / f"{name}.mdsl",
+                    words,
+                    frontend="ast-json-bootstrap",
+                ),
+            )
+
+        extra_source = temporary / "compiler-arguments/extra-source.cpp"
+        extra_source.parent.mkdir(parents=True, exist_ok=True)
+        extra_source.write_text("int unrelated_translation_unit;\n", encoding="utf-8")
+        invalid_compiler_arguments = (
+            ("unknown_clang_option", ("-fdefinitely-not-a-clang-option",)),
+            ("invalid_language_standard", ("-std=c++99",)),
+            ("missing_clang_config", ("--config=/definitely/missing.cfg",)),
+            ("bare_clang_plugin", ("-fplugin", "/definitely/missing.so")),
+            ("response_file", ("@/definitely/missing.rsp",)),
+            ("extra_source", (str(extra_source),)),
+        )
+        for name, arguments in invalid_compiler_arguments:
+            checks.case(
+                f"compiler-arguments/{name}",
+                lambda name=name, arguments=arguments: (
+                    compiler_argument_rejection_case(
+                        checks, extractor, clang, temporary, name, arguments
+                    )
+                ),
+            )
 
         trusted_annotation = 'MATCORE_MDSL_ANNOTATE("matcore.op.gemm")\nvoid gemm'
         trusted_signature = (
