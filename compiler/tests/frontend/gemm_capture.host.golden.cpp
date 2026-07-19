@@ -1,6 +1,14 @@
+// MDSLC generated global call-site declarations.
+namespace matcore::mdsl {
+struct matrix_view;
+struct out_arg;
+struct policy;
+} // namespace matcore::mdsl
+
+void __matcore_call_site_mc_d02b3f5b625dc51ed089ace811832a03(::matcore::mdsl::out_arg output, const ::matcore::mdsl::matrix_view &lhs, const ::matcore::mdsl::matrix_view &rhs, ::matcore::mdsl::policy execution_policy);
+
+#line 1 "compiler/tests/frontend/gemm_capture.mdsl"
 #include <matcore/mdsl.h>
-#include "gemm_capture.sites.h"
-#line 2 "compiler/tests/frontend/gemm_capture.mdsl"
 
 namespace md = matcore::mdsl;
 
@@ -20,6 +28,7 @@ void capture_gemm() {
   const int ordinary_host_value = host_add(2, 3);
   (void)ordinary_host_value;
 
-  ::matcore::mdsl::detail::__matcore_call_site_mc_d02b3f5b625dc51ed089ace811832a03(md::out(C), A, B, md::policy{.target = md::target::cpu,
+  ::__matcore_call_site_mc_d02b3f5b625dc51ed089ace811832a03(md::out(C), A, B,
+           md::policy{.target = md::target::cpu,
                       .fallback = md::fallback::error});
 }

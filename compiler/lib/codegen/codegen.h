@@ -16,7 +16,9 @@ struct Artifacts {
 };
 
 // Generates all four textual artifacts as one transaction. sites_include is
-// the quoted-include spelling used by the rewritten host and stubs source.
+// the quoted-include spelling used by the stubs source. The rewritten host gets
+// only global forward declarations before a #line reset, so no user include or
+// macro ordering is changed.
 bool generate(const ir::Module &module, std::string_view original_source,
               std::string_view sites_include, Artifacts &artifacts,
               std::string &error);
