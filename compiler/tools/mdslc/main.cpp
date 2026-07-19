@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -30,6 +31,8 @@ struct CpuInvocation {
   bool has_link_only_arguments = false;
   std::string input;
   std::string output;
+  std::string dependency_mode;
+  std::string dependency_file;
   std::vector<std::string> compile_arguments;
   std::vector<std::string> link_arguments;
 };
@@ -72,6 +75,25 @@ private:
   bool enabled_ = false;
 };
 
+fs::path NormalizedPath(const fs::path &path) {
+  std::error_code error;
+  fs::path absolute = fs::absolute(path, error);
+  if (error) {
+    absolute = path;
+  }
+  error.clear();
+  const fs::path normalized = fs::weakly_canonical(absolute, error);
+  return error ? absolute.lexically_normal() : normalized;
+}
+
+bool PathsReferToSameLocation(const fs::path &left, const fs::path &right) {
+  std::error_code error;
+  if (fs::equivalent(left, right, error) && !error) {
+    return true;
+  }
+  return NormalizedPath(left) == NormalizedPath(right);
+}
+
 bool HasMdslExtension(std::string_view argument) {
   constexpr std::string_view extension = ".mdsl";
   return argument.size() >= extension.size() &&
@@ -104,43 +126,17 @@ bool IsExtractionIncompatibleArgument(std::string_view argument) {
          argument.starts_with("-fplugin=");
 }
 
-bool IsUnsupportedLinkerModeValue(std::string_view argument) {
+bool IsUnsupportedFinalLinkMode(std::string_view argument) {
   return argument == "-shared" || argument == "--shared" ||
          argument == "-static" || argument == "--static" ||
          argument == "-static-pie" || argument == "--static-pie" ||
          argument == "-pie" || argument == "--pie" ||
          argument == "-no-pie" || argument == "--no-pie" ||
-         argument == "-r" || argument == "--relocatable";
-}
-
-bool ContainsUnsafeWlComponent(std::string_view argument) {
-  constexpr std::string_view prefix = "-Wl,";
-  if (!argument.starts_with(prefix)) {
-    return false;
-  }
-  argument.remove_prefix(prefix.size());
-  while (!argument.empty()) {
-    const std::size_t comma = argument.find(',');
-    const std::string_view component = argument.substr(0, comma);
-    if (IsUnsupportedLinkerModeValue(component) || component.starts_with('@')) {
-      return true;
-    }
-    if (comma == std::string_view::npos) {
-      break;
-    }
-    argument.remove_prefix(comma + 1);
-  }
-  return false;
-}
-
-bool IsUnsupportedFinalLinkMode(std::string_view argument) {
-  return argument == "-shared" || argument == "-static" ||
-         argument == "-static-pie" || argument == "-pie" ||
-         argument == "-no-pie" || argument == "-r" ||
+         argument == "-r" ||
          argument == "--relocatable" || argument == "-nostdlib" ||
          argument == "-nodefaultlibs" || argument.starts_with('@') ||
          argument.starts_with("-Xlinker=@") ||
-         ContainsUnsafeWlComponent(argument);
+         argument.starts_with("-Wl,");
 }
 
 bool IsLinkOptionWithValue(std::string_view argument) {
@@ -397,6 +393,22 @@ ParseCpuInvocation(const WrapperArguments &arguments) {
       invocation.output = argument.substr(2);
       continue;
     }
+    if (argument == "-MD" || argument == "-MMD") {
+      invocation.dependency_mode = argument;
+      continue;
+    }
+    if (argument == "-MF") {
+      if (++index == arguments.compiler_arguments.size()) {
+        std::cerr << "mdslc++: -MF requires a dependency-file path\n";
+        return std::nullopt;
+      }
+      invocation.dependency_file = arguments.compiler_arguments[index];
+      continue;
+    }
+    if (argument.starts_with("-MF") && argument.size() > 3) {
+      invocation.dependency_file = argument.substr(3);
+      continue;
+    }
     if (IsExtractionIncompatibleArgument(argument)) {
       std::cerr << "mdslc++: compiler argument is incompatible with the CPU "
                    "extraction pipeline: "
@@ -427,11 +439,10 @@ ParseCpuInvocation(const WrapperArguments &arguments) {
         return std::nullopt;
       }
       const std::string &value = arguments.compiler_arguments[index];
-      if (argument == "-Xlinker" &&
-          (IsUnsupportedLinkerModeValue(value) || value.starts_with('@'))) {
-        std::cerr << "mdslc++: linker mode " << value
-                  << " is not implemented by the CPU bootstrap; use -c and "
-                     "perform that link explicitly with clang++\n";
+      if (argument == "-Xlinker") {
+        std::cerr << "mdslc++: opaque linker forwarding with -Xlinker is not "
+                     "implemented by the CPU bootstrap; use -c and perform "
+                     "that link explicitly with clang++\n";
         return std::nullopt;
       }
       if (IsLinkOptionWithValue(argument)) {
@@ -467,6 +478,22 @@ ParseCpuInvocation(const WrapperArguments &arguments) {
   }
   if (invocation.output.empty()) {
     std::cerr << "mdslc++: CPU pipeline v0 requires an explicit -o output\n";
+    return std::nullopt;
+  }
+  if (!invocation.dependency_file.empty() &&
+      invocation.dependency_mode.empty()) {
+    std::cerr << "mdslc++: -MF requires -MD or -MMD in the CPU pipeline\n";
+    return std::nullopt;
+  }
+  if (!invocation.dependency_mode.empty() &&
+      invocation.dependency_file.empty()) {
+    fs::path dependency(invocation.output);
+    dependency.replace_extension(".d");
+    invocation.dependency_file = dependency.string();
+  }
+  if (invocation.dependency_file == "-") {
+    std::cerr << "mdslc++: CPU pipeline dependency output must be a file, not "
+                 "standard output\n";
     return std::nullopt;
   }
   if (invocation.compile_only && invocation.has_link_only_arguments) {
@@ -547,7 +574,6 @@ GeneratedArtifacts MakeArtifactPaths(const fs::path &directory,
 void AppendCompileEnvironment(std::vector<std::string> &command,
                               const CpuInvocation &invocation,
                               const ToolLayout &layout,
-                              const fs::path &generated_directory,
                               const fs::path &source_directory) {
   bool has_language_standard = false;
   for (const std::string &argument : invocation.compile_arguments) {
@@ -559,25 +585,68 @@ void AppendCompileEnvironment(std::vector<std::string> &command,
   if (!has_language_standard) {
     command.emplace_back("-std=c++20");
   }
-  command.insert(command.end(), invocation.compile_arguments.begin(),
-                 invocation.compile_arguments.end());
   command.emplace_back("-I" + layout.include_directory.string());
-  command.emplace_back("-I" + generated_directory.string());
   command.emplace_back("-iquote");
   command.emplace_back(source_directory.string());
+  command.insert(command.end(), invocation.compile_arguments.begin(),
+                 invocation.compile_arguments.end());
 }
 
 int CompileGeneratedSource(const fs::path &source, const fs::path &object,
                            const CpuInvocation &invocation,
                            const ToolLayout &layout,
-                           const fs::path &generated_directory,
                            const fs::path &source_directory, bool verbose) {
   std::vector<std::string> command{MDSLC_DEFAULT_CLANGXX};
-  AppendCompileEnvironment(command, invocation, layout, generated_directory,
-                           source_directory);
+  AppendCompileEnvironment(command, invocation, layout, source_directory);
   command.insert(command.end(), {"-fPIC", "-x", "c++", "-c",
                                  source.string(), "-o", object.string()});
   return RunCommand(std::move(command), verbose);
+}
+
+int GenerateDependencyFile(const CpuInvocation &invocation,
+                           const ToolLayout &layout,
+                           const fs::path &source_directory,
+                           const fs::path &source,
+                           const fs::path &object_target,
+                           const fs::path &dependency_output, bool verbose) {
+  std::vector<std::string> command{MDSLC_DEFAULT_CLANGXX};
+  AppendCompileEnvironment(command, invocation, layout, source_directory);
+  command.insert(command.end(),
+                 {"-x", "c++", invocation.dependency_mode, "-MF",
+                  dependency_output.string(), "-MQ", object_target.string(),
+                  "-fsyntax-only", source.string()});
+  return RunCommand(std::move(command), verbose);
+}
+
+bool PublishFileAtomically(const fs::path &source,
+                           const fs::path &destination) {
+  std::ifstream input(source, std::ios::binary);
+  if (!input) {
+    std::cerr << "mdslc++: dependency scan did not produce " << source << '\n';
+    return false;
+  }
+  const fs::path temporary =
+      destination.string() + ".tmp." + std::to_string(::getpid());
+  {
+    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+    output << input.rdbuf();
+    if (!output) {
+      std::cerr << "mdslc++: failed to write dependency file " << temporary
+                << '\n';
+      std::error_code ignored;
+      fs::remove(temporary, ignored);
+      return false;
+    }
+  }
+  std::error_code error;
+  fs::rename(temporary, destination, error);
+  if (error) {
+    std::cerr << "mdslc++: failed to publish dependency file " << destination
+              << ": " << error.message() << '\n';
+    fs::remove(temporary, error);
+    return false;
+  }
+  return true;
 }
 
 bool RequireGeneratedFile(const fs::path &path) {
@@ -630,12 +699,33 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     std::cerr << "mdslc++: invalid input path: " << invocation.input << '\n';
     return 2;
   }
-  if (source_absolute.lexically_normal() == output.lexically_normal()) {
+  if (PathsReferToSameLocation(source_absolute, output)) {
     std::cerr << "mdslc++: output path must not overwrite the input .mdsl "
                  "source\n";
     return 2;
   }
   const fs::path source_directory = source_absolute.parent_path();
+  fs::path dependency_output;
+  fs::path raw_dependency;
+  if (!invocation.dependency_mode.empty()) {
+    dependency_output = fs::absolute(invocation.dependency_file, error);
+    if (error || dependency_output.filename().empty() ||
+        !fs::is_directory(dependency_output.parent_path())) {
+      std::cerr << "mdslc++: invalid dependency-file path: "
+                << invocation.dependency_file << '\n';
+      return 2;
+    }
+    if (PathsReferToSameLocation(source_absolute, dependency_output) ||
+        PathsReferToSameLocation(output, dependency_output)) {
+      std::cerr << "mdslc++: dependency file must not overwrite or alias the "
+                   "input or output\n";
+      return 2;
+    }
+    raw_dependency = workspace / (stem + ".dependencies.raw.d");
+    if (PathsReferToSameLocation(raw_dependency, dependency_output)) {
+      raw_dependency = workspace / (stem + ".dependencies.temporary.d");
+    }
+  }
 
   std::vector<std::string> extract_command{
       layout->extractor.string(),
@@ -656,7 +746,7 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   }
   extract_command.emplace_back("--");
   extract_command.emplace_back(MDSLC_DEFAULT_CLANGXX);
-  AppendCompileEnvironment(extract_command, invocation, *layout, workspace,
+  AppendCompileEnvironment(extract_command, invocation, *layout,
                            source_directory);
   extract_command.emplace_back(invocation.input);
 
@@ -672,22 +762,30 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     return 1;
   }
 
+  if (!invocation.dependency_mode.empty()) {
+    result = GenerateDependencyFile(invocation, *layout, source_directory,
+                                    source_absolute, output,
+                                    raw_dependency, wrapper.verbose);
+    if (result != 0) {
+      return result;
+    }
+  }
+
   result = CompileGeneratedSource(artifacts.host_source, artifacts.host_object,
-                                  invocation, *layout, workspace,
-                                  source_directory, wrapper.verbose);
+                                  invocation, *layout, source_directory,
+                                  wrapper.verbose);
   if (result != 0) {
     return result;
   }
   result = CompileGeneratedSource(artifacts.stubs_source,
                                   artifacts.stubs_object, invocation, *layout,
-                                  workspace, source_directory, wrapper.verbose);
+                                  source_directory, wrapper.verbose);
   if (result != 0) {
     return result;
   }
   result = CompileGeneratedSource(artifacts.backend_source,
                                   artifacts.backend_object, invocation,
-                                  *layout, workspace, source_directory,
-                                  wrapper.verbose);
+                                  *layout, source_directory, wrapper.verbose);
   if (result != 0) {
     return result;
   }
@@ -708,7 +806,16 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     link_command.emplace_back("-o");
     link_command.emplace_back(output.string());
   }
-  return RunCommand(std::move(link_command), wrapper.verbose);
+  result = RunCommand(std::move(link_command), wrapper.verbose);
+  if (result != 0) {
+    return result;
+  }
+  if (!invocation.dependency_mode.empty() &&
+      !PublishFileAtomically(raw_dependency, dependency_output)) {
+    fs::remove(output, error);
+    return 1;
+  }
+  return 0;
 }
 
 } // namespace

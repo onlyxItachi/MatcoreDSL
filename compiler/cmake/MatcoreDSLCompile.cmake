@@ -56,6 +56,7 @@ function(matcoredsl_add_executable target_name)
       "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/${target_name}.mdsl")
   set(mdsl_object
       "${mdsl_object_dir}/${mdsl_stem}-${mdsl_source_hash}.o")
+  set(mdsl_depfile "${mdsl_object}.d")
 
   add_custom_command(
     OUTPUT "${mdsl_object}"
@@ -65,12 +66,14 @@ function(matcoredsl_add_executable target_name)
       "-std=c++${MDSLC_CXX_STANDARD}"
       "--matcore-target=${MDSLC_MATCORE_TARGET}"
       ${MDSLC_COMPILE_OPTIONS}
+      -MD -MF "${mdsl_depfile}"
       -c "${mdsl_source}"
       -o "${mdsl_object}"
     DEPENDS
       "${mdsl_source}"
       MatcoreDSL::Compiler
       MatcoreDSL::Extractor
+    DEPFILE "${mdsl_depfile}"
     COMMENT "Compiling MDSLC source ${MDSLC_SOURCE}"
     COMMAND_EXPAND_LISTS
     VERBATIM
