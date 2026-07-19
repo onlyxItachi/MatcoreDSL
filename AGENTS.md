@@ -13,9 +13,15 @@ in `context.md`.
   to `std` or `std::mdsl`.
 - Users opt in through the `.mdsl` extension, the `mdslc++` driver,
   `<matcore/mdsl.h>`, and annotated canonical declarations.
-- Recognize operations after Clang Sema from the canonical resolved
-  `FunctionDecl` and its `clang::annotate` metadata. Textual call matching,
-  unqualified/ADL recognition, and arbitrary C++ capture are forbidden.
+- The supported frontend is the in-process Clang 21 LibTooling path. Recognize
+  operations after Sema from `getDirectCallee()`, the canonical resolved
+  `FunctionDecl`, its exact `clang::annotate` payload, and its trusted-header
+  origin. Textual call matching, unqualified/ADL recognition, and arbitrary
+  C++ capture are forbidden.
+- Authenticate `<matcore/mdsl.h>` through the directly resolved `FileEntry`
+  identity, a stable physical/parsed content snapshot, and the expected public
+  ABI semantics. A copied, shadowed, macro-altered, or signature-compatible
+  lookalike is not a trusted declaration.
 - Output mutation is explicit through `matcore::mdsl::out(C)`. Preserve shape,
   dtype, layout, memory-space, alias, effect, policy, and source-location
   information at compiler boundaries.
@@ -39,21 +45,29 @@ in `context.md`.
 - Unsupported contexts must fail with a nonzero status and an actionable
   diagnostic tied to the original `.mdsl` file, line, and column when Clang
   provides them. Reject unsafe macro, template, lambda, header, indirect-call,
-  side-effect, alias, layout, dtype, and residency cases before rewriting.
+  unevaluated, side-effect, alias, layout, dtype, and residency cases before
+  rewriting.
 - Rewrite only the exact validated `CallExpr` source range. Never rewrite macro
   expansions or source ranges not owned by the main `.mdsl` file.
+- Do not accept user-controlled VFS overlays, precompiled headers, or module
+  injection in the v1 frontend. Freeze the main source and its dependency
+  closure before extraction and recheck both after every generated compile,
+  link, and dependency publication phase.
 - Generated host, IR, site, stub, backend, object, and executable files belong
   in the build tree. Do not commit them. Commit deterministic golden fixtures
   only when a test intentionally reviews their complete contents.
 - Generated identifiers must be deterministic and collision-safe across call
-  sites and translation units.
+  sites and translation units. Equivalent generated site wrappers/backends use
+  weak definitions so deterministic IDs can safely co-link across independent
+  source roots.
 
 ## Toolchain and build discipline
 
 The 2026-07-19 audit selected one coherent native-frontend tuple: Clang,
 Clang development libraries, and LLVM 21.1.8 from Ubuntu package revision
-`1:21.1.8-6ubuntu1`. The matching `libclang-21-dev` and
-`libclang-cpp21-dev` packages were installed with explicit user approval.
+`1:21.1.8-6ubuntu1`. The user approved the exact
+`libclang-21-dev libclang-cpp21-dev` install command; when run, APT reported
+both packages already at the newest version and made zero package changes.
 Configure the standalone project with that tuple:
 
 ```sh
@@ -86,12 +100,9 @@ ctest --test-dir build-mdslc --output-on-failure -j1
 
 Native is the supported default. Missing native dependencies must fail
 configuration or default invocation clearly; they must never trigger a silent
-bootstrap fallback. Keep the bootstrap producer label and limitations
-explicit. It must authenticate the
-exact shipped/source public header, use structural AST declaration IDs, verify
-one unchanged source snapshot, and reject ambiguous constructs. It does not
-replace the required LibTooling implementation because JSON AST omits the
-`AnnotateAttr` payload.
+bootstrap fallback. Keep the compatibility producer label and its limitations
+explicit. Differential parity is a regression oracle; native Clang declaration
+and source-manager semantics remain authoritative.
 
 For the driver-only language proof, use the selected executable explicitly:
 

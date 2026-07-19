@@ -1,76 +1,76 @@
 # MDSLC roadmap
 
-The roadmap remains gate-driven and additive to the legacy Python/JIT path.
+The roadmap is gate-driven and additive to the legacy Python/JIT path. A
+backend is supported only after it compiles, links, executes, validates
+correctness, and passes its declared acceptance suite.
 
-## Completed bootstrap gates
+## Completed architecture gates
 
-1. **Standalone build skeleton — complete.** `compiler/` configures and builds
-   independently of Python, nanobind, MLIR, and root CMake.
-2. **Valid-C++ driver proof — complete.** `mdslc++` forces `.mdsl` through
-   Clang as C++, supports host executable/object modes, is shell-free, and
-   preserves compiler diagnostics/status.
-3. **Public API and bootstrap capture — partial by dependency.** The public
-   `matcore::mdsl` header, exact trusted-declaration recognition, Clang
-   parsing/Sema, deterministic JSON, verifier, and negative context diagnostics
-   pass. The AST-JSON implementation must still be replaced by LibTooling to
-   authenticate the annotation payload and use native Clang AST APIs.
-4. **C ABI, rewrite, and CPU GEMM — complete.** Exact source rewrite, stable
-   multi-TU site symbols, generated stubs/backend, synchronous checked f32 GEMM,
-   combined `.o`, ordinary external link, and independent-oracle execution pass.
-5. **Installation and external consumer — complete.** Tools, headers, runtime,
-   exported CMake targets, helper, external `find_package`, incremental rebuild,
-   and clean installed-path checks pass.
-6. **Adversarial validation — complete for implemented scope.** Fresh Release,
-   Debug, generated-host/runtime ASan/UBSan, artifact, runtime,
-   negative-source, IR-mutation, install, and independent review gates pass.
-   Full extractor instrumentation separately exposes Ubuntu RapidJSON 1.1.0's
-   null-pointer arithmetic and is not claimed clean.
-7. **CUDA/cuBLAS — not attempted.** It remains optional after the exact
-   LibTooling frontend gate is closed.
+1. **Standalone build — complete.** `compiler/` builds independently of root
+   CMake, Python, nanobind, MLIR, and the legacy JIT.
+2. **Valid-C++ driver — complete.** `mdslc++` forces `.mdsl` through Clang as
+   C++, preserves ordinary host C++, and produces executables or relocatable
+   objects.
+3. **Native LibTooling frontend v1 — complete.** In-process Clang 21
+   PPCallbacks, parse/Sema, ASTMatcher, canonical declaration and exact
+   annotation authentication, trusted-header identity/ABI checks, and
+   SourceManager/Lexer ranges are the validated default.
+4. **Verified bootstrap IR — complete for v0.** Deterministic Matcore JSON IR
+   v0 has a shared serializer, verifier, source locations, conversion boundary,
+   and native/bootstrap differential tests.
+5. **Rewrite, C ABI, and CPU GEMM — complete for v0.** Generated
+   sites/stubs/backend, versioned C runtime, synchronous checked f32 GEMM,
+   combined `.o`, ordinary final link, and independent-oracle execution pass.
+6. **Installation and consumer — complete.** Tools, headers, runtime, CMake
+   package/helper, fresh-prefix external consumer, dependency regeneration,
+   relocation, and no-op rebuild pass.
+7. **Adversarial validation — complete for the declared slice.** Release,
+   Debug, supported sanitizer scope, native/bootstrap parity, fake-header and
+   annotation attacks, source/dependency races, artifact inspection, package,
+   and legacy smoke gates have reproducible evidence.
 
-## Native LibTooling v1 in progress
-
-The approved matching Clang 21.1.8 development surface is installed and
-verified. The active gate replaces AST-JSON capture with native PPCallbacks,
-post-Sema canonical declaration and `AnnotateAttr` authentication, and
-SourceManager ranges while preserving JSON IR v0 and the validated CPU
-artifact pipeline. Native becomes the default only after parity, install,
-consumer, sanitizer, and adversarial review gates pass. Bootstrap remains an
-explicit comparison mode and never a silent fallback.
+The architecture verdict is **passed for the standalone native CPU
+frontend/runtime vertical slice**. The AST-JSON producer remains an explicitly
+selected compatibility oracle only; it is never a fallback from native.
 
 ## Next three exact engineering tasks
 
-1. Implement the existing
-   frontend interface with `getDirectCallee()`, canonical `FunctionDecl`,
-   `AnnotateAttr` payload checks, and `SourceManager` ranges. Run the current 44
-   frontend checks unchanged against it.
-2. Make the LibTooling frontend the default and retain AST JSON only as an
-   explicitly selected diagnostic fallback until parity is proven. Add
-   compile-database support, include/source-manager tests, and remove the
-   trusted-path inference workaround once annotation identity is native.
-3. Define and test the single versioned JSON-v0-to-high-level-Matcore-IR bridge,
-   including capability requirements and a CPU planner choice between the
-   reference loop, structured/vector lowering, and an external optimized
-   library. Do not begin custom GPU kernels in this step.
+1. **Freeze the post-JSON high-level IR boundary.** Define one versioned
+   conversion from verified JSON v0 into a typed target-independent Matcore IR,
+   including dynamic dimensions, dtypes, layouts/strides, memory space,
+   effects, alias requirements, policy, synchronization, source locations, and
+   capability requirements. Add verifier and round-trip tests before adding an
+   operation.
+2. **Introduce a CPU capability/planning contract.** Model detected scalar and
+   vector capabilities and make the planner choose explicitly among the
+   validated reference loop, a structured/vector implementation, and an
+   external optimized-library implementation. Each choice needs legality,
+   correctness, artifact, and bounded performance evidence; no silent fallback
+   or global-performance claim.
+3. **Add an explicit NVIDIA library-call milestone only after task 2.** Require
+   device-resident descriptors, target/capability validation, synchronous
+   cuBLAS execution, no hidden migration, no mixed residency, and CPU-oracle
+   correctness. Treat unavailable architectures as errors or clearly labeled
+   compile-only results, never runtime support.
 
-## Subsequent lowering milestones
+## Later operation and lowering milestones
 
-- Expand the typed high-level IR only through versioned fields and verifier
-  tests; do not introduce an overlapping undocumented IR.
-- Add `gemv`, `gevm`, and then `relu_gemm` one operation at a time with explicit
-  legality, effects, ABI, runtime, and negative tests.
-- Add a CPU capability record and vector/library selection with correctness and
-  bounded performance evidence.
-- Add NVIDIA capability discovery and a synchronous, explicit
-  device-resident cuBLAS library-call backend. No hidden migration or CPU
-  fallback is allowed.
-- Only after the library backend passes may scheduled GPU/Vector/NVGPU/NVVM
-  experiments begin. WGMMA requires a detected legal architecture and actual
-  runtime validation.
-- AMD, HIP, and other accelerators require their own capability contract,
-  legalizer, lowering, runtime, artifact, correctness, and performance gates.
+- Add `gemv`, `gevm`, then `relu_gemm` individually, with explicit legality,
+  effects, ABI, runtime, diagnostics, and negative tests.
+- Introduce a Matcore MLIR dialect/bridge only as the documented consumer of
+  the high-level IR. Lower through structured dialects where appropriate; do
+  not make Clang the matrix optimizer.
+- Add target-specific scheduling, tiling, vectorization, memory mapping,
+  legalization, runtime loading, and validation for every claimed target.
+- Consider generated NVIDIA kernels only after the library-call backend passes.
+  WGMMA requires a detected legal architecture and actual runtime validation.
+- AMD/HIP, Metal, NPU, and other targets each require a separate capability
+  contract, legalizer, lowering, runtime, artifact, correctness, and
+  performance gate.
+- Add operations and optimizations incrementally; do not introduce arbitrary
+  C++ capture, implicit host/device copies, silent fallback, a general tensor
+  framework, or overlapping undocumented IRs.
 
-A backend is supported only after it compiles, links, executes, validates
-correctness, and passes its declared acceptance suite. The performance promise
-remains: choose and validate the best implementation available within the
-supported device capability model and implemented search space.
+The long-term performance promise remains deliberately bounded: choose and
+validate the best implementation available within the supported device
+capability model and implemented search space.
