@@ -1,0 +1,12 @@
+#if !defined(MDSLC_NATIVE_VALIDATION_FLAG) || MDSLC_NATIVE_VALIDATION_FLAG != 17
+#error "MDSLC_NATIVE_VALIDATION_FLAG must be forwarded consistently"
+#endif
+
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+
+void flag_forwarding(md::matrix_view &C, const md::matrix_view &A,
+                     const md::matrix_view &B) {
+  md::gemm(md::out(C), A, B);
+}

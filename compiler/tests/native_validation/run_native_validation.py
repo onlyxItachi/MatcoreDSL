@@ -1,0 +1,1034 @@
+#!/usr/bin/env python3
+"""Differential and adversarial validation for the native Clang frontend."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, Sequence
+
+
+NATIVE_PRODUCER = "clang-libtooling-v1"
+BOOTSTRAP_PRODUCER = "clang-ast-json-bootstrap-v0"
+REPOSITORY = Path(__file__).resolve().parents[3]
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+@dataclass(frozen=True)
+class Extraction:
+    completed: subprocess.CompletedProcess[str]
+    ir: Path
+    host: Path | None = None
+    sites: Path | None = None
+    stubs: Path | None = None
+    backend: Path | None = None
+
+
+class Checks:
+    def __init__(self) -> None:
+        self.count = 0
+        self.failures: list[str] = []
+
+    def require(self, condition: bool, message: str) -> None:
+        self.count += 1
+        if not condition:
+            self.failures.append(message)
+
+    def case(self, name: str, operation) -> None:  # type: ignore[no-untyped-def]
+        try:
+            operation()
+        except Exception as error:  # keep independent adversarial cases running
+            self.failures.append(f"{name}: unexpected exception: {error}")
+
+
+def run(
+    command: Sequence[str], *, cwd: Path = REPOSITORY, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        list(command),
+        cwd=cwd,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+
+
+def source_argument(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(REPOSITORY).as_posix()
+    except ValueError:
+        return str(path.resolve())
+
+
+def extraction(
+    extractor: Path,
+    source: Path,
+    output_root: Path,
+    label: str,
+    *,
+    frontend: str | None,
+    clang: Path,
+    generate: bool = False,
+    extra_compile_arguments: Iterable[str] = (),
+) -> Extraction:
+    output_root.mkdir(parents=True, exist_ok=True)
+    ir = output_root / f"{label}.matcore.json"
+    command = [str(extractor)]
+    if frontend is not None:
+        command.append(f"--frontend={frontend}")
+    command.extend(["--input", source_argument(source), "--ir-out", str(ir)])
+    host = sites = stubs = backend = None
+    if generate:
+        host = output_root / f"{label}.host.cpp"
+        sites = output_root / f"{label}.sites.h"
+        stubs = output_root / f"{label}.stubs.cpp"
+        backend = output_root / f"{label}.backend.cpp"
+        command.extend(
+            [
+                "--rewrite-out",
+                str(host),
+                "--sites-out",
+                str(sites),
+                "--stubs-out",
+                str(stubs),
+                "--backend-out",
+                str(backend),
+            ]
+        )
+    encoded_source = source_argument(source)
+    command.extend(
+        [
+            "--",
+            str(clang),
+            "-x",
+            "c++",
+            "-std=c++20",
+            *extra_compile_arguments,
+            encoded_source,
+        ]
+    )
+    return Extraction(
+        run(command), ir, host=host, sites=sites, stubs=stubs, backend=backend
+    )
+
+
+def load_ir(result: Extraction) -> dict:  # type: ignore[type-arg]
+    return json.loads(result.ir.read_text(encoding="utf-8"))
+
+
+def semantic_ir(document: dict) -> dict:  # type: ignore[type-arg]
+    # Producer is the sole intentional frontend-specific field in IR v0.
+    normalized = json.loads(json.dumps(document))
+    normalized.pop("producer", None)
+    return normalized
+
+
+def validate_ir_ranges(
+    checks: Checks, label: str, document: dict, source: Path, expected_operations: int
+) -> None:  # type: ignore[type-arg]
+    source_bytes = source.read_bytes()
+    checks.require(document.get("schema") == "matcore.ir", f"{label}: wrong schema")
+    checks.require(document.get("version") == 0, f"{label}: wrong IR version")
+    operations = document.get("operations", [])
+    checks.require(
+        len(operations) == expected_operations,
+        f"{label}: expected {expected_operations} operations, got {len(operations)}",
+    )
+    prior_offset = -1
+    site_ids: set[str] = set()
+    for index, operation in enumerate(operations):
+        prefix = f"{label} operation {index}"
+        checks.require(operation.get("kind") == "gemm", f"{prefix}: wrong kind")
+        checks.require(
+            operation.get("canonical_callee") == "matcore::mdsl::gemm",
+            f"{prefix}: canonical declaration identity was lost",
+        )
+        site_id = operation.get("site_id", "")
+        checks.require(site_id not in site_ids, f"{prefix}: duplicate site ID")
+        site_ids.add(site_id)
+        source_record = operation.get("source", {})
+        byte_range = source_record.get("byte_range", {})
+        begin = byte_range.get("begin", -1)
+        end = byte_range.get("end", -1)
+        checks.require(
+            isinstance(begin, int)
+            and isinstance(end, int)
+            and 0 <= begin < end <= len(source_bytes),
+            f"{prefix}: invalid SourceManager byte range {begin}:{end}",
+        )
+        if not isinstance(begin, int) or not isinstance(end, int) or begin < 0:
+            continue
+        call_bytes = source_bytes[begin:end]
+        checks.require(b"gemm" in call_bytes, f"{prefix}: call range misses callee")
+        checks.require(begin > prior_offset, f"{prefix}: operations not source ordered")
+        prior_offset = begin
+        checks.require(
+            source_record.get("byte_offset") == begin,
+            f"{prefix}: location offset differs from range begin",
+        )
+        expected_line = source_bytes[:begin].count(b"\n") + 1
+        last_newline = source_bytes.rfind(b"\n", 0, begin)
+        expected_column = begin - last_newline
+        checks.require(
+            source_record.get("line") == expected_line,
+            f"{prefix}: line is not backed by source bytes",
+        )
+        checks.require(
+            source_record.get("column") == expected_column,
+            f"{prefix}: column is not backed by source bytes",
+        )
+        argument_ranges = operation.get("source_argument_ranges", [])
+        checks.require(
+            len(argument_ranges) in (3, 4),
+            f"{prefix}: expected three source arguments plus optional explicit policy",
+        )
+        prior_argument_end = begin
+        for argument_range in argument_ranges:
+            argument_begin = argument_range.get("begin", -1)
+            argument_end = argument_range.get("end", -1)
+            checks.require(
+                begin <= argument_begin < argument_end <= end,
+                f"{prefix}: argument range escapes validated CallExpr",
+            )
+            checks.require(
+                argument_begin >= prior_argument_end,
+                f"{prefix}: argument ranges overlap or are unordered",
+            )
+            prior_argument_end = argument_end
+
+
+def compile_generated(
+    checks: Checks,
+    label: str,
+    result: Extraction,
+    clang: Path,
+    extractor: Path,
+    extra_compile_arguments: Iterable[str] = (),
+) -> None:
+    include = extractor.resolve().parent.parent / "include"
+    assert result.host and result.sites and result.stubs and result.backend
+    for kind, path in (
+        ("host", result.host),
+        ("stubs", result.stubs),
+        ("backend", result.backend),
+    ):
+        completed = run(
+            [
+                str(clang),
+                "-std=c++20",
+                *extra_compile_arguments,
+                "-Wall",
+                "-Wextra",
+                "-Wpedantic",
+                "-Werror",
+                f"-I{include}",
+                f"-I{path.parent}",
+                "-x",
+                "c++",
+                "-fsyntax-only",
+                str(path),
+            ]
+        )
+        checks.require(
+            completed.returncode == 0,
+            f"{label}: generated {kind} failed strict syntax check:\n{completed.stderr}",
+        )
+
+
+def positive_parity_case(
+    checks: Checks,
+    extractor: Path,
+    clang: Path,
+    temporary: Path,
+    name: str,
+    source: Path,
+    expected_operations: int,
+    extra_compile_arguments: Iterable[str] = (),
+) -> None:
+    native = extraction(
+        extractor,
+        source,
+        temporary / name / "native",
+        name,
+        frontend="native",
+        clang=clang,
+        generate=True,
+        extra_compile_arguments=extra_compile_arguments,
+    )
+    bootstrap = extraction(
+        extractor,
+        source,
+        temporary / name / "bootstrap",
+        name,
+        frontend="ast-json-bootstrap",
+        clang=clang,
+        generate=True,
+        extra_compile_arguments=extra_compile_arguments,
+    )
+    checks.require(
+        native.completed.returncode == 0,
+        f"{name}: native extraction failed:\n{native.completed.stderr}",
+    )
+    checks.require(
+        bootstrap.completed.returncode == 0,
+        f"{name}: bootstrap extraction failed:\n{bootstrap.completed.stderr}",
+    )
+    if native.completed.returncode or bootstrap.completed.returncode:
+        return
+    native_document = load_ir(native)
+    bootstrap_document = load_ir(bootstrap)
+    checks.require(
+        native_document.get("producer") == NATIVE_PRODUCER,
+        f"{name}: native producer is not explicit",
+    )
+    checks.require(
+        bootstrap_document.get("producer") == BOOTSTRAP_PRODUCER,
+        f"{name}: bootstrap producer is not explicit",
+    )
+    checks.require(
+        semantic_ir(native_document) == semantic_ir(bootstrap_document),
+        f"{name}: native/bootstrap semantic IR mismatch",
+    )
+    validate_ir_ranges(
+        checks, f"{name}/native", native_document, source, expected_operations
+    )
+    for kind in ("host", "sites", "stubs", "backend"):
+        native_path = getattr(native, kind)
+        bootstrap_path = getattr(bootstrap, kind)
+        assert native_path and bootstrap_path
+        checks.require(
+            native_path.read_bytes() == bootstrap_path.read_bytes(),
+            f"{name}: generated {kind} differs between frontends",
+        )
+    compile_generated(checks, name, native, clang, extractor, extra_compile_arguments)
+
+
+def native_range_case(
+    checks: Checks,
+    extractor: Path,
+    clang: Path,
+    temporary: Path,
+    name: str,
+    source: Path,
+    expected_operations: int,
+) -> None:
+    first = extraction(
+        extractor,
+        source,
+        temporary / name / "first",
+        name,
+        frontend="native",
+        clang=clang,
+        generate=True,
+    )
+    second = extraction(
+        extractor,
+        source,
+        temporary / name / "second",
+        name,
+        frontend="native",
+        clang=clang,
+        generate=True,
+    )
+    checks.require(
+        first.completed.returncode == 0,
+        f"{name}: native extraction failed:\n{first.completed.stderr}",
+    )
+    checks.require(
+        second.completed.returncode == 0,
+        f"{name}: repeated native extraction failed:\n{second.completed.stderr}",
+    )
+    if first.completed.returncode or second.completed.returncode:
+        return
+    first_document = load_ir(first)
+    validate_ir_ranges(checks, name, first_document, source, expected_operations)
+    checks.require(
+        first.ir.read_bytes() == second.ir.read_bytes(),
+        f"{name}: native IR is not byte deterministic",
+    )
+    for kind in ("host", "sites", "stubs", "backend"):
+        first_path = getattr(first, kind)
+        second_path = getattr(second, kind)
+        assert first_path and second_path
+        checks.require(
+            first_path.read_bytes() == second_path.read_bytes(),
+            f"{name}: native generated {kind} is not deterministic",
+        )
+    compile_generated(checks, name, first, clang, extractor)
+
+
+def negative_case(
+    checks: Checks,
+    extractor: Path,
+    clang: Path,
+    temporary: Path,
+    name: str,
+    source: Path,
+    expected_words: Sequence[str],
+    location_extension: str = "mdsl",
+) -> None:
+    result = extraction(
+        extractor,
+        source,
+        temporary / "negative" / name,
+        name,
+        frontend="native",
+        clang=clang,
+    )
+    diagnostic = result.completed.stderr.lower()
+    diagnostic_messages = "\n".join(
+        line.split(": error:", 1)[1]
+        for line in diagnostic.splitlines()
+        if ": error:" in line
+    )
+    checks.require(result.completed.returncode != 0, f"{name}: was accepted")
+    checks.require(not result.ir.exists(), f"{name}: emitted IR after rejection")
+    checks.require("error" in diagnostic, f"{name}: diagnostic was not actionable")
+    checks.require(
+        any(word.lower() in diagnostic_messages for word in expected_words),
+        f"{name}: diagnostic lacked one of {expected_words!r}:\n{result.completed.stderr}",
+    )
+    checks.require(
+        re.search(
+            rf"\.{re.escape(location_extension)}:\d+:\d+", result.completed.stderr
+        )
+        is not None,
+        f"{name}: diagnostic lacks an actionable source line and column:\n"
+        f"{result.completed.stderr}",
+    )
+
+
+def trusted_header_mutation_case(
+    checks: Checks,
+    extractor: Path,
+    clang: Path,
+    temporary: Path,
+    name: str,
+    old: str,
+    new: str,
+    expected_words: Sequence[str],
+) -> None:
+    prefix = temporary / "trusted-header-mutations" / name
+    copied_extractor = prefix / "bin/matcore-extract"
+    copied_header = prefix / "include/matcore/mdsl.h"
+    copied_extractor.parent.mkdir(parents=True)
+    copied_header.parent.mkdir(parents=True)
+    shutil.copy2(extractor, copied_extractor)
+    original_header_path = extractor.resolve().parent.parent / "include/matcore/mdsl.h"
+    original_header = original_header_path.read_text(encoding="utf-8")
+    checks.require(old in original_header, f"{name}: header mutation anchor is absent")
+    mutated_header = original_header.replace(old, new, 1)
+    checks.require(
+        mutated_header != original_header,
+        f"{name}: trusted-header mutation did not alter the header",
+    )
+    copied_header.write_text(mutated_header, encoding="utf-8")
+    source = FIXTURES / "positive/namespace_alias.mdsl"
+    result = extraction(
+        copied_extractor,
+        source,
+        prefix / "output",
+        name,
+        frontend="native",
+        clang=clang,
+    )
+    diagnostic = result.completed.stderr.lower()
+    diagnostic_messages = "\n".join(
+        line.split(": error:", 1)[1]
+        for line in diagnostic.splitlines()
+        if ": error:" in line
+    )
+    checks.require(result.completed.returncode != 0, f"{name}: was accepted")
+    checks.require(not result.ir.exists(), f"{name}: emitted IR after rejection")
+    checks.require(
+        any(word.lower() in diagnostic_messages for word in expected_words),
+        f"{name}: wrong trusted-declaration diagnostic:\n{result.completed.stderr}",
+    )
+    checks.require(
+        re.search(r"\.mdsl:\d+:\d+", result.completed.stderr) is not None,
+        f"{name}: diagnostic lacks original .mdsl line and column:\n"
+        f"{result.completed.stderr}",
+    )
+
+
+def core_suite(checks: Checks, extractor: Path, clang: Path) -> None:
+    positives = FIXTURES / "positive"
+    old = REPOSITORY / "compiler/tests/frontend"
+    with tempfile.TemporaryDirectory(prefix="matcore-native-validation-") as encoded:
+        temporary = Path(encoded)
+        parity_cases = (
+            ("old_host_only", old / "host_only.mdsl", 0, ()),
+            ("old_direct", old / "direct_qualified.mdsl", 1, ()),
+            ("old_alias", old / "gemm_capture.mdsl", 1, ()),
+            ("old_two_sites", old / "two_sites.mdsl", 2, ()),
+            ("namespace_alias", positives / "namespace_alias.mdsl", 1, ()),
+            ("class_two_calls", positives / "class_two_calls_one_line.mdsl", 2, ()),
+            (
+                "flag_forwarding",
+                positives / "flag_forwarding.mdsl",
+                1,
+                ("-DMDSLC_NATIVE_VALIDATION_FLAG=17",),
+            ),
+        )
+
+        producer_only_left = {
+            "producer": NATIVE_PRODUCER,
+            "operations": [{"target": "cpu"}],
+        }
+        producer_only_right = {
+            "producer": BOOTSTRAP_PRODUCER,
+            "operations": [{"target": "cpu"}],
+        }
+        semantic_mismatch = {
+            "producer": BOOTSTRAP_PRODUCER,
+            "operations": [{"target": "cuda"}],
+        }
+        checks.require(
+            semantic_ir(producer_only_left) == semantic_ir(producer_only_right),
+            "parity normalizer did not ignore the intentional producer difference",
+        )
+        checks.require(
+            semantic_ir(producer_only_left) != semantic_ir(semantic_mismatch),
+            "parity harness failed to detect a semantic field mismatch",
+        )
+        for name, source, operation_count, extra in parity_cases:
+            checks.case(
+                name,
+                lambda name=name, source=source, operation_count=operation_count, extra=extra: (
+                    positive_parity_case(
+                        checks,
+                        extractor,
+                        clang,
+                        temporary,
+                        name,
+                        source,
+                        operation_count,
+                        extra,
+                    )
+                ),
+            )
+
+        range_source = positives / "range_edges.mdsl"
+        checks.case(
+            "range_edges",
+            lambda: native_range_case(
+                checks, extractor, clang, temporary, "range_edges", range_source, 1
+            ),
+        )
+        crlf = temporary / "materialized" / "range_edges_crlf.mdsl"
+        crlf.parent.mkdir(parents=True)
+        crlf.write_bytes(range_source.read_bytes().replace(b"\n", b"\r\n"))
+        checks.case(
+            "range_edges_crlf",
+            lambda: native_range_case(
+                checks, extractor, clang, temporary, "range_edges_crlf", crlf, 1
+            ),
+        )
+        no_final_newline = temporary / "materialized" / "range_edges_no_final.mdsl"
+        no_final_newline.write_bytes(range_source.read_bytes().rstrip(b"\n"))
+        checks.case(
+            "range_edges_no_final",
+            lambda: native_range_case(
+                checks,
+                extractor,
+                clang,
+                temporary,
+                "range_edges_no_final",
+                no_final_newline,
+                1,
+            ),
+        )
+
+        default_result = extraction(
+            extractor,
+            positives / "namespace_alias.mdsl",
+            temporary / "default",
+            "default",
+            frontend=None,
+            clang=clang,
+        )
+        checks.require(
+            default_result.completed.returncode == 0,
+            f"default native frontend failed:\n{default_result.completed.stderr}",
+        )
+        if default_result.completed.returncode == 0:
+            checks.require(
+                load_ir(default_result).get("producer") == NATIVE_PRODUCER,
+                "default extractor invocation did not select native frontend",
+            )
+
+        shadow_result = extraction(
+            extractor,
+            positives / "namespace_alias.mdsl",
+            temporary / "shadow",
+            "shadow",
+            frontend="native",
+            clang=clang,
+            extra_compile_arguments=(f"-I{FIXTURES / 'shadow'}",),
+        )
+        checks.require(
+            shadow_result.completed.returncode == 0,
+            "user include directory shadowed the tool-owned header:\n"
+            f"{shadow_result.completed.stderr}",
+        )
+        if shadow_result.completed.returncode == 0:
+            checks.require(
+                load_ir(shadow_result).get("producer") == NATIVE_PRODUCER,
+                "shadow attempt changed frontend producer",
+            )
+
+        negative = FIXTURES / "negative"
+        negative_cases = (
+            ("no_direct_include", ("direct", "include", "trusted"), "mdsl"),
+            ("copied_header", ("trusted", "header"), "mdsl"),
+            ("quoted_shadow", ("trusted", "header"), "mdsl"),
+            ("unannotated_overload", ("trusted", "declaration"), "mdsl"),
+            ("untrusted_annotated_overload", ("trusted", "declaration"), "mdsl"),
+            ("mutated_annotation", ("annotation", "payload", "unsupported"), "mdsl"),
+            (
+                "conflicting_annotations",
+                ("conflict", "annotation", "ambiguous"),
+                "mdsl",
+            ),
+            (
+                "annotated_wrong_signature_overload",
+                ("trusted", "declaration"),
+                "mdsl",
+            ),
+            ("user_overload", ("trusted", "declaration"), "mdsl"),
+            ("unqualified", ("qualified", "unqualified"), "mdsl"),
+            ("indirect", ("indirect", "function-pointer"), "mdsl"),
+            ("template_body", ("template",), "mdsl"),
+            ("dependent_instantiation", ("template", "dependent"), "mdsl"),
+            ("lambda", ("lambda",), "mdsl"),
+            ("macro", ("macro",), "mdsl"),
+            ("header_origin", ("header", "main source", "input .mdsl"), "h"),
+        )
+        for name, words, location_extension in negative_cases:
+            checks.case(
+                f"negative/{name}",
+                lambda name=name, words=words, location_extension=location_extension: (
+                    negative_case(
+                        checks,
+                        extractor,
+                        clang,
+                        temporary,
+                        name,
+                        negative / f"{name}.mdsl",
+                        words,
+                        location_extension,
+                    )
+                ),
+            )
+
+        trusted_annotation = 'MATCORE_MDSL_ANNOTATE("matcore.op.gemm")\nvoid gemm'
+        trusted_signature = (
+            "void gemm(out_arg output, const matrix_view &lhs, "
+            "const matrix_view &rhs,\n          policy execution_policy = {});"
+        )
+        trusted_mutations = (
+            (
+                "trusted_missing_annotation",
+                trusted_annotation,
+                "void gemm",
+                ("annotation", "annotate"),
+            ),
+            (
+                "trusted_wrong_signature",
+                trusted_signature,
+                (
+                    "void gemm(out_arg output, const matrix_view &lhs, "
+                    "matrix_view rhs,\n          policy execution_policy = {});"
+                ),
+                ("signature", "parameter", "const matrix_view"),
+            ),
+        )
+        for name, old, new, words in trusted_mutations:
+            checks.case(
+                name,
+                lambda name=name, old=old, new=new, words=words: (
+                    trusted_header_mutation_case(
+                        checks, extractor, clang, temporary, name, old, new, words
+                    )
+                ),
+            )
+
+        without_flag = extraction(
+            extractor,
+            positives / "flag_forwarding.mdsl",
+            temporary / "missing-flag",
+            "missing-flag",
+            frontend="native",
+            clang=clang,
+        )
+        checks.require(
+            without_flag.completed.returncode != 0,
+            "native extraction ignored a missing semantic -D flag",
+        )
+        checks.require(
+            not without_flag.ir.exists(), "missing compile flag still produced IR"
+        )
+
+
+def installed_suite(checks: Checks, extractor: Path, clang: Path) -> None:
+    prefix = extractor.resolve().parent.parent
+    trusted_header = prefix / "include/matcore/mdsl.h"
+    checks.require(trusted_header.is_file(), "installed trusted header is missing")
+    with tempfile.TemporaryDirectory(prefix="matcore-native-installed-") as encoded:
+        temporary = Path(encoded)
+        source = FIXTURES / "positive/namespace_alias.mdsl"
+        installed = extraction(
+            extractor,
+            source,
+            temporary / "installed",
+            "installed",
+            frontend=None,
+            clang=clang,
+        )
+        checks.require(
+            installed.completed.returncode == 0,
+            f"installed native extraction failed:\n{installed.completed.stderr}",
+        )
+        if installed.completed.returncode == 0:
+            checks.require(
+                load_ir(installed).get("producer") == NATIVE_PRODUCER,
+                "installed extractor defaulted away from native",
+            )
+        shadow = extraction(
+            extractor,
+            source,
+            temporary / "shadow",
+            "shadow",
+            frontend="native",
+            clang=clang,
+            extra_compile_arguments=(f"-I{FIXTURES / 'shadow'}",),
+        )
+        checks.require(
+            shadow.completed.returncode == 0,
+            f"installed header was shadowed by user include path:\n{shadow.completed.stderr}",
+        )
+        copied = extraction(
+            extractor,
+            FIXTURES / "negative/copied_header.mdsl",
+            temporary / "copied",
+            "copied",
+            frontend="native",
+            clang=clang,
+        )
+        checks.require(
+            copied.completed.returncode != 0,
+            "installed extractor trusted a copied public header",
+        )
+        checks.require(
+            not copied.ir.exists(), "installed copied-header attack emitted IR"
+        )
+    binary = extractor.read_bytes()
+    checks.require(
+        str(REPOSITORY).encode() not in binary,
+        "installed extractor embeds the source checkout path",
+    )
+
+
+def unavailable_suite(
+    checks: Checks, extractor: Path, driver: Path, clang: Path
+) -> None:
+    with tempfile.TemporaryDirectory(prefix="matcore-native-unavailable-") as encoded:
+        temporary = Path(encoded)
+        source = FIXTURES / "positive/namespace_alias.mdsl"
+        default = extraction(
+            extractor,
+            source,
+            temporary / "default",
+            "default",
+            frontend=None,
+            clang=clang,
+        )
+        checks.require(
+            default.completed.returncode != 0,
+            "native-unavailable default silently succeeded",
+        )
+        checks.require(not default.ir.exists(), "native-unavailable default emitted IR")
+        diagnostic = default.completed.stderr.lower()
+        checks.require(
+            "native" in diagnostic
+            and ("unavailable" in diagnostic or "not built" in diagnostic),
+            f"native-unavailable diagnostic was unclear:\n{default.completed.stderr}",
+        )
+        bootstrap = extraction(
+            extractor,
+            source,
+            temporary / "bootstrap",
+            "bootstrap",
+            frontend="ast-json-bootstrap",
+            clang=clang,
+        )
+        checks.require(
+            bootstrap.completed.returncode == 0,
+            f"explicit bootstrap mode failed:\n{bootstrap.completed.stderr}",
+        )
+        if bootstrap.completed.returncode == 0:
+            checks.require(
+                load_ir(bootstrap).get("producer") == BOOTSTRAP_PRODUCER,
+                "explicit compatibility mode did not label bootstrap producer",
+            )
+
+        driver_default_output = temporary / "driver-default.o"
+        driver_default = run(
+            [
+                str(driver),
+                "--matcore-target=cpu",
+                "-std=c++20",
+                "-c",
+                source_argument(source),
+                "-o",
+                str(driver_default_output),
+            ]
+        )
+        checks.require(
+            driver_default.returncode != 0,
+            "bootstrap-only mdslc++ silently used bootstrap by default",
+        )
+        checks.require(
+            not driver_default_output.exists(),
+            "bootstrap-only default mdslc++ emitted an object",
+        )
+        driver_default_diagnostic = driver_default.stderr.lower()
+        checks.require(
+            "native" in driver_default_diagnostic
+            and (
+                "unavailable" in driver_default_diagnostic
+                or "not built" in driver_default_diagnostic
+            ),
+            "bootstrap-only default mdslc++ lacked a native-unavailable diagnostic:\n"
+            f"{driver_default.stderr}",
+        )
+
+        bootstrap_root = temporary / "driver-bootstrap"
+        bootstrap_root.mkdir()
+        driver_bootstrap_output = bootstrap_root / "driver-bootstrap.o"
+        driver_bootstrap = run(
+            [
+                str(driver),
+                "--frontend=ast-json-bootstrap",
+                "--save-temps",
+                "--matcore-target=cpu",
+                "-std=c++20",
+                "-c",
+                source_argument(source),
+                "-o",
+                str(driver_bootstrap_output),
+            ]
+        )
+        checks.require(
+            driver_bootstrap.returncode == 0,
+            "bootstrap-only mdslc++ explicit compatibility mode failed:\n"
+            f"{driver_bootstrap.stderr}",
+        )
+        checks.require(
+            driver_bootstrap_output.is_file(),
+            "explicit bootstrap mdslc++ emitted no object",
+        )
+        driver_bootstrap_ir = bootstrap_root / "driver-bootstrap.matcore.json"
+        checks.require(
+            driver_bootstrap_ir.is_file()
+            and json.loads(driver_bootstrap_ir.read_text()).get("producer")
+            == BOOTSTRAP_PRODUCER,
+            "explicit bootstrap mdslc++ did not preserve bootstrap provenance",
+        )
+
+
+def copy_driver_layout(driver: Path, extractor: Path, root: Path) -> tuple[Path, Path]:
+    original_root = driver.resolve().parent.parent
+    (root / "bin").mkdir(parents=True)
+    (root / "include").mkdir()
+    (root / "lib").mkdir()
+    copied_driver = root / "bin/mdslc++"
+    shutil.copy2(driver, copied_driver)
+    shutil.copytree(original_root / "include", root / "include", dirs_exist_ok=True)
+    runtime = original_root / "lib/libmatcore_runtime.so"
+    if runtime.exists():
+        os.symlink(runtime.resolve(), root / "lib/libmatcore_runtime.so")
+    real_extractor = root / "bin/matcore-extract-real"
+    os.symlink(extractor.resolve(), real_extractor)
+    wrapper = root / "bin/matcore-extract"
+    wrapper.write_text(
+        "#!/usr/bin/env python3\n"
+        "import pathlib, subprocess, sys\n"
+        f"command = [{str(extractor.resolve())!r}, *sys.argv[1:]]\n"
+        "completed = subprocess.run(command, check=False)\n"
+        "if completed.returncode == 0 and '--input' in sys.argv:\n"
+        "    source = pathlib.Path(sys.argv[sys.argv.index('--input') + 1])\n"
+        "    with source.open('ab') as stream:\n"
+        "        stream.write(b'\\n// deterministic post-extraction edit\\n')\n"
+        "raise SystemExit(completed.returncode)\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    return copied_driver, wrapper
+
+
+def driver_suite(checks: Checks, extractor: Path, driver: Path, clang: Path) -> None:
+    del clang  # the configured driver owns the coherent host compiler tuple
+    with tempfile.TemporaryDirectory(prefix="matcore-native-driver-") as encoded:
+        temporary = Path(encoded)
+        source = FIXTURES / "positive/flag_forwarding.mdsl"
+        for frontend in (None, "native", "ast-json-bootstrap"):
+            label = frontend or "default"
+            output_root = temporary / label
+            output_root.mkdir()
+            output = output_root / f"{label}.o"
+            command = [str(driver), "--verbose", "--save-temps"]
+            if frontend is not None:
+                command.append(f"--frontend={frontend}")
+            command.extend(
+                [
+                    "--matcore-target=cpu",
+                    "-std=c++20",
+                    "-DMDSLC_NATIVE_VALIDATION_FLAG=17",
+                    "-c",
+                    source_argument(source),
+                    "-o",
+                    str(output),
+                ]
+            )
+            completed = run(command)
+            checks.require(
+                completed.returncode == 0,
+                f"driver {label} mode failed:\n{completed.stderr}",
+            )
+            checks.require(output.is_file(), f"driver {label} emitted no object")
+            ir = output_root / f"{label}.matcore.json"
+            if ir.exists():
+                expected = (
+                    BOOTSTRAP_PRODUCER
+                    if frontend == "ast-json-bootstrap"
+                    else NATIVE_PRODUCER
+                )
+                checks.require(
+                    json.loads(ir.read_text()).get("producer") == expected,
+                    f"driver {label} selected the wrong frontend",
+                )
+            else:
+                checks.require(
+                    False, f"driver {label} did not preserve IR with --save-temps"
+                )
+            checks.require(
+                completed.stderr.count("MDSLC_NATIVE_VALIDATION_FLAG=17") >= 2,
+                f"driver {label} did not forward semantic flags to extraction and compile",
+            )
+
+        missing_output = temporary / "missing-flag.o"
+        missing = run(
+            [
+                str(driver),
+                "--frontend=native",
+                "--matcore-target=cpu",
+                "-std=c++20",
+                "-c",
+                source_argument(source),
+                "-o",
+                str(missing_output),
+            ]
+        )
+        checks.require(
+            missing.returncode != 0,
+            "driver accepted source when extraction flag was missing",
+        )
+        checks.require(
+            not missing_output.exists(),
+            "driver emitted object after semantic flag failure",
+        )
+
+        race_root = temporary / "race-prefix"
+        race_driver, _ = copy_driver_layout(driver, extractor, race_root)
+        race_source = temporary / "race.mdsl"
+        race_source.write_bytes(
+            (FIXTURES / "positive/namespace_alias.mdsl").read_bytes()
+        )
+        race_output = temporary / "race.o"
+        raced = run(
+            [
+                str(race_driver),
+                "--frontend=native",
+                "--matcore-target=cpu",
+                "-std=c++20",
+                "-c",
+                str(race_source),
+                "-o",
+                str(race_output),
+            ]
+        )
+        checks.require(
+            raced.returncode != 0, "driver accepted a source changed after extraction"
+        )
+        checks.require(
+            not race_output.exists(),
+            "source-change race emitted an inconsistent object",
+        )
+        checks.require(
+            any(
+                word in raced.stderr.lower()
+                for word in ("changed", "snapshot", "modified")
+            ),
+            f"source-change race diagnostic was unclear:\n{raced.stderr}",
+        )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--suite",
+        choices=("core", "installed", "unavailable", "driver"),
+        default="core",
+    )
+    parser.add_argument("--extractor", type=Path, required=True)
+    parser.add_argument("--driver", type=Path)
+    parser.add_argument("--clang", type=Path, default=Path("/usr/bin/clang++-21"))
+    arguments = parser.parse_args()
+
+    extractor = arguments.extractor.resolve()
+    clang = arguments.clang.resolve()
+    if not extractor.is_file():
+        parser.error(f"extractor does not exist: {extractor}")
+    if not clang.is_file():
+        parser.error(f"Clang does not exist: {clang}")
+    if arguments.suite in ("driver", "unavailable") and arguments.driver is None:
+        parser.error(f"--suite {arguments.suite} requires --driver")
+
+    checks = Checks()
+    if arguments.suite == "core":
+        core_suite(checks, extractor, clang)
+    elif arguments.suite == "installed":
+        installed_suite(checks, extractor, clang)
+    elif arguments.suite == "unavailable":
+        assert arguments.driver is not None
+        unavailable_suite(checks, extractor, arguments.driver.resolve(), clang)
+    else:
+        assert arguments.driver is not None
+        driver_suite(checks, extractor, arguments.driver.resolve(), clang)
+
+    if checks.failures:
+        print(
+            f"native frontend {arguments.suite}: {len(checks.failures)} failure(s) "
+            f"across {checks.count} checks",
+            file=sys.stderr,
+        )
+        for failure in checks.failures:
+            print(f"- {failure}", file=sys.stderr)
+        return 1
+    print(f"native frontend {arguments.suite}: {checks.count} checks passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
