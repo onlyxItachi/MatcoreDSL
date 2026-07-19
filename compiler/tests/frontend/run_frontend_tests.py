@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile-level tests for the explicitly labeled AST-JSON bootstrap frontend."""
+"""Primary compile-level tests for the native Clang LibTooling frontend."""
 
 from __future__ import annotations
 
@@ -118,8 +118,8 @@ def main() -> int:
             positive_bytes[name] = encoded
             if document.get("schema") != "matcore.ir" or document.get("version") != 0:
                 failures.append(f"positive {name} emitted the wrong schema/version")
-            if document.get("producer") != "clang-ast-json-bootstrap-v0":
-                failures.append(f"positive {name} did not label the bootstrap producer")
+            if document.get("producer") != "clang-libtooling-v1":
+                failures.append(f"positive {name} did not label the native producer")
             operations = document.get("operations", [])
             if len(operations) != expected_operations:
                 failures.append(
@@ -227,6 +227,7 @@ def main() -> int:
             arguments.extractor, changing_source, output_root / "changing.json"
         )
         changing_command[changing_command.index("--"):changing_command.index("--")] = [
+            "--frontend=ast-json-bootstrap",
             "--clang",
             str(changing_compiler),
         ]

@@ -7,7 +7,7 @@ include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
 
 if(NOT CMAKE_GENERATOR STREQUAL "Ninja")
-  message(FATAL_ERROR "The standalone MDSLC bootstrap currently supports the Ninja generator only")
+  message(FATAL_ERROR "The standalone MDSLC compiler currently supports the Ninja generator only")
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
@@ -24,6 +24,17 @@ option(
   "Build the compatibility-only Clang AST-JSON frontend"
   ON
 )
+option(
+  MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE
+  "Enable the driver tool-prefix override for deliberate tests"
+  OFF
+)
+mark_as_advanced(MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE)
+
+if(MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE AND NOT BUILD_TESTING)
+  message(FATAL_ERROR
+    "MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE is allowed only with BUILD_TESTING=ON")
+endif()
 
 if(NOT MDSLC_ENABLE_NATIVE_FRONTEND AND NOT MDSLC_ENABLE_BOOTSTRAP_FRONTEND)
   message(FATAL_ERROR "At least one MDSLC frontend must be enabled")
@@ -200,42 +211,100 @@ if(BUILD_TESTING)
         frontend.native.focused
         PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
       )
+
+      add_test(
+        NAME frontend.native.primary
+        COMMAND
+          "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/run_frontend_tests.py"
+          --extractor "$<TARGET_FILE:matcore-extract>"
+      )
+      set_tests_properties(
+        frontend.native.primary
+        PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+      )
+
+      add_test(
+        NAME frontend.native.adversarial
+        COMMAND
+          "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/native_validation/run_native_validation.py"
+          --suite core
+          --extractor "$<TARGET_FILE:matcore-extract>"
+          --clang "${MDSLC_CLANGXX_EXECUTABLE}"
+      )
+      set_tests_properties(
+        frontend.native.adversarial
+        PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+      )
+
+      add_test(
+        NAME frontend.native.driver_pipeline
+        COMMAND
+          "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/native_validation/run_native_validation.py"
+          --suite driver
+          --extractor "$<TARGET_FILE:matcore-extract>"
+          --driver "$<TARGET_FILE:mdslc_driver>"
+          --clang "${MDSLC_CLANGXX_EXECUTABLE}"
+      )
+      set_tests_properties(
+        frontend.native.driver_pipeline
+        PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+      )
+    elseif(MDSLC_ENABLE_BOOTSTRAP_FRONTEND)
+      add_test(
+        NAME frontend.native.unavailable
+        COMMAND
+          "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/native_validation/run_native_validation.py"
+          --suite unavailable
+          --extractor "$<TARGET_FILE:matcore-extract>"
+          --driver "$<TARGET_FILE:mdslc_driver>"
+          --clang "${MDSLC_CLANGXX_EXECUTABLE}"
+      )
+      set_tests_properties(
+        frontend.native.unavailable
+        PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+      )
     endif()
 
     add_test(
-      NAME frontend.bootstrap
+      NAME driver.native.selection
       COMMAND
         "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/run_frontend_tests.py"
-        --extractor "$<TARGET_FILE:matcore-extract>"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/driver_native/run_driver_tests.py"
+        --driver "$<TARGET_FILE:mdslc_driver>"
     )
     set_tests_properties(
-      frontend.bootstrap
+      driver.native.selection
       PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
     )
 
-    add_test(
-      NAME integration.validation_matrix
-      COMMAND
-        "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/run_validation_matrix.py"
-        --build-dir "${CMAKE_BINARY_DIR}"
-    )
-    set_tests_properties(
-      integration.validation_matrix
-      PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
-    )
+    if(MDSLC_ENABLE_NATIVE_FRONTEND)
+      add_test(
+        NAME integration.validation_matrix
+        COMMAND
+          "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/run_validation_matrix.py"
+          --build-dir "${CMAKE_BINARY_DIR}"
+      )
+      set_tests_properties(
+        integration.validation_matrix
+        PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+      )
 
-    add_test(
-      NAME consumer.installed
-      COMMAND
-        "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/consumer/run_installed_consumer_test.py"
-        --cmake "${CMAKE_COMMAND}"
-        --source-dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/consumer"
-        --producer-build-dir "${CMAKE_BINARY_DIR}"
-        --test-root "${CMAKE_BINARY_DIR}/tests/installed-consumer"
-        --cxx-compiler "${CMAKE_CXX_COMPILER}"
-    )
+      add_test(
+        NAME consumer.installed
+        COMMAND
+          "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/consumer/run_installed_consumer_test.py"
+          --cmake "${CMAKE_COMMAND}"
+          --source-dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/consumer"
+          --producer-build-dir "${CMAKE_BINARY_DIR}"
+          --test-root "${CMAKE_BINARY_DIR}/tests/installed-consumer"
+          --cxx-compiler "${CMAKE_CXX_COMPILER}"
+      )
+    endif()
   endif()
 endif()

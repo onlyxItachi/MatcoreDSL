@@ -135,8 +135,8 @@ def load_and_validate_ir(
     require(document.get("schema") == "matcore.ir", "wrong IR schema")
     require(document.get("version") == 0, "wrong IR version")
     require(
-        document.get("producer") == "clang-ast-json-bootstrap-v0",
-        "bootstrap producer is not explicit",
+        document.get("producer") == "clang-libtooling-v1",
+        "native frontend producer is not explicit",
     )
     operations = document.get("operations")
     require(isinstance(operations, list), "operations is not an array")

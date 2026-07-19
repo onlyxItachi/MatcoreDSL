@@ -1,7 +1,7 @@
 {
   "schema": "matcore.ir",
   "version": 0,
-  "producer": "clang-ast-json-bootstrap-v0",
+  "producer": "clang-libtooling-v1",
   "translation_unit": {
     "identity": "compiler/tests/frontend/gemm_capture.mdsl",
     "source_file": "compiler/tests/frontend/gemm_capture.mdsl"
