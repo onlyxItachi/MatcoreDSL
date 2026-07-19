@@ -1,0 +1,4 @@
+#pragma once
+
+#define MDSLC_DEFAULT_CLANGXX "@MDSLC_CLANGXX_EXECUTABLE@"
+
