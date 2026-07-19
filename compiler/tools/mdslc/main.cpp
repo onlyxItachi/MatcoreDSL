@@ -1,5 +1,6 @@
 #include "mdslc_config.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
@@ -8,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -42,6 +44,7 @@ struct CpuInvocation {
   std::string dependency_mode;
   std::string dependency_file;
   std::vector<std::string> compile_arguments;
+  std::vector<std::string> link_context_arguments;
   std::vector<std::string> link_arguments;
 };
 
@@ -71,6 +74,11 @@ struct SourceSnapshot {
   timespec modified{};
   timespec changed{};
   std::string contents;
+};
+
+struct DependencySnapshot {
+  fs::path path;
+  SourceSnapshot snapshot;
 };
 
 class ScopedDirectoryCleanup {
@@ -243,6 +251,180 @@ bool SourceMatchesSnapshot(const fs::path &source,
   return true;
 }
 
+std::optional<std::vector<fs::path>>
+ReadMakeDependencyPaths(const fs::path &dependency_file,
+                        std::string &error_message) {
+  std::ifstream input(dependency_file, std::ios::binary);
+  if (!input) {
+    error_message = "cannot open dependency scan output";
+    return std::nullopt;
+  }
+  std::string contents((std::istreambuf_iterator<char>(input)),
+                       std::istreambuf_iterator<char>());
+  if (!input.eof() && input.fail()) {
+    error_message = "cannot read dependency scan output";
+    return std::nullopt;
+  }
+
+  std::size_t separator = std::string::npos;
+  bool escaped = false;
+  for (std::size_t index = 0; index < contents.size(); ++index) {
+    const char character = contents[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character == '\\') {
+      escaped = true;
+      continue;
+    }
+    if (character == ':' &&
+        (index + 1 == contents.size() || contents[index + 1] == ' ' ||
+         contents[index + 1] == '\t' || contents[index + 1] == '\n' ||
+         contents[index + 1] == '\r')) {
+      separator = index;
+      break;
+    }
+    if (character == '\n' || character == '\r') {
+      break;
+    }
+  }
+  if (separator == std::string::npos) {
+    error_message = "dependency scan output has no Make rule separator";
+    return std::nullopt;
+  }
+
+  std::vector<fs::path> paths;
+  std::string token;
+  const auto finish_token = [&]() {
+    if (!token.empty()) {
+      paths.emplace_back(std::move(token));
+      token.clear();
+    }
+  };
+  for (std::size_t index = separator + 1; index < contents.size(); ++index) {
+    const char character = contents[index];
+    if (character == '\\') {
+      if (index + 1 == contents.size()) {
+        error_message = "dependency scan output ends in an escape";
+        return std::nullopt;
+      }
+      const char next = contents[index + 1];
+      if (next == '\n') {
+        ++index;
+        continue;
+      }
+      if (next == '\r' && index + 2 < contents.size() &&
+          contents[index + 2] == '\n') {
+        index += 2;
+        continue;
+      }
+      token += next;
+      ++index;
+      continue;
+    }
+    if (character == '$' && index + 1 < contents.size() &&
+        contents[index + 1] == '$') {
+      token += '$';
+      ++index;
+      continue;
+    }
+    if (character == ' ' || character == '\t') {
+      finish_token();
+      continue;
+    }
+    if (character == '\n' || character == '\r' || character == '#') {
+      finish_token();
+      break;
+    }
+    token += character;
+  }
+  finish_token();
+  if (paths.empty()) {
+    error_message = "dependency scan output contains no input files";
+    return std::nullopt;
+  }
+  return paths;
+}
+
+std::optional<std::vector<DependencySnapshot>>
+CaptureDependencyClosure(const fs::path &dependency_file,
+                         std::string &error_message) {
+  const std::optional<std::vector<fs::path>> parsed =
+      ReadMakeDependencyPaths(dependency_file, error_message);
+  if (!parsed) {
+    return std::nullopt;
+  }
+
+  std::vector<DependencySnapshot> closure;
+  std::vector<fs::path> captured_paths;
+  for (const fs::path &dependency : *parsed) {
+    std::error_code path_error;
+    fs::path absolute = dependency;
+    if (absolute.is_relative()) {
+      absolute = fs::absolute(absolute, path_error);
+      if (path_error) {
+        error_message = "cannot resolve dependency path " +
+                        dependency.string() + ": " + path_error.message();
+        return std::nullopt;
+      }
+    }
+    absolute = NormalizedPath(absolute);
+    if (std::find(captured_paths.begin(), captured_paths.end(), absolute) !=
+        captured_paths.end()) {
+      continue;
+    }
+    std::string snapshot_error;
+    std::optional<SourceSnapshot> snapshot =
+        ReadSourceSnapshot(absolute, snapshot_error);
+    if (!snapshot) {
+      error_message = "cannot snapshot dependency " + absolute.string() +
+                      ": " + snapshot_error;
+      return std::nullopt;
+    }
+    captured_paths.emplace_back(absolute);
+    closure.push_back(
+        DependencySnapshot{absolute, std::move(*snapshot)});
+  }
+  return closure;
+}
+
+bool DependencyClosureMatches(
+    const std::vector<DependencySnapshot> &expected,
+    std::string_view phase) {
+  for (const DependencySnapshot &dependency : expected) {
+    std::string error_message;
+    const std::optional<SourceSnapshot> current =
+        ReadSourceSnapshot(dependency.path, error_message);
+    if (!current) {
+      std::cerr << "mdslc++: dependency consistency check failed after "
+                << phase << ": " << dependency.path << ": " << error_message
+                << '\n';
+      return false;
+    }
+    const SourceSnapshot &snapshot = dependency.snapshot;
+    if (current->device != snapshot.device ||
+        current->inode != snapshot.inode || current->size != snapshot.size ||
+        !SameTimespec(current->modified, snapshot.modified) ||
+        !SameTimespec(current->changed, snapshot.changed) ||
+        current->contents != snapshot.contents) {
+      std::cerr << "mdslc++: dependency changed during compilation after "
+                << phase << ": " << dependency.path
+                << "; refusing to emit an object from stale generated code\n";
+      return false;
+    }
+  }
+  return true;
+}
+
+bool CompilationInputsMatch(
+    const fs::path &source, const SourceSnapshot &source_snapshot,
+    const std::vector<DependencySnapshot> &dependencies,
+    std::string_view phase) {
+  return SourceMatchesSnapshot(source, source_snapshot, phase) &&
+         DependencyClosureMatches(dependencies, phase);
+}
+
 bool HasMdslExtension(std::string_view argument) {
   constexpr std::string_view extension = ".mdsl";
   return argument.size() >= extension.size() &&
@@ -255,6 +437,7 @@ bool OptionConsumesNextArgument(std::string_view argument) {
          argument == "-l" || argument == "-x" || argument == "-arch" ||
          argument == "-target" || argument == "--target" ||
          argument == "--sysroot" || argument == "-isysroot" ||
+         argument == "--gcc-toolchain" || argument == "-gcc-toolchain" ||
          argument == "-isystem" || argument == "-iquote" ||
          argument == "-idirafter" || argument == "-include" ||
          argument == "-imacros" || argument == "-iprefix" ||
@@ -263,6 +446,34 @@ bool OptionConsumesNextArgument(std::string_view argument) {
          argument == "-Xclang" || argument == "-Xlinker" ||
          argument == "-Xassembler" || argument == "-Xpreprocessor" ||
          argument == "-mllvm";
+}
+
+bool IsCompileAndLinkOptionWithValue(std::string_view argument) {
+  return argument == "-B" || argument == "-arch" ||
+         argument == "-target" || argument == "--target" ||
+         argument == "--sysroot" || argument == "-isysroot" ||
+         argument == "--gcc-toolchain" || argument == "-gcc-toolchain";
+}
+
+bool IsAttachedCompileAndLinkOption(std::string_view argument) {
+  return argument == "-m32" || argument == "-m64" ||
+         argument.starts_with("--target=") ||
+         argument.starts_with("-target=") ||
+         argument.starts_with("--sysroot=") ||
+         (argument.starts_with("-isysroot") &&
+          argument.size() > std::string_view("-isysroot").size()) ||
+         argument.starts_with("-stdlib=") ||
+         argument.starts_with("--gcc-toolchain=") ||
+         argument.starts_with("-gcc-toolchain=") ||
+         argument.starts_with("-rtlib=") ||
+         argument.starts_with("-unwindlib=") ||
+         (argument.starts_with("-B") && argument.size() > 2) ||
+         argument.starts_with("-mabi=");
+}
+
+bool IsUnsupportedLtoMode(std::string_view argument) {
+  return argument == "-flto" || argument.starts_with("-flto=") ||
+         argument.starts_with("-flto-jobs=");
 }
 
 bool IsExtractionIncompatibleArgument(std::string_view argument) {
@@ -635,6 +846,13 @@ ParseCpuInvocation(const WrapperArguments &arguments) {
       invocation.dependency_file = argument.substr(3);
       continue;
     }
+    if (IsUnsupportedLtoMode(argument)) {
+      std::cerr << "mdslc++: LTO mode " << argument
+                << " is not supported by the CPU pipeline because the "
+                   "generated relocatable-object boundary requires ordinary "
+                   "native objects\n";
+      return std::nullopt;
+    }
     if (IsExtractionIncompatibleArgument(argument)) {
       std::cerr << "mdslc++: compiler argument is incompatible with the CPU "
                    "extraction pipeline: "
@@ -675,6 +893,11 @@ ParseCpuInvocation(const WrapperArguments &arguments) {
         invocation.has_link_only_arguments = true;
         invocation.link_arguments.emplace_back(argument);
         invocation.link_arguments.emplace_back(value);
+      } else if (IsCompileAndLinkOptionWithValue(argument)) {
+        invocation.compile_arguments.emplace_back(argument);
+        invocation.compile_arguments.emplace_back(value);
+        invocation.link_context_arguments.emplace_back(argument);
+        invocation.link_context_arguments.emplace_back(value);
       } else {
         invocation.compile_arguments.emplace_back(argument);
         invocation.compile_arguments.emplace_back(value);
@@ -687,7 +910,10 @@ ParseCpuInvocation(const WrapperArguments &arguments) {
         invocation.link_arguments.emplace_back(argument);
       } else {
         invocation.compile_arguments.emplace_back(argument);
-        if (argument == "-pthread" || argument.starts_with("-fsanitize=")) {
+        if (IsAttachedCompileAndLinkOption(argument)) {
+          invocation.link_context_arguments.emplace_back(argument);
+        } else if (argument == "-pthread" ||
+                   argument.starts_with("-fsanitize=")) {
           invocation.link_arguments.emplace_back(argument);
         }
       }
@@ -1038,6 +1264,7 @@ int CompileRewrittenHost(const fs::path &virtual_source,
 }
 
 int GenerateDependencyFile(const CpuInvocation &invocation,
+                           std::string_view dependency_mode,
                            const ToolLayout &layout,
                            const fs::path &source_directory,
                            const fs::path &source,
@@ -1046,7 +1273,7 @@ int GenerateDependencyFile(const CpuInvocation &invocation,
   std::vector<std::string> command{MDSLC_DEFAULT_CLANGXX};
   AppendCompileEnvironment(command, invocation, layout, source_directory);
   command.insert(command.end(),
-                 {"-x", "c++", invocation.dependency_mode, "-MF",
+                 {"-x", "c++", std::string(dependency_mode), "-MF",
                   dependency_output.string(), "-MQ", object_target.string(),
                   "-fsyntax-only", source.string()});
   return RunCommand(std::move(command), verbose);
@@ -1123,6 +1350,12 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     workspace = *temporary;
   }
   ScopedDirectoryCleanup cleanup(workspace, !wrapper.save_temps);
+  const std::optional<fs::path> dependency_workspace =
+      CreateTemporaryDirectory();
+  if (!dependency_workspace) {
+    return 1;
+  }
+  ScopedDirectoryCleanup dependency_cleanup(*dependency_workspace, true);
 
   std::string stem = output.stem().string();
   if (stem.empty()) {
@@ -1149,7 +1382,8 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   }
   const fs::path source_directory = source_absolute.parent_path();
   fs::path dependency_output;
-  fs::path raw_dependency;
+  const fs::path raw_dependency =
+      *dependency_workspace / "source-closure.d";
   if (!invocation.dependency_mode.empty()) {
     dependency_output = fs::absolute(invocation.dependency_file, error);
     if (error || dependency_output.filename().empty() ||
@@ -1176,10 +1410,34 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
         return 2;
       }
     }
-    raw_dependency = workspace / (stem + ".dependencies.raw.d");
-    if (PathsReferToSameLocation(raw_dependency, dependency_output)) {
-      raw_dependency = workspace / (stem + ".dependencies.temporary.d");
-    }
+  }
+
+  const std::string_view dependency_scan_mode =
+      invocation.dependency_mode.empty()
+          ? std::string_view("-MMD")
+          : std::string_view(invocation.dependency_mode);
+  int result = GenerateDependencyFile(
+      invocation, dependency_scan_mode, *layout, source_directory,
+      source_absolute, output, raw_dependency, wrapper.verbose);
+  if (!SourceMatchesSnapshot(source_absolute, *source_snapshot,
+                             "dependency scanning")) {
+    return 1;
+  }
+  if (result != 0) {
+    return result;
+  }
+  std::string closure_error;
+  const std::optional<std::vector<DependencySnapshot>> dependency_closure =
+      CaptureDependencyClosure(raw_dependency, closure_error);
+  if (!dependency_closure) {
+    std::cerr << "mdslc++: cannot establish dependency consistency from "
+              << raw_dependency << ": " << closure_error << '\n';
+    return 1;
+  }
+  if (!CompilationInputsMatch(source_absolute, *source_snapshot,
+                              *dependency_closure,
+                              "dependency snapshotting")) {
+    return 1;
   }
 
   std::vector<std::string> extract_command{
@@ -1206,9 +1464,9 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
                            source_directory);
   extract_command.emplace_back(invocation.input);
 
-  int result = RunCommand(std::move(extract_command), wrapper.verbose);
-  if (!SourceMatchesSnapshot(source_absolute, *source_snapshot,
-                             "frontend extraction")) {
+  result = RunCommand(std::move(extract_command), wrapper.verbose);
+  if (!CompilationInputsMatch(source_absolute, *source_snapshot,
+                              *dependency_closure, "frontend extraction")) {
     return 1;
   }
   if (result != 0) {
@@ -1226,24 +1484,12 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     return 1;
   }
 
-  if (!invocation.dependency_mode.empty()) {
-    result = GenerateDependencyFile(invocation, *layout, source_directory,
-                                    source_absolute, output,
-                                    raw_dependency, wrapper.verbose);
-    if (!SourceMatchesSnapshot(source_absolute, *source_snapshot,
-                               "dependency scanning")) {
-      return 1;
-    }
-    if (result != 0) {
-      return result;
-    }
-  }
-
   result = CompileRewrittenHost(source_absolute, artifacts.host_overlay,
                                 artifacts.host_object, invocation, *layout,
                                 source_directory, wrapper.verbose);
-  if (!SourceMatchesSnapshot(source_absolute, *source_snapshot,
-                             "generated host compilation")) {
+  if (!CompilationInputsMatch(source_absolute, *source_snapshot,
+                              *dependency_closure,
+                              "generated host compilation")) {
     return 1;
   }
   if (result != 0) {
@@ -1252,8 +1498,9 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   result = CompileGeneratedSource(artifacts.stubs_source,
                                   artifacts.stubs_object, invocation, *layout,
                                   source_directory, wrapper.verbose);
-  if (!SourceMatchesSnapshot(source_absolute, *source_snapshot,
-                             "generated stub compilation")) {
+  if (!CompilationInputsMatch(source_absolute, *source_snapshot,
+                              *dependency_closure,
+                              "generated stub compilation")) {
     return 1;
   }
   if (result != 0) {
@@ -1262,17 +1509,23 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   result = CompileGeneratedSource(artifacts.backend_source,
                                   artifacts.backend_object, invocation,
                                   *layout, source_directory, wrapper.verbose);
-  if (!SourceMatchesSnapshot(source_absolute, *source_snapshot,
-                             "generated backend compilation")) {
+  if (!CompilationInputsMatch(source_absolute, *source_snapshot,
+                              *dependency_closure,
+                              "generated backend compilation")) {
     return 1;
   }
   if (result != 0) {
     return result;
   }
 
-  std::vector<std::string> link_command{
-      MDSLC_DEFAULT_CLANGXX, artifacts.host_object.string(),
-      artifacts.stubs_object.string(), artifacts.backend_object.string()};
+  std::vector<std::string> link_command{MDSLC_DEFAULT_CLANGXX};
+  link_command.insert(link_command.end(),
+                      invocation.link_context_arguments.begin(),
+                      invocation.link_context_arguments.end());
+  link_command.insert(link_command.end(),
+                      {artifacts.host_object.string(),
+                       artifacts.stubs_object.string(),
+                       artifacts.backend_object.string()});
   if (invocation.compile_only) {
     link_command.insert(link_command.end(),
                         {"-r", "-o", output.string()});
@@ -1289,16 +1542,27 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     link_command.emplace_back(output.string());
   }
   result = RunCommand(std::move(link_command), wrapper.verbose);
-  if (!SourceMatchesSnapshot(source_absolute, *source_snapshot, "linking")) {
+  if (!CompilationInputsMatch(source_absolute, *source_snapshot,
+                              *dependency_closure, "linking")) {
     fs::remove(output, error);
     return 1;
   }
   if (result != 0) {
+    fs::remove(output, error);
     return result;
   }
   if (!invocation.dependency_mode.empty() &&
       !PublishFileAtomically(raw_dependency, dependency_output)) {
     fs::remove(output, error);
+    return 1;
+  }
+  if (!CompilationInputsMatch(source_absolute, *source_snapshot,
+                              *dependency_closure,
+                              "dependency publication")) {
+    fs::remove(output, error);
+    if (!invocation.dependency_mode.empty()) {
+      fs::remove(dependency_output, error);
+    }
     return 1;
   }
   return 0;
