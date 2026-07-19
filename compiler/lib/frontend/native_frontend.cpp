@@ -4,8 +4,11 @@
 #include <clang/AST/Attr.h>
 #include <clang/AST/Decl.h>
 #include <clang/AST/DeclCXX.h>
+#include <clang/AST/ExprConcepts.h>
 #include <clang/AST/Expr.h>
 #include <clang/AST/ExprCXX.h>
+#include <clang/AST/RecordLayout.h>
+#include <clang/AST/TypeLoc.h>
 #include <clang/ASTMatchers/ASTMatchFinder.h>
 #include <clang/Basic/Diagnostic.h>
 #include <clang/Basic/DiagnosticOptions.h>
@@ -192,6 +195,7 @@ struct NativeState {
   std::string source;
   std::set<FileIdentity> trusted_header_ids;
   std::map<FileIdentity, std::string> trusted_header_contents;
+  std::set<std::string> trusted_header_external_macros;
   bool saw_direct_expected_include = false;
   bool saw_direct_trusted_include = false;
   bool saw_candidate = false;
@@ -205,7 +209,7 @@ bool isTrustedFile(const clang::FileEntry *entry, const NativeState &state) {
          state.trusted_header_ids.contains(identityOf(entry->getUniqueID()));
 }
 
-bool declarationIsTrusted(const clang::FunctionDecl &declaration,
+bool declarationIsTrusted(const clang::Decl &declaration,
                           const clang::SourceManager &source_manager,
                           const NativeState &state) {
   const clang::SourceLocation location =
@@ -289,6 +293,36 @@ public:
     }
   }
 
+  void MacroExpands(const clang::Token &macro_name,
+                    const clang::MacroDefinition &definition,
+                    clang::SourceRange range,
+                    const clang::MacroArgs *) override {
+    const clang::SourceLocation use =
+        source_manager_.getExpansionLoc(range.getBegin());
+    if (use.isInvalid()) {
+      return;
+    }
+    const clang::FileID file_id = source_manager_.getFileID(use);
+    if (!isTrustedFile(source_manager_.getFileEntryForID(file_id), state_)) {
+      return;
+    }
+    const clang::IdentifierInfo *identifier = macro_name.getIdentifierInfo();
+    const clang::MacroInfo *macro = definition.getMacroInfo();
+    if (identifier == nullptr || macro == nullptr || macro->isBuiltinMacro() ||
+        identifier->getName() == "MATCORE_MDSL_ANNOTATE") {
+      return;
+    }
+    const clang::SourceLocation definition_location =
+        source_manager_.getExpansionLoc(macro->getDefinitionLoc());
+    if (definition_location.isValid() &&
+        isTrustedFile(source_manager_.getFileEntryForID(
+                          source_manager_.getFileID(definition_location)),
+                      state_)) {
+      return;
+    }
+    state_.trusted_header_external_macros.insert(identifier->getName().str());
+  }
+
 private:
   const clang::SourceManager &source_manager_;
   NativeState &state_;
@@ -346,6 +380,198 @@ bool hasExpectedOutSignature(const clang::FunctionDecl &declaration) {
                        "matcore::mdsl::out_arg") &&
          isMutableLvalueReferenceTo(declaration.getParamDecl(0)->getType(),
                                     "matcore::mdsl::matrix_view");
+}
+
+const clang::RecordDecl *recordDefinition(const clang::RecordDecl *record) {
+  if (record == nullptr) {
+    return nullptr;
+  }
+  const clang::RecordDecl *definition = record->getDefinition();
+  return definition == nullptr ? record : definition;
+}
+
+std::vector<const clang::FieldDecl *>
+recordFields(const clang::RecordDecl &record) {
+  std::vector<const clang::FieldDecl *> fields;
+  for (const clang::FieldDecl *field : record.fields()) {
+    fields.push_back(field);
+  }
+  return fields;
+}
+
+std::uint64_t alignTo(std::uint64_t value, std::uint64_t alignment) {
+  return alignment == 0 ? value
+                        : ((value + alignment - 1) / alignment) * alignment;
+}
+
+bool hasNaturalRecordLayout(const clang::RecordDecl &record,
+                            const std::vector<const clang::FieldDecl *> &fields,
+                            const clang::ASTContext &context) {
+  const clang::ASTRecordLayout &layout = context.getASTRecordLayout(&record);
+  std::uint64_t expected_offset = 0;
+  std::uint64_t expected_alignment = context.getCharWidth();
+  for (std::size_t index = 0; index < fields.size(); ++index) {
+    const std::uint64_t field_alignment =
+        context.getTypeAlign(fields[index]->getType());
+    expected_alignment = std::max(expected_alignment, field_alignment);
+    expected_offset = alignTo(expected_offset, field_alignment);
+    if (layout.getFieldOffset(static_cast<unsigned>(index)) !=
+        expected_offset) {
+      return false;
+    }
+    expected_offset += context.getTypeSize(fields[index]->getType());
+  }
+  const std::uint64_t expected_size =
+      alignTo(expected_offset, expected_alignment);
+  return static_cast<std::uint64_t>(context.toBits(layout.getAlignment())) ==
+             expected_alignment &&
+         static_cast<std::uint64_t>(context.toBits(layout.getSize())) ==
+             expected_size;
+}
+
+bool isFloatPointer(clang::QualType type) {
+  type = type.getCanonicalType().getUnqualifiedType();
+  const auto *pointer = type->getAs<clang::PointerType>();
+  return pointer != nullptr &&
+         pointer->getPointeeType()
+             ->isSpecificBuiltinType(clang::BuiltinType::Float);
+}
+
+bool isSignedIntegerWithWidth(clang::QualType type, unsigned width,
+                              const clang::ASTContext &context) {
+  type = type.getCanonicalType().getUnqualifiedType();
+  return type->isSignedIntegerType() && context.getTypeSize(type) == width;
+}
+
+bool isPointerToRecord(clang::QualType type, std::string_view name) {
+  type = type.getCanonicalType().getUnqualifiedType();
+  const auto *pointer = type->getAs<clang::PointerType>();
+  return pointer != nullptr && isNamedRecord(pointer->getPointeeType(), name);
+}
+
+const clang::EnumDecl *enumDefinition(clang::QualType type) {
+  type = type.getCanonicalType().getUnqualifiedType();
+  const auto *enumeration_type = type->getAs<clang::EnumType>();
+  if (enumeration_type == nullptr) {
+    return nullptr;
+  }
+  const clang::EnumDecl *enumeration = enumeration_type->getDecl();
+  const clang::EnumDecl *definition = enumeration->getDefinition();
+  return definition == nullptr ? enumeration : definition;
+}
+
+bool hasExpectedEnum(const clang::EnumDecl &enumeration,
+                     std::string_view qualified_name,
+                     const std::vector<std::pair<std::string_view, int>> &values,
+                     const clang::ASTContext &context,
+                     const clang::SourceManager &source_manager,
+                     const NativeState &state) {
+  if (enumeration.getCanonicalDecl()->getQualifiedNameAsString() !=
+          qualified_name ||
+      !declarationIsTrusted(enumeration, source_manager, state)) {
+    return false;
+  }
+  clang::QualType integer_type = enumeration.getIntegerType();
+  if (integer_type.isNull()) {
+    return false;
+  }
+  integer_type = integer_type.getCanonicalType().getUnqualifiedType();
+  if (!integer_type->isUnsignedIntegerType() ||
+      context.getTypeSize(integer_type) != 32) {
+    return false;
+  }
+  auto expected = values.begin();
+  for (const clang::EnumConstantDecl *constant : enumeration.enumerators()) {
+    if (expected == values.end() ||
+        constant->getName() !=
+            llvm::StringRef(expected->first.data(), expected->first.size()) ||
+        constant->getInitVal() != expected->second) {
+      return false;
+    }
+    ++expected;
+  }
+  return expected == values.end();
+}
+
+bool validatePublicAbi(const clang::FunctionDecl &gemm,
+                       const clang::ASTContext &context,
+                       const NativeState &state, std::string &error) {
+  const clang::SourceManager &source_manager = context.getSourceManager();
+  const clang::RecordDecl *out =
+      recordDefinition(recordDeclaration(gemm.getParamDecl(0)->getType()));
+  clang::QualType lhs_type = gemm.getParamDecl(1)->getType().getCanonicalType();
+  const auto *lhs_reference = lhs_type->getAs<clang::LValueReferenceType>();
+  const clang::RecordDecl *matrix =
+      lhs_reference == nullptr
+          ? nullptr
+          : recordDefinition(recordDeclaration(lhs_reference->getPointeeType()));
+  const clang::RecordDecl *policy =
+      recordDefinition(recordDeclaration(gemm.getParamDecl(3)->getType()));
+  if (out == nullptr || matrix == nullptr || policy == nullptr ||
+      !out->isCompleteDefinition() || !matrix->isCompleteDefinition() ||
+      !policy->isCompleteDefinition()) {
+    error = "public matrix descriptor records are incomplete";
+    return false;
+  }
+  for (const auto &[record, name] :
+       std::vector<std::pair<const clang::RecordDecl *, std::string_view>>{
+           {matrix, "matcore::mdsl::matrix_view"},
+           {out, "matcore::mdsl::out_arg"},
+           {policy, "matcore::mdsl::policy"}}) {
+    const auto *cxx = llvm::dyn_cast<clang::CXXRecordDecl>(record);
+    if (record->getCanonicalDecl()->getQualifiedNameAsString() != name ||
+        !declarationIsTrusted(*record, source_manager, state) || cxx == nullptr ||
+        cxx->getNumBases() != 0 || !cxx->isAggregate() ||
+        !cxx->isStandardLayout()) {
+      error = "public record semantics differ from <matcore/mdsl.h>";
+      return false;
+    }
+  }
+
+  const std::vector<const clang::FieldDecl *> matrix_fields =
+      recordFields(*matrix);
+  const std::vector<const clang::FieldDecl *> out_fields = recordFields(*out);
+  const std::vector<const clang::FieldDecl *> policy_fields =
+      recordFields(*policy);
+  if (matrix_fields.size() != 3 ||
+      matrix_fields[0]->getName() != "data" ||
+      !isFloatPointer(matrix_fields[0]->getType()) ||
+      matrix_fields[1]->getName() != "rows" ||
+      !isSignedIntegerWithWidth(matrix_fields[1]->getType(), 64, context) ||
+      matrix_fields[2]->getName() != "columns" ||
+      !isSignedIntegerWithWidth(matrix_fields[2]->getType(), 64, context) ||
+      out_fields.size() != 1 || out_fields[0]->getName() != "value" ||
+      !isPointerToRecord(out_fields[0]->getType(),
+                         "matcore::mdsl::matrix_view") ||
+      policy_fields.size() != 2 ||
+      policy_fields[0]->getName() != "target" ||
+      policy_fields[1]->getName() != "fallback" ||
+      !policy_fields[0]->hasInClassInitializer() ||
+      !policy_fields[1]->hasInClassInitializer()) {
+    error = "public descriptor fields or types differ from the f32 ABI";
+    return false;
+  }
+  if (!hasNaturalRecordLayout(*matrix, matrix_fields, context) ||
+      !hasNaturalRecordLayout(*out, out_fields, context) ||
+      !hasNaturalRecordLayout(*policy, policy_fields, context)) {
+    error = "public descriptor layout was changed by compiler state";
+    return false;
+  }
+
+  const clang::EnumDecl *target =
+      enumDefinition(policy_fields[0]->getType());
+  const clang::EnumDecl *fallback =
+      enumDefinition(policy_fields[1]->getType());
+  if (target == nullptr || fallback == nullptr ||
+      !hasExpectedEnum(*target, "matcore::mdsl::target",
+                       {{"cpu", 0}, {"cuda", 1}}, context, source_manager,
+                       state) ||
+      !hasExpectedEnum(*fallback, "matcore::mdsl::fallback", {{"error", 0}},
+                       context, source_manager, state)) {
+    error = "public policy enum semantics differ from <matcore/mdsl.h>";
+    return false;
+  }
+  return true;
 }
 
 enum class Authentication { valid, untrusted, wrong_signature, annotation };
@@ -560,7 +786,26 @@ mainFileTokenRange(const clang::Expr &expression,
   };
 }
 
-enum class ContextViolation { none, template_context, lambda, constexpr_context };
+bool hasMacroOrigin(const clang::Stmt &statement) {
+  if (statement.getBeginLoc().isMacroID() ||
+      statement.getEndLoc().isMacroID()) {
+    return true;
+  }
+  for (const clang::Stmt *child : statement.children()) {
+    if (child != nullptr && hasMacroOrigin(*child)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+enum class ContextViolation {
+  none,
+  template_context,
+  lambda,
+  constexpr_context,
+  unevaluated_context
+};
 
 ContextViolation forbiddenContext(const clang::DynTypedNode &node,
                                   clang::ASTContext &context,
@@ -569,6 +814,25 @@ ContextViolation forbiddenContext(const clang::DynTypedNode &node,
     return ContextViolation::template_context;
   }
   for (const clang::DynTypedNode &parent : context.getParents(node)) {
+    if (parent.get<clang::CXXNoexceptExpr>() != nullptr ||
+        parent.get<clang::UnaryExprOrTypeTraitExpr>() != nullptr ||
+        parent.get<clang::TypeTraitExpr>() != nullptr ||
+        parent.get<clang::ExpressionTraitExpr>() != nullptr ||
+        parent.get<clang::RequiresExpr>() != nullptr ||
+        parent.get<clang::CXXTypeidExpr>() != nullptr) {
+      return ContextViolation::unevaluated_context;
+    }
+    if (const clang::TypeLoc *type_location = parent.get<clang::TypeLoc>()) {
+      if (!type_location->isNull() &&
+          llvm::isa<clang::DecltypeType>(type_location->getTypePtr())) {
+        return ContextViolation::unevaluated_context;
+      }
+    }
+    if (const clang::Type *type = parent.get<clang::Type>()) {
+      if (llvm::isa<clang::DecltypeType>(type)) {
+        return ContextViolation::unevaluated_context;
+      }
+    }
     if (parent.get<clang::LambdaExpr>() != nullptr) {
       return ContextViolation::lambda;
     }
@@ -702,6 +966,18 @@ private:
                       call.getExprLoc())) {
       return;
     }
+    if (!state_.trusted_header_external_macros.empty()) {
+      fail("the trusted <matcore/mdsl.h> ABI was altered by macro expansion '" +
+           *state_.trusted_header_external_macros.begin() +
+           "'; source macros may not rewrite public Matcore declarations");
+      return;
+    }
+    std::string public_abi_error;
+    if (!validatePublicAbi(*direct, context, state_, public_abi_error)) {
+      fail("the parsed <matcore/mdsl.h> ABI is incompatible with runtime v0: " +
+           public_abi_error);
+      return;
+    }
     if (callee_reference == nullptr) {
       fail("indirect or function-pointer calls to Matcore operations are not "
            "supported");
@@ -710,7 +986,7 @@ private:
            "matcore::mdsl or a namespace alias to it; unqualified, ADL, and "
            "using-declaration re-exports are rejected");
     }
-    if (call.getBeginLoc().isMacroID() || call.getEndLoc().isMacroID()) {
+    if (hasMacroOrigin(call)) {
       fail("Matcore calls generated by macros or unsafe source ranges are not "
            "supported in native v1");
     } else if (!source_manager.isWrittenInMainFile(
@@ -721,13 +997,17 @@ private:
     switch (forbiddenContext(clang::DynTypedNode::create(call), context)) {
     case ContextViolation::template_context:
       fail("Matcore calls inside templates are not supported in native v1");
-      break;
+      return;
     case ContextViolation::lambda:
       fail("Matcore calls inside lambdas are not supported in native v1");
-      break;
+      return;
     case ContextViolation::constexpr_context:
       fail("constexpr Matcore execution is not supported in native v1");
-      break;
+      return;
+    case ContextViolation::unevaluated_context:
+      fail("Matcore calls in unevaluated contexts are not supported in native "
+           "v1");
+      return;
     case ContextViolation::none:
       break;
     }
