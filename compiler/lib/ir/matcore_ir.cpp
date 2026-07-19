@@ -1,5 +1,7 @@
 #include "matcore_ir.h"
 
+#include <rapidjson/document.h>
+#include <rapidjson/error/en.h>
 #include <rapidjson/prettywriter.h>
 #include <rapidjson/stringbuffer.h>
 
@@ -42,6 +44,78 @@ void writeMatrixValue(Writer &writer, const MatrixValue &value) {
   writer.Key("memory_space");
   writer.String("host");
   writer.EndObject();
+}
+
+const rapidjson::Value *requiredMember(const rapidjson::Value &object,
+                                       const char *name,
+                                       rapidjson::Type type,
+                                       std::string &error) {
+  if (!object.IsObject()) {
+    error = "expected a JSON object while reading " + std::string(name);
+    return nullptr;
+  }
+  const auto iterator = object.FindMember(name);
+  if (iterator == object.MemberEnd() || iterator->value.GetType() != type) {
+    error = "missing or invalid Matcore IR field: " + std::string(name);
+    return nullptr;
+  }
+  return &iterator->value;
+}
+
+bool readString(const rapidjson::Value &object, const char *name,
+                std::string &value, std::string &error) {
+  const rapidjson::Value *encoded =
+      requiredMember(object, name, rapidjson::kStringType, error);
+  if (encoded == nullptr) {
+    return false;
+  }
+  value.assign(encoded->GetString(), encoded->GetStringLength());
+  return true;
+}
+
+bool readUint64(const rapidjson::Value &object, const char *name,
+                std::uint64_t &value, std::string &error) {
+  const rapidjson::Value *encoded = object.IsObject() && object.HasMember(name)
+                                        ? &object[name]
+                                        : nullptr;
+  if (encoded == nullptr || !encoded->IsUint64()) {
+    error = "missing or invalid Matcore IR integer field: " + std::string(name);
+    return false;
+  }
+  value = encoded->GetUint64();
+  return true;
+}
+
+bool parseRange(const rapidjson::Value &encoded, SourceRange &range,
+                std::string &error) {
+  return readUint64(encoded, "begin", range.begin, error) &&
+         readUint64(encoded, "end", range.end, error);
+}
+
+bool parseMatrix(const rapidjson::Value &encoded, MatrixValue &matrix,
+                 std::string &error) {
+  if (!readString(encoded, "role", matrix.role, error) ||
+      !readString(encoded, "expression", matrix.expression, error) ||
+      !readString(encoded, "mutability", matrix.mutability, error)) {
+    return false;
+  }
+  std::string dtype;
+  std::string layout;
+  std::string memory_space;
+  if (!readString(encoded, "dtype", dtype, error) ||
+      !readString(encoded, "layout", layout, error) ||
+      !readString(encoded, "memory_space", memory_space, error)) {
+    return false;
+  }
+  const rapidjson::Value *rank =
+      encoded.IsObject() && encoded.HasMember("rank") ? &encoded["rank"] : nullptr;
+  if (dtype != "f32" || rank == nullptr || !rank->IsUint() ||
+      rank->GetUint() != 2 || layout != "row_major_contiguous" ||
+      memory_space != "host") {
+    error = "Matcore IR v0 matrix metadata must be host f32 rank-2 contiguous";
+    return false;
+  }
+  return true;
 }
 
 } // namespace
@@ -250,6 +324,137 @@ std::string serializeDeterministicJson(const Module &module) {
   writer.EndObject();
 
   return std::string(buffer.GetString(), buffer.GetSize()) + '\n';
+}
+
+bool parseAndVerifyJson(std::string_view json, Module &module,
+                        std::string &error) {
+  module = Module{};
+  error.clear();
+  rapidjson::Document document;
+  document.Parse(json.data(), json.size());
+  if (document.HasParseError()) {
+    error = "malformed JSON at byte " +
+            std::to_string(document.GetErrorOffset()) + ": " +
+            rapidjson::GetParseError_En(document.GetParseError());
+    return false;
+  }
+  if (!document.IsObject()) {
+    error = "Matcore IR root must be a JSON object";
+    return false;
+  }
+  std::string schema;
+  if (!readString(document, "schema", schema, error) || schema != "matcore.ir") {
+    if (error.empty()) {
+      error = "unsupported Matcore IR schema: " + schema;
+    }
+    return false;
+  }
+  const rapidjson::Value *version =
+      document.HasMember("version") ? &document["version"] : nullptr;
+  if (version == nullptr || !version->IsUint() ||
+      version->GetUint() != kMatcoreIrVersion) {
+    error = "unsupported Matcore IR version; expected version 0";
+    return false;
+  }
+  if (!readString(document, "producer", module.producer, error)) {
+    return false;
+  }
+  const rapidjson::Value *translation_unit = requiredMember(
+      document, "translation_unit", rapidjson::kObjectType, error);
+  if (translation_unit == nullptr ||
+      !readString(*translation_unit, "identity", module.translation_unit,
+                  error) ||
+      !readString(*translation_unit, "source_file", module.source_file,
+                  error)) {
+    return false;
+  }
+  const rapidjson::Value *operations =
+      requiredMember(document, "operations", rapidjson::kArrayType, error);
+  if (operations == nullptr) {
+    return false;
+  }
+
+  for (const rapidjson::Value &encoded : operations->GetArray()) {
+    if (!encoded.IsObject()) {
+      error = "Matcore IR operation must be an object";
+      return false;
+    }
+    Operation operation;
+    if (!readString(encoded, "site_id", operation.site_id, error) ||
+        !readString(encoded, "kind", operation.kind, error) ||
+        !readString(encoded, "canonical_callee", operation.canonical_callee,
+                    error)) {
+      return false;
+    }
+    const rapidjson::Value *source =
+        requiredMember(encoded, "source", rapidjson::kObjectType, error);
+    if (source == nullptr ||
+        !readString(*source, "file", operation.source.file, error) ||
+        !readUint64(*source, "byte_offset", operation.source.offset, error)) {
+      return false;
+    }
+    std::uint64_t line = 0;
+    std::uint64_t column = 0;
+    if (!readUint64(*source, "line", line, error) ||
+        !readUint64(*source, "column", column, error) ||
+        line > UINT32_MAX || column > UINT32_MAX) {
+      if (error.empty()) {
+        error = "source line or column exceeds the v0 range";
+      }
+      return false;
+    }
+    operation.source.line = static_cast<std::uint32_t>(line);
+    operation.source.column = static_cast<std::uint32_t>(column);
+    const rapidjson::Value *call_range =
+        requiredMember(*source, "byte_range", rapidjson::kObjectType, error);
+    if (call_range == nullptr ||
+        !parseRange(*call_range, operation.call_range, error)) {
+      return false;
+    }
+    const rapidjson::Value *argument_ranges = requiredMember(
+        encoded, "source_argument_ranges", rapidjson::kArrayType, error);
+    if (argument_ranges == nullptr) {
+      return false;
+    }
+    for (const rapidjson::Value &range : argument_ranges->GetArray()) {
+      SourceRange parsed;
+      if (!parseRange(range, parsed, error)) {
+        return false;
+      }
+      operation.argument_ranges.push_back(parsed);
+    }
+    const rapidjson::Value *output =
+        requiredMember(encoded, "output", rapidjson::kObjectType, error);
+    if (output == nullptr || !parseMatrix(*output, operation.output, error)) {
+      return false;
+    }
+    const rapidjson::Value *operands =
+        requiredMember(encoded, "operands", rapidjson::kArrayType, error);
+    if (operands == nullptr) {
+      return false;
+    }
+    for (const rapidjson::Value &operand : operands->GetArray()) {
+      MatrixValue parsed;
+      if (!parseMatrix(operand, parsed, error)) {
+        return false;
+      }
+      operation.operands.push_back(std::move(parsed));
+    }
+    const rapidjson::Value *policy =
+        requiredMember(encoded, "policy", rapidjson::kObjectType, error);
+    if (policy == nullptr ||
+        !readString(*policy, "target", operation.target, error) ||
+        !readString(*policy, "fallback", operation.fallback, error)) {
+      return false;
+    }
+    module.operations.push_back(std::move(operation));
+  }
+  if (!verify(module, error)) {
+    error = "Matcore IR verifier rejected input: " + error;
+    module = Module{};
+    return false;
+  }
+  return true;
 }
 
 } // namespace matcore::mdslc::ir

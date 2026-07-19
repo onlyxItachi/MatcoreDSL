@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -21,6 +22,7 @@ struct CommandLine {
   std::string sites_output;
   std::string stubs_output;
   std::string backend_output;
+  std::string verify_ir;
   bool compiler_was_explicit = false;
 };
 
@@ -38,6 +40,7 @@ void usage(std::ostream &output) {
       << "  --sites-out FILE      generated C++ site declarations\n"
       << "  --stubs-out FILE      generated C++ descriptor stubs\n"
       << "  --backend-out FILE    generated C ABI backend forwarding entries\n"
+      << "  --verify-ir FILE      verify serialized Matcore IR v0 and exit\n"
       << "  --frontend-info       describe this non-LibTooling fallback\n"
       << "\n"
       << "A bare clang++ token after -- is a command-shape placeholder; the "
@@ -94,6 +97,10 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
                      "--backend-out")) {
         return std::nullopt;
       }
+    } else if (argument == "--verify-ir") {
+      if (!takeValue(argc, argv, index, command.verify_ir, "--verify-ir")) {
+        return std::nullopt;
+      }
     } else if (argument == "--clang") {
       if (!takeValue(argc, argv, index, command.frontend.clang_path,
                      "--clang")) {
@@ -130,6 +137,17 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
     }
   }
 
+  if (!command.verify_ir.empty()) {
+    if (!command.frontend.input_path.empty() || !command.ir_output.empty() ||
+        !command.rewrite_output.empty() || !command.sites_output.empty() ||
+        !command.stubs_output.empty() || !command.backend_output.empty() ||
+        !command.frontend.compiler_arguments.empty()) {
+      std::cerr << "matcore-extract: --verify-ir cannot be combined with "
+                   "extraction or generation options\n";
+      return std::nullopt;
+    }
+    return command;
+  }
   if (command.frontend.input_path.empty() || command.ir_output.empty()) {
     std::cerr << "matcore-extract: --input and --ir-out are required\n";
     return std::nullopt;
@@ -143,6 +161,27 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
     std::cerr << "matcore-extract: --rewrite-out, --sites-out, --stubs-out, "
                  "and --backend-out must be supplied together\n";
     return std::nullopt;
+  }
+  if (generated_output_count == 4) {
+    std::set<std::string> unique_outputs;
+    for (const std::string *path :
+         {&command.ir_output, &command.rewrite_output, &command.sites_output,
+          &command.stubs_output, &command.backend_output}) {
+      if (*path == "-") {
+        std::cerr << "matcore-extract: generated artifact mode requires file "
+                     "paths, not standard output\n";
+        return std::nullopt;
+      }
+      std::error_code error;
+      std::filesystem::path normalized = std::filesystem::absolute(*path, error);
+      if (error) {
+        normalized = std::filesystem::path(*path);
+      }
+      if (!unique_outputs.insert(normalized.lexically_normal().string()).second) {
+        std::cerr << "matcore-extract: generated output paths must be distinct\n";
+        return std::nullopt;
+      }
+    }
   }
   if (!command.frontend.compiler_arguments.empty() &&
       !command.frontend.compiler_arguments.front().starts_with("-")) {
@@ -225,6 +264,23 @@ int main(int argc, char **argv) {
   if (!command) {
     usage(std::cerr);
     return 2;
+  }
+
+  if (!command->verify_ir.empty()) {
+    const std::optional<std::string> encoded = readFile(command->verify_ir);
+    if (!encoded) {
+      std::cerr << command->verify_ir << ": error: unable to read Matcore IR\n";
+      return 1;
+    }
+    matcore::mdslc::ir::Module module;
+    std::string error;
+    if (!matcore::mdslc::ir::parseAndVerifyJson(*encoded, module, error)) {
+      std::cerr << command->verify_ir << ": error: " << error << '\n';
+      return 1;
+    }
+    std::cout << "verified Matcore IR v0: " << module.operations.size()
+              << " operation(s)\n";
+    return 0;
   }
 
   std::unique_ptr<matcore::mdslc::frontend::Frontend> frontend =
