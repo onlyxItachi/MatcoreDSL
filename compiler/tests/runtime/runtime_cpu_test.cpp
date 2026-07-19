@@ -97,10 +97,18 @@ void negative_cases() {
   changed.abi_version = 1;
   expect_error(MATCORE_STATUS_ABI_MISMATCH_V0, changed, lhs, rhs, p,
                "ABI mismatch is rejected");
+  changed = out;
+  changed.reserved[0] = 1;
+  expect_error(MATCORE_STATUS_INVALID_ARGUMENT_V0, changed, lhs, rhs, p,
+               "nonzero tensor reserved fields are rejected");
   auto bad_policy = p;
   bad_policy.struct_size = 0;
   expect_error(MATCORE_STATUS_ABI_MISMATCH_V0, out, lhs, rhs, bad_policy,
                "policy ABI mismatch is rejected");
+  bad_policy = p;
+  bad_policy.reserved[0] = 1;
+  expect_error(MATCORE_STATUS_INVALID_ARGUMENT_V0, out, lhs, rhs, bad_policy,
+               "nonzero policy reserved fields are rejected");
   changed = lhs;
   changed.data = nullptr;
   expect_error(MATCORE_STATUS_INVALID_ARGUMENT_V0, out, changed, rhs, p,

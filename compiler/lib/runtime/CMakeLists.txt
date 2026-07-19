@@ -18,6 +18,7 @@ target_include_directories(matcore_runtime
 )
 set_target_properties(matcore_runtime PROPERTIES
   CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN YES
   OUTPUT_NAME matcore_runtime
   SOVERSION 0
   VERSION 0.0.0
