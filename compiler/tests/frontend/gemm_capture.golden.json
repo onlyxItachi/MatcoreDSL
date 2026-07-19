@@ -15,8 +15,30 @@
         "file": "compiler/tests/frontend/gemm_capture.mdsl",
         "line": 21,
         "column": 3,
-        "byte_offset": 419
+        "byte_offset": 419,
+        "byte_range": {
+          "begin": 419,
+          "end": 550
+        }
       },
+      "source_argument_ranges": [
+        {
+          "begin": 428,
+          "end": 438
+        },
+        {
+          "begin": 440,
+          "end": 441
+        },
+        {
+          "begin": 443,
+          "end": 444
+        },
+        {
+          "begin": 457,
+          "end": 549
+        }
+      ],
       "output": {
         "role": "output",
         "expression": "C",

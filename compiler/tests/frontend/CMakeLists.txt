@@ -6,6 +6,8 @@ add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../../lib/ir"
                  "${CMAKE_CURRENT_BINARY_DIR}/ir")
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../../lib/frontend"
                  "${CMAKE_CURRENT_BINARY_DIR}/frontend")
+add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../../lib/codegen"
+                 "${CMAKE_CURRENT_BINARY_DIR}/codegen")
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../../tools/matcore-extract"
                  "${CMAKE_CURRENT_BINARY_DIR}/matcore-extract")
 

@@ -1,4 +1,5 @@
 #include "../../lib/frontend/frontend.h"
+#include "../../lib/codegen/codegen.h"
 
 #include <unistd.h>
 
@@ -16,6 +17,10 @@ namespace {
 struct CommandLine {
   matcore::mdslc::frontend::Options frontend;
   std::string ir_output;
+  std::string rewrite_output;
+  std::string sites_output;
+  std::string stubs_output;
+  std::string backend_output;
   bool compiler_was_explicit = false;
 };
 
@@ -29,6 +34,10 @@ void usage(std::ostream &output) {
          "/usr/bin/clang++-21)\n"
       << "  --ast-byte-limit N    maximum captured AST JSON bytes\n"
       << "  --verbose             print the exact Clang command\n"
+      << "  --rewrite-out FILE    rewritten host C++ (requires all outputs)\n"
+      << "  --sites-out FILE      generated C++ site declarations\n"
+      << "  --stubs-out FILE      generated C++ descriptor stubs\n"
+      << "  --backend-out FILE    generated C ABI backend forwarding entries\n"
       << "  --frontend-info       describe this non-LibTooling fallback\n"
       << "\n"
       << "A bare clang++ token after -- is a command-shape placeholder; the "
@@ -65,6 +74,24 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
       }
     } else if (argument == "--ir-out") {
       if (!takeValue(argc, argv, index, command.ir_output, "--ir-out")) {
+        return std::nullopt;
+      }
+    } else if (argument == "--rewrite-out") {
+      if (!takeValue(argc, argv, index, command.rewrite_output,
+                     "--rewrite-out")) {
+        return std::nullopt;
+      }
+    } else if (argument == "--sites-out") {
+      if (!takeValue(argc, argv, index, command.sites_output, "--sites-out")) {
+        return std::nullopt;
+      }
+    } else if (argument == "--stubs-out") {
+      if (!takeValue(argc, argv, index, command.stubs_output, "--stubs-out")) {
+        return std::nullopt;
+      }
+    } else if (argument == "--backend-out") {
+      if (!takeValue(argc, argv, index, command.backend_output,
+                     "--backend-out")) {
         return std::nullopt;
       }
     } else if (argument == "--clang") {
@@ -105,6 +132,16 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
 
   if (command.frontend.input_path.empty() || command.ir_output.empty()) {
     std::cerr << "matcore-extract: --input and --ir-out are required\n";
+    return std::nullopt;
+  }
+  const unsigned generated_output_count =
+      static_cast<unsigned>(!command.rewrite_output.empty()) +
+      static_cast<unsigned>(!command.sites_output.empty()) +
+      static_cast<unsigned>(!command.stubs_output.empty()) +
+      static_cast<unsigned>(!command.backend_output.empty());
+  if (generated_output_count != 0 && generated_output_count != 4) {
+    std::cerr << "matcore-extract: --rewrite-out, --sites-out, --stubs-out, "
+                 "and --backend-out must be supplied together\n";
     return std::nullopt;
   }
   if (!command.frontend.compiler_arguments.empty() &&
@@ -172,6 +209,15 @@ bool writeAtomically(const std::string &path, std::string_view contents) {
   return true;
 }
 
+std::optional<std::string> readFile(const std::string &path) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    return std::nullopt;
+  }
+  return std::string(std::istreambuf_iterator<char>(input),
+                     std::istreambuf_iterator<char>());
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -200,5 +246,42 @@ int main(int argc, char **argv) {
   }
   const std::string json =
       matcore::mdslc::ir::serializeDeterministicJson(result.module);
-  return writeAtomically(command->ir_output, json) ? 0 : 1;
+  if (command->rewrite_output.empty()) {
+    return writeAtomically(command->ir_output, json) ? 0 : 1;
+  }
+
+  const std::optional<std::string> source =
+      readFile(command->frontend.input_path);
+  if (!source) {
+    std::cerr << command->frontend.input_path
+              << ": error: unable to reread source for deterministic rewrite\n";
+    return 1;
+  }
+  const std::string sites_include =
+      std::filesystem::path(command->sites_output).filename().string();
+  matcore::mdslc::codegen::Artifacts artifacts;
+  std::string generation_error;
+  if (!matcore::mdslc::codegen::generate(result.module, *source, sites_include,
+                                         artifacts, generation_error)) {
+    std::cerr << command->frontend.input_path
+              << ": error: generated artifact validation failed: "
+              << generation_error << '\n';
+    return 1;
+  }
+
+  // All contents are generated and verified before any destination is
+  // published. Each individual file is published through a temporary rename.
+  const std::vector<std::pair<std::string, std::string_view>> outputs = {
+      {command->ir_output, json},
+      {command->rewrite_output, artifacts.rewritten_host},
+      {command->sites_output, artifacts.sites_header},
+      {command->stubs_output, artifacts.stubs_source},
+      {command->backend_output, artifacts.backend_source},
+  };
+  for (const auto &[path, contents] : outputs) {
+    if (!writeAtomically(path, contents)) {
+      return 1;
+    }
+  }
+  return 0;
 }

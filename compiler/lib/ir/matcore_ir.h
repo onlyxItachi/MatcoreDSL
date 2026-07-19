@@ -16,6 +16,12 @@ struct SourceLocation {
   std::uint32_t column = 0;
 };
 
+// Half-open byte offsets into the original .mdsl file.
+struct SourceRange {
+  std::uint64_t begin = 0;
+  std::uint64_t end = 0;
+};
+
 struct MatrixValue {
   std::string role;
   std::string expression;
@@ -27,6 +33,8 @@ struct Operation {
   std::string kind;
   std::string canonical_callee;
   SourceLocation source;
+  SourceRange call_range;
+  std::vector<SourceRange> argument_ranges;
   MatrixValue output;
   std::vector<MatrixValue> operands;
   std::string target;
