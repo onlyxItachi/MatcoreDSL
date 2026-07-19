@@ -21,8 +21,10 @@ The roadmap remains gate-driven and additive to the legacy Python/JIT path.
    exported CMake targets, helper, external `find_package`, incremental rebuild,
    and clean installed-path checks pass.
 6. **Adversarial validation — complete for implemented scope.** Fresh Release,
-   Debug, ASan/UBSan, artifact, runtime, negative-source, IR-mutation, install,
-   and independent review gates pass.
+   Debug, generated-host/runtime ASan/UBSan, artifact, runtime,
+   negative-source, IR-mutation, install, and independent review gates pass.
+   Full extractor instrumentation separately exposes Ubuntu RapidJSON 1.1.0's
+   null-pointer arithmetic and is not claimed clean.
 7. **CUDA/cuBLAS — not attempted.** It remains optional after the exact
    LibTooling frontend gate is closed.
 
