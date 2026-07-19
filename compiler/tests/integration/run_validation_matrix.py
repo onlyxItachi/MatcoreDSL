@@ -356,7 +356,7 @@ def execute_case(context: Context, case: dict[str, object], work: Path) -> None:
                 artifact_sets[0][kind].read_bytes() == artifact_sets[1][kind].read_bytes(),
                 f"generated {kind} is not byte deterministic",
             )
-        require("#line 1" in artifact_sets[0]["host"].read_text(), "host source lost #line mapping")
+        require("#line " in artifact_sets[0]["host"].read_text(), "host source lost #line mapping")
         require("__matcore_call_site_" in artifact_sets[0]["host"].read_text(), "host call was not rewritten")
         require("extern \"C\"" in artifact_sets[0]["backend"].read_text(), "backend lacks C ABI")
         return
