@@ -814,12 +814,20 @@ ContextViolation forbiddenContext(const clang::DynTypedNode &node,
     return ContextViolation::template_context;
   }
   for (const clang::DynTypedNode &parent : context.getParents(node)) {
+    if (const auto *parent_call = parent.get<clang::CallExpr>()) {
+      if (parent_call->isUnevaluatedBuiltinCall(context)) {
+        return ContextViolation::unevaluated_context;
+      }
+    }
     if (parent.get<clang::CXXNoexceptExpr>() != nullptr ||
         parent.get<clang::UnaryExprOrTypeTraitExpr>() != nullptr ||
         parent.get<clang::TypeTraitExpr>() != nullptr ||
         parent.get<clang::ExpressionTraitExpr>() != nullptr ||
         parent.get<clang::RequiresExpr>() != nullptr ||
-        parent.get<clang::CXXTypeidExpr>() != nullptr) {
+        parent.get<clang::CXXTypeidExpr>() != nullptr ||
+        parent.get<clang::ChooseExpr>() != nullptr ||
+        parent.get<clang::GenericSelectionExpr>() != nullptr ||
+        parent.get<clang::CXXUuidofExpr>() != nullptr) {
       return ContextViolation::unevaluated_context;
     }
     if (const clang::TypeLoc *type_location = parent.get<clang::TypeLoc>()) {
