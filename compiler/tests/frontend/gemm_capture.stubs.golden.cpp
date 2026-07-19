@@ -67,7 +67,7 @@ void throw_on_error(const matcore_status_v0 &status,
 }
 } // namespace
 
-void __matcore_call_site_mc_3c5b6d5e7992fb7b249de44210c6415d(::matcore::mdsl::out_arg output, const ::matcore::mdsl::matrix_view &lhs, const ::matcore::mdsl::matrix_view &rhs, ::matcore::mdsl::policy execution_policy) {
+__attribute__((weak)) void __matcore_call_site_mc_3c5b6d5e7992fb7b249de44210c6415d(::matcore::mdsl::out_arg output, const ::matcore::mdsl::matrix_view &lhs, const ::matcore::mdsl::matrix_view &rhs, ::matcore::mdsl::policy execution_policy) {
   const ::matcore::mdsl::matrix_view empty_output{};
   const ::matcore::mdsl::matrix_view &output_view =
       output.value != nullptr ? *output.value : empty_output;
