@@ -1042,6 +1042,18 @@ bool AstJsonBootstrapFrontend::extract(const Options &options, Result &result) {
         Diagnostic{.file = display_path, .message = std::move(error)});
     return false;
   }
+  std::ifstream verification_stream(options.input_path, std::ios::binary);
+  const std::string verified_source(
+      (std::istreambuf_iterator<char>(verification_stream)),
+      std::istreambuf_iterator<char>());
+  if (!verification_stream || verified_source != source) {
+    result.diagnostics.push_back(Diagnostic{
+        .file = display_path,
+        .message = "input .mdsl changed while Clang parsed it; retry from a "
+                   "stable source snapshot"});
+    return false;
+  }
+  result.source_snapshot = source;
 
   rapidjson::Document document;
   document.ParseInsitu(ast_json.data());

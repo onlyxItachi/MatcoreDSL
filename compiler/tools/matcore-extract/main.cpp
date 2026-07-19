@@ -318,19 +318,13 @@ int main(int argc, char **argv) {
     return writeAtomically(command->ir_output, json) ? 0 : 1;
   }
 
-  const std::optional<std::string> source =
-      readFile(command->frontend.input_path);
-  if (!source) {
-    std::cerr << command->frontend.input_path
-              << ": error: unable to reread source for deterministic rewrite\n";
-    return 1;
-  }
   const std::string sites_include =
       std::filesystem::path(command->sites_output).filename().string();
   matcore::mdslc::codegen::Artifacts artifacts;
   std::string generation_error;
-  if (!matcore::mdslc::codegen::generate(result.module, *source, sites_include,
-                                         artifacts, generation_error)) {
+  if (!matcore::mdslc::codegen::generate(result.module, result.source_snapshot,
+                                         sites_include, artifacts,
+                                         generation_error)) {
     std::cerr << command->frontend.input_path
               << ": error: generated artifact validation failed: "
               << generation_error << '\n';
