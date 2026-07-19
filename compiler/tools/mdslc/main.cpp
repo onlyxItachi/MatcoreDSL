@@ -104,23 +104,43 @@ bool IsExtractionIncompatibleArgument(std::string_view argument) {
          argument.starts_with("-fplugin=");
 }
 
+bool IsUnsupportedLinkerModeValue(std::string_view argument) {
+  return argument == "-shared" || argument == "--shared" ||
+         argument == "-static" || argument == "--static" ||
+         argument == "-static-pie" || argument == "--static-pie" ||
+         argument == "-pie" || argument == "--pie" ||
+         argument == "-no-pie" || argument == "--no-pie" ||
+         argument == "-r" || argument == "--relocatable";
+}
+
+bool ContainsUnsafeWlComponent(std::string_view argument) {
+  constexpr std::string_view prefix = "-Wl,";
+  if (!argument.starts_with(prefix)) {
+    return false;
+  }
+  argument.remove_prefix(prefix.size());
+  while (!argument.empty()) {
+    const std::size_t comma = argument.find(',');
+    const std::string_view component = argument.substr(0, comma);
+    if (IsUnsupportedLinkerModeValue(component) || component.starts_with('@')) {
+      return true;
+    }
+    if (comma == std::string_view::npos) {
+      break;
+    }
+    argument.remove_prefix(comma + 1);
+  }
+  return false;
+}
+
 bool IsUnsupportedFinalLinkMode(std::string_view argument) {
   return argument == "-shared" || argument == "-static" ||
          argument == "-static-pie" || argument == "-pie" ||
          argument == "-no-pie" || argument == "-r" ||
          argument == "--relocatable" || argument == "-nostdlib" ||
-         argument == "-nodefaultlibs" || argument == "-Wl,-r" ||
-         argument == "-Wl,-shared" || argument == "-Wl,--shared" ||
-         argument == "-Wl,-static" || argument == "-Wl,--static" ||
-         argument == "-Wl,-pie" || argument == "-Wl,--pie" ||
-         argument == "-Wl,--relocatable";
-}
-
-bool IsUnsupportedLinkerModeValue(std::string_view argument) {
-  return argument == "-shared" || argument == "--shared" ||
-         argument == "-static" || argument == "--static" ||
-         argument == "-pie" || argument == "--pie" || argument == "-r" ||
-         argument == "--relocatable";
+         argument == "-nodefaultlibs" || argument.starts_with('@') ||
+         argument.starts_with("-Xlinker=@") ||
+         ContainsUnsafeWlComponent(argument);
 }
 
 bool IsLinkOptionWithValue(std::string_view argument) {
@@ -407,7 +427,8 @@ ParseCpuInvocation(const WrapperArguments &arguments) {
         return std::nullopt;
       }
       const std::string &value = arguments.compiler_arguments[index];
-      if (argument == "-Xlinker" && IsUnsupportedLinkerModeValue(value)) {
+      if (argument == "-Xlinker" &&
+          (IsUnsupportedLinkerModeValue(value) || value.starts_with('@'))) {
         std::cerr << "mdslc++: linker mode " << value
                   << " is not implemented by the CPU bootstrap; use -c and "
                      "perform that link explicitly with clang++\n";
