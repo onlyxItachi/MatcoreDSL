@@ -481,6 +481,34 @@ bool containsPolicySideEffect(const JsonValue &node) {
   return false;
 }
 
+const JsonValue *policyInitializer(const JsonValue &expression) {
+  if (memberString(expression, "kind") == "InitListExpr") {
+    return &expression;
+  }
+  if (memberString(expression, "kind") != "CXXFunctionalCastExpr" &&
+      memberString(expression, "kind") != "CXXTemporaryObjectExpr") {
+    return nullptr;
+  }
+  const JsonValue *inner = innerArray(expression);
+  if (inner == nullptr || inner->Size() != 1 ||
+      memberString((*inner)[0], "kind") != "InitListExpr") {
+    return nullptr;
+  }
+  return &(*inner)[0];
+}
+
+bool directEnumValue(const JsonValue &expression,
+                     std::string_view expected_type, std::string &value) {
+  std::vector<std::pair<std::string, std::string>> constants;
+  collectEnumConstants(expression, constants);
+  if (constants.size() != 1 || constants[0].first != expected_type ||
+      constants[0].second.empty()) {
+    return false;
+  }
+  value = constants[0].second;
+  return true;
+}
+
 bool parsePolicy(const JsonValue &expression, std::string &target,
                  std::string &fallback) {
   target = "cpu";
@@ -488,35 +516,17 @@ bool parsePolicy(const JsonValue &expression, std::string &target,
   if (memberString(expression, "kind") == "CXXDefaultArgExpr") {
     return true;
   }
-  if (memberString(expression, "kind") != "CXXFunctionalCastExpr" &&
-      memberString(expression, "kind") != "InitListExpr" &&
-      memberString(expression, "kind") != "CXXTemporaryObjectExpr") {
+  const JsonValue *initializer = policyInitializer(expression);
+  const JsonValue *fields =
+      initializer == nullptr ? nullptr : innerArray(*initializer);
+  if (fields == nullptr || fields->Size() != 2) {
     return false;
   }
-  std::vector<std::pair<std::string, std::string>> constants;
-  collectEnumConstants(expression, constants);
-  bool saw_target = false;
-  bool saw_fallback = false;
-  for (const auto &[type, value] : constants) {
-    if (type == "matcore::mdsl::target") {
-      if (saw_target) {
-        return false;
-      }
-      saw_target = true;
-      target = value;
-    } else if (type == "matcore::mdsl::fallback") {
-      if (saw_fallback) {
-        return false;
-      }
-      saw_fallback = true;
-      fallback = value;
-    }
-  }
-  // Clang materializes the public policy's default member initializers in an
-  // InitListExpr, including for `policy{}`. Requiring one canonical enumerator
-  // for each field prevents an opaque enum cast (for example target(1)) from
-  // being silently interpreted as the CPU default.
-  return saw_target && saw_fallback;
+  // Clang materializes the public policy's default member initializers in
+  // declaration order. Authenticate each field independently so an enum token
+  // nested in one field cannot be mistaken for the value of another field.
+  return directEnumValue((*fields)[0], "matcore::mdsl::target", target) &&
+         directEnumValue((*fields)[1], "matcore::mdsl::fallback", fallback);
 }
 
 std::pair<unsigned, unsigned> lineAndColumn(std::string_view source,
@@ -668,7 +678,9 @@ bool forbiddenCompilerArgument(const std::string &argument) {
          argument == "-MD" || argument == "-MMD" || argument == "-MJ" ||
          argument == "-MF" || argument == "-MT" || argument == "-MQ" ||
          argument == "-Xclang" || argument == "-load" ||
-         argument == "-###" ||
+         argument == "-###" || argument == "-fplugin" ||
+         argument == "--config" || argument.starts_with("--config=") ||
+         argument.starts_with('@') ||
          argument.starts_with("-fplugin=") ||
          (argument.starts_with("-o") && argument.size() > 2) ||
          (argument.starts_with("-MF") && argument.size() > 3) ||
@@ -811,11 +823,15 @@ bool AstJsonBootstrapFrontend::processCall(
   }
 
   const std::string callee_spelling = sourceText(*callee->reference, source);
+  const JsonValue *found_callee =
+      memberObject(*callee->reference, "foundReferencedDecl");
   if (canonicalPath(context.source_file) == input_canonical &&
-      callee_spelling.find("::") == std::string::npos) {
-    reject("Matcore operations must be directly qualified (for example, "
-           "matcore::mdsl::gemm or md::gemm); unqualified and ADL calls are "
-           "rejected");
+      (callee_spelling.find("::") == std::string::npos ||
+       (found_callee != nullptr &&
+        memberString(*found_callee, "kind") == "UsingShadowDecl"))) {
+    reject("Matcore operations must be directly qualified through "
+           "matcore::mdsl or a namespace alias to it; unqualified, ADL, and "
+           "using-declaration re-exports are rejected");
   }
 
   const JsonValue *children = innerArray(call);
@@ -836,8 +852,13 @@ bool AstJsonBootstrapFrontend::processCall(
   } else {
     const std::string wrapper_spelling =
         sourceText(*output_wrapper->reference, source);
-    if (wrapper_spelling.find("::") == std::string::npos) {
-      reject("the out wrapper must be directly namespace-qualified");
+    const JsonValue *found_wrapper =
+        memberObject(*output_wrapper->reference, "foundReferencedDecl");
+    if (wrapper_spelling.find("::") == std::string::npos ||
+        (found_wrapper != nullptr &&
+         memberString(*found_wrapper, "kind") == "UsingShadowDecl")) {
+      reject("the out wrapper must be directly qualified through "
+             "matcore::mdsl or a namespace alias to it");
     }
     const JsonValue *output_children = innerArray(output_expression);
     if (output_children == nullptr || output_children->Size() != 2 ||

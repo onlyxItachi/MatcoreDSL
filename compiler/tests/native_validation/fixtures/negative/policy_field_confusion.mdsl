@@ -1,0 +1,15 @@
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+
+md::target selected_target = md::target::cuda;
+
+void policy_field_confusion(md::matrix_view &C, const md::matrix_view &A,
+                            const md::matrix_view &B) {
+  md::gemm(
+      md::out(C), A, B,
+      md::policy{
+          .target = selected_target,
+          .fallback =
+              (static_cast<void>(md::target::cpu), md::fallback::error)});
+}
