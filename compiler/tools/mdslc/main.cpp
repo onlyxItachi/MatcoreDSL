@@ -463,17 +463,11 @@ ReadMakeDependencyPaths(const fs::path &dependency_file,
 }
 
 std::optional<std::vector<DependencySnapshot>>
-CaptureDependencyClosure(const fs::path &dependency_file,
-                         std::string &error_message) {
-  const std::optional<std::vector<fs::path>> parsed =
-      ReadMakeDependencyPaths(dependency_file, error_message);
-  if (!parsed) {
-    return std::nullopt;
-  }
-
+CaptureDependencyPaths(const std::vector<fs::path> &dependencies,
+                       std::string &error_message) {
   std::vector<DependencySnapshot> closure;
   std::vector<fs::path> captured_paths;
-  for (const fs::path &dependency : *parsed) {
+  for (const fs::path &dependency : dependencies) {
     std::error_code path_error;
     fs::path absolute = dependency;
     if (absolute.is_relative()) {
@@ -514,6 +508,17 @@ CaptureDependencyClosure(const fs::path &dependency_file,
                                          std::move(*path_identity)});
   }
   return closure;
+}
+
+std::optional<std::vector<DependencySnapshot>>
+CaptureDependencyClosure(const fs::path &dependency_file,
+                         std::string &error_message) {
+  const std::optional<std::vector<fs::path>> parsed =
+      ReadMakeDependencyPaths(dependency_file, error_message);
+  if (!parsed) {
+    return std::nullopt;
+  }
+  return CaptureDependencyPaths(*parsed, error_message);
 }
 
 std::optional<std::vector<fs::path>>
@@ -1553,7 +1558,7 @@ std::string EscapeMakePath(std::string_view path) {
       continue;
     }
     if (character == ' ' || character == '\t' || character == '#' ||
-        character == '\\') {
+        character == ':' || character == '\\') {
       escaped += '\\';
     }
     escaped += character;
@@ -1763,6 +1768,36 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
       }
     }
   }
+  error.clear();
+  if (fs::is_directory(output, error) && !error) {
+    std::cerr << "mdslc++: requested output is a directory: " << output
+              << '\n';
+    return 2;
+  }
+  error.clear();
+  fs::remove(output, error);
+  if (error) {
+    std::cerr << "mdslc++: cannot clear the requested output before "
+                 "compilation: "
+              << output << ": " << error.message() << '\n';
+    return 2;
+  }
+  if (!invocation.dependency_mode.empty()) {
+    error.clear();
+    if (fs::is_directory(dependency_output, error) && !error) {
+      std::cerr << "mdslc++: requested dependency output is a directory: "
+                << dependency_output << '\n';
+      return 2;
+    }
+    error.clear();
+    fs::remove(dependency_output, error);
+    if (error) {
+      std::cerr << "mdslc++: cannot clear the requested dependency output "
+                   "before compilation: "
+                << dependency_output << ": " << error.message() << '\n';
+      return 2;
+    }
+  }
 
   // The private consistency closure is intentionally independent of the
   // user's public depfile mode. In particular, -MD is required here so an
@@ -1852,9 +1887,33 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
                         fs::absolute(artifacts.host_source))) {
     return 1;
   }
+  const std::vector<fs::path> generated_source_artifacts{
+      artifacts.host_source, artifacts.host_overlay, artifacts.ir,
+      artifacts.sites_header, artifacts.stubs_source,
+      artifacts.backend_source};
+  std::string generated_snapshot_error;
+  std::optional<std::vector<DependencySnapshot>> generated_snapshots =
+      CaptureDependencyPaths(generated_source_artifacts,
+                             generated_snapshot_error);
+  if (!generated_snapshots) {
+    std::cerr << "mdslc++: cannot snapshot generated artifacts: "
+              << generated_snapshot_error << '\n';
+    return 1;
+  }
+  AppendDependencyClosure(dependency_closure,
+                          std::move(*generated_snapshots));
+  if (!CompilationInputsMatch(source_absolute, *source_snapshot,
+                              dependency_closure,
+                              "generated artifact snapshotting")) {
+    return 1;
+  }
 
   const fs::path private_host_dependency =
       *dependency_workspace / "private-host-closure.d";
+  const fs::path private_host_post_compile_dependency =
+      *dependency_workspace / "private-host-post-compile.d";
+  const fs::path private_host_final_dependency =
+      *dependency_workspace / "private-host-final.d";
   const fs::path private_stubs_dependency =
       *dependency_workspace / "private-stubs-closure.d";
   const fs::path private_backend_dependency =
@@ -1887,6 +1946,11 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
                                   dependency_closure, phase);
   };
 
+  if (!CompilationInputsMatch(source_absolute, *source_snapshot,
+                              dependency_closure,
+                              "before generated host dependency scanning")) {
+    return 1;
+  }
   result = GenerateRewrittenHostDependencyFile(
       invocation, "-MD", *layout, source_directory, source_absolute,
       artifacts.host_overlay, output, private_host_dependency,
@@ -1899,11 +1963,33 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
       artifacts.sites_header, artifacts.stubs_source,
       artifacts.backend_source, artifacts.host_object,
       artifacts.stubs_object, artifacts.backend_object};
+  const auto recheck_host_resolution = [&](const fs::path &depfile,
+                                           std::string_view phase) {
+    const int scan_result = GenerateRewrittenHostDependencyFile(
+        invocation, "-MD", *layout, source_directory, source_absolute,
+        artifacts.host_overlay, output, depfile, wrapper.verbose);
+    if (!CompilationInputsMatch(source_absolute, *source_snapshot,
+                                dependency_closure, phase)) {
+      return 1;
+    }
+    if (scan_result != 0) {
+      return scan_result;
+    }
+    return RequireSameDependencyResolution(private_source_dependency, depfile,
+                                           generated_host_paths)
+               ? 0
+               : 1;
+  };
   if (!RequireSameDependencyResolution(private_source_dependency,
                                        private_host_dependency,
                                        generated_host_paths) ||
       !capture_generated_closure(private_host_dependency,
                                  "generated host dependency scanning")) {
+    return 1;
+  }
+  if (!CompilationInputsMatch(source_absolute, *source_snapshot,
+                              dependency_closure,
+                              "before generated stub dependency scanning")) {
     return 1;
   }
   result = GenerateDependencyFile(
@@ -1913,6 +1999,11 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
       !capture_generated_closure(private_stubs_dependency,
                                  "generated stub dependency scanning")) {
     return result != 0 ? result : 1;
+  }
+  if (!CompilationInputsMatch(
+          source_absolute, *source_snapshot, dependency_closure,
+          "before generated backend dependency scanning")) {
+    return 1;
   }
   result = GenerateDependencyFile(
       invocation, "-MD", *layout, source_directory, artifacts.backend_source,
@@ -1927,6 +2018,11 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     const auto scan_public_generated = [&](const fs::path &source,
                                            const fs::path &depfile,
                                            bool rewritten_host) {
+      if (!CompilationInputsMatch(
+              source_absolute, *source_snapshot, dependency_closure,
+              "before public generated dependency scanning")) {
+        return 1;
+      }
       const int scan_result =
           rewritten_host
               ? GenerateRewrittenHostDependencyFile(
@@ -1964,6 +2060,11 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     public_dependency_files.emplace_back(public_backend_dependency);
   }
 
+  if (!CompilationInputsMatch(source_absolute, *source_snapshot,
+                              dependency_closure,
+                              "before generated host compilation")) {
+    return 1;
+  }
   result = CompileRewrittenHost(source_absolute, artifacts.host_overlay,
                                 artifacts.host_object, invocation, *layout,
                                 source_directory, wrapper.verbose);
@@ -1975,6 +2076,17 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   if (result != 0) {
     return result;
   }
+  result = recheck_host_resolution(private_host_post_compile_dependency,
+                                   "post-compile host dependency scanning");
+  if (result != 0) {
+    fs::remove(artifacts.host_object, error);
+    return result;
+  }
+  if (!CompilationInputsMatch(source_absolute, *source_snapshot,
+                              dependency_closure,
+                              "before generated stub compilation")) {
+    return 1;
+  }
   result = CompileGeneratedSource(artifacts.stubs_source,
                                   artifacts.stubs_object, invocation, *layout,
                                   source_directory, wrapper.verbose);
@@ -1985,6 +2097,11 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   }
   if (result != 0) {
     return result;
+  }
+  if (!CompilationInputsMatch(source_absolute, *source_snapshot,
+                              dependency_closure,
+                              "before generated backend compilation")) {
+    return 1;
   }
   result = CompileGeneratedSource(artifacts.backend_source,
                                   artifacts.backend_object, invocation,
@@ -2021,12 +2138,22 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     link_command.emplace_back("-o");
     link_command.emplace_back(output.string());
   }
+  if (!CompilationInputsMatch(source_absolute, *source_snapshot,
+                              dependency_closure, "before linking")) {
+    return 1;
+  }
   result = RunCommand(std::move(link_command), wrapper.verbose);
   if (!CompilationInputsMatch(source_absolute, *source_snapshot,
                               dependency_closure, "linking")) {
     fs::remove(output, error);
     return 1;
   }
+  if (result != 0) {
+    fs::remove(output, error);
+    return result;
+  }
+  result = recheck_host_resolution(private_host_final_dependency,
+                                   "final host dependency scanning");
   if (result != 0) {
     fs::remove(output, error);
     return result;
@@ -2038,7 +2165,10 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
         artifacts.stubs_source,  artifacts.backend_source,
         artifacts.host_object,   artifacts.stubs_object,
         artifacts.backend_object};
-    if (!MergeDependencyFiles(public_dependency_files, output,
+    if (!CompilationInputsMatch(source_absolute, *source_snapshot,
+                                dependency_closure,
+                                "before dependency publication") ||
+        !MergeDependencyFiles(public_dependency_files, output,
                               generated_dependencies,
                               merged_public_dependency) ||
         !PublishFileAtomically(merged_public_dependency,
