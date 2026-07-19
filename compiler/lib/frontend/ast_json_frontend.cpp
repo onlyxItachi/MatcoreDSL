@@ -513,59 +513,6 @@ std::string sourceText(const JsonValue &node, std::string_view source) {
                                                             range->first)));
 }
 
-std::string stableSourcePath(const std::string &canonical_input) {
-  const std::filesystem::path input(canonical_input);
-  std::filesystem::path directory = input.parent_path();
-  std::error_code error;
-  while (!directory.empty()) {
-    if (std::filesystem::exists(directory / ".git", error) && !error) {
-      const std::filesystem::path relative =
-          std::filesystem::relative(input, directory, error);
-      if (!error && !relative.empty()) {
-        return relative.lexically_normal().generic_string();
-      }
-    }
-    error.clear();
-    const std::filesystem::path parent = directory.parent_path();
-    if (parent == directory) {
-      break;
-    }
-    directory = parent;
-  }
-  return input.lexically_normal().generic_string();
-}
-
-std::string siteId(std::string_view source_identity, std::string_view source,
-                   std::uint64_t offset, std::string_view kind) {
-  // Two independently seeded FNV-1a streams make the symbol identity stable
-  // across relative/absolute spelling while including both the physical TU
-  // identity and its exact contents. This is a bootstrap naming contract, not
-  // a content-addressed cache or a cryptographic authentication mechanism.
-  std::uint64_t left = 14695981039346656037ULL;
-  std::uint64_t right = 7809847782465536322ULL;
-  const auto append = [&left, &right](std::string_view value) {
-    for (const unsigned char character : value) {
-      left ^= character;
-      left *= 1099511628211ULL;
-      right ^= static_cast<unsigned char>(character + 0x9dU);
-      right *= 14029467366897019727ULL;
-    }
-    left ^= 0xffU;
-    left *= 1099511628211ULL;
-    right ^= 0x5aU;
-    right *= 14029467366897019727ULL;
-  };
-  append("matcore-site-v0");
-  append(source_identity);
-  append(source);
-  append(std::to_string(offset));
-  append(kind);
-  std::ostringstream formatted;
-  formatted << "mc_" << std::hex << std::setfill('0') << std::setw(16) << left
-            << std::setw(16) << right;
-  return formatted.str();
-}
-
 std::string shellQuoted(std::string_view value) {
   std::string result = "'";
   for (const char character : value) {
@@ -915,8 +862,9 @@ bool AstJsonBootstrapFrontend::processCall(
     return false;
   }
   ir::Operation operation;
-  operation.site_id = siteId(stableSourcePath(input_canonical), source,
-                             location.offset, "gemm");
+  operation.site_id =
+      makeStableSiteId(stableSourceIdentity(input_canonical), source,
+                       location.offset, "gemm");
   operation.kind = "gemm";
   operation.canonical_callee = "matcore::mdsl::gemm";
   operation.source = ir::SourceLocation{.file = display_path,

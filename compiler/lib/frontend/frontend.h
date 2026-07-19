@@ -44,6 +44,16 @@ public:
 // representation so LibTooling can replace it without changing the IR layer.
 std::unique_ptr<Frontend> createClangAstJsonBootstrapFrontend();
 
+// Supported frontend. It runs Clang parsing/Sema in-process and authenticates
+// operation declarations and source ranges through LibTooling APIs.
+std::unique_ptr<Frontend> createClangLibToolingFrontend();
+
+// Shared naming contract used by every frontend producer.
+std::string stableSourceIdentity(const std::string &canonical_input);
+std::string makeStableSiteId(std::string_view source_identity,
+                             std::string_view source, std::uint64_t offset,
+                             std::string_view kind);
+
 } // namespace matcore::mdslc::frontend
 
 #endif // MATCORE_MDSLC_FRONTEND_H

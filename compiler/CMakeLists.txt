@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(MatcoreDSLCompiler VERSION 0.1.0 LANGUAGES CXX)
+project(MatcoreDSLCompiler VERSION 0.1.0 LANGUAGES C CXX)
 
 include(CTest)
 include(CMakePackageConfigHelpers)
@@ -13,6 +13,49 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+option(
+  MDSLC_ENABLE_NATIVE_FRONTEND
+  "Build the supported Clang LibTooling frontend"
+  ON
+)
+option(
+  MDSLC_ENABLE_BOOTSTRAP_FRONTEND
+  "Build the compatibility-only Clang AST-JSON frontend"
+  ON
+)
+
+if(NOT MDSLC_ENABLE_NATIVE_FRONTEND AND NOT MDSLC_ENABLE_BOOTSTRAP_FRONTEND)
+  message(FATAL_ERROR "At least one MDSLC frontend must be enabled")
+endif()
+
+if(MDSLC_ENABLE_NATIVE_FRONTEND)
+  find_package(LLVM 21.1.8 EXACT CONFIG REQUIRED)
+  find_package(Clang 21.1.8 EXACT CONFIG REQUIRED)
+  if(NOT LLVM_PACKAGE_VERSION VERSION_EQUAL "21.1.8")
+    message(FATAL_ERROR
+      "MDSLC native frontend requires the audited LLVM/Clang 21.1.8 tuple; "
+      "found LLVM ${LLVM_PACKAGE_VERSION}")
+  endif()
+  if(NOT TARGET clang-cpp OR NOT TARGET LLVM)
+    message(FATAL_ERROR
+      "Clang 21 CMake packages do not provide the required clang-cpp/LLVM targets")
+  endif()
+  foreach(MDSLC_REQUIRED_CLANG_HEADER IN ITEMS
+      clang/Tooling/Tooling.h
+      clang/Tooling/CommonOptionsParser.h
+      clang/ASTMatchers/ASTMatchFinder.h
+      clang/Rewrite/Core/Rewriter.h
+      clang/Frontend/FrontendActions.h
+      clang/Frontend/CompilerInstance.h
+      clang/Lex/Lexer.h
+      clang/AST/Attr.h)
+    if(NOT EXISTS "${CLANG_INCLUDE_DIRS}/${MDSLC_REQUIRED_CLANG_HEADER}")
+      message(FATAL_ERROR
+        "Matching Clang 21 development header is required: ${MDSLC_REQUIRED_CLANG_HEADER}")
+    endif()
+  endforeach()
+endif()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
@@ -38,6 +81,22 @@ if(NOT IS_ABSOLUTE "${MDSLC_CLANGXX_EXECUTABLE}")
 endif()
 if(NOT EXISTS "${MDSLC_CLANGXX_EXECUTABLE}")
   message(FATAL_ERROR "Configured clang++ driver does not exist: ${MDSLC_CLANGXX_EXECUTABLE}")
+endif()
+if(MDSLC_ENABLE_NATIVE_FRONTEND)
+  execute_process(
+    COMMAND "${MDSLC_CLANGXX_EXECUTABLE}" --version
+    RESULT_VARIABLE MDSLC_CLANGXX_VERSION_STATUS
+    OUTPUT_VARIABLE MDSLC_CLANGXX_VERSION_OUTPUT
+    ERROR_VARIABLE MDSLC_CLANGXX_VERSION_ERROR
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  if(NOT MDSLC_CLANGXX_VERSION_STATUS EQUAL 0 OR
+     NOT MDSLC_CLANGXX_VERSION_OUTPUT MATCHES "clang version 21\\.1\\.8")
+    message(FATAL_ERROR
+      "Native frontend requires clang++ 21.1.8 coherent with the linked "
+      "LLVM/Clang packages; ${MDSLC_CLANGXX_EXECUTABLE} reported: "
+      "${MDSLC_CLANGXX_VERSION_OUTPUT}${MDSLC_CLANGXX_VERSION_ERROR}")
+  endif()
 endif()
 
 configure_file(
