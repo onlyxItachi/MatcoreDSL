@@ -1649,6 +1649,101 @@ def driver_suite(checks: Checks, extractor: Path, driver: Path, clang: Path) -> 
             f"generated host mutation diagnostic was unclear:\n{host_artifact_race.stderr}",
         )
 
+        stub_shadow_root = temporary / "stub-shadow-race-prefix"
+        stub_shadow_driver, stub_shadow_extractor = copy_driver_layout(
+            driver, extractor, stub_shadow_root
+        )
+        stub_shadow_directory = temporary / "stub-shadow-source"
+        stub_early_include = stub_shadow_directory / "early"
+        stub_late_include = stub_shadow_directory / "late"
+        stub_early_include.mkdir(parents=True)
+        stub_late_include.mkdir()
+        stub_late_header = stub_late_include / "stdexcept"
+        stub_late_header.write_text(
+            "#pragma once\n#include_next <stdexcept>\n", encoding="utf-8"
+        )
+        stub_early_header = stub_early_include / "stdexcept"
+        stub_shadow_source = stub_shadow_directory / "stub_shadow_race.mdsl"
+        stub_shadow_source.write_bytes(
+            (FIXTURES / "positive/namespace_alias.mdsl").read_bytes()
+        )
+        stub_shadow_watcher = stub_shadow_directory / "watch_public_stubs.py"
+        stub_shadow_watcher.write_text(
+            "import pathlib, sys, time\n"
+            "trigger = pathlib.Path(sys.argv[1])\n"
+            "header = pathlib.Path(sys.argv[2])\n"
+            "deadline = time.monotonic() + 10.0\n"
+            "while time.monotonic() < deadline:\n"
+            "    if trigger.exists():\n"
+            "        header.write_text("
+            "'#pragma once\\n#include_next <stdexcept>\\n', encoding='utf-8')\n"
+            "        raise SystemExit(0)\n"
+            "    time.sleep(0.001)\n"
+            "raise SystemExit(2)\n",
+            encoding="utf-8",
+        )
+        stub_shadow_extractor.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib, subprocess, sys, tempfile\n"
+            f"command = [{str(extractor.resolve())!r}, *sys.argv[1:]]\n"
+            "completed = subprocess.run(command, check=False)\n"
+            "if completed.returncode == 0 and '--input' in sys.argv:\n"
+            "    source = pathlib.Path(sys.argv[sys.argv.index('--input') + 1]).resolve()\n"
+            "    candidates = []\n"
+            "    for depfile in pathlib.Path(tempfile.gettempdir()).glob("
+            "'mdslc-*/private-source-closure.d'):\n"
+            "        try:\n"
+            "            if str(source) in depfile.read_text(encoding='utf-8'):\n"
+            "                candidates.append(depfile.parent)\n"
+            "        except OSError:\n"
+            "            pass\n"
+            "    if not candidates:\n"
+            "        raise SystemExit(94)\n"
+            "    dependency_root = max(candidates, key=lambda path: path.stat().st_mtime_ns)\n"
+            f"    subprocess.Popen([sys.executable, {str(stub_shadow_watcher)!r}, "
+            "str(dependency_root / 'public-stubs.d'), "
+            f"{str(stub_early_header)!r}], stdout=subprocess.DEVNULL, "
+            "stderr=subprocess.DEVNULL, start_new_session=True)\n"
+            "raise SystemExit(completed.returncode)\n",
+            encoding="utf-8",
+        )
+        stub_shadow_extractor.chmod(0o755)
+        stub_shadow_output = temporary / "stub-shadow-race.o"
+        stub_shadow_depfile = temporary / "stub-shadow-race.d"
+        stub_shadow_race = run(
+            [
+                str(stub_shadow_driver),
+                "--frontend=native",
+                "--matcore-target=cpu",
+                "-std=c++20",
+                "-I",
+                str(stub_early_include),
+                "-I",
+                str(stub_late_include),
+                "-MMD",
+                "-MF",
+                str(stub_shadow_depfile),
+                "-c",
+                str(stub_shadow_source),
+                "-o",
+                str(stub_shadow_output),
+            ]
+        )
+        checks.require(
+            stub_shadow_race.returncode != 0,
+            "driver accepted generated-stub header shadowing after public scan",
+        )
+        checks.require(
+            not stub_shadow_output.exists() and not stub_shadow_depfile.exists(),
+            "generated-stub shadowing left a final object or published depfile",
+        )
+        checks.require(
+            "dependency resolution changed" in stub_shadow_race.stderr.lower()
+            and "generated stubs" in stub_shadow_race.stderr.lower()
+            and str(stub_early_header) in stub_shadow_race.stderr,
+            f"generated-stub shadow diagnostic was unclear:\n{stub_shadow_race.stderr}",
+        )
+
         include_parity = temporary / "include-parity"
         include_source = include_parity / "source"
         include_output = include_parity / "output"

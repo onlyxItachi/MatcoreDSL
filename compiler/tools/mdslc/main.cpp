@@ -575,7 +575,9 @@ ReadDependencyPathSet(const fs::path &dependency_file,
 bool RequireSameDependencyResolution(
     const fs::path &original_dependency_file,
     const fs::path &rewritten_dependency_file,
-    const std::vector<fs::path> &excluded_paths) {
+    const std::vector<fs::path> &excluded_paths,
+    std::string_view comparison =
+        "between the original source and rewritten host") {
   std::string original_error;
   const std::optional<std::vector<fs::path>> original =
       ReadDependencyPathSet(original_dependency_file, {}, original_error);
@@ -607,8 +609,7 @@ bool RequireSameDependencyResolution(
   };
   const auto removed = first_difference(*original, *rewritten);
   const auto added = first_difference(*rewritten, *original);
-  std::cerr << "mdslc++: dependency resolution changed between the original "
-               "source and rewritten host";
+  std::cerr << "mdslc++: dependency resolution changed " << comparison;
   if (removed != original->end()) {
     std::cerr << "; no longer resolved: " << *removed;
   }
@@ -1916,8 +1917,16 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
       *dependency_workspace / "private-host-final.d";
   const fs::path private_stubs_dependency =
       *dependency_workspace / "private-stubs-closure.d";
+  const fs::path private_stubs_post_compile_dependency =
+      *dependency_workspace / "private-stubs-post-compile.d";
+  const fs::path private_stubs_final_dependency =
+      *dependency_workspace / "private-stubs-final.d";
   const fs::path private_backend_dependency =
       *dependency_workspace / "private-backend-closure.d";
+  const fs::path private_backend_post_compile_dependency =
+      *dependency_workspace / "private-backend-post-compile.d";
+  const fs::path private_backend_final_dependency =
+      *dependency_workspace / "private-backend-final.d";
   const fs::path public_host_dependency =
       *dependency_workspace / "public-host.d";
   const fs::path public_stubs_dependency =
@@ -1980,6 +1989,25 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
                ? 0
                : 1;
   };
+  const auto recheck_generated_resolution =
+      [&](const fs::path &source, const fs::path &baseline_depfile,
+          const fs::path &rescan_depfile, std::string_view phase,
+          std::string_view comparison) {
+        const int scan_result = GenerateDependencyFile(
+            invocation, "-MD", *layout, source_directory, source, output,
+            rescan_depfile, wrapper.verbose);
+        if (!CompilationInputsMatch(source_absolute, *source_snapshot,
+                                    dependency_closure, phase)) {
+          return 1;
+        }
+        if (scan_result != 0) {
+          return scan_result;
+        }
+        return RequireSameDependencyResolution(
+                   baseline_depfile, rescan_depfile, {}, comparison)
+                   ? 0
+                   : 1;
+      };
   if (!RequireSameDependencyResolution(private_source_dependency,
                                        private_host_dependency,
                                        generated_host_paths) ||
@@ -2098,6 +2126,15 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   if (result != 0) {
     return result;
   }
+  result = recheck_generated_resolution(
+      artifacts.stubs_source, private_stubs_dependency,
+      private_stubs_post_compile_dependency,
+      "post-compile stub dependency scanning",
+      "between baseline and post-compile generated stubs");
+  if (result != 0) {
+    fs::remove(artifacts.stubs_object, error);
+    return result;
+  }
   if (!CompilationInputsMatch(source_absolute, *source_snapshot,
                               dependency_closure,
                               "before generated backend compilation")) {
@@ -2112,6 +2149,15 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     return 1;
   }
   if (result != 0) {
+    return result;
+  }
+  result = recheck_generated_resolution(
+      artifacts.backend_source, private_backend_dependency,
+      private_backend_post_compile_dependency,
+      "post-compile backend dependency scanning",
+      "between baseline and post-compile generated backend");
+  if (result != 0) {
+    fs::remove(artifacts.backend_object, error);
     return result;
   }
 
@@ -2156,6 +2202,28 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
                                    "final host dependency scanning");
   if (result != 0) {
     fs::remove(output, error);
+    return result;
+  }
+  result = recheck_generated_resolution(
+      artifacts.stubs_source, private_stubs_dependency,
+      private_stubs_final_dependency, "final stub dependency scanning",
+      "between baseline and final generated stubs");
+  if (result != 0) {
+    fs::remove(output, error);
+    if (!invocation.dependency_mode.empty()) {
+      fs::remove(dependency_output, error);
+    }
+    return result;
+  }
+  result = recheck_generated_resolution(
+      artifacts.backend_source, private_backend_dependency,
+      private_backend_final_dependency, "final backend dependency scanning",
+      "between baseline and final generated backend");
+  if (result != 0) {
+    fs::remove(output, error);
+    if (!invocation.dependency_mode.empty()) {
+      fs::remove(dependency_output, error);
+    }
     return result;
   }
   if (!invocation.dependency_mode.empty()) {
