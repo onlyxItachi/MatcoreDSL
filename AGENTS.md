@@ -50,36 +50,44 @@ in `context.md`.
 
 ## Toolchain and build discipline
 
-The 2026-07-19 audit selected `/usr/bin/clang++-21` 21.1.8 for the
-standalone bootstrap. A complete LibTooling build is currently blocked
-because matching Clang development headers are not installed. Do not describe
-the frontend as buildable until that dependency is resolved. Once the matching
-21.1.8 development package is available, configure the standalone project with
-one coherent tuple:
+The 2026-07-19 audit selected one coherent native-frontend tuple: Clang,
+Clang development libraries, and LLVM 21.1.8 from Ubuntu package revision
+`1:21.1.8-6ubuntu1`. The matching `libclang-21-dev` and
+`libclang-cpp21-dev` packages were installed with explicit user approval.
+Configure the standalone project with that tuple:
 
 ```sh
 cmake -S compiler -B build-mdslc -G Ninja \
   -DCMAKE_C_COMPILER=/usr/bin/clang-21 \
   -DCMAKE_CXX_COMPILER=/usr/bin/clang++-21 \
+  -DMDSLC_CLANGXX_EXECUTABLE=/usr/bin/clang++-21 \
+  -DMDSLC_ENABLE_NATIVE_FRONTEND=ON \
+  -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=ON \
   -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
   -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang
 cmake --build build-mdslc -- -j2
 ctest --test-dir build-mdslc --output-on-failure -j1
 ```
 
-The currently implemented AST-JSON bootstrap configures without LLVM/Clang
-development CMake packages:
+The AST-JSON bootstrap remains an explicitly selected compatibility and
+differential-testing path. It may configure without LLVM/Clang development
+CMake packages only when native support is deliberately disabled:
 
 ```sh
 cmake -S compiler -B build-mdslc -G Ninja \
   -DCMAKE_CXX_COMPILER=/usr/bin/clang++-21 \
   -DMDSLC_CLANGXX_EXECUTABLE=/usr/bin/clang++-21 \
+  -DMDSLC_ENABLE_NATIVE_FRONTEND=OFF \
+  -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=ON \
   -DCMAKE_BUILD_TYPE=Release
 cmake --build build-mdslc -- -j2
 ctest --test-dir build-mdslc --output-on-failure -j1
 ```
 
-Keep its producer label and limitations explicit. It must authenticate the
+Native is the supported default. Missing native dependencies must fail
+configuration or default invocation clearly; they must never trigger a silent
+bootstrap fallback. Keep the bootstrap producer label and limitations
+explicit. It must authenticate the
 exact shipped/source public header, use structural AST declaration IDs, verify
 one unchanged source snapshot, and reject ambiguous constructs. It does not
 replace the required LibTooling implementation because JSON AST omits the
@@ -94,8 +102,8 @@ For the driver-only language proof, use the selected executable explicitly:
 
 - Default to Ninja `-j2`; use `-j1` for memory-heavy links. Use ccache when the
   standalone CMake target detects the already-installed tool.
-- Do not start an LLVM source build or install packages without explicit user
-  approval.
+- Do not start an LLVM source build. Additional system package changes require
+  the user's authorization and must stay within the task scope.
 - Do not mix compiler executables, headers, libraries, or CMake packages from
   different LLVM/Clang releases in one frontend binary.
 - Validate incrementally after every meaningful change. Before handoff, run the

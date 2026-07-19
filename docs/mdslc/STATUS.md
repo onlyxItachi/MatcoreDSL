@@ -1,4 +1,4 @@
-# MDSLC bootstrap status
+# MDSLC native frontend status
 
 Status date: 2026-07-19
 
@@ -6,11 +6,20 @@ Verified baseline: `351075e4d8af1880330b7c0474d701ca76776dfa`
 
 Integration branch: `mdslc/bootstrap-v0`
 
+Native-v1 integration branch: `mdslc/native-libtooling-v1`
+
 Final validated implementation head: `b2b4706c44009a51ebb743e09e2b973fb1fcb796`
 
 Independent review report commit: `be687f6f26812fdab6af22ee244061899fcf09d6`
 
-## Current verdict
+## Current native-v1 milestone
+
+The Clang 21 development hard gate is closed. Matching 21.1.8 Tooling,
+ASTMatcher, Rewriter, Lexer, AST, Frontend headers, libraries, and CMake
+packages are present. Native frontend implementation and validation are in
+progress on `mdslc/native-libtooling-v1`.
+
+## Bootstrap-v0 verdict
 
 The standalone CPU vertical slice, normal native-artifact path, installation,
 and external-consumer proof pass. The overall architecture proof is
