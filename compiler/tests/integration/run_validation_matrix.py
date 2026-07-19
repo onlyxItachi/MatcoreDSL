@@ -690,13 +690,28 @@ def execute_case(context: Context, case: dict[str, object], work: Path) -> None:
         fixture = context.repository / source_argument(context, case)
         source = work / "preprocessor.mdsl"
         scenario = str(case["scenario"])
+        fixture_text = fixture.read_text(encoding="utf-8")
         if scenario == "active":
             prefix = "#if 0\n#include <inactive-bootstrap-probe.h>\n#endif\n"
-        elif scenario == "ambiguous":
+            source_text = prefix + fixture_text
+        elif scenario == "inactive_duplicate":
             prefix = "#if 0\n#include <matcore/mdsl.h>\n#endif\n"
+            source_text = prefix + fixture_text
+        elif scenario == "macro_raw":
+            direct_include = "#include <matcore/mdsl.h>"
+            require(direct_include in fixture_text, "fixture lost direct public include")
+            source_text = fixture_text.replace(
+                direct_include,
+                "#define MDSL_HEADER <matcore/mdsl.h>\n"
+                "#include MDSL_HEADER\n"
+                "[[maybe_unused]] const char *mdsl_include_probe = R\"MDSL(\n"
+                "#include <matcore/mdsl.h>\n"
+                ")MDSL\";",
+                1,
+            )
         else:
             raise ValidationFailure(f"unknown preprocessor scenario: {scenario}")
-        source.write_text(prefix + fixture.read_text(encoding="utf-8"), encoding="utf-8")
+        source.write_text(source_text, encoding="utf-8")
         output = work / "program"
         completed = run(
             [
@@ -709,16 +724,44 @@ def execute_case(context: Context, case: dict[str, object], work: Path) -> None:
             ],
             work,
         )
-        if scenario == "active":
-            completed_ok(completed, "active preprocessor include pipeline")
-            executed = run([str(output)], work)
-            completed_ok(executed, "active preprocessor include executable")
-            require(executed.stdout == str(case["stdout"]), "preprocessor host behavior changed")
-        else:
-            require(completed.returncode != 0, "ambiguous opt-in include succeeded")
-            require(str(case["diagnostic"]) in completed.stderr, "ambiguous include diagnostic missing")
-            require(SOURCE_DIAGNOSTIC.search(completed.stderr) is not None, "ambiguous include location missing")
-            require(not output.exists(), "ambiguous include emitted an executable")
+        completed_ok(completed, f"{scenario} preprocessor include pipeline")
+        executed = run([str(output)], work)
+        completed_ok(executed, f"{scenario} preprocessor include executable")
+        require(executed.stdout == str(case["stdout"]), "preprocessor host behavior changed")
+        return
+
+    if mode == "driver_default_policy":
+        fixture = context.repository / source_argument(context, case)
+        source = work / "default-policy.mdsl"
+        fixture_text = fixture.read_text(encoding="utf-8")
+        explicit_call = """md::gemm(md::out(output), lhs, rhs,
+           md::policy{.target = md::target::cpu,
+                      .fallback = md::fallback::error});"""
+        require(explicit_call in fixture_text, "GEMM fixture policy spelling changed")
+        source.write_text(
+            fixture_text.replace(
+                explicit_call,
+                "md::gemm(md::out(output), lhs, rhs);",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        output = work / "program"
+        completed = run(
+            [
+                str(context.driver),
+                "--matcore-target=cpu",
+                "-std=c++20",
+                str(source),
+                "-o",
+                str(output),
+            ],
+            work,
+        )
+        completed_ok(completed, "default-policy CPU pipeline")
+        executed = run([str(output)], work)
+        completed_ok(executed, "default-policy CPU executable")
+        require(executed.stdout == str(case["stdout"]), "default policy changed execution")
         return
 
     if mode == "runtime_contract":
