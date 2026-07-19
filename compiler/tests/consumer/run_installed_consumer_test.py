@@ -36,7 +36,8 @@ def main() -> int:
         shutil.rmtree(test_root)
     source = test_root / "source"
     build = test_root / "build"
-    prefix = test_root / "install"
+    staging_prefix = test_root / "install-staging"
+    prefix = test_root / "relocated" / "matcoredsl"
     shutil.copytree(Path(args.source_dir).resolve(), source)
 
     run([
@@ -44,8 +45,10 @@ def main() -> int:
         "--install",
         str(Path(args.producer_build_dir).resolve()),
         "--prefix",
-        str(prefix),
+        str(staging_prefix),
     ])
+    prefix.parent.mkdir(parents=True)
+    shutil.move(staging_prefix, prefix)
     expected_install_files = [
         prefix / "bin" / "mdslc++",
         prefix / "bin" / "matcore-extract",
@@ -63,6 +66,7 @@ def main() -> int:
 
     repository = Path(__file__).resolve().parents[3]
     source_public_header = repository / "compiler" / "include" / "matcore" / "mdsl.h"
+    driver = prefix / "bin" / "mdslc++"
     extractor = prefix / "bin" / "matcore-extract"
     if str(source_public_header).encode() in extractor.read_bytes():
         raise RuntimeError("installed extractor embeds the source checkout's public-header path")
@@ -80,6 +84,7 @@ def main() -> int:
     untrusted = subprocess.run(
         [
             str(extractor),
+            "--frontend=native",
             "--input",
             str(untrusted_source),
             "--ir-out",
@@ -100,6 +105,30 @@ def main() -> int:
         )
     if untrusted_ir.exists():
         raise RuntimeError("untrusted checkout header produced Matcore IR")
+
+    production_override = subprocess.run(
+        [
+            str(driver),
+            f"--tool-prefix-for-testing={prefix}",
+            "--matcore-target=cpu",
+            "-c",
+            str(source / "consumer.mdsl"),
+            "-o",
+            str(test_root / "override.o"),
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if (
+        production_override.returncode == 0
+        or "unavailable in this production driver build"
+        not in production_override.stderr
+    ):
+        raise RuntimeError(
+            "installed production driver exposed the trusted-prefix test override:\n"
+            f"{production_override.stderr}"
+        )
 
     run([
         args.cmake,
@@ -218,6 +247,7 @@ def main() -> int:
     forbidden = {
         str(Path(args.source_dir).resolve().parents[2]),
         str(Path(args.producer_build_dir).resolve()),
+        str(staging_prefix),
     }
     package_dir = prefix / "lib" / "cmake" / "MatcoreDSL"
     for package_file in package_dir.glob("*.cmake"):
@@ -228,7 +258,10 @@ def main() -> int:
                     f"absolute local path leaked into {package_file}: {path}"
                 )
 
-    print("installed consumer: configure/build/run/source+header rebuild/no-op PASS")
+    print(
+        "installed consumer: relocated configure/build/run/source+header "
+        "rebuild/no-op PASS"
+    )
     return 0
 
 
