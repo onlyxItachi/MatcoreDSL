@@ -30,6 +30,9 @@ the legacy pin was not changed.
   compiler arguments and inherited stdout/stderr, propagates the child exit
   status, prints the exact argv with `--verbose`, and translates
   `--save-temps` to Clang's `-save-temps=obj`.
+- A real `--` ends wrapper parsing. If an `.mdsl` input follows it, the driver
+  inserts `-x c++` immediately before `--`, then preserves every user token
+  after the terminator verbatim.
 - Added `hello_host.mdsl`, which is ordinary valid C++20 and prints `5`.
 
 ## Validation evidence
@@ -82,12 +85,49 @@ Exit-code propagation was checked with a missing `.mdsl` input. Direct
 `clang++-21` and `mdslc++` both returned status 1, and the wrapper preserved
 Clang's diagnostic naming the missing source file.
 
+Option-terminator regression proof:
+
+```text
+cmake --build /tmp/matcoredsl-mdslc-driver-final -- -j2
+/tmp/matcoredsl-mdslc-driver-final/bin/mdslc++ --verbose \
+  -std=c++20 -c -o /tmp/mdslc-wrapper-terminator.o -- \
+  compiler/examples/hello_host.mdsl
+/usr/bin/clang++-21 -std=c++20 -c \
+  -o /tmp/mdslc-direct-terminator.o -x c++ -- \
+  compiler/examples/hello_host.mdsl
+cmp /tmp/mdslc-wrapper-terminator.o /tmp/mdslc-direct-terminator.o
+```
+
+The wrapper printed `'-x' 'c++' '--'` in that order, both compilers exited
+zero, and `cmp` found the generated objects byte-identical. `file` and
+`readelf` identified the wrapper artifact as an x86-64 ELF relocatable object.
+
+Literal post-terminator argument semantics were compared with:
+
+```text
+/tmp/matcoredsl-mdslc-driver-final/bin/mdslc++ --verbose \
+  -std=c++20 -fsyntax-only -- compiler/examples/hello_host.mdsl \
+  -o /tmp/mdslc-option-after-terminator.o
+/usr/bin/clang++-21 -std=c++20 -fsyntax-only -x c++ -- \
+  compiler/examples/hello_host.mdsl -o \
+  /tmp/mdslc-option-after-terminator.o
+```
+
+Both returned status 1 with identical Clang diagnostics that `-o` and its
+following path were missing input files. This confirms the wrapper does not
+reinterpret compiler-looking tokens after `--`; successful use must place the
+output option before the terminator. The normal no-terminator executable proof
+was rerun and still printed `5`. The implementation continues to call
+`fork`/`execv` directly and contains no shell invocation.
+
 ## Commits and handoff
 
 - `569e14c60b4b8fa41411d99a2e9d186ebaf0c187` —
   `build(mdslc): add isolated standalone CMake skeleton`
-- Driver implementation commit: this report is included in that commit; its
-  SHA is supplied in the agent handoff.
+- `c9d7c3122dbb24fe0168bb2d9786700d70f7afa7` —
+  `feat(mdslc): compile valid .mdsl sources as C++`
+- Option-terminator fix: this report is included in that commit; its SHA is
+  supplied in the agent handoff.
 
 LibTooling extraction, generated stubs, runtime linkage, install rules, and
 consumer CMake integration are intentionally outside this Goal 1-2 slice.
