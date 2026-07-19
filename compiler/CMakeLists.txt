@@ -188,6 +188,20 @@ install(
 if(BUILD_TESTING)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
+    if(MDSLC_ENABLE_NATIVE_FRONTEND AND MDSLC_ENABLE_BOOTSTRAP_FRONTEND)
+      add_test(
+        NAME frontend.native.focused
+        COMMAND
+          "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/run_native_frontend_tests.py"
+          --extractor "$<TARGET_FILE:matcore-extract>"
+      )
+      set_tests_properties(
+        frontend.native.focused
+        PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+      )
+    endif()
+
     add_test(
       NAME frontend.bootstrap
       COMMAND
