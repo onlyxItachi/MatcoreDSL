@@ -1,6 +1,10 @@
 {
   "schema": "matcore.ir",
   "version": 999,
-  "translation_unit": "version_mismatch.mdsl",
-  "sites": []
+  "producer": "clang-ast-json-bootstrap-v0",
+  "translation_unit": {
+    "identity": "version_mismatch.mdsl",
+    "source_file": "version_mismatch.mdsl"
+  },
+  "operations": []
 }
