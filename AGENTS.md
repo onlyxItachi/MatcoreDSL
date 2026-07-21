@@ -25,14 +25,22 @@ in `context.md`.
 - Output mutation is explicit through `matcore::mdsl::out(C)`. Preserve shape,
   dtype, layout, memory-space, alias, effect, policy, and source-location
   information at compiler boundaries.
-- Bootstrap through deterministic, verified Matcore JSON IR v0. JSON is a
-  versioned inspection boundary, not the permanent optimizer architecture.
+- Native and compatibility capture first produce the verified Matcore JSON IR
+  v0 compatibility DTO, then cross an explicit, mandatory boundary into typed,
+  verified Matcore IR v1. `mdslc++` artifacts are v1. Existing rewrite/codegen
+  is reached only through a loss-checked v1-to-v0 projection; do not fork the
+  schema, verifier, or code generator. JSON remains a versioned inspection
+  boundary, not the permanent optimizer architecture.
 - Clang is the C++ frontend and host compiler. MDSLC owns matrix semantics,
   planning, legalization, scheduling, and target lowering. Do not claim that
   Clang automatically lowers Matcore IR for every accelerator.
-- The first execution backend is a synchronous, row-major, rank-2 `f32` CPU
-  reference GEMM behind a C ABI. GPU work is not a prerequisite for the CPU
-  architecture proof.
+- The synchronous, row-major, rank-2 `f32` CPU runtime validates descriptors,
+  discovers capabilities, and deterministically selects among the registered
+  reference, 32x32x64 tiled, and compiler-vectorized AVX2/FMA variants. Forced
+  illegal variants fail without fallback. The generated execution ABI retains
+  its v0 name for compatibility; planning is additive and typed IR v1 is the
+  compiler contract. GPU work is not a prerequisite for the CPU architecture
+  proof.
 - Never silently fall back between targets, silently copy between host and
   device, hide allocation, or propagate C++ exceptions across the C ABI.
 
@@ -123,6 +131,12 @@ For the driver-only language proof, use the selected executable explicitly:
 - A successful compile is not enough for an execution milestone: run the
   program, compare GEMM with an independent oracle, inspect the relocatable
   object, and verify the ordinary final link.
+- Runtime correctness tests use an independent double-precision oracle. The
+  opt-in performance-regression benchmark instead compares every legal variant
+  against the forced reference implementation and must be described that way.
+- Sanitizer builds advertise only capability-backed implementations that the
+  instrumented object actually contains; never label scalarized work as a
+  compiler-vectorized plan.
 
 ## Commits and agent handoff
 

@@ -23,9 +23,10 @@ matcore::mdsl::gemm
 No CUDA, HIP, Metal, NPU, heterogeneous placement, fusion, WGMMA, MFMA, or
 autotuning work is included.
 
-Local implementation and validation verdict: **PASS**. The independent review
-also returned **PASS** after finding and fixing one Debug-lowering defect.
-PR #5 is the authoritative record for final hosted checks.
+Local implementation and validation verdict: **PASS**. Independent review
+found implementation and evidence defects during development; each confirmed
+high/medium finding was fixed and revalidated. The final sign-off report is
+recorded separately. PR #5 is the authoritative record for hosted checks.
 
 ## Exact Matcore IR v1 schema
 
@@ -86,10 +87,12 @@ to v0, and verified again before rewrite/codegen. The canonical upgrade is:
 | output | `[m,n]` | `[n,1]` | host f32, row-major, write, alignment 4 |
 
 Projection rejects static dimensions, renamed canonical symbols, noncanonical
-strides/layout, non-host/f32 values, alignment other than 4, changed effects,
-aliasing, requirements, target, fallback, provenance, or ranges. This prevents
-silent information loss while preserving byte-stable v0 output and the
-existing `matcore_runtime_gemm_f32_v0` execution ABI.
+strides/layout, non-host/f32 values, alignment other than 4, and changed
+effects, aliasing, requirements, target, or fallback. It structurally verifies
+and preserves self-consistent provenance and source ranges; malformed or
+inconsistent ranges are rejected. This prevents silent information loss while
+preserving byte-stable v0 output and the existing
+`matcore_runtime_gemm_f32_v0` execution ABI.
 
 ## CPU capability model
 
@@ -188,23 +191,49 @@ generous 5 s median/10 s p95 absolute regression bound.
 
 | M,K,N | Automatic selection | Reference median/p95 ms | Tiled median/p95 ms | Vector median/p95 ms |
 | --- | --- | ---: | ---: | ---: |
-| 4,4,4 | reference | 0.0001 / 0.0005 | 0.0001 / 0.0006 | 0.0001 / 0.0001 |
-| 16,16,16 | tiled | 0.0013 / 0.0016 | 0.0007 / 0.0009 | 0.0017 / 0.0018 |
-| 64,7,19 | tiled | 0.0027 / 0.0030 | 0.0020 / 0.0023 | 0.0034 / 0.0034 |
-| 33,35,37 | compiler-vectorized | 0.0138 / 0.0140 | 0.0097 / 0.0100 | 0.0061 / 0.0062 |
-| 128,128,128 | compiler-vectorized | 1.3413 / 1.3983 | 0.1852 / 0.2086 | 0.0880 / 0.0898 |
+| 4,4,4 | reference | 0.0001 / 0.0004 | 0.0001 / 0.0014 | 0.0001 / 0.0001 |
+| 16,16,16 | tiled | 0.0013 / 0.0018 | 0.0007 / 0.0018 | 0.0017 / 0.0018 |
+| 64,7,19 | tiled | 0.0027 / 0.0031 | 0.0021 / 0.0029 | 0.0034 / 0.0034 |
+| 33,35,37 | compiler-vectorized | 0.0137 / 0.0141 | 0.0096 / 0.0108 | 0.0061 / 0.0062 |
+| 128,128,128 | compiler-vectorized | 1.3426 / 1.3641 | 0.2902 / 0.3477 | 0.1411 / 0.1432 |
 
 These are one local Clang 21.1.8 run on the named CPU. They demonstrate
 correct execution and plausible crossover behavior only; they are not general
 performance, BLAS, or cross-machine claims.
 
-Linux `perf` capture was attempted, but `perf_event_paranoid=4` denied hardware
-counters. PerfDigest correctly returned no fabricated metrics. PerfDigest also
-compacted the fresh Debug Ninja log: 30 build units, with the hottest eight
-covering 75.43% of summed build-step duration; native frontend compilation was
-the dominant unit at 6.131 s.
-
 ## Validation commands and results
+
+The final fresh Release and Debug configurations used:
+
+```sh
+cmake -S compiler -B /tmp/mdslc-m2-final-release.tkIrjw -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER=/usr/bin/clang-21 \
+  -DCMAKE_CXX_COMPILER=/usr/bin/clang++-21 \
+  -DMDSLC_CLANGXX_EXECUTABLE=/usr/bin/clang++-21 \
+  -DMDSLC_ENABLE_NATIVE_FRONTEND=ON \
+  -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=ON \
+  -DMDSLC_BUILD_RUNTIME_BENCHMARKS=ON \
+  -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
+  -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang
+cmake --build /tmp/mdslc-m2-final-release.tkIrjw --parallel 2
+ctest --test-dir /tmp/mdslc-m2-final-release.tkIrjw \
+  --output-on-failure -j1
+
+cmake -S compiler -B /tmp/mdslc-m2-final-debug.jy3e01 -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_C_COMPILER=/usr/bin/clang-21 \
+  -DCMAKE_CXX_COMPILER=/usr/bin/clang++-21 \
+  -DMDSLC_CLANGXX_EXECUTABLE=/usr/bin/clang++-21 \
+  -DMDSLC_ENABLE_NATIVE_FRONTEND=ON \
+  -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=ON \
+  -DMDSLC_BUILD_RUNTIME_BENCHMARKS=ON \
+  -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
+  -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang
+cmake --build /tmp/mdslc-m2-final-debug.jy3e01 --parallel 2
+ctest --test-dir /tmp/mdslc-m2-final-debug.jy3e01 \
+  --output-on-failure -j1
+```
 
 Fresh Ubuntu 24.04 RapidJSON/Release reproduction before the additive object
 artifact test:
@@ -225,14 +254,15 @@ ctest --test-dir /tmp/matcore-m2-noble-rapidjson.vlsn4d \
   --output-on-failure -j1
 ```
 
-Result: 29 build steps and 13/13 tests passed in 60.48 s, including native,
-bootstrap parity, adversarial, driver, integration, installed consumer, IR,
-runtime, benchmark-support, and plan CLI tests.
+That compatibility reproduction passed its then-current 13/13 suite. The final
+fresh Release tree at `/tmp/mdslc-m2-final-release.tkIrjw` built the complete
+implementation and passed 14/14 tests in 62.11 s, including the scoped
+compiler-vectorized object inspection.
 
 Fresh Debug used the same configure tuple with
-`-DCMAKE_BUILD_TYPE=Debug`, built 29 steps, and passed the final 14/14 suite in
-63.76 s at
-`/tmp/matcore-m2-final-debug.xNGqPr`.
+`-DCMAKE_BUILD_TYPE=Debug` at `/tmp/mdslc-m2-final-debug.jy3e01`, built the
+complete implementation, and passed 14/14 tests in 63.14 s. Its exact
+compiler-vectorized function body contains YMM packed FMA instructions.
 
 Fresh sanitizer configure added:
 
@@ -242,12 +272,13 @@ ASAN_OPTIONS=detect_leaks=1:halt_on_error=1
 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
 ```
 
-At `/tmp/matcore-m2-final-sanitize.dSaW3c`, 29 build steps completed and the
-focused native/IR/runtime/planner set passed 7/7. The vector artifact test is
-intentionally absent there because instrumented builds make that variant
-unavailable. A separately instrumented
-generated executable at
-`/tmp/matcore-m2-final-sanitize-artifact.Hswo9G/gemm-sanitized` ran and printed:
+At `/tmp/mdslc-m2-final-sanitize.WpLoOc`, the focused native, primary,
+adversarial, IR, benchmark-support, runtime, and plan-CLI set passed 9/9 in
+8.73 s. The vector artifact test is intentionally absent there because the
+instrumented capability record exposes portable scalar f32 only, making that
+variant explicitly unavailable. A generated executable from that same
+instrumented build at
+`/tmp/mdslc-m2-final-sanitize.WpLoOc/gemm_m2_sanitized` ran and printed:
 
 ```text
 host-before
@@ -262,11 +293,14 @@ Benchmark command:
 
 ```sh
 for shape in '4 4 4' '16 16 16' '64 7 19' '33 35 37' '128 128 128'; do
-  build-m2-integration/bin/matcore_cpu_planner_benchmark --guard $shape
+  /tmp/mdslc-m2-final-release.tkIrjw/bin/matcore_cpu_planner_benchmark \
+    --guard $shape
 done
 ```
 
-All variants available on the host passed correctness and guard checks.
+All variants available on the host matched the forced reference implementation
+and passed guard checks. The runtime test suite separately compares selected
+execution with an independent double-precision oracle.
 
 ## Remaining limitations
 
@@ -284,14 +318,13 @@ All variants available on the host passed correctness and guard checks.
 
 ## Independent review and GitHub
 
-The independent reviewer audited through `0ff17cd` and returned **PASS** in
-`docs/mdslc/agent-reports/milestone2-independent-review.md`. It found one P1:
-Debug/default builds could select the compiler-vectorized stable ID while `-O0`
-had emitted scalar packed work. The integrated fix preserves Release `-O3`,
-uses `-O2` only where Debug/default otherwise lacks optimization, and freezes
-the exact function-local YMM packed-FMA artifact. Its fresh archive build
-completed 29/29 steps; selected tests passed 7/7; Release and Debug runtime plus
-artifact checks each passed 2/2; emitted v1, adversarial mutations, native
-execution, C ABI, no-allocation, and oracle probes passed.
+Independent review reproduced implementation and evidence defects, including
+the initially scalarized Debug vector-named implementation. The integrated
+fix preserves Release `-O3`, uses `-O2` only where Debug/default otherwise
+lacks optimization, freezes the exact function-local YMM packed-FMA artifact,
+and suppresses vector capability under sanitizer instrumentation. Subsequent
+fresh Release, Debug, sanitizer, native/driver/integration, artifact, install,
+consumer, IR mutation, C ABI, no-allocation, and independent-oracle probes all
+passed. The final reviewer report records the complete finding disposition.
 
 GitHub PR #5 is the authoritative record for the final hosted check results.

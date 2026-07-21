@@ -34,19 +34,21 @@ Current validation host capability record:
 x86_64; discovery complete; portable scalar f32, AVX2, FMA; 256 vector bits
 ```
 
-Fresh Release with the Ubuntu 24.04 RapidJSON header passed 13/13 CTest tests
-in 60.48 s before the additive object-artifact test. Fresh Debug passed the
-final 14/14 suite in 63.76 s. The ASan/UBSan focused set
-passed 7/7, and a separately instrumented generated GEMM printed
-`MDSLC CPU GEMM PASS`. Five representative benchmark shapes passed independent
-correctness and generous absolute regression guards. Results and exact
-contracts are recorded in
-`docs/mdslc/agent-reports/matcore-ir-v1-cpu-planner-final.md`.
+The final fresh Release suite passed 14/14 CTest tests in 62.11 s, and the
+final fresh Debug suite passed 14/14 in 63.14 s. The ASan/UBSan focused set
+passed 9/9, and a generated executable built through the same instrumented
+pipeline printed `MDSLC CPU GEMM PASS`. Runtime tests passed an independent
+double-precision oracle; five representative benchmark shapes compared every
+legal implementation with the forced reference implementation and passed
+generous absolute regression guards. Results and exact contracts are recorded
+in `docs/mdslc/agent-reports/matcore-ir-v1-cpu-planner-final.md`.
 
-The independent reviewer returned PASS after finding one P1: Debug/default
-could select a vector-named implementation whose `-O0` body was scalar. The
-fix preserves Release `-O3`, enables `-O2` only for Debug/default, and requires
-function-local YMM packed-FMA instructions in an artifact regression test.
+Independent review found and reproduced implementation and evidence defects,
+including a vector-named Debug implementation whose `-O0` body was scalar.
+The fixes preserve Release `-O3`, enable `-O2` only for Debug/default, require
+function-local YMM packed-FMA instructions, and suppress vector capability
+when sanitizer instrumentation scalarizes that body. All confirmed
+high/medium findings were revalidated before final sign-off.
 
 No coherent BLAS development package was installed, so the optional BLAS
 adapter was not added and is not required. No accelerator, fusion, or
@@ -77,12 +79,15 @@ valid C++ foo.mdsl
   -> ASTMatcher + getDirectCallee() + canonical FunctionDecl
   -> exact AnnotateAttr("matcore.op.gemm") authentication
   -> SourceManager/Lexer source locations and call/argument token ranges
-  -> deterministic, verified Matcore JSON IR v0
+  -> deterministic, verified Matcore JSON IR v0 compatibility capture
+  -> explicit upgrade to typed, verified Matcore JSON IR v1
+  -> loss-checked projection into existing rewrite/codegen
   -> exact call rewrite + generated sites/stubs/backend
   -> three ordinary Clang C++ objects
   -> clang++ -r combined relocatable object
   -> ordinary clang++ link against versioned libmatcore_runtime
-  -> synchronous checked row-major f32 CPU GEMM
+  -> checked CPU capability discovery and deterministic plan selection
+  -> synchronous selected reference/tiled/compiler-vectorized f32 GEMM
 ```
 
 The main source and every non-system dependency are snapshotted before
