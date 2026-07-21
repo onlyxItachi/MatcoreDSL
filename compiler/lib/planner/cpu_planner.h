@@ -338,7 +338,8 @@ struct DiagnosticWriter {
   std::size_t required = 0;
 
   void character(char value) noexcept {
-    if (capacity != 0 && required + 1 < capacity) output[required] = value;
+    if (output != nullptr && capacity != 0 && required + 1 < capacity)
+      output[required] = value;
     ++required;
   }
   void text(std::string_view value) noexcept {
@@ -354,7 +355,7 @@ struct DiagnosticWriter {
     while (count != 0) character(reversed[--count]);
   }
   std::size_t finish() noexcept {
-    if (capacity != 0) {
+    if (output != nullptr && capacity != 0) {
       const std::size_t terminator = required < capacity ? required : capacity - 1;
       output[terminator] = '\0';
     }
