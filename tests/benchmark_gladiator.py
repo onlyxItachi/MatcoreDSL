@@ -617,6 +617,12 @@ def run_matcore_worker(
             clear_matcore_cache()
 
         a_arg, b_arg, out, quant = prepare_matcore_inputs(mc, dtype, size=size, seed=seed)
+        cp = _optional_import_cupy()
+        sync = (
+            cp.cuda.Stream.null.synchronize
+            if cp is not None and hasattr(out, "__cuda_array_interface__")
+            else (lambda: None)
+        )
 
         def launch_once() -> None:
             if quant is None:
@@ -627,9 +633,7 @@ def run_matcore_worker(
         if cache_mode in ("cold", "warm-cache"):
             start = time.perf_counter()
             launch_once()
-            cp = _optional_import_cupy()
-            if cp is not None and hasattr(out, "__cuda_array_interface__"):
-                cp.cuda.Stream.null.synchronize()
+            sync()
             elapsed_ms = (time.perf_counter() - start) * 1000.0
             checksum = matcore_checksum(out)
             return WorkerResult(
@@ -648,14 +652,16 @@ def run_matcore_worker(
 
         if cache_mode == "ongoing":
             launch_once()
+            sync()
             ongoing_runs = 100
             samples_ms: list[float] = []
             for _ in range(ongoing_runs):
                 t0 = time.perf_counter()
                 launch_once()
+                sync()
                 samples_ms.append((time.perf_counter() - t0) * 1000.0)
 
-            checksum = float(np.sum(np.asarray(out, dtype=np.float64)))
+            checksum = matcore_checksum(out)
             median_ms = statistics.median(samples_ms)
             p50_ms = median_ms
             mean_ms = statistics.fmean(samples_ms)
@@ -680,8 +686,8 @@ def run_matcore_worker(
                 compile_note="ongoing cached execution (100 iters)",
             )
 
-        stats = benchmark_operation(launch_once, lambda: None, warmup=warmup, runs=runs)
-        checksum = float(np.sum(np.asarray(out, dtype=np.float64)))
+        stats = benchmark_operation(launch_once, sync, warmup=warmup, runs=runs)
+        checksum = matcore_checksum(out)
         return stats_to_result(
             framework="MatCore",
             dtype=dtype,
