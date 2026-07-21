@@ -1,12 +1,12 @@
-find_path(MATCORE_RAPIDJSON_INCLUDE_DIR rapidjson/prettywriter.h REQUIRED)
-
 # RapidJSON 1.1 lazily grows its internal stack by adding to a null pointer.
 # Suppress only that dependency-local UBSan category; all Matcore verifier and
-# bridge sources retain the complete sanitizer set.
+# bridge sources retain the complete sanitizer set. Older packaged headers
+# also receive the configure-probed Clang compatibility flags.
 set_source_files_properties(
   matcore_ir.cpp
   matcore_ir_v1_json.cpp
-  PROPERTIES COMPILE_OPTIONS -fno-sanitize=pointer-overflow
+  PROPERTIES COMPILE_OPTIONS
+    "-fno-sanitize=pointer-overflow;${MDSLC_RAPIDJSON_COMPAT_COMPILE_OPTIONS}"
 )
 
 add_library(matcore_ir_v0 STATIC matcore_ir.cpp)
