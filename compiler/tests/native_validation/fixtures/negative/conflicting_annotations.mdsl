@@ -1,0 +1,14 @@
+#include <matcore/mdsl.h>
+
+namespace matcore::mdsl {
+[[clang::annotate("matcore.op.gemm")]]
+[[clang::annotate("matcore.op.not_gemm")]]
+void gemm(out_arg, const matrix_view &, const matrix_view &, policy);
+}
+
+namespace md = matcore::mdsl;
+
+void conflicting_annotations(md::matrix_view &C, const md::matrix_view &A,
+                             const md::matrix_view &B) {
+  md::gemm(md::out(C), A, B);
+}

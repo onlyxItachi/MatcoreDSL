@@ -1,0 +1,6 @@
+{
+  "matcore_cache_version": "matcore-phase4-cache-v4-nvidia-shared-mma-hotfix",
+  "target": "x86-auto",
+  "entry_point": "matmul_kernel",
+  "route_description": "func+memref+linalg.matmul -> loops/vector -> llvm(x86vector)"
+}

@@ -1,0 +1,272 @@
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=16)
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/56e1717098a4e3258a72ee8d7cd312d7/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=16)
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/615b95fdd7f8839216732cc7484415f4/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=16)
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/19d9c4191ae84c5377176c72427c3619/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=16)
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/e2a72a214151e44f837fed7a383465d9/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+[SplitK] grid_mn=4, k_tiles=4 → split_k=2 (total_blocks=8, 2 K-tiles/slice)
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=32)
+[SubTileUnroll] Unroll factor 2: OK
+[SubTileUnroll] Unroll factor 4: OK
+[SubTileUnroll] Unroll factor 2: OK
+[SubTileUnroll] Total loops unrolled: 3
+[AccHoist] K-loop=YES (attr=tagged)
+[AccHoist] Found 16 MMA ops in K-loop
+[AccHoist] Found store patterns for all MMAs
+[AccHoist] Store addresses are loop-invariant ✓
+[AccHoist] C-chain: 290 candidates, 128 safe to skip
+[AccHoist] Grouped 16 MMAs into 8 accumulator chains
+[AccHoist] SUCCESS: hoisted 8 accumulator groups (16 total MMAs) as iter_args
+[VecCopy] Async copy 64x32: 2 vecs/thread, vec_size=8 (cp.async 16B)
+[VecCopy] Async copy 32x64: 2 vecs/thread, vec_size=8 (cp.async 16B)
+[VecCopy] Replaced 2 linalg.copy ops with nvgpu.device_async_copy (CP.ASYNC)
+[PadSmem] 64x32 -> 64x40 (pad=8, 16B-aligned)
+[PadSmem] 32x64 -> 32x72 (pad=8, 16B-aligned)
+[DoubleBuffer] Added smemA1(64x40), smemB1(32x72) workgroup attrs
+[DoubleBuffer] Found K-loop with 8 iter_args
+[DoubleBuffer] Loop body: 2 srcSubviews, 4 asyncCopies, 2 barriers
+[DoubleBuffer] Prologue: k=lb prefetch issued (no wait)
+[DoubleBuffer] replaceWithAdditionalYields OK, 13 iter_args
+[DoubleBuffer] Phase E: double-buffering applied
+  - 4 workgroup attrs (2× ping-pong buffers)
+  - 13 iter_args (8 acc + 4 memref + 1 token)
+  - 4 async copies per K-step
+  - wait-at-top for compute/prefetch overlap
+  - scf.if conditional last-iteration guard
+[LdMatrixRewrite] Replaced 32 MMA operand(s) with ldmatrix
+[SplitKEpilogue] Found 32 tagged epilogue stores
+[SplitKEpilogue] Inserted workspace alloc + reduction kernel (split_k=2, threads=256), removed 1 stale copies
+Could not compile mgpuMemset32:
+  Symbols not found: [ _mlir_mgpuMemset32 ]
+[SplitK] grid_mn=4, k_tiles=4 → split_k=2 (total_blocks=8, 2 K-tiles/slice)
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=32)
+[SubTileUnroll] Unroll factor 2: OK
+[SubTileUnroll] Unroll factor 4: OK
+[SubTileUnroll] Unroll factor 2: OK
+[SubTileUnroll] Total loops unrolled: 3
+[AccHoist] K-loop=YES (attr=tagged)
+[AccHoist] Found 16 MMA ops in K-loop
+[AccHoist] Found store patterns for all MMAs
+[AccHoist] Store addresses are loop-invariant ✓
+[AccHoist] C-chain: 290 candidates, 128 safe to skip
+[AccHoist] Grouped 16 MMAs into 8 accumulator chains
+[AccHoist] SUCCESS: hoisted 8 accumulator groups (16 total MMAs) as iter_args
+[VecCopy] Async copy 64x32: 2 vecs/thread, vec_size=8 (cp.async 16B)
+[VecCopy] Async copy 32x64: 2 vecs/thread, vec_size=8 (cp.async 16B)
+[VecCopy] Replaced 2 linalg.copy ops with nvgpu.device_async_copy (CP.ASYNC)
+[PadSmem] 64x32 -> 64x40 (pad=8, 16B-aligned)
+[PadSmem] 32x64 -> 32x72 (pad=8, 16B-aligned)
+[DoubleBuffer] Added smemA1(64x40), smemB1(32x72) workgroup attrs
+[DoubleBuffer] Found K-loop with 8 iter_args
+[DoubleBuffer] Loop body: 2 srcSubviews, 4 asyncCopies, 2 barriers
+[DoubleBuffer] Prologue: k=lb prefetch issued (no wait)
+[DoubleBuffer] replaceWithAdditionalYields OK, 13 iter_args
+[DoubleBuffer] Phase E: double-buffering applied
+  - 4 workgroup attrs (2× ping-pong buffers)
+  - 13 iter_args (8 acc + 4 memref + 1 token)
+  - 4 async copies per K-step
+  - wait-at-top for compute/prefetch overlap
+  - scf.if conditional last-iteration guard
+[LdMatrixRewrite] Replaced 32 MMA operand(s) with ldmatrix
+[SplitKEpilogue] Found 32 tagged epilogue stores
+[SplitKEpilogue] Inserted workspace alloc + reduction kernel (split_k=2, threads=256), removed 0 stale copies
+Could not compile mgpuMemset32:
+  Symbols not found: [ _mlir_mgpuMemset32 ]
+[SplitK] grid_mn=16, k_tiles=8 → split_k=2 (total_blocks=32, 4 K-tiles/slice)
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=32)
+[SubTileUnroll] Unroll factor 2: OK
+[SubTileUnroll] Unroll factor 4: OK
+[SubTileUnroll] Unroll factor 2: OK
+[SubTileUnroll] Total loops unrolled: 3
+[AccHoist] K-loop=YES (attr=tagged)
+[AccHoist] Found 16 MMA ops in K-loop
+[AccHoist] Found store patterns for all MMAs
+[AccHoist] Store addresses are loop-invariant ✓
+[AccHoist] C-chain: 290 candidates, 128 safe to skip
+[AccHoist] Grouped 16 MMAs into 8 accumulator chains
+[AccHoist] SUCCESS: hoisted 8 accumulator groups (16 total MMAs) as iter_args
+[VecCopy] Async copy 64x32: 2 vecs/thread, vec_size=8 (cp.async 16B)
+[VecCopy] Async copy 32x64: 2 vecs/thread, vec_size=8 (cp.async 16B)
+[VecCopy] Replaced 2 linalg.copy ops with nvgpu.device_async_copy (CP.ASYNC)
+[PadSmem] 64x32 -> 64x40 (pad=8, 16B-aligned)
+[PadSmem] 32x64 -> 32x72 (pad=8, 16B-aligned)
+[DoubleBuffer] Added smemA1(64x40), smemB1(32x72) workgroup attrs
+[DoubleBuffer] Found K-loop with 8 iter_args
+[DoubleBuffer] Loop body: 2 srcSubviews, 4 asyncCopies, 2 barriers
+[DoubleBuffer] Prologue: k=lb prefetch issued (no wait)
+[DoubleBuffer] replaceWithAdditionalYields OK, 13 iter_args
+[DoubleBuffer] Phase E: double-buffering applied
+  - 4 workgroup attrs (2× ping-pong buffers)
+  - 13 iter_args (8 acc + 4 memref + 1 token)
+  - 4 async copies per K-step
+  - wait-at-top for compute/prefetch overlap
+  - scf.if conditional last-iteration guard
+[LdMatrixRewrite] Replaced 32 MMA operand(s) with ldmatrix
+[SplitKEpilogue] Found 32 tagged epilogue stores
+[SplitKEpilogue] Inserted workspace alloc + reduction kernel (split_k=2, threads=256), removed 1 stale copies
+Could not compile mgpuMemset32:
+  Symbols not found: [ _mlir_mgpuMemset32 ]
+[SplitK] grid_mn=16, k_tiles=8 → split_k=2 (total_blocks=32, 4 K-tiles/slice)
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=32)
+[SubTileUnroll] Unroll factor 2: OK
+[SubTileUnroll] Unroll factor 4: OK
+[SubTileUnroll] Unroll factor 2: OK
+[SubTileUnroll] Total loops unrolled: 3
+[AccHoist] K-loop=YES (attr=tagged)
+[AccHoist] Found 16 MMA ops in K-loop
+[AccHoist] Found store patterns for all MMAs
+[AccHoist] Store addresses are loop-invariant ✓
+[AccHoist] C-chain: 290 candidates, 128 safe to skip
+[AccHoist] Grouped 16 MMAs into 8 accumulator chains
+[AccHoist] SUCCESS: hoisted 8 accumulator groups (16 total MMAs) as iter_args
+[VecCopy] Async copy 64x32: 2 vecs/thread, vec_size=8 (cp.async 16B)
+[VecCopy] Async copy 32x64: 2 vecs/thread, vec_size=8 (cp.async 16B)
+[VecCopy] Replaced 2 linalg.copy ops with nvgpu.device_async_copy (CP.ASYNC)
+[PadSmem] 64x32 -> 64x40 (pad=8, 16B-aligned)
+[PadSmem] 32x64 -> 32x72 (pad=8, 16B-aligned)
+[DoubleBuffer] Added smemA1(64x40), smemB1(32x72) workgroup attrs
+[DoubleBuffer] Found K-loop with 8 iter_args
+[DoubleBuffer] Loop body: 2 srcSubviews, 4 asyncCopies, 2 barriers
+[DoubleBuffer] Prologue: k=lb prefetch issued (no wait)
+[DoubleBuffer] replaceWithAdditionalYields OK, 13 iter_args
+[DoubleBuffer] Phase E: double-buffering applied
+  - 4 workgroup attrs (2× ping-pong buffers)
+  - 13 iter_args (8 acc + 4 memref + 1 token)
+  - 4 async copies per K-step
+  - wait-at-top for compute/prefetch overlap
+  - scf.if conditional last-iteration guard
+[LdMatrixRewrite] Replaced 32 MMA operand(s) with ldmatrix
+[SplitKEpilogue] Found 32 tagged epilogue stores
+[SplitKEpilogue] Inserted workspace alloc + reduction kernel (split_k=2, threads=256), removed 0 stale copies
+Could not compile mgpuMemset32:
+  Symbols not found: [ _mlir_mgpuMemset32 ]
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=32)
+[SubTileUnroll] Unroll factor 2: OK
+[SubTileUnroll] Unroll factor 4: OK
+[SubTileUnroll] Unroll factor 2: OK
+[SubTileUnroll] Total loops unrolled: 3
+[AccHoist] K-loop=YES (attr=tagged)
+[AccHoist] Found 16 MMA ops in K-loop
+[AccHoist] Found store patterns for all MMAs
+[AccHoist] Store addresses are loop-invariant ✓
+[AccHoist] C-chain: 290 candidates, 128 safe to skip
+[AccHoist] Grouped 16 MMAs into 8 accumulator chains
+[AccHoist] SUCCESS: hoisted 8 accumulator groups (16 total MMAs) as iter_args
+[VecCopy] Async copy 64x32: 2 vecs/thread, vec_size=8 (cp.async 16B)
+[VecCopy] Async copy 32x64: 2 vecs/thread, vec_size=8 (cp.async 16B)
+[VecCopy] Replaced 2 linalg.copy ops with nvgpu.device_async_copy (CP.ASYNC)
+[PadSmem] 64x32 -> 64x40 (pad=8, 16B-aligned)
+[PadSmem] 32x64 -> 32x72 (pad=8, 16B-aligned)
+[DoubleBuffer] Added smemA1(64x40), smemB1(32x72) workgroup attrs
+[DoubleBuffer] Found K-loop with 8 iter_args
+[DoubleBuffer] Loop body: 2 srcSubviews, 4 asyncCopies, 2 barriers
+[DoubleBuffer] Prologue: k=lb prefetch issued (no wait)
+[DoubleBuffer] replaceWithAdditionalYields OK, 13 iter_args
+[DoubleBuffer] Phase E: double-buffering applied
+  - 4 workgroup attrs (2× ping-pong buffers)
+  - 13 iter_args (8 acc + 4 memref + 1 token)
+  - 4 async copies per K-step
+  - wait-at-top for compute/prefetch overlap
+  - scf.if conditional last-iteration guard
+[LdMatrixRewrite] Replaced 32 MMA operand(s) with ldmatrix
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/9ae2f2f6699f19a735297a4232b3294a/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=32)
+[SubTileUnroll] Unroll factor 2: OK
+[SubTileUnroll] Unroll factor 4: OK
+[SubTileUnroll] Unroll factor 2: OK
+[SubTileUnroll] Total loops unrolled: 3
+[AccHoist] K-loop=YES (attr=tagged)
+[AccHoist] Found 16 MMA ops in K-loop
+[AccHoist] Found store patterns for all MMAs
+[AccHoist] Store addresses are loop-invariant ✓
+[AccHoist] C-chain: 290 candidates, 128 safe to skip
+[AccHoist] Grouped 16 MMAs into 8 accumulator chains
+[AccHoist] SUCCESS: hoisted 8 accumulator groups (16 total MMAs) as iter_args
+[VecCopy] Async copy 64x32: 2 vecs/thread, vec_size=8 (cp.async 16B)
+[VecCopy] Async copy 32x64: 2 vecs/thread, vec_size=8 (cp.async 16B)
+[VecCopy] Replaced 2 linalg.copy ops with nvgpu.device_async_copy (CP.ASYNC)
+[PadSmem] 64x32 -> 64x40 (pad=8, 16B-aligned)
+[PadSmem] 32x64 -> 32x72 (pad=8, 16B-aligned)
+[DoubleBuffer] Added smemA1(64x40), smemB1(32x72) workgroup attrs
+[DoubleBuffer] Found K-loop with 8 iter_args
+[DoubleBuffer] Loop body: 2 srcSubviews, 4 asyncCopies, 2 barriers
+[DoubleBuffer] Prologue: k=lb prefetch issued (no wait)
+[DoubleBuffer] replaceWithAdditionalYields OK, 13 iter_args
+[DoubleBuffer] Phase E: double-buffering applied
+  - 4 workgroup attrs (2× ping-pong buffers)
+  - 13 iter_args (8 acc + 4 memref + 1 token)
+  - 4 async copies per K-step
+  - wait-at-top for compute/prefetch overlap
+  - scf.if conditional last-iteration guard
+[LdMatrixRewrite] Replaced 32 MMA operand(s) with ldmatrix
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/933ef604bde6e06b6c103a56467398bd/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=32)
+[SubTileUnroll] Unroll factor 2: OK
+[SubTileUnroll] Unroll factor 4: OK
+[SubTileUnroll] Unroll factor 2: OK
+[SubTileUnroll] Total loops unrolled: 3
+[AccHoist] K-loop=YES (attr=tagged)
+[AccHoist] Found 16 MMA ops in K-loop
+[AccHoist] Found store patterns for all MMAs
+[AccHoist] Store addresses are loop-invariant ✓
+[AccHoist] C-chain: 290 candidates, 128 safe to skip
+[AccHoist] Grouped 16 MMAs into 8 accumulator chains
+[AccHoist] SUCCESS: hoisted 8 accumulator groups (16 total MMAs) as iter_args
+[VecCopy] Async copy 128x32: 1 vecs/thread, vec_size=8 (cp.async 16B)
+[VecCopy] Async copy 32x128: 1 vecs/thread, vec_size=8 (cp.async 16B)
+[VecCopy] Replaced 2 linalg.copy ops with nvgpu.device_async_copy (CP.ASYNC)
+[PadSmem] 128x32 -> 128x40 (pad=8, 16B-aligned)
+[PadSmem] 32x128 -> 32x136 (pad=8, 16B-aligned)
+[DoubleBuffer] Added smemA1(128x40), smemB1(32x136) workgroup attrs
+[DoubleBuffer] Found K-loop with 8 iter_args
+[DoubleBuffer] Loop body: 2 srcSubviews, 2 asyncCopies, 2 barriers
+[DoubleBuffer] Prologue: k=lb prefetch issued (no wait)
+[DoubleBuffer] replaceWithAdditionalYields OK, 13 iter_args
+[DoubleBuffer] Phase E: double-buffering applied
+  - 4 workgroup attrs (2× ping-pong buffers)
+  - 13 iter_args (8 acc + 4 memref + 1 token)
+  - 2 async copies per K-step
+  - wait-at-top for compute/prefetch overlap
+  - scf.if conditional last-iteration guard
+[LdMatrixRewrite] Replaced 32 MMA operand(s) with ldmatrix
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/c2c64319e79188776e0b256baca7d217/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=32)
+[SubTileUnroll] Unroll factor 2: OK
+[SubTileUnroll] Unroll factor 4: OK
+[SubTileUnroll] Unroll factor 2: OK
+[SubTileUnroll] Total loops unrolled: 3
+[AccHoist] K-loop=YES (attr=tagged)
+[AccHoist] Found 16 MMA ops in K-loop
+[AccHoist] Found store patterns for all MMAs
+[AccHoist] Store addresses are loop-invariant ✓
+[AccHoist] C-chain: 290 candidates, 128 safe to skip
+[AccHoist] Grouped 16 MMAs into 8 accumulator chains
+[AccHoist] SUCCESS: hoisted 8 accumulator groups (16 total MMAs) as iter_args
+[VecCopy] Async copy 128x32: 1 vecs/thread, vec_size=8 (cp.async 16B)
+[VecCopy] Async copy 32x128: 1 vecs/thread, vec_size=8 (cp.async 16B)
+[VecCopy] Replaced 2 linalg.copy ops with nvgpu.device_async_copy (CP.ASYNC)
+[PadSmem] 128x32 -> 128x40 (pad=8, 16B-aligned)
+[PadSmem] 32x128 -> 32x136 (pad=8, 16B-aligned)
+[DoubleBuffer] Added smemA1(128x40), smemB1(32x136) workgroup attrs
+[DoubleBuffer] Found K-loop with 8 iter_args
+[DoubleBuffer] Loop body: 2 srcSubviews, 2 asyncCopies, 2 barriers
+[DoubleBuffer] Prologue: k=lb prefetch issued (no wait)
+[DoubleBuffer] replaceWithAdditionalYields OK, 13 iter_args
+[DoubleBuffer] Phase E: double-buffering applied
+  - 4 workgroup attrs (2× ping-pong buffers)
+  - 13 iter_args (8 acc + 4 memref + 1 token)
+  - 2 async copies per K-step
+  - wait-at-top for compute/prefetch overlap
+  - scf.if conditional last-iteration guard
+[LdMatrixRewrite] Replaced 32 MMA operand(s) with ldmatrix
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/7543543036f0640a41c857c468bfe300/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object

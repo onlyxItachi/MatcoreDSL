@@ -1,0 +1,10 @@
+#include <matcore/mdsl.h>
+
+void direct_qualified() {
+  float storage[1]{};
+  matcore::mdsl::matrix_view A{storage, 1, 1};
+  matcore::mdsl::matrix_view B{storage, 1, 1};
+  float output_storage[1]{};
+  matcore::mdsl::matrix_view C{output_storage, 1, 1};
+  matcore::mdsl::gemm(matcore::mdsl::out(C), A, B);
+}

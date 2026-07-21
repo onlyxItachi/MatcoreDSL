@@ -1,0 +1,11 @@
+#include <iostream>
+
+template <class T>
+T host_add(T lhs, T rhs) {
+  return lhs + rhs;
+}
+
+int main() {
+  std::cout << host_add(2, 3) << '\n';
+  return 0;
+}

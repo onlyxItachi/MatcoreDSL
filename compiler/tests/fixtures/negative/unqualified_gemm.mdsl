@@ -1,0 +1,12 @@
+#include <matcore/mdsl.h>
+
+using matcore::mdsl::gemm;
+
+int main() {
+  float values[3] = {1, 1, 0};
+  matcore::mdsl::matrix_view a{values, 1, 1};
+  matcore::mdsl::matrix_view b{values + 1, 1, 1};
+  matcore::mdsl::matrix_view c{values + 2, 1, 1};
+  gemm(matcore::mdsl::out(c), a, b);
+  return 0;
+}

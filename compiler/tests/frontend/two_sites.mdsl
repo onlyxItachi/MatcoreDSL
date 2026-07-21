@@ -1,0 +1,14 @@
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+
+struct GemmOwner {
+  md::matrix_view A;
+  md::matrix_view B;
+  md::matrix_view C;
+
+  void execute() {
+    md::gemm(md::out(C), A, B);
+    md::gemm(md::out(C), A, B);
+  }
+};

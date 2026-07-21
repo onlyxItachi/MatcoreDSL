@@ -1,10 +1,12 @@
 #include "matcore/jit_runner.h"
 
-#include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
-#include <cstdint>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -24,24 +26,29 @@
 #include "llvm/ExecutionEngine/Orc/Shared/ExecutorAddress.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Error.h"
-#include "llvm/Support/MD5.h"
+#include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/SubtargetFeature.h"
-#include "mlir/ExecutionEngine/CRunnerUtils.h"
 #include "mlir/ExecutionEngine/ExecutionEngine.h"
-#include "mlir/ExecutionEngine/RunnerUtils.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Target/LLVM/NVVM/Target.h"
 #include "mlir/Target/LLVM/ROCDL/Target.h"
 #include "mlir/Target/LLVMIR/Dialect/All.h"
 
+#include "cache_manager.h"
+#include "executor.h"
+#include "matcore/device_buffer.h"
 #include "matcore/gpu_runtime_symbols.h"
 #include "matcore/mlir_engine.h"
+#include "matcore/observability.h"
+#include "matcore/plan.h"
 #include "matcore/runtime_capabilities.h"
+#include "jit_runner_internal.h"
 
 #if defined(__GNUC__) || defined(__clang__)
 #define MATCORE_JIT_RUNTIME_EXPORT __attribute__((visibility("default")))
@@ -58,9 +65,70 @@ extern "C" MATCORE_JIT_RUNTIME_EXPORT void _mlir_free(void *ptr) {
 }
 
 namespace matcore {
+
+thread_local CompilationStats g_last_compilation_stats;
+thread_local bool g_has_last_compilation_stats = false;
+
 namespace {
 
 namespace fs = std::filesystem;
+
+/// Return the byte size of a single element for the given dtype.
+static std::size_t dtypeElementBytes(TensorDType dtype) {
+  switch (dtype) {
+    case TensorDType::kFloat32: return 4;
+    case TensorDType::kInt32:   return 4;
+    case TensorDType::kFloat16: return 2;
+    case TensorDType::kBFloat16: return 2;
+    case TensorDType::kInt8:    return 1;
+    case TensorDType::kFloat8E4M3FN: return 1;
+  }
+  return 4; // fallback
+}
+
+bool quantizationMatches(const QuantizationParams &lhs,
+                         const QuantizationParams &rhs) {
+  if (lhs.enabled != rhs.enabled) {
+    return false;
+  }
+  if (!lhs.enabled) {
+    return true;
+  }
+  return lhs.scale == rhs.scale && lhs.zero_point == rhs.zero_point;
+}
+
+/// Zero the output tensor(s) before invoking the JIT function.
+/// linalg.matmul semantics are C += A*B, so the output must be zeroed
+/// to get C = A*B.  We do this on the host side (memset) rather than
+/// generating linalg.fill in the MLIR IR, because the host-level fill
+/// creates memref/cf ops that break the NVVM pipeline for multi-warp.
+/// Device-resident outputs are zeroed by the user via DeviceTensor.zero_().
+static void zeroOutputTensors(const std::vector<RuntimeTensorView> &tensors,
+                              const LoweredModule &lowered) {
+  if (tensors.empty()) return;
+
+  auto zero_tensor = [&](const RuntimeTensorView &out) {
+    if (out.is_device_resident) return;  // user's responsibility
+    if (!out.data) return;
+
+    std::size_t num_elements = 1;
+    for (auto dim : out.shape) num_elements *= static_cast<std::size_t>(dim);
+    std::size_t byte_size = num_elements * dtypeElementBytes(out.dtype);
+    std::memset(out.data, 0, byte_size);
+  };
+
+  if (!lowered.output_tensor_indices.empty()) {
+    for (std::size_t idx : lowered.output_tensor_indices) {
+      if (idx < tensors.size()) {
+        zero_tensor(tensors[idx]);
+      }
+    }
+    return;
+  }
+
+  // Legacy fallback.
+  zero_tensor(tensors.back());
+}
 
 [[noreturn]] void fail(const std::string &message) {
   throw std::runtime_error("MatCore JIT runner: " + message);
@@ -73,24 +141,6 @@ std::string targetName(const RequestedTargetProfile &target_profile) {
   return CanonicalTargetString(target_profile);
 }
 
-std::string dtypeName(TensorDType dtype) {
-  switch (dtype) {
-    case TensorDType::kFloat32:
-      return "float32";
-    case TensorDType::kFloat16:
-      return "float16";
-    case TensorDType::kBFloat16:
-      return "bfloat16";
-    case TensorDType::kInt8:
-      return "int8";
-    case TensorDType::kInt32:
-      return "int32";
-    case TensorDType::kFloat8E4M3FN:
-      return "float8_e4m3fn";
-  }
-  return "unknown";
-}
-
 bool isX86Target(const RequestedTargetProfile &target_profile) {
   const TargetKind normalized = normalizeTarget(target_profile.kind);
   return normalized == TargetKind::kX86Auto ||
@@ -98,26 +148,23 @@ bool isX86Target(const RequestedTargetProfile &target_profile) {
          normalized == TargetKind::kX86AVX512;
 }
 
+bool isGpuTarget(TargetKind target) {
+  switch (target) {
+    case TargetKind::kNvidiaDGPU:
+    case TargetKind::kAmdIGPU:
+    case TargetKind::kAMDGCN:
+    case TargetKind::kNVPTX:
+      return true;
+    default:
+      return false;
+  }
+}
+
 struct X86TargetProfile {
   std::string cpu;
   std::string features;
   std::string cache_tag;
 };
-
-struct DiskCacheArtifacts {
-  fs::path root_dir;
-  fs::path artifact_dir;
-  fs::path shared_object_path;
-  fs::path object_path;
-};
-
-enum class ExecutionBackend {
-  kExecutionEngine,
-  kSharedLibrary,
-};
-
-constexpr std::string_view kDiskCacheVersion =
-    "matcore-phase4-cache-v4-nvidia-shared-mma-hotfix";
 
 void addFeature(llvm::SubtargetFeatures &subtarget, llvm::StringRef feature_name,
                 bool enabled = true) {
@@ -232,55 +279,8 @@ std::vector<std::string> buildSharedLibraryPaths(
   return libs;
 }
 
-std::string buildExecutionCacheKey(
-    const KernelIR &kernel, const RequestedTargetProfile &target_profile,
-    const std::vector<RuntimeTensorView> &tensors,
-    const std::optional<X86TargetProfile> &x86_profile) {
-  std::string key = kernel.kernel_name.empty() ? "matcore_kernel" : kernel.kernel_name;
-  key += "|target=" + targetName(target_profile);
-  if (x86_profile.has_value()) {
-    key += "|";
-    key += x86_profile->cache_tag;
-  }
-  key += "|ops=" + std::to_string(kernel.ops.size());
-  if (kernel.global_quantization.enabled) {
-    key += "|gq=" + std::to_string(kernel.global_quantization.scale);
-    key += ":";
-    key += std::to_string(kernel.global_quantization.zero_point);
-  }
-  for (std::size_t i = 0; i < std::min<std::size_t>(3, tensors.size()); ++i) {
-    const RuntimeTensorView &tensor = tensors[i];
-    key += "|";
-    key += tensor.symbol;
-    key += ":";
-    key += dtypeName(tensor.dtype);
-    if (tensor.shape.size() >= 2) {
-      key += ":";
-      key += std::to_string(tensor.shape[0]);
-      key += "x";
-      key += std::to_string(tensor.shape[1]);
-    }
-    if (tensor.quantization.enabled) {
-      key += ":q=";
-      key += std::to_string(tensor.quantization.scale);
-      key += ":";
-      key += std::to_string(tensor.quantization.zero_point);
-    }
-  }
-  return key;
-}
-
 std::string entryPointName(const KernelIR &kernel) {
   return kernel.kernel_name.empty() ? "matcore_kernel" : kernel.kernel_name;
-}
-
-std::string buildStableCacheHash(const std::string &key) {
-  llvm::MD5 hasher;
-  hasher.update(llvm::StringRef(kDiskCacheVersion.data(), kDiskCacheVersion.size()));
-  hasher.update(key);
-  llvm::MD5::MD5Result result;
-  hasher.final(result);
-  return result.digest().str().str();
 }
 
 fs::path currentExtensionPath() {
@@ -295,48 +295,6 @@ fs::path currentExtensionPath() {
     return fs::path(info.dli_fname);
   }
   return path;
-}
-
-fs::path cacheRootPath() {
-  if (const char *override_dir = std::getenv("MATCORE_CACHE_DIR")) {
-    if (*override_dir != '\0') {
-      return fs::path(override_dir);
-    }
-  }
-  const fs::path extension_path = currentExtensionPath();
-  if (!extension_path.empty()) {
-    return extension_path.parent_path().parent_path() / ".matcore_cache";
-  }
-  return fs::current_path() / ".matcore_cache";
-}
-
-DiskCacheArtifacts buildDiskCacheArtifacts(const std::string &cache_key) {
-  DiskCacheArtifacts artifacts;
-  artifacts.root_dir = cacheRootPath();
-  artifacts.artifact_dir = artifacts.root_dir / buildStableCacheHash(cache_key);
-  artifacts.shared_object_path = artifacts.artifact_dir / "kernel.so";
-  artifacts.object_path = artifacts.artifact_dir / "kernel.o";
-  return artifacts;
-}
-
-bool isDiskCacheSupported(const RequestedTargetProfile &target_profile) {
-  switch (normalizeTarget(target_profile.kind)) {
-    case TargetKind::kX86Auto:
-    case TargetKind::kX86AVX2:
-    case TargetKind::kX86AVX512:
-      return true;
-    default:
-      return false;
-  }
-}
-
-void ensureCacheDirectory(const fs::path &path) {
-  std::error_code ec;
-  fs::create_directories(path, ec);
-  if (ec) {
-    fail("failed to create cache directory '" + path.string() + "': " +
-         ec.message());
-  }
 }
 
 void removeArtifactIfExists(const fs::path &path) {
@@ -392,10 +350,21 @@ std::vector<std::string> buildSharedLibraryRPaths(
   return rpaths;
 }
 
+static std::string resolveLinker() {
+  if (const char *env = std::getenv("MATCORE_CXX")) {
+    if (*env != '\0') return env;
+  }
+  for (const char *candidate : {"clang++", "c++", "g++"}) {
+    auto found = llvm::sys::findProgramByName(candidate);
+    if (found) return *found;
+  }
+  return "/usr/bin/clang++";  // fallback
+}
+
 void linkObjectFileToSharedLibrary(const DiskCacheArtifacts &artifacts,
                                    const RequestedTargetProfile &target_profile) {
   std::vector<std::string> owned_args = {
-      "/usr/bin/clang++",
+      resolveLinker(),
       "-shared",
       "-fPIC",
       "-o",
@@ -463,143 +432,6 @@ void enforceExecutionPolicy(const LoweredModule &lowered) {
        lowered.route_description + "' but execution is not enabled");
 }
 
-struct CachedExecution {
-  ~CachedExecution() {
-    if (shared_library_handle != nullptr) {
-      dlclose(shared_library_handle);
-    }
-  }
-
-  ExecutionBackend backend = ExecutionBackend::kExecutionEngine;
-  std::unique_ptr<mlir::MLIRContext> context;
-  LoweredModule lowered;
-  std::unique_ptr<mlir::ExecutionEngine> engine;
-  void *shared_library_handle = nullptr;
-  void (*ciface_entrypoint)(void *, void *, void *) = nullptr;
-};
-
-template <typename ElementT>
-::StridedMemRefType<ElementT, 2>
-makeMemRef2DDescriptor(const RuntimeTensorView &tensor) {
-  if (tensor.data == nullptr) {
-    fail("tensor '" + tensor.symbol + "' has null data pointer");
-  }
-  if (tensor.shape.size() != 2 || tensor.strides.size() != 2) {
-    fail("tensor '" + tensor.symbol + "' must be rank-2 for JIT invocation");
-  }
-
-  auto *typed = reinterpret_cast<ElementT *>(tensor.data);
-  ::StridedMemRefType<ElementT, 2> descriptor;
-  descriptor.basePtr = typed;
-  descriptor.data = typed;
-  descriptor.offset = 0;
-  descriptor.sizes[0] = tensor.shape[0];
-  descriptor.sizes[1] = tensor.shape[1];
-  descriptor.strides[0] = tensor.strides[0];
-  descriptor.strides[1] = tensor.strides[1];
-  return descriptor;
-}
-
-template <typename LhsElementT, typename RhsElementT, typename OutElementT>
-llvm::Error invokeWithTypedDescriptors(const CachedExecution &compiled,
-                                       const std::string &entry_point,
-                                       const RuntimeTensorView &lhs,
-                                       const RuntimeTensorView &rhs,
-                                       const RuntimeTensorView &out) {
-  auto lhs_desc = makeMemRef2DDescriptor<LhsElementT>(lhs);
-  auto rhs_desc = makeMemRef2DDescriptor<RhsElementT>(rhs);
-  auto out_desc = makeMemRef2DDescriptor<OutElementT>(out);
-
-  const std::string adapter_name = std::string("_mlir_ciface_") + entry_point;
-  void *lhs_arg = &lhs_desc;
-  void *rhs_arg = &rhs_desc;
-  void *out_arg = &out_desc;
-  // The C-interface wrapper takes pointer-valued arguments, so the packed call
-  // expects addresses of those pointer values, not the descriptor storage itself.
-  std::vector<void *> packed_args = {&lhs_arg, &rhs_arg, &out_arg};
-  if (compiled.backend == ExecutionBackend::kSharedLibrary) {
-    if (compiled.ciface_entrypoint == nullptr) {
-      return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                     "cached shared library entrypoint missing");
-    }
-    compiled.ciface_entrypoint(&lhs_desc, &rhs_desc, &out_desc);
-    return llvm::Error::success();
-  }
-
-  if (compiled.engine == nullptr) {
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "execution engine is not initialized");
-  }
-
-  llvm::Error packed_error = compiled.engine->invokePacked(adapter_name, packed_args);
-  if (!packed_error) {
-    return llvm::Error::success();
-  }
-
-  std::string packed_message = llvm::toString(std::move(packed_error));
-  return llvm::createStringError(
-      llvm::inconvertibleErrorCode(), "packed invoke failed: %s",
-      packed_message.c_str());
-}
-
-template <typename LhsElementT, typename RhsElementT>
-llvm::Error invokeWithOutputType(const CachedExecution &compiled,
-                                 const std::string &entry_point,
-                                 const RuntimeTensorView &lhs,
-                                 const RuntimeTensorView &rhs,
-                                 const RuntimeTensorView &out) {
-  switch (out.dtype) {
-    case TensorDType::kFloat32:
-      return invokeWithTypedDescriptors<LhsElementT, RhsElementT, float>(
-          compiled, entry_point, lhs, rhs, out);
-    case TensorDType::kFloat16:
-    case TensorDType::kBFloat16:
-      return invokeWithTypedDescriptors<LhsElementT, RhsElementT, std::uint16_t>(
-          compiled, entry_point, lhs, rhs, out);
-    case TensorDType::kInt8:
-      return invokeWithTypedDescriptors<LhsElementT, RhsElementT, std::int8_t>(
-          compiled, entry_point, lhs, rhs, out);
-    case TensorDType::kInt32:
-      return invokeWithTypedDescriptors<LhsElementT, RhsElementT, std::int32_t>(
-          compiled, entry_point, lhs, rhs, out);
-    case TensorDType::kFloat8E4M3FN:
-      return invokeWithTypedDescriptors<LhsElementT, RhsElementT, std::uint8_t>(
-          compiled, entry_point, lhs, rhs, out);
-  }
-
-  return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "unsupported output dtype");
-}
-
-template <typename LhsElementT>
-llvm::Error invokeWithRhsType(const CachedExecution &compiled,
-                              const std::string &entry_point,
-                              const RuntimeTensorView &lhs,
-                              const RuntimeTensorView &rhs,
-                              const RuntimeTensorView &out) {
-  switch (rhs.dtype) {
-    case TensorDType::kFloat32:
-      return invokeWithOutputType<LhsElementT, float>(compiled, entry_point, lhs,
-                                                      rhs, out);
-    case TensorDType::kFloat16:
-    case TensorDType::kBFloat16:
-      return invokeWithOutputType<LhsElementT, std::uint16_t>(
-          compiled, entry_point, lhs, rhs, out);
-    case TensorDType::kInt8:
-      return invokeWithOutputType<LhsElementT, std::int8_t>(compiled, entry_point,
-                                                            lhs, rhs, out);
-    case TensorDType::kInt32:
-      return invokeWithOutputType<LhsElementT, std::int32_t>(
-          compiled, entry_point, lhs, rhs, out);
-    case TensorDType::kFloat8E4M3FN:
-      return invokeWithOutputType<LhsElementT, std::uint8_t>(
-          compiled, entry_point, lhs, rhs, out);
-  }
-
-  return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "unsupported rhs dtype");
-}
-
 const mlir::DialectRegistry &sharedDialectRegistry() {
   static const mlir::DialectRegistry registry = [] {
     mlir::DialectRegistry dialect_registry;
@@ -611,14 +443,21 @@ const mlir::DialectRegistry &sharedDialectRegistry() {
   return registry;
 }
 
-const RuntimeCapabilities &cachedRuntimeCapabilities() {
-  static const RuntimeCapabilities runtime = DetectRuntimeCapabilities();
+}  // anonymous namespace
+
+RuntimeCapabilities &cachedRuntimeCapabilities() {
+  static RuntimeCapabilities runtime = DetectRuntimeCapabilities();
   return runtime;
 }
 
 RequestedTargetProfile resolveCompilationTargetProfile(
     const RequestedTargetProfile &target_profile,
-    const RuntimeCapabilities &runtime) {
+    RuntimeCapabilities &runtime) {
+  // Ensure GPU capabilities are probed before reading compute_major.
+  // Without this, the lazy probe hasn't fired yet and we fall back to sm_80.
+  if (normalizeTarget(target_profile.kind) == TargetKind::kNvidiaDGPU) {
+    probeNvidiaIfNeeded(runtime);
+  }
   RequestedTargetProfile resolved = target_profile;
   if (normalizeTarget(resolved.kind) == TargetKind::kNvidiaDGPU &&
       !resolved.nvidia_sm_major.has_value() &&
@@ -631,6 +470,8 @@ RequestedTargetProfile resolveCompilationTargetProfile(
   return resolved;
 }
 
+namespace {
+
 std::shared_ptr<CachedExecution> tryLoadDiskCachedExecution(
     const KernelIR &kernel, const RequestedTargetProfile &compile_target,
     const ExecutionRequirements &execution_requirements,
@@ -642,7 +483,16 @@ std::shared_ptr<CachedExecution> tryLoadDiskCachedExecution(
 
   void *handle = dlopen(artifacts.shared_object_path.c_str(), RTLD_NOW | RTLD_LOCAL);
   if (handle == nullptr) {
-    removeDiskCacheArtifacts(artifacts);
+    const char *err = dlerror();
+    const std::string err_str = err ? err : "";
+    const bool corrupt =
+        err_str.find("invalid ELF") != std::string::npos ||
+        err_str.find("not an ELF") != std::string::npos ||
+        err_str.find("wrong ELF class") != std::string::npos ||
+        err_str.find("file too short") != std::string::npos;
+    if (corrupt) {
+      removeDiskCacheArtifacts(artifacts);
+    }
     return nullptr;
   }
 
@@ -658,13 +508,33 @@ std::shared_ptr<CachedExecution> tryLoadDiskCachedExecution(
   auto compiled = std::make_shared<CachedExecution>();
   compiled->backend = ExecutionBackend::kSharedLibrary;
   compiled->shared_library_handle = handle;
-  compiled->ciface_entrypoint =
-      reinterpret_cast<void (*)(void *, void *, void *)>(symbol);
+  compiled->ciface_entrypoint = reinterpret_cast<void *>(symbol);
   compiled->lowered.entry_point = entry_point;
   compiled->lowered.target_profile = compile_target;
   compiled->lowered.execution_requirements = execution_requirements;
   compiled->lowered.route_description = "disk-cached shared object";
   compiled->lowered.executable = true;
+
+  // Restore tensor metadata from cache
+  try {
+    auto metadata_path = artifacts.artifact_dir / "metadata.json";
+    if (fileExists(metadata_path)) {
+      std::ifstream meta_in(metadata_path);
+      std::string meta_str((std::istreambuf_iterator<char>(meta_in)),
+                           std::istreambuf_iterator<char>());
+      auto parsed = llvm::json::parse(meta_str);
+      if (parsed) {
+        if (auto *obj = parsed->getAsObject()) {
+          if (auto tc = obj->getInteger("tensor_count"))
+            compiled->lowered.tensor_count = static_cast<std::size_t>(*tc);
+          if (auto noz = obj->getBoolean("needs_output_zeroing"))
+            compiled->lowered.needs_output_zeroing = *noz;
+        }
+      }
+    }
+  } catch (...) {
+  }
+
   return compiled;
 }
 
@@ -682,12 +552,29 @@ void persistExecutionToDiskCache(const CachedExecution &compiled,
   removeArtifactIfExists(artifacts.object_path);
   compiled.engine->dumpToObjectFile(artifacts.object_path.string());
   if (!fileExists(artifacts.object_path)) {
-    fail("object dump for cache artifact '" + artifacts.object_path.string() +
-         "' did not produce a file");
+    // Object dump failed (e.g., GPU-only codegen without host object support).
+    // The in-memory JIT engine is still valid — just skip disk caching.
+    return;
   }
   linkObjectFileToSharedLibrary(artifacts, compile_target);
-  if (!keepDiskCacheObjectFile()) {
-    removeArtifactIfExists(artifacts.object_path);
+  removeArtifactIfExists(artifacts.object_path);
+  try {
+    auto metadata_path = artifacts.artifact_dir / "metadata.json";
+    llvm::json::Object metadata_obj{
+        {"matcore_cache_version", std::string(kDiskCacheVersion)},
+        {"target", CanonicalTargetString(compile_target)},
+        {"entry_point", compiled.lowered.entry_point},
+        {"route_description", compiled.lowered.route_description},
+        {"tensor_count", static_cast<int64_t>(compiled.lowered.tensor_count)},
+        {"needs_output_zeroing", compiled.lowered.needs_output_zeroing},
+    };
+    std::ofstream meta_out(metadata_path);
+    if (meta_out.is_open()) {
+      meta_out << llvm::formatv("{0:2}\n",
+                                llvm::json::Value(std::move(metadata_obj)))
+                      .str();
+    }
+  } catch (...) {
   }
 }
 
@@ -695,7 +582,9 @@ std::shared_ptr<CachedExecution>
 getOrCreateExecution(const KernelIR &kernel,
                      const RequestedTargetProfile &target_profile,
                      const std::vector<RuntimeTensorView> &tensors,
-                     const RuntimeCapabilities &runtime) {
+                     RuntimeCapabilities &runtime,
+                     ObservabilityContext *obs,
+                     bool graph_mode) {
   static std::mutex cache_mutex;
   static auto *cache =
       new std::unordered_map<std::string, std::shared_ptr<CachedExecution>>();
@@ -704,30 +593,74 @@ getOrCreateExecution(const KernelIR &kernel,
       resolveCompilationTargetProfile(target_profile, runtime);
   const ExecutionRequirements requested_requirements =
       BuildExecutionRequirements(target_profile);
-  std::string upfront_denial_reason;
-  if (!CanExecuteOnHost(runtime, requested_requirements, &upfront_denial_reason)) {
-    fail(FormatExecutionDeniedMessage(target_profile, upfront_denial_reason));
-  }
+  auto validateExecutionEligibility =
+      [&](const RequestedTargetProfile &profile,
+          const ExecutionRequirements &requirements) {
+        if (isGpuTarget(profile.kind)) {
+          const GpuPreflightResult preflight = gpuPreflightCheck(profile.kind);
+          if (obs) {
+            obs->traceEvent(TraceEventKind::kGpuPreflight, "gpu_preflight",
+                            preflight.diagnostic);
+          }
+          if (preflight.status == GpuPreflightStatus::kFail) {
+            fail(FormatExecutionDeniedMessage(
+                profile, "GPU preflight failed: " + preflight.diagnostic));
+          }
+        }
+
+        std::string denial_reason;
+        if (!CanExecuteOnHost(runtime, requirements, &denial_reason)) {
+          fail(FormatExecutionDeniedMessage(profile, denial_reason));
+        }
+      };
   const std::optional<X86TargetProfile> x86_profile =
       resolveX86TargetProfile(compile_target, runtime);
+  const std::optional<std::string_view> x86_cache_tag =
+      x86_profile.has_value()
+          ? std::optional<std::string_view>(x86_profile->cache_tag)
+          : std::nullopt;
   const std::string cache_key =
-      buildExecutionCacheKey(kernel, compile_target, tensors, x86_profile);
+      buildExecutionCacheKey(kernel, compile_target, tensors, x86_cache_tag,
+                             graph_mode);
   const DiskCacheArtifacts disk_artifacts = buildDiskCacheArtifacts(cache_key);
-  {
-    std::lock_guard<std::mutex> lock(cache_mutex);
-    auto it = cache->find(cache_key);
-    if (it != cache->end()) {
-      return it->second;
+  const bool skip_cache_lookup = obs && obs->forceRecompile();
+  if (!skip_cache_lookup) {
+    std::shared_ptr<CachedExecution> memory_cached;
+    {
+      std::lock_guard<std::mutex> lock(cache_mutex);
+      auto it = cache->find(cache_key);
+      if (it != cache->end()) {
+        if (obs) {
+          obs->recordCacheHit(cache_key);
+          obs->traceEvent(TraceEventKind::kCacheHit, cache_key);
+        }
+        memory_cached = it->second;
+      }
+    }
+    if (memory_cached) {
+      validateExecutionEligibility(compile_target, requested_requirements);
+      return memory_cached;
     }
   }
-  if (std::shared_ptr<CachedExecution> disk_cached = tryLoadDiskCachedExecution(
-          kernel, compile_target, requested_requirements, disk_artifacts)) {
-    std::lock_guard<std::mutex> lock(cache_mutex);
-    auto [it, inserted] = cache->emplace(cache_key, disk_cached);
-    if (!inserted) {
-      return it->second;
+  if (!skip_cache_lookup) {
+    if (std::shared_ptr<CachedExecution> disk_cached = tryLoadDiskCachedExecution(
+            kernel, compile_target, requested_requirements, disk_artifacts)) {
+      std::shared_ptr<CachedExecution> selected;
+      {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        auto [it, inserted] = cache->emplace(cache_key, disk_cached);
+        if (obs) {
+          obs->recordCacheHit(cache_key);
+          obs->traceEvent(TraceEventKind::kCacheHit, cache_key);
+        }
+        selected = inserted ? disk_cached : it->second;
+      }
+      validateExecutionEligibility(compile_target, requested_requirements);
+      return selected;
     }
-    return disk_cached;
+  }
+  if (obs) {
+    obs->traceEvent(TraceEventKind::kCacheMiss, cache_key);
   }
 
   auto compiled = std::make_shared<CachedExecution>();
@@ -736,14 +669,11 @@ getOrCreateExecution(const KernelIR &kernel,
   compiled->context->loadAllAvailableDialects();
 
   compiled->lowered = MlirEngine::BuildAndLower(kernel, compile_target, tensors,
-                                                *compiled->context);
+                                                *compiled->context, obs,
+                                                graph_mode);
   enforceExecutionPolicy(compiled->lowered);
-  std::string denial_reason;
-  if (!CanExecuteOnHost(runtime, compiled->lowered.execution_requirements,
-                        &denial_reason)) {
-    fail(FormatExecutionDeniedMessage(compiled->lowered.target_profile,
-                                      denial_reason));
-  }
+  validateExecutionEligibility(compiled->lowered.target_profile,
+                               compiled->lowered.execution_requirements);
 
   const std::vector<std::string> shared_lib_storage =
       buildSharedLibraryPaths(compile_target);
@@ -751,6 +681,13 @@ getOrCreateExecution(const KernelIR &kernel,
   shared_libs.reserve(shared_lib_storage.size());
   for (const std::string &path : shared_lib_storage) {
     shared_libs.push_back(path);
+  }
+
+  // Dump final MLIR IR for debug (temporary).
+  if (std::getenv("MATCORE_DUMP_FINAL_IR")) {
+    llvm::errs() << "=== FINAL MLIR IR BEFORE JIT ===\n";
+    compiled->lowered.module->print(llvm::errs());
+    llvm::errs() << "=== END FINAL MLIR IR ===\n";
   }
 
   mlir::ExecutionEngineOptions options;
@@ -767,6 +704,10 @@ getOrCreateExecution(const KernelIR &kernel,
   persistExecutionToDiskCache(*compiled, compile_target, disk_artifacts);
 
   std::lock_guard<std::mutex> lock(cache_mutex);
+  if (skip_cache_lookup) {
+    (*cache)[cache_key] = compiled;
+    return compiled;
+  }
   auto [it, inserted] = cache->emplace(cache_key, compiled);
   if (!inserted) {
     return it->second;
@@ -774,70 +715,407 @@ getOrCreateExecution(const KernelIR &kernel,
   return compiled;
 }
 
-llvm::Error invokeCompiledKernel(const CachedExecution &compiled,
-                                 const std::vector<RuntimeTensorView> &tensors) {
-  if (tensors.size() < 3) {
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "matmul invocation requires 3 tensors");
-  }
-  if (compiled.lowered.lhs_tensor_index >= tensors.size() ||
-      compiled.lowered.rhs_tensor_index >= tensors.size() ||
-      compiled.lowered.out_tensor_index >= tensors.size()) {
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "lowered tensor indices are out of range for runtime tensors");
-  }
-
-  const RuntimeTensorView &lhs = tensors[compiled.lowered.lhs_tensor_index];
-  const RuntimeTensorView &rhs = tensors[compiled.lowered.rhs_tensor_index];
-  const RuntimeTensorView &out = tensors[compiled.lowered.out_tensor_index];
-
-  switch (lhs.dtype) {
-    case TensorDType::kFloat32:
-      return invokeWithRhsType<float>(compiled, compiled.lowered.entry_point, lhs,
-                                      rhs, out);
-    case TensorDType::kFloat16:
-    case TensorDType::kBFloat16:
-      return invokeWithRhsType<std::uint16_t>(compiled,
-                                              compiled.lowered.entry_point, lhs,
-                                              rhs, out);
-    case TensorDType::kInt8:
-      return invokeWithRhsType<std::int8_t>(compiled,
-                                            compiled.lowered.entry_point, lhs, rhs,
-                                            out);
-    case TensorDType::kInt32:
-      return invokeWithRhsType<std::int32_t>(compiled,
-                                             compiled.lowered.entry_point, lhs, rhs,
-                                             out);
-    case TensorDType::kFloat8E4M3FN:
-      return invokeWithRhsType<std::uint8_t>(compiled,
-                                             compiled.lowered.entry_point, lhs, rhs,
-                                             out);
-  }
-
-  return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "unsupported runtime dtype");
-}
-
 }  // namespace
+
+CachedExecution::~CachedExecution() {
+  if (shared_library_handle != nullptr) {
+    dlclose(shared_library_handle);
+  }
+}
 
 void compileAndRun(const KernelIR &kernel,
                    const RequestedTargetProfile &target_profile,
-                   const std::vector<RuntimeTensorView> &tensors) {
+                   const std::vector<RuntimeTensorView> &tensors,
+                   ObservabilityContext *obs) {
   static std::once_flag native_target_once;
   std::call_once(native_target_once, [] {
     llvm::InitializeNativeTarget();
     llvm::InitializeNativeTargetAsmPrinter();
     llvm::InitializeNativeTargetAsmParser();
   });
-  const RuntimeCapabilities &runtime = cachedRuntimeCapabilities();
+  RuntimeCapabilities &runtime = cachedRuntimeCapabilities();
+  auto run = [&]() {
+    const bool trace_timing = std::getenv("MATCORE_TRACE_TIMING") != nullptr;
+    auto t0 = std::chrono::high_resolution_clock::now();
+    std::shared_ptr<CachedExecution> compiled;
+    if (obs) {
+      auto compile_scope = obs->scopedTrace(TraceEventKind::kCompileStart,
+                                            TraceEventKind::kCompileEnd,
+                                            "compileAndRun");
+      compiled =
+          getOrCreateExecution(kernel, target_profile, tensors, runtime, obs,
+                               false);
+    } else {
+      compiled =
+          getOrCreateExecution(kernel, target_profile, tensors, runtime, obs,
+                               false);
+    }
+    g_last_compilation_stats.actual_reg_count = compiled->lowered.actual_reg_count;
+    g_last_compilation_stats.reg_budget_exceeded =
+        compiled->lowered.reg_budget_exceeded;
+    g_last_compilation_stats.route = compiled->lowered.route_description;
+    g_last_compilation_stats.fusion_launch_count =
+        compiled->lowered.fusion_launch_count;
+    g_last_compilation_stats.family_c_strategy =
+        compiled->lowered.family_c_strategy;
+    g_last_compilation_stats.family_c_dtile = compiled->lowered.family_c_dtile;
+    g_last_compilation_stats.available = true;
+    g_has_last_compilation_stats = true;
+    auto t1 = std::chrono::high_resolution_clock::now();
+    setGpuRuntimeObservabilityContext(obs);
+    std::unique_ptr<ObservabilityContext::TraceScope> execute_scope;
+    if (obs) {
+      execute_scope = std::make_unique<ObservabilityContext::TraceScope>(
+          *obs, TraceEventKind::kPassStageStart, TraceEventKind::kPassStageEnd,
+          "execute");
+    }
+    if (compiled->lowered.needs_output_zeroing) {
+      zeroOutputTensors(tensors, compiled->lowered);
+    }
+    if (llvm::Error error = invokeCompiledKernel(*compiled, tensors)) {
+      setGpuRuntimeObservabilityContext(nullptr);
+      const std::string message = llvm::toString(std::move(error));
+      fail("failed to invoke JIT entrypoint '" + compiled->lowered.entry_point +
+           "': " + message);
+    }
+    setGpuRuntimeObservabilityContext(nullptr);
+    auto t2 = std::chrono::high_resolution_clock::now();
+    if (trace_timing) {
+      auto cache_us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+      auto exec_us = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
+      auto total_us = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t0).count();
+      std::fprintf(stderr, "[MATCORE_TIMING] cache_lookup=%lld us  execute=%lld us  total=%lld us\n",
+                   (long long)cache_us, (long long)exec_us, (long long)total_us);
+    }
+  };
+  if (obs) {
+    try {
+      run();
+      obs->finalize();
+      return;
+    } catch (...) {
+      setGpuRuntimeObservabilityContext(nullptr);
+      obs->finalize();
+      throw;
+    }
+  }
+  run();
+}
 
+CompilationStats getLastCompilationStats() {
+  if (!g_has_last_compilation_stats) {
+    return {};
+  }
+  return g_last_compilation_stats;
+}
+
+// -------------------------------------------------------------------------
+// V2: MatcorePlan — pre-compiled execution plan for near-zero-overhead dispatch
+// -------------------------------------------------------------------------
+
+static std::atomic<uint64_t> g_plan_generation_counter{1};
+
+uint64_t MatcorePlan::nextGenerationId() {
+  return g_plan_generation_counter.fetch_add(1, std::memory_order_relaxed);
+}
+
+MatcorePlan::~MatcorePlan() {
+  // V2: Destroy CUDA graph resources before releasing execution bundle
+  if (graph_exec_) {
+    matcore_graph_exec_destroy(graph_exec_);
+    graph_exec_ = nullptr;
+  }
+  if (graph_stream_) {
+    matcore_graph_stream_destroy(graph_stream_);
+    graph_stream_ = nullptr;
+  }
+}
+MatcorePlan::MatcorePlan(MatcorePlan &&other) noexcept
+    : generation_id_(other.generation_id_),
+      execution_(std::move(other.execution_)),
+      frozen_meta_(std::move(other.frozen_meta_)),
+      has_device_tensors_(other.has_device_tensors_),
+      cache_key_(std::move(other.cache_key_)),
+      graph_mode_(other.graph_mode_),
+      graph_stream_(other.graph_stream_),
+      graph_exec_(other.graph_exec_),
+      graph_captured_(other.graph_captured_),
+      captured_ptrs_(std::move(other.captured_ptrs_)) {
+  // Null the source to prevent double-destroy of CUDA resources
+  other.graph_stream_ = nullptr;
+  other.graph_exec_ = nullptr;
+  other.graph_captured_ = false;
+}
+
+MatcorePlan &MatcorePlan::operator=(MatcorePlan &&other) noexcept {
+  if (this != &other) {
+    // Destroy our own graph resources first
+    if (graph_exec_) matcore_graph_exec_destroy(graph_exec_);
+    if (graph_stream_) matcore_graph_stream_destroy(graph_stream_);
+
+    generation_id_ = other.generation_id_;
+    execution_ = std::move(other.execution_);
+    frozen_meta_ = std::move(other.frozen_meta_);
+    has_device_tensors_ = other.has_device_tensors_;
+    cache_key_ = std::move(other.cache_key_);
+    graph_mode_ = other.graph_mode_;
+    graph_stream_ = other.graph_stream_;
+    graph_exec_ = other.graph_exec_;
+    graph_captured_ = other.graph_captured_;
+    captured_ptrs_ = std::move(other.captured_ptrs_);
+
+    other.graph_stream_ = nullptr;
+    other.graph_exec_ = nullptr;
+    other.graph_captured_ = false;
+  }
+  return *this;
+}
+
+std::unique_ptr<MatcorePlan>
+MatcorePlan::create(const KernelIR &kernel,
+                    const std::vector<RuntimeTensorView> &template_tensors,
+                    const std::string &target_str,
+                    ObservabilityContext *obs,
+                    bool graph_mode) {
+  static std::once_flag native_target_once;
+  std::call_once(native_target_once, [] {
+    llvm::InitializeNativeTarget();
+    llvm::InitializeNativeTargetAsmPrinter();
+    llvm::InitializeNativeTargetAsmParser();
+  });
+
+  // Parse target string to RequestedTargetProfile
+  const RequestedTargetProfile target_profile = ParseRequestedTargetProfile(target_str);
+  RuntimeCapabilities &runtime = cachedRuntimeCapabilities();
+
+  // Full JIT compilation — this is the expensive part (done once)
   std::shared_ptr<CachedExecution> compiled =
-      getOrCreateExecution(kernel, target_profile, tensors, runtime);
-  if (llvm::Error error = invokeCompiledKernel(*compiled, tensors)) {
+      getOrCreateExecution(kernel, target_profile, template_tensors, runtime,
+                           obs, graph_mode);
+
+  // Build the plan
+  auto plan = std::unique_ptr<MatcorePlan>(new MatcorePlan());
+  plan->generation_id_ = nextGenerationId();
+  plan->execution_ = std::move(compiled);
+
+  // Freeze tensor metadata
+  plan->frozen_meta_.reserve(template_tensors.size());
+  for (size_t i = 0; i < template_tensors.size(); ++i) {
+    const auto &t = template_tensors[i];
+    FrozenTensorMeta meta;
+    meta.symbol = t.symbol;
+    meta.dtype = t.dtype;
+    meta.rank = static_cast<int64_t>(t.shape.size());
+    meta.shape = t.shape;
+    meta.strides = t.strides;
+    meta.is_device_resident = t.is_device_resident;
+    meta.quantization = t.quantization;
+    if (!plan->execution_->lowered.output_tensor_indices.empty()) {
+      for (std::size_t output_idx : plan->execution_->lowered.output_tensor_indices) {
+        if (i == output_idx) {
+          meta.is_output = true;
+          break;
+        }
+      }
+    } else {
+      meta.is_output = (i == plan->execution_->lowered.out_tensor_index);
+    }
+    plan->frozen_meta_.push_back(std::move(meta));
+    if (t.is_device_resident) {
+      plan->has_device_tensors_ = true;
+    }
+  }
+
+  // V2 Pillar 2: Create dedicated graph stream if graph_mode requested
+  plan->graph_mode_ = graph_mode;
+  if (graph_mode) {
+    plan->graph_stream_ = matcore_graph_stream_create();
+  }
+
+  return plan;
+}
+
+bool MatcorePlan::validateTensors(const std::vector<RuntimeTensorView> &tensors,
+                                  std::string *error_msg) const {
+  if (tensors.size() != frozen_meta_.size()) {
+    if (error_msg) {
+      *error_msg = "expected " + std::to_string(frozen_meta_.size()) +
+                   " tensors, got " + std::to_string(tensors.size());
+    }
+    return false;
+  }
+
+  for (size_t i = 0; i < tensors.size(); ++i) {
+    const auto &t = tensors[i];
+    const auto &m = frozen_meta_[i];
+
+    if (t.dtype != m.dtype) {
+      if (error_msg) {
+        *error_msg = "tensor[" + std::to_string(i) + "] dtype mismatch";
+      }
+      return false;
+    }
+    if (static_cast<int64_t>(t.shape.size()) != m.rank) {
+      if (error_msg) {
+        *error_msg = "tensor[" + std::to_string(i) + "] rank mismatch";
+      }
+      return false;
+    }
+    if (t.shape != m.shape) {
+      if (error_msg) {
+        *error_msg = "tensor[" + std::to_string(i) + "] shape mismatch — "
+                     "plans are shape-locked, create a new plan for different shapes";
+      }
+      return false;
+    }
+    if (t.strides != m.strides) {
+      if (error_msg) {
+        *error_msg = "tensor[" + std::to_string(i) + "] strides mismatch";
+      }
+      return false;
+    }
+    if (t.is_device_resident != m.is_device_resident) {
+      if (error_msg) {
+        *error_msg = "tensor[" + std::to_string(i) + "] residency mismatch — "
+                     "cannot mix host/device tensors with a device-resident plan";
+      }
+      return false;
+    }
+    if (!quantizationMatches(t.quantization, m.quantization)) {
+      if (error_msg) {
+        *error_msg =
+            "tensor[" + std::to_string(i) +
+            "] quantization mismatch — plans are quantization-locked, "
+            "create a new plan for different scale/zero_point";
+      }
+      return false;
+    }
+  }
+
+  return true;
+}
+
+void MatcorePlan::zeroOutputs(const std::vector<RuntimeTensorView> &tensors) {
+  for (size_t i = 0; i < tensors.size(); ++i) {
+    if (frozen_meta_[i].is_output && tensors[i].data != nullptr) {
+      uint64_t size_bytes = 1;
+      for (auto dim : frozen_meta_[i].shape) size_bytes *= dim;
+      switch (frozen_meta_[i].dtype) {
+        case TensorDType::kFloat16:
+        case TensorDType::kBFloat16: size_bytes *= 2; break;
+        case TensorDType::kFloat32:
+        case TensorDType::kInt32: size_bytes *= 4; break;
+        case TensorDType::kInt8:
+        case TensorDType::kFloat8E4M3FN: break;
+      }
+      if (tensors[i].is_device_resident) {
+        matcore_device_zero_raw(tensors[i].data, size_bytes);
+      } else {
+        std::memset(tensors[i].data, 0, size_bytes);
+      }
+    }
+  }
+}
+
+void MatcorePlan::zeroOutputsOnStream(
+    const std::vector<RuntimeTensorView> &tensors, void *stream) {
+  for (size_t i = 0; i < tensors.size(); ++i) {
+    if (frozen_meta_[i].is_output && tensors[i].data != nullptr) {
+      uint64_t size_bytes = 1;
+      for (auto dim : frozen_meta_[i].shape) size_bytes *= dim;
+      switch (frozen_meta_[i].dtype) {
+        case TensorDType::kFloat16:
+        case TensorDType::kBFloat16: size_bytes *= 2; break;
+        case TensorDType::kFloat32:
+        case TensorDType::kInt32: size_bytes *= 4; break;
+        case TensorDType::kInt8:
+        case TensorDType::kFloat8E4M3FN: break;
+      }
+      if (tensors[i].is_device_resident) {
+        matcore_device_zero_raw_on_stream(tensors[i].data, size_bytes, stream);
+      } else {
+        std::memset(tensors[i].data, 0, size_bytes);
+      }
+    }
+  }
+}
+
+void MatcorePlan::execute(const std::vector<RuntimeTensorView> &tensors) {
+  // Step 1: Validate tensors match frozen plan
+  std::string error_msg;
+  if (!validateTensors(tensors, &error_msg)) {
+    fail("execute_plan: " + error_msg);
+  }
+
+  // ---- Graph replay fast path ----
+  if (graph_mode_ && graph_captured_) {
+    for (size_t i = 0; i < tensors.size(); ++i) {
+      if (tensors[i].data != captured_ptrs_[i]) {
+        fail("execute_plan: tensor[" + std::to_string(i) +
+             "] data pointer changed since graph capture. "
+             "CUDA graphs bake addresses — use the same DeviceTensors, "
+             "or create a new plan to re-capture.");
+      }
+    }
+    matcore_graph_launch(graph_exec_, graph_stream_);
+    matcore_stream_synchronize(graph_stream_);
+    return;
+  }
+
+  // ---- First call with graph_mode: warm-up then capture ----
+  if (graph_mode_ && !graph_captured_) {
+    // Phase 1: Warm-up invocation — caches module/function, skips unload.
+    matcore_set_graph_warmup(true);
+    if (execution_->lowered.needs_output_zeroing) {
+      zeroOutputs(tensors);
+    }
+    setGpuRuntimeObservabilityContext(nullptr);
+    if (llvm::Error error = invokeCompiledKernel(*execution_, tensors)) {
+      matcore_set_graph_warmup(false);
+      const std::string message = llvm::toString(std::move(error));
+      fail("execute_plan: warm-up failed: " + message);
+    }
+    matcore_set_graph_warmup(false);
+
+    // Phase 2: Capture. Stream override routes all GPU ops to capture stream.
+    matcore_set_capture_stream_override(graph_stream_);
+    matcore_graph_begin_capture(graph_stream_);
+
+    if (execution_->lowered.needs_output_zeroing) {
+      zeroOutputsOnStream(tensors, graph_stream_);
+    }
+
+    if (llvm::Error error = invokeCompiledKernel(*execution_, tensors)) {
+      matcore_set_capture_stream_override(nullptr);
+      try {
+        void *exec = matcore_graph_end_capture(graph_stream_);
+        if (exec) matcore_graph_exec_destroy(exec);
+      } catch (...) {}
+      const std::string message = llvm::toString(std::move(error));
+      fail("execute_plan: capture failed: " + message);
+    }
+
+    matcore_set_capture_stream_override(nullptr);
+    graph_exec_ = matcore_graph_end_capture(graph_stream_);
+    graph_captured_ = true;
+    captured_ptrs_.clear();
+    captured_ptrs_.reserve(tensors.size());
+    for (const auto &t : tensors) {
+      captured_ptrs_.push_back(t.data);
+    }
+    matcore_stream_synchronize(graph_stream_);
+    return;
+  }
+
+  // ---- Normal (non-graph) execution ----
+  if (execution_->lowered.needs_output_zeroing) {
+    zeroOutputs(tensors);
+  }
+  setGpuRuntimeObservabilityContext(nullptr);
+  if (llvm::Error error = invokeCompiledKernel(*execution_, tensors)) {
     const std::string message = llvm::toString(std::move(error));
-    fail("failed to invoke JIT entrypoint '" + compiled->lowered.entry_point +
-         "': " + message);
+    fail("execute_plan: failed to invoke kernel '" +
+         execution_->lowered.entry_point + "': " + message);
   }
 }
 

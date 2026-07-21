@@ -1,0 +1,14 @@
+#include <matcore/mdsl.h>
+
+namespace user_api {
+using namespace matcore::mdsl;
+}
+
+void qualified_using_directive(matcore::mdsl::matrix_view &C,
+                               const matcore::mdsl::matrix_view &A,
+                               const matcore::mdsl::matrix_view &B) {
+  user_api::gemm(matcore::mdsl::out(C), A, B,
+                 matcore::mdsl::policy{
+                     .target = matcore::mdsl::target::cpu,
+                     .fallback = matcore::mdsl::fallback::error});
+}

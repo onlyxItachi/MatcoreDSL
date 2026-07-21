@@ -1,0 +1,15 @@
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+
+md::target observe(md::target value) {
+  static int calls = 0;
+  ++calls;
+  return value;
+}
+
+void capture(md::matrix_view &c, md::matrix_view &a, md::matrix_view &b) {
+  md::gemm(md::out(c), a, b,
+           md::policy{.target = observe(md::target::cpu),
+                      .fallback = md::fallback::error});
+}

@@ -1,0 +1,9 @@
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+
+void indirect(md::matrix_view &C, const md::matrix_view &A,
+              const md::matrix_view &B) {
+  auto operation = &md::gemm;
+  operation(md::out(C), A, B, {});
+}
