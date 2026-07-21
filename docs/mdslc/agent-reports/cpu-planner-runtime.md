@@ -184,6 +184,10 @@ Results:
    diagnostic formatting.
 4. `aab3cc25e5664540b88740d6e8a2da6ea5c2fd61` — aligned runtime and exact
    registry metadata coverage.
+5. `e065b32f7102fc7040fd47ad40c8a52d82a109af` — this validation and benchmark
+   evidence report.
+6. `b68a2f55838cbd7f6aa5e40e04b6095d79c233d2` — power-of-two alignment
+   legality and overflow-safe benchmark dimensions.
 
 An unexplained concurrent editor added useful adversarial assertions and
 benchmark guard/compiler metadata in this isolated worktree. The integration
