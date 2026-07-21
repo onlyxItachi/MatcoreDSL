@@ -1,11 +1,14 @@
 #include "matcore_ir.h"
 #include "matcore_ir_v1.h"
 
+#include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -142,6 +145,11 @@ int main() {
         "read/write effects must be typed and ordered");
 
   const std::string v1_json = v1::serializeDeterministicJson(typed);
+  const std::string v1_golden =
+      readFile(std::string(MDSLC_IR_TEST_SOURCE_DIR) +
+               "/gemm_capture.v1.golden.json");
+  check(v1_json == v1_golden,
+        "canonical v1 serialization must match the reviewed golden bytes");
   check(v1_json == v1::serializeDeterministicJson(typed),
         "v1 serialization must be deterministic across calls");
   checkContains(v1_json, "\"version\": 1", "v1 JSON must identify version 1");
@@ -155,10 +163,10 @@ int main() {
   checkContains(error, "expected version 1",
                 "wrong exact parser diagnostic must name expected version");
 
-  check(v1::parseAndVerifyJson(v1_json, reparsed, error),
-        "serialized v1 must parse and verify");
-  check(v1::serializeDeterministicJson(reparsed) == v1_json,
-        "v1 parse/serialize must be byte stable");
+  check(v1::parseAndVerifyJson(v1_golden, reparsed, error),
+        "reviewed v1 golden must parse and verify");
+  check(v1::serializeDeterministicJson(reparsed) == v1_golden,
+        "v1 golden parse/serialize must be byte stable");
 
   v0::Module projected;
   check(v1::projectToV0(reparsed, projected, error),
@@ -212,10 +220,137 @@ int main() {
   check(!v1::projectToV0(strided, projected, error),
         "general strided semantics must not project to contiguous v0");
 
+  v1::Module renamed_symbols = typed;
+  renamed_symbols.operations[0].output.type.shape[0] =
+      v1::ScalarExpr::dynamic("rows");
+  renamed_symbols.operations[0].operands[0].type.shape[0] =
+      v1::ScalarExpr::dynamic("rows");
+  check(v1::verify(renamed_symbols, error),
+        "noncanonical but consistent dynamic symbols must verify in v1");
+  check(!v1::projectToV0(renamed_symbols, projected, error),
+        "v0 projection must reject noncanonical dynamic symbols");
+  checkContains(error, "losslessly",
+                "renamed dynamic symbols must receive a lossy diagnostic");
+
   v1::Module invalid = typed;
   invalid.operations[0].operands[1].type.shape[0] =
       v1::ScalarExpr::dynamic("other_k");
   expectInvalid(invalid, "M/K/N", "mismatched contraction dimensions fail");
+
+  invalid = typed;
+  invalid.translation_unit.clear();
+  expectInvalid(invalid, "translation-unit", "missing translation unit fails");
+
+  invalid = typed;
+  invalid.source_file = "input.cpp";
+  expectInvalid(invalid, ".mdsl", "non-MDSL source file fails");
+
+  invalid = typed;
+  invalid.producer = "untrusted-producer";
+  expectInvalid(invalid, "producer", "unknown producer fails");
+
+  invalid = typed;
+  invalid.operations[0].site_id = "MC_3c5b6d5e7992fb7b249de44210c6415d";
+  expectInvalid(invalid, "site IDs", "noncanonical site ID fails");
+
+  invalid = typed;
+  invalid.operations[0].kind = static_cast<v1::OperationKind>(99);
+  expectInvalid(invalid, "canonical gemm", "unknown operation kind fails");
+
+  invalid = typed;
+  invalid.operations[0].canonical_callee = "matcore::mdsl::other";
+  expectInvalid(invalid, "canonical gemm", "noncanonical callee fails");
+
+  invalid = typed;
+  invalid.operations[0].source.file = "other.mdsl";
+  expectInvalid(invalid, "input .mdsl", "foreign source location fails");
+
+  invalid = typed;
+  invalid.operations[0].source.line = 0;
+  expectInvalid(invalid, "source location", "zero source line fails");
+
+  invalid = typed;
+  ++invalid.operations[0].call_range.begin;
+  expectInvalid(invalid, "half-open", "source offset/range mismatch fails");
+
+  invalid = typed;
+  invalid.operations[0].argument_ranges.resize(2);
+  expectInvalid(invalid, "three or four", "wrong argument range count fails");
+
+  invalid = typed;
+  invalid.operations[0].argument_ranges[1].begin =
+      invalid.operations[0].argument_ranges[0].begin;
+  expectInvalid(invalid, "ordered", "overlapping argument ranges fail");
+
+  invalid = typed;
+  v1::Operation overlapping = invalid.operations[0];
+  overlapping.site_id = "mc_11111111111111111111111111111111";
+  invalid.operations.push_back(std::move(overlapping));
+  expectInvalid(invalid, "sorted", "overlapping operation ranges fail");
+
+  invalid = typed;
+  invalid.operations[0].output.id = v1::ValueId::Lhs;
+  expectInvalid(invalid, "semantic role", "incorrect output role fails");
+
+  invalid = typed;
+  invalid.operations[0].operands[0].source_expression.clear();
+  expectInvalid(invalid, "source expression", "empty source expression fails");
+
+  invalid = typed;
+  invalid.operations[0].operands.clear();
+  expectInvalid(invalid, "ordered lhs", "missing operands fail");
+
+  invalid = typed;
+  invalid.operations[0].output.type.rank = 3;
+  expectInvalid(invalid, "rank 2", "wrong tensor rank fails");
+
+  invalid = typed;
+  invalid.operations[0].output.type.shape.pop_back();
+  expectInvalid(invalid, "rank 2", "wrong shape cardinality fails");
+
+  invalid = typed;
+  invalid.operations[0].output.type.element_dtype =
+      static_cast<v1::DType>(99);
+  expectInvalid(invalid, "element dtype", "unknown dtype fails");
+
+  invalid = typed;
+  invalid.operations[0].output.type.element_dtype = v1::DType::F64;
+  invalid.operations[0].output.type.required_alignment_bytes = 8;
+  expectInvalid(invalid, "element dtypes", "mismatched tensor dtypes fail");
+
+  invalid = typed;
+  invalid.operations[0].accumulation_dtype = v1::DType::F64;
+  expectInvalid(invalid, "accumulation", "illegal accumulation dtype fails");
+
+  invalid = typed;
+  invalid.operations[0].output.type.layout = static_cast<v1::Layout>(99);
+  expectInvalid(invalid, "layout or memory", "unknown layout fails");
+
+  invalid = typed;
+  invalid.operations[0].output.type.memory_space =
+      static_cast<v1::MemorySpace>(99);
+  expectInvalid(invalid, "layout or memory", "unknown memory space fails");
+
+  invalid = typed;
+  invalid.operations[0].output.type.required_alignment_bytes = 2;
+  expectInvalid(invalid, "at least", "under-aligned f32 value fails");
+
+  invalid = typed;
+  invalid.operations[0].output.type.layout =
+      v1::Layout::ColumnMajorContiguous;
+  expectInvalid(invalid, "column-major", "invalid column-major strides fail");
+
+  invalid = typed;
+  v1::ScalarExpr malformed_static = v1::ScalarExpr::staticValue(2);
+  malformed_static.symbol = "not_allowed";
+  invalid.operations[0].output.type.shape[0] = malformed_static;
+  expectInvalid(invalid, "no symbol", "static expression with a symbol fails");
+
+  invalid = typed;
+  v1::ScalarExpr malformed_dynamic = v1::ScalarExpr::dynamic("m");
+  malformed_dynamic.value = 7;
+  invalid.operations[0].output.type.shape[0] = malformed_dynamic;
+  expectInvalid(invalid, "no literal", "dynamic expression with a literal fails");
 
   invalid = typed;
   invalid.operations[0].output.type.strides[0] =
@@ -247,8 +382,18 @@ int main() {
   expectInvalid(invalid, "effects", "missing write effect fails");
 
   invalid = typed;
+  invalid.operations[0].effects.synchronization =
+      static_cast<v1::Synchronization>(99);
+  expectInvalid(invalid, "effects", "unknown synchronization fails");
+
+  invalid = typed;
   invalid.operations[0].alias_requirements.pop_back();
   expectInvalid(invalid, "no-alias", "missing alias precondition fails");
+
+  invalid = typed;
+  invalid.operations[0].output.source_expression =
+      invalid.operations[0].operands[0].source_expression;
+  expectInvalid(invalid, "must not alias", "matching output/input expressions fail");
 
   invalid = typed;
   std::swap(invalid.operations[0].requirements[0],
@@ -275,6 +420,14 @@ int main() {
   expectInvalid(invalid, "host f32", "device-resident v1 GEMM fails CPU scope");
 
   invalid = typed;
+  invalid.operations[0].policy.target = static_cast<v1::Target>(99);
+  expectInvalid(invalid, "target=cpu", "unknown target policy fails");
+
+  invalid = typed;
+  invalid.operations[0].policy.fallback = static_cast<v1::Fallback>(99);
+  expectInvalid(invalid, "target=cpu", "unknown fallback policy fails");
+
+  invalid = typed;
   invalid.operations.push_back(invalid.operations[0]);
   expectInvalid(invalid, "unique", "duplicate site IDs fail");
 
@@ -283,6 +436,8 @@ int main() {
   check(!v1::fromV0(invalid_v0, reparsed, error),
         "unverified v0 must never cross the v1 boundary");
   checkContains(error, "unverified", "invalid v0 upgrade must name the boundary");
+  check(reparsed.operations.empty(),
+        "failed v0 upgrade must not leave a stale typed module");
 
   const std::string unknown_version =
       replaceOnce(v1_json, "\"version\": 1", "\"version\": 99");
@@ -293,12 +448,65 @@ int main() {
         "v1 parser must reject unknown version without fallback");
   check(reparsed.operations.empty(), "failed v1 parse must reset output module");
 
+  const std::string unknown_schema = replaceOnce(
+      v1_json, "\"schema\": \"matcore.ir\"",
+      "\"schema\": \"matcore.unknown\"");
+  check(!v1::probeJsonVersion(unknown_schema, version, error),
+        "unknown schema must fail version dispatch");
+  checkContains(error, "schema", "unknown schema diagnostic is explicit");
+  check(!v1::parseAndVerifyJson(unknown_schema, reparsed, error),
+        "v1 parser must reject an unknown schema");
+
+  const std::string string_version = replaceOnce(
+      v1_json, "\"version\": 1", "\"version\": \"1\"");
+  check(!v1::probeJsonVersion(string_version, version, error),
+        "non-integer version must fail version dispatch");
+  checkContains(error, "integer", "non-integer version diagnostic is explicit");
+
+  check(!v1::parseAndVerifyJson("[]", reparsed, error),
+        "non-object JSON root must fail");
+  checkContains(error, "root", "non-object root diagnostic is explicit");
+
   const std::string extra_field = replaceOnce(
       v1_json, "\"producer\": \"clang-libtooling-v1\",",
       "\"producer\": \"clang-libtooling-v1\",\n  \"extra\": true,");
   check(!v1::parseAndVerifyJson(extra_field, reparsed, error),
         "v1 exact-member parser must reject unknown fields");
   checkContains(error, "unexpected", "unknown-field diagnostic is explicit");
+
+  const std::string extra_tensor_field = replaceOnce(
+      v1_json, "\"required_alignment_bytes\": 4",
+      "\"required_alignment_bytes\": 4, \"extra\": true");
+  check(!v1::parseAndVerifyJson(extra_tensor_field, reparsed, error),
+        "nested unknown tensor fields must fail exact-member parsing");
+  checkContains(error, "tensor value",
+                "nested unknown field diagnostic names the tensor object");
+
+  const std::string extra_scalar_field = replaceOnce(
+      v1_json, "\"symbol\": \"m\"",
+      "\"symbol\": \"m\", \"value\": 1");
+  check(!v1::parseAndVerifyJson(extra_scalar_field, reparsed, error),
+        "scalar expressions must reject unknown members");
+  checkContains(error, "scalar expression",
+                "scalar exact-member diagnostic is explicit");
+
+  const std::string bad_dtype =
+      replaceOnce(v1_json, "\"dtype\": \"f32\"", "\"dtype\": \"f128\"");
+  check(!v1::parseAndVerifyJson(bad_dtype, reparsed, error),
+        "unknown dtype must fail JSON parsing");
+  checkContains(error, "dtype", "unknown dtype diagnostic is explicit");
+
+  const std::string renamed_operation_field = replaceOnce(
+      v1_json, "\"canonical_callee\"", "\"callee\"");
+  check(!v1::parseAndVerifyJson(renamed_operation_field, reparsed, error),
+        "missing operation members must fail exact-member parsing");
+  checkContains(error, "operation", "missing operation field names its object");
+
+  const std::string bad_source_range = replaceOnce(
+      v1_json, "\"end\": 550", "\"end\": 419");
+  check(!v1::parseAndVerifyJson(bad_source_range, reparsed, error),
+        "nonempty source ranges are verified after JSON parsing");
+  checkContains(error, "verifier rejected", "semantic JSON rejection is wrapped");
 
   const std::string bad_requirement =
       replaceOnce(v1_json, "\"f32_arithmetic\"", "\"f64_arithmetic\"");
