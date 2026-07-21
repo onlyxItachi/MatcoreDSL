@@ -1,8 +1,14 @@
 #include "matcore/runtime_c.h"
 
+#include "cpu_planner.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+
+static_assert(matcore::mdslc::planner::kCpuGemmCandidateCountV1 ==
+                  MATCORE_RUNTIME_CPU_GEMM_CANDIDATE_COUNT_V1,
+              "CPU planner registry and C plan report must stay in sync");
 
 namespace {
 
@@ -111,13 +117,18 @@ bool overlaps(std::uintptr_t lhs_begin, std::uintptr_t lhs_end,
   return lhs_begin < rhs_end && rhs_begin < lhs_end;
 }
 
-}  // namespace
+struct ValidatedGemmV0 {
+  matcore::mdslc::planner::CpuGemmProblemV1 problem;
+  const float *lhs = nullptr;
+  const float *rhs = nullptr;
+  float *out = nullptr;
+};
 
-extern "C" MATCORE_RUNTIME_API matcore_status_v0
-matcore_runtime_gemm_f32_v0(const matcore_tensor_desc_v0 *out,
-                            const matcore_tensor_desc_v0 *lhs,
-                            const matcore_tensor_desc_v0 *rhs,
-                            const matcore_policy_v0 *policy) noexcept {
+matcore_status_v0 validate_gemm_v0(const matcore_tensor_desc_v0 *out,
+                                   const matcore_tensor_desc_v0 *lhs,
+                                   const matcore_tensor_desc_v0 *rhs,
+                                   const matcore_policy_v0 *policy,
+                                   ValidatedGemmV0 *validated) noexcept {
   if (out == nullptr || lhs == nullptr || rhs == nullptr || policy == nullptr) {
     return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
                   "GEMM descriptors and policy must be non-null");
@@ -183,17 +194,171 @@ matcore_runtime_gemm_f32_v0(const matcore_tensor_desc_v0 *out,
                   "GEMM output must not overlap either input");
   }
 
-  const auto *a = static_cast<const float *>(lhs->data);
-  const auto *b = static_cast<const float *>(rhs->data);
-  auto *c = static_cast<float *>(out->data);
-  for (std::int64_t i = 0; i < m; ++i) {
-    for (std::int64_t j = 0; j < n; ++j) {
-      float sum = 0.0F;
-      for (std::int64_t p = 0; p < k; ++p) {
-        sum += a[i * k + p] * b[p * n + j];
-      }
-      c[i * n + j] = sum;
+  const std::uint32_t out_alignment =
+      matcore::mdslc::planner::pointer_alignment_bytes(out->data);
+  const std::uint32_t lhs_alignment =
+      matcore::mdslc::planner::pointer_alignment_bytes(lhs->data);
+  const std::uint32_t rhs_alignment =
+      matcore::mdslc::planner::pointer_alignment_bytes(rhs->data);
+  std::uint32_t minimum_alignment =
+      out_alignment < lhs_alignment ? out_alignment : lhs_alignment;
+  if (rhs_alignment < minimum_alignment) minimum_alignment = rhs_alignment;
+  validated->problem = {m,
+                        n,
+                        k,
+                        matcore::mdslc::planner::CpuScalarTypeV1::f32,
+                        matcore::mdslc::planner::CpuScalarTypeV1::f32,
+                        matcore::mdslc::planner::CpuLayoutV1::row_major_contiguous,
+                        minimum_alignment};
+  validated->lhs = static_cast<const float *>(lhs->data);
+  validated->rhs = static_cast<const float *>(rhs->data);
+  validated->out = static_cast<float *>(out->data);
+  return status(MATCORE_STATUS_OK_V0, "ok");
+}
+
+bool empty_candidate_report(
+    const matcore_cpu_gemm_candidate_v1 &candidate) noexcept {
+  return candidate.stable_id == nullptr && candidate.legal == 0 &&
+         candidate.deterministic_priority == 0 &&
+         candidate.estimated_cost == 0 && candidate.reason == nullptr &&
+         reserved_is_zero(candidate.reserved);
+}
+
+matcore_status_v0 validate_empty_report(
+    const matcore_cpu_gemm_plan_report_v1 &report) noexcept {
+  if (report.abi_version != MATCORE_RUNTIME_PLAN_ABI_VERSION_V1 ||
+      report.struct_size != sizeof(matcore_cpu_gemm_plan_report_v1)) {
+    return status(MATCORE_STATUS_ABI_MISMATCH_V0,
+                  "CPU plan report ABI version or size mismatch");
+  }
+  if (report.planner_version != 0 || report.request != 0 ||
+      report.plan_status != 0 || report.architecture != 0 ||
+      report.capability_detection_complete != 0 ||
+      report.usable_vector_bits != 0 || report.feature_bits != 0 ||
+      report.m != 0 || report.n != 0 || report.k != 0 ||
+      report.minimum_alignment_bytes != 0 || report.candidate_count != 0 ||
+      report.selected_stable_id != nullptr || report.selection_reason != nullptr ||
+      !reserved_is_zero(report.reserved)) {
+    return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
+                  "CPU plan report output fields must be zero");
+  }
+  for (const auto &candidate : report.candidates) {
+    if (!empty_candidate_report(candidate)) {
+      return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
+                    "CPU plan report output fields must be zero");
     }
+  }
+  return status(MATCORE_STATUS_OK_V0, "ok");
+}
+
+matcore_cpu_architecture_v1 to_c_architecture(
+    matcore::mdslc::planner::CpuArchitectureV1 architecture) noexcept {
+  using Architecture = matcore::mdslc::planner::CpuArchitectureV1;
+  switch (architecture) {
+    case Architecture::x86_64:
+      return MATCORE_CPU_ARCHITECTURE_X86_64_V1;
+    case Architecture::aarch64:
+      return MATCORE_CPU_ARCHITECTURE_AARCH64_V1;
+    case Architecture::unknown:
+      return MATCORE_CPU_ARCHITECTURE_UNKNOWN_V1;
+  }
+  return MATCORE_CPU_ARCHITECTURE_UNKNOWN_V1;
+}
+
+matcore_cpu_plan_status_v1 to_c_plan_status(
+    matcore::mdslc::planner::CpuPlanStatusV1 plan_status) noexcept {
+  using Status = matcore::mdslc::planner::CpuPlanStatusV1;
+  switch (plan_status) {
+    case Status::selected:
+      return MATCORE_CPU_PLAN_STATUS_SELECTED_V1;
+    case Status::no_legal_variant:
+      return MATCORE_CPU_PLAN_STATUS_NO_LEGAL_VARIANT_V1;
+    case Status::forced_variant_illegal:
+      return MATCORE_CPU_PLAN_STATUS_FORCED_VARIANT_ILLEGAL_V1;
+    case Status::invalid_problem:
+      return MATCORE_CPU_PLAN_STATUS_INVALID_PROBLEM_V1;
+    case Status::invalid_capabilities:
+      return MATCORE_CPU_PLAN_STATUS_INVALID_CAPABILITIES_V1;
+  }
+  return MATCORE_CPU_PLAN_STATUS_INVALID_CAPABILITIES_V1;
+}
+
+void populate_report(const matcore::mdslc::planner::CpuGemmPlanV1 &plan,
+                     matcore_cpu_gemm_plan_report_v1 *report) noexcept {
+  matcore_cpu_gemm_plan_report_v1 output{};
+  output.abi_version = MATCORE_RUNTIME_PLAN_ABI_VERSION_V1;
+  output.struct_size = sizeof(output);
+  output.planner_version = plan.planner_version;
+  output.request = MATCORE_CPU_PLAN_REQUEST_AUTOMATIC_V1;
+  output.plan_status = to_c_plan_status(plan.status);
+  output.architecture = to_c_architecture(plan.capabilities.architecture);
+  output.capability_detection_complete =
+      plan.capabilities.detection_complete ? 1U : 0U;
+  output.usable_vector_bits = plan.capabilities.usable_vector_bits;
+  output.feature_bits = plan.capabilities.features;
+  output.m = plan.problem.m;
+  output.n = plan.problem.n;
+  output.k = plan.problem.k;
+  output.minimum_alignment_bytes = plan.problem.minimum_alignment_bytes;
+  output.candidate_count = static_cast<uint32_t>(plan.candidates.size());
+  for (std::size_t index = 0; index < plan.candidates.size(); ++index) {
+    const auto &source = plan.candidates[index];
+    auto &destination = output.candidates[index];
+    destination.stable_id = source.stable_id.data();
+    destination.legal = source.legal ? 1U : 0U;
+    destination.deterministic_priority = source.deterministic_priority;
+    destination.estimated_cost = source.estimated_cost;
+    destination.reason = source.reason.data();
+  }
+  output.selected_stable_id = plan.selected_id.data();
+  output.selection_reason = plan.selection_reason.data();
+  *report = output;
+}
+
+}  // namespace
+
+extern "C" MATCORE_RUNTIME_API matcore_status_v0
+matcore_runtime_plan_gemm_f32_v1(const matcore_tensor_desc_v0 *out,
+                                 const matcore_tensor_desc_v0 *lhs,
+                                 const matcore_tensor_desc_v0 *rhs,
+                                 const matcore_policy_v0 *policy,
+                                 matcore_cpu_gemm_plan_report_v1 *report) noexcept {
+  if (report == nullptr) {
+    return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
+                  "CPU plan report must be non-null");
+  }
+  matcore_status_v0 result = validate_empty_report(*report);
+  if (result.code != MATCORE_STATUS_OK_V0) return result;
+  ValidatedGemmV0 validated;
+  result = validate_gemm_v0(out, lhs, rhs, policy, &validated);
+  if (result.code != MATCORE_STATUS_OK_V0) return result;
+  const auto plan = matcore::mdslc::planner::plan_cpu_gemm_v1(
+      validated.problem,
+      matcore::mdslc::planner::discover_cpu_capabilities_v1());
+  if (plan.status != matcore::mdslc::planner::CpuPlanStatusV1::selected) {
+    return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
+                  "CPU GEMM planner found no legal implementation");
+  }
+  populate_report(plan, report);
+  return status(MATCORE_STATUS_OK_V0, "ok");
+}
+
+extern "C" MATCORE_RUNTIME_API matcore_status_v0
+matcore_runtime_gemm_f32_v0(const matcore_tensor_desc_v0 *out,
+                            const matcore_tensor_desc_v0 *lhs,
+                            const matcore_tensor_desc_v0 *rhs,
+                            const matcore_policy_v0 *policy) noexcept {
+  ValidatedGemmV0 validated;
+  const matcore_status_v0 result =
+      validate_gemm_v0(out, lhs, rhs, policy, &validated);
+  if (result.code != MATCORE_STATUS_OK_V0) return result;
+  const auto plan = matcore::mdslc::planner::plan_cpu_gemm_v1(
+      validated.problem,
+      matcore::mdslc::planner::discover_cpu_capabilities_v1());
+  if (!matcore::mdslc::planner::execute_cpu_gemm_plan_v1(
+          plan, validated.lhs, validated.rhs, validated.out)) {
+    return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
+                  "CPU GEMM planner found no legal implementation");
   }
   return status(MATCORE_STATUS_OK_V0, "ok");
 }
