@@ -133,6 +133,7 @@ add_subdirectory(lib/frontend)
 add_subdirectory(lib/codegen)
 add_subdirectory(tools/matcore-extract)
 add_subdirectory(lib/runtime)
+add_subdirectory(tools/matcore-plan)
 
 add_executable(mdslc_driver tools/mdslc/main.cpp)
 set_property(TARGET mdslc_driver PROPERTY EXPORT_NAME Compiler)
@@ -158,7 +159,7 @@ add_dependencies(mdslc_driver matcore-extract matcore_runtime)
 set_property(TARGET matcore-extract PROPERTY EXPORT_NAME Extractor)
 
 install(
-  TARGETS mdslc_driver matcore-extract matcore_runtime
+  TARGETS mdslc_driver matcore-extract matcore_runtime matcore-plan
   EXPORT MatcoreDSLTargets
   RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
   LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
