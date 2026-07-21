@@ -266,12 +266,10 @@ void planner_contract() {
   non_x86.architecture = CpuArchitectureV1::aarch64;
   const auto non_x86_plan = matcore::mdslc::planner::plan_cpu_gemm_v1(
       problem(32, 32, 32), non_x86);
-  expect_selected(non_x86_plan, CpuGemmVariantV1::tiled,
-                  "non-x86 synthetic capabilities");
-  expect(!non_x86_plan.candidates[2].legal &&
-             non_x86_plan.candidates[2].reason ==
-                 "compiler-vectorized candidate requires x86_64",
-         "non-x86 vector request has an explicit reason");
+  expect(non_x86_plan.status == CpuPlanStatusV1::invalid_capabilities &&
+             non_x86_plan.selection_reason ==
+                 "AVX2 capability requires x86_64 architecture",
+         "incoherent architecture and AVX2 claims fail closed");
 
   auto narrow_vector = vector_capabilities();
   narrow_vector.usable_vector_bits = 128;
@@ -340,6 +338,69 @@ void planner_contract() {
     expect(candidate.reason == "CPU capability record version is unsupported",
            "every candidate explains an unsupported capability version");
   }
+
+  auto unknown_architecture = vector_capabilities();
+  unknown_architecture.architecture =
+      static_cast<CpuArchitectureV1>(UINT8_C(255));
+  const auto unknown_architecture_plan =
+      matcore::mdslc::planner::plan_cpu_gemm_v1(
+          problem(32, 32, 32), unknown_architecture);
+  expect(unknown_architecture_plan.status ==
+                 CpuPlanStatusV1::invalid_capabilities &&
+             unknown_architecture_plan.selection_reason ==
+                 "CPU capability record architecture is invalid",
+         "out-of-domain architecture values fail closed");
+  for (const auto &candidate : unknown_architecture_plan.candidates) {
+    expect(!candidate.legal &&
+               candidate.reason ==
+                   "CPU capability record architecture is invalid",
+           "every candidate explains an invalid architecture");
+  }
+
+  auto unknown_features = vector_capabilities();
+  unknown_features.features |= UINT64_C(1) << 63;
+  const auto unknown_features_plan = matcore::mdslc::planner::plan_cpu_gemm_v1(
+      problem(32, 32, 32), unknown_features);
+  expect(unknown_features_plan.status ==
+                 CpuPlanStatusV1::invalid_capabilities &&
+             unknown_features_plan.selection_reason ==
+                 "CPU capability record contains unknown feature bits",
+         "unknown feature bits fail closed");
+
+  auto invalid_vector_width = vector_capabilities();
+  invalid_vector_width.usable_vector_bits = UINT16_C(65535);
+  const auto invalid_vector_width_plan =
+      matcore::mdslc::planner::plan_cpu_gemm_v1(
+          problem(32, 32, 32), invalid_vector_width);
+  expect(invalid_vector_width_plan.status ==
+                 CpuPlanStatusV1::invalid_capabilities &&
+             invalid_vector_width_plan.selection_reason ==
+                 "CPU capability vector width is outside the v1 domain",
+         "out-of-domain vector widths fail closed");
+
+  std::array<char, 2048> invalid_capability_diagnostic{};
+  matcore::mdslc::planner::format_cpu_gemm_plan_v1(
+      unknown_architecture_plan, invalid_capability_diagnostic.data(),
+      invalid_capability_diagnostic.size());
+  const std::string_view invalid_diagnostic(
+      invalid_capability_diagnostic.data());
+  expect(invalid_diagnostic.find("arch=invalid(255)") !=
+                 std::string_view::npos &&
+             invalid_diagnostic.find("status=invalid-capabilities") !=
+                 std::string_view::npos &&
+             invalid_diagnostic.find(
+                 "reason=CPU capability record architecture is invalid") !=
+                 std::string_view::npos,
+         "invalid capability diagnostics remain complete and parseable");
+
+  std::array<char, 2048> unknown_feature_diagnostic{};
+  matcore::mdslc::planner::format_cpu_gemm_plan_v1(
+      unknown_features_plan, unknown_feature_diagnostic.data(),
+      unknown_feature_diagnostic.size());
+  expect(std::string_view(unknown_feature_diagnostic.data())
+                 .find("unknown-bits=9223372036854775808") !=
+             std::string_view::npos,
+         "diagnostics expose unknown capability bits instead of hiding them");
 
   const auto saturated = matcore::mdslc::planner::plan_cpu_gemm_v1(
       problem(std::numeric_limits<std::int64_t>::max(),

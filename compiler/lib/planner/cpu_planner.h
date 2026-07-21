@@ -170,6 +170,42 @@ struct CpuGemmPlanV1 {
 
 namespace detail {
 
+inline constexpr std::uint64_t kKnownCpuFeatureBitsV1 =
+    feature_bit(CpuFeatureV1::portable_scalar_f32) |
+    feature_bit(CpuFeatureV1::avx2) | feature_bit(CpuFeatureV1::fma);
+
+constexpr std::string_view capability_record_reason(
+    const CpuCapabilitiesV1 &capabilities) noexcept {
+  if (capabilities.version != kCpuCapabilitiesVersionV1)
+    return "CPU capability record version is unsupported";
+  switch (capabilities.architecture) {
+    case CpuArchitectureV1::unknown:
+    case CpuArchitectureV1::x86_64:
+    case CpuArchitectureV1::aarch64:
+      break;
+    default:
+      return "CPU capability record architecture is invalid";
+  }
+  if ((capabilities.features & ~kKnownCpuFeatureBitsV1) != 0)
+    return "CPU capability record contains unknown feature bits";
+  if (capabilities.detection_complete &&
+      capabilities.architecture == CpuArchitectureV1::unknown)
+    return "complete CPU capability discovery requires a known architecture";
+  if (has_feature(capabilities, CpuFeatureV1::avx2) &&
+      capabilities.architecture != CpuArchitectureV1::x86_64)
+    return "AVX2 capability requires x86_64 architecture";
+  if (capabilities.usable_vector_bits != 0 &&
+      capabilities.usable_vector_bits != 128 &&
+      capabilities.usable_vector_bits != 256 &&
+      capabilities.usable_vector_bits != 512)
+    return "CPU capability vector width is outside the v1 domain";
+  if (capabilities.usable_vector_bits != 0 &&
+      (!has_feature(capabilities, CpuFeatureV1::avx2) ||
+       capabilities.architecture != CpuArchitectureV1::x86_64))
+    return "usable vector width requires modeled x86_64 AVX2 capability";
+  return {};
+}
+
 constexpr std::uint64_t saturating_add(std::uint64_t lhs,
                                        std::uint64_t rhs) noexcept {
   const auto maximum = std::numeric_limits<std::uint64_t>::max();
@@ -377,12 +413,14 @@ inline CpuGemmPlanV1 plan_cpu_gemm_v1(
   plan.request = request;
 
   const std::string_view problem_reason = detail::common_legality_reason(problem);
+  const std::string_view capability_reason =
+      detail::capability_record_reason(capabilities);
   if (!problem_reason.empty()) {
     plan.status = CpuPlanStatusV1::invalid_problem;
     plan.selection_reason = problem_reason;
-  } else if (capabilities.version != kCpuCapabilitiesVersionV1) {
+  } else if (!capability_reason.empty()) {
     plan.status = CpuPlanStatusV1::invalid_capabilities;
-    plan.selection_reason = "CPU capability record version is unsupported";
+    plan.selection_reason = capability_reason;
   }
 
   bool found = false;
@@ -399,10 +437,14 @@ inline CpuGemmPlanV1 plan_cpu_gemm_v1(
       decision.reason = problem_reason;
       continue;
     }
-    const auto capability_reason =
-        detail::capability_legality_reason(record, capabilities);
     if (!capability_reason.empty()) {
       decision.reason = capability_reason;
+      continue;
+    }
+    const auto variant_capability_reason =
+        detail::capability_legality_reason(record, capabilities);
+    if (!variant_capability_reason.empty()) {
+      decision.reason = variant_capability_reason;
       continue;
     }
     decision.legal = true;
@@ -423,8 +465,7 @@ inline CpuGemmPlanV1 plan_cpu_gemm_v1(
     }
   }
 
-  if (!problem_reason.empty() ||
-      capabilities.version != kCpuCapabilitiesVersionV1)
+  if (!problem_reason.empty() || !capability_reason.empty())
     return plan;
   if (!found) {
     plan.status = request == CpuGemmRequestV1::automatic
@@ -493,6 +534,12 @@ inline std::size_t format_cpu_gemm_plan_v1(const CpuGemmPlanV1 &plan,
     case CpuArchitectureV1::aarch64:
       writer.text("aarch64");
       break;
+    default:
+      writer.text("invalid(");
+      writer.number(static_cast<std::uint8_t>(
+          plan.capabilities.architecture));
+      writer.character(')');
+      break;
   }
   writer.text(" detection_complete=");
   writer.text(plan.capabilities.detection_complete ? "true" : "false");
@@ -508,6 +555,13 @@ inline std::size_t format_cpu_gemm_plan_v1(const CpuGemmPlanV1 &plan,
   write_feature(CpuFeatureV1::portable_scalar_f32, "portable-scalar-f32");
   write_feature(CpuFeatureV1::avx2, "avx2");
   write_feature(CpuFeatureV1::fma, "fma");
+  const std::uint64_t unknown_feature_bits =
+      plan.capabilities.features & ~detail::kKnownCpuFeatureBitsV1;
+  if (unknown_feature_bits != 0) {
+    if (wrote_feature) writer.character(',');
+    writer.text("unknown-bits=");
+    writer.number(unknown_feature_bits);
+  }
   writer.text("] vector_bits=");
   writer.number(plan.capabilities.usable_vector_bits);
   writer.text(" request=");
@@ -523,6 +577,9 @@ inline std::size_t format_cpu_gemm_plan_v1(const CpuGemmPlanV1 &plan,
       break;
     case CpuGemmRequestV1::force_compiler_vectorized:
       writer.text("force-compiler-vectorized");
+      break;
+    default:
+      writer.text("invalid");
       break;
   }
   writer.text(" status=");
@@ -541,6 +598,9 @@ inline std::size_t format_cpu_gemm_plan_v1(const CpuGemmPlanV1 &plan,
       break;
     case CpuPlanStatusV1::invalid_capabilities:
       writer.text("invalid-capabilities");
+      break;
+    default:
+      writer.text("invalid");
       break;
   }
   writer.text(" m=");
