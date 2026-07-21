@@ -32,6 +32,8 @@ namespace {
 
 thread_local ObservabilityContext *g_gpu_runtime_observability = nullptr;
 
+#if __has_include("cuda.h")
+
 // V2 Pillar 2: Thread-local capture stream override.
 // When set, mgpuStreamCreate() returns this stream instead of creating one,
 // and mgpuStreamDestroy() is a no-op. This ensures the kernel executes on
@@ -48,6 +50,8 @@ struct CaptureModuleCache {
   bool warmup = false;  // true during warm-up — cache values, skip unload
 };
 thread_local CaptureModuleCache g_capture_module_cache;
+
+#endif
 
 void traceGpuRuntimeEvent(TraceEventKind kind, const std::string &name,
                           const std::string &metadata = {}) {
