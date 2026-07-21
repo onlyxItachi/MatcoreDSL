@@ -202,6 +202,9 @@ constexpr std::string_view common_legality_reason(
     return "variant requires row-major contiguous matrices";
   if (problem.minimum_alignment_bytes < alignof(float))
     return "variant requires float-aligned storage";
+  if ((problem.minimum_alignment_bytes &
+       (problem.minimum_alignment_bytes - 1U)) != 0)
+    return "minimum alignment must be a power of two";
   return {};
 }
 
