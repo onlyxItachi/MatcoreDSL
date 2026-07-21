@@ -1,0 +1,11 @@
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+#define MDSLC_GEMM md::gemm
+
+void macro_callee(md::matrix_view &C, const md::matrix_view &A,
+                  const md::matrix_view &B) {
+  (MDSLC_GEMM)(md::out(C), A, B, md::policy{});
+}
+
+#undef MDSLC_GEMM

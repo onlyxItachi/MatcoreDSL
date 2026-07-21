@@ -1,0 +1,8 @@
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+
+void rejected_temporary_output(const md::matrix_view &A,
+                               const md::matrix_view &B) {
+  md::gemm(md::out(md::matrix_view{}), A, B);
+}

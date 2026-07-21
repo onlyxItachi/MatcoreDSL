@@ -34,7 +34,10 @@ class MatmulCorrectnessReport:
 
 _FP8_CLEAR_FAILURE_MESSAGES: tuple[str, ...] = (
     "float8_e4m3fn matmul is currently limited to nvidia-dgpu",
+    "float8_e4m3fn matmul requires float32 output/accumulation",
     "float8_e4m3fn matmul requires native nvidia fp8 tensor-core support",
+    "float8_e4m3fn matmul is eligible for nvidia fp8 wgmma on sm_90+",
+    "float8_e4m3fn matmul is not eligible for nvidia fp8 wgmma",
     "float8_e4m3fn matmul requires a dedicated native nvidia fp8 wgmma lowering path",
 )
 
@@ -135,7 +138,7 @@ def run_fp8_case_with_capability(target: str) -> tuple[str, str | np.ndarray]:
     rhs_storage = np.array([[0x3C, 0x44], [0x40, 0x38]], dtype=np.uint8)
     lhs = mc.asdtype(lhs_storage, "float8_e4m3fn")
     rhs = mc.asdtype(rhs_storage, "float8_e4m3fn")
-    out = np.zeros((2, 2), dtype=np.float16)
+    out = np.zeros((2, 2), dtype=np.float32)
 
     try:
         mc.launch(matmul_kernel, lhs, rhs, out, target=target)

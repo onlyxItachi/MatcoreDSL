@@ -1,0 +1,10 @@
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+
+void namespace_alias(md::matrix_view &C, const md::matrix_view &A,
+                     const md::matrix_view &B) {
+  md::gemm(md::out(C), A, B,
+           md::policy{.target = md::target::cpu,
+                      .fallback = md::fallback::error});
+}

@@ -1,0 +1,10 @@
+#include "untrusted/matcore/mdsl.h"
+
+namespace md = matcore::mdsl;
+
+void rejected_header(md::matrix_view &output, md::matrix_view &lhs,
+                     md::matrix_view &rhs) {
+  md::gemm(md::out(output), lhs, rhs,
+           md::policy{.target = md::target::cpu,
+                      .fallback = md::fallback::error});
+}

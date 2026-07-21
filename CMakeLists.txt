@@ -5,6 +5,11 @@ set(CMAKE_CXX_COMPILER "/usr/bin/clang++" CACHE FILEPATH "C++ compiler" FORCE)
 
 project(MatCore LANGUAGES C CXX)
 
+# Default to Release (-O3 -DNDEBUG) for maximum optimization.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 if(NOT EXISTS "${MLIR_DIR}/MLIRConfig.cmake" AND
    EXISTS "/usr/lib/llvm-18/lib/cmake/mlir/MLIRConfig.cmake")
   set(MLIR_DIR "/usr/lib/llvm-18/lib/cmake/mlir" CACHE PATH "MLIR CMake package" FORCE)
@@ -41,16 +46,35 @@ include_directories(SYSTEM
 add_definitions(${LLVM_DEFINITIONS})
 
 set(MATCORE_NATIVE_SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/amd_runtime_symbols.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/bindings.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/cache_manager.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/cpu_lowering.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/diagnostics.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/executor.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/fp8_wgmma.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/fusion_analysis.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/fusion_emitter.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/fusion_emitter_common.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/fusion_emitter_family_a.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/fusion_emitter_family_b.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/fusion_emitter_family_c.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/fusion_epilogue_pass.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_amd_lowering.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_data_staging.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_mapping.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_nvvm_lowering.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/transform_builder.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_runtime_symbols.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu_tiling.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/lowering_pipeline.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/mlir_engine.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/jit_runner.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime_capabilities.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/observability.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/region_emitter.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/region_emitter_block_attn_res.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/region_verifier.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/target_registry.cpp"
 )
 

@@ -1,0 +1,10 @@
+#define float double
+#include <matcore/mdsl.h>
+#undef float
+
+namespace md = matcore::mdsl;
+
+void abi_macro(md::matrix_view &C, const md::matrix_view &A,
+               const md::matrix_view &B) {
+  md::gemm(md::out(C), A, B, md::policy{});
+}

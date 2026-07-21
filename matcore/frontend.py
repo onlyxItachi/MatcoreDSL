@@ -1,14 +1,25 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
+import functools
+import hashlib
 import importlib
 import inspect
+import json
+import os
 import re
+import sys
 import textwrap
+import time
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+
+from .config import configure, get_config, reset_config
+from .device_tensor import DeviceTensor, to_device
 
 _NATIVE_MODULE_NAME = "_matcore_native"
 SUPPORTED_TARGETS: tuple[str, ...] = (
@@ -45,6 +56,7 @@ _TARGET_ALIASES: dict[str, str] = {
     "amd_npu": "amd-npu",
 }
 _NVIDIA_SM_TOKEN = re.compile(r"^(?:compute_)?sm?_?([0-9]{2,3})$")
+_AMD_GFX_TOKEN = re.compile(r"^gfx[0-9a-z]+$")
 _DTYPE_STORAGE_BYTES: dict[str, int] = {
     "float32": 4,
     "float16": 2,
@@ -53,6 +65,34 @@ _DTYPE_STORAGE_BYTES: dict[str, int] = {
     "int32": 4,
     "float8_e4m3fn": 1,
 }
+_KERNEL_HELPER_NAMES = frozenset(
+    {
+        "load",
+        "store",
+        "matmul",
+        "transpose",
+        "add",
+        "sub",
+        "mul",
+        "div",
+        "relu",
+        "exp",
+        "log",
+        "sqrt",
+        "tanh",
+        "sigmoid",
+        "gelu",
+        "neg",
+        "abs",
+        "softmax",
+        "sin",
+        "cos",
+        "rsqrt",
+        "min",
+        "max",
+        "cast",
+    }
+)
 
 
 def _expr_to_source(node: ast.AST | None) -> str | None:
@@ -70,6 +110,14 @@ def _literal_int(node: ast.AST | None, default: int) -> int:
     if isinstance(node, ast.Constant) and isinstance(node.value, int):
         return int(node.value)
     return default
+
+
+def _literal_str(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return str(node.value)
+    if isinstance(node, ast.Str):
+        return str(node.s)
+    return None
 
 
 def _indices_from_node(node: ast.AST | None) -> list[str]:
@@ -123,23 +171,30 @@ def _normalize_target(target: str) -> str:
         raise ValueError(
             "Unsupported target "
             f"'{target}'. Supported base targets: {', '.join(SUPPORTED_TARGETS)}. "
-            "NVIDIA compile profiles may be requested as nvidia-dgpu:sm_90."
+            "GPU profiles may be requested as nvidia-dgpu:sm_90 or amd-igpu:gfx90a."
         )
 
     if not suffix:
         return base
 
-    if base != "nvidia-dgpu":
-        raise ValueError(
-            f"Target profile suffixes are currently only supported for nvidia-dgpu, got '{target}'."
-        )
+    normalized_suffix = suffix.strip()
+    if base == "nvidia-dgpu":
+        match = _NVIDIA_SM_TOKEN.fullmatch(normalized_suffix)
+        if match is None:
+            raise ValueError(
+                f"Unsupported NVIDIA target profile '{target}'. Use forms like 'nvidia-dgpu:sm_90'."
+            )
+        return f"{base}:sm_{match.group(1)}"
+    if base == "amd-igpu":
+        if _AMD_GFX_TOKEN.fullmatch(normalized_suffix) is None:
+            raise ValueError(
+                f"Unsupported AMD target profile '{target}'. Use forms like 'amd-igpu:gfx90a'."
+            )
+        return f"{base}:{normalized_suffix}"
 
-    match = _NVIDIA_SM_TOKEN.fullmatch(suffix.strip())
-    if match is None:
-        raise ValueError(
-            f"Unsupported NVIDIA target profile '{target}'. Use forms like 'nvidia-dgpu:sm_90'."
-        )
-    return f"{base}:sm_{match.group(1)}"
+    raise ValueError(
+        f"Target profile suffixes are not supported for '{base}', got '{target}'."
+    )
 
 
 def _normalize_dtype_name(dtype_name: str) -> str:
@@ -163,6 +218,78 @@ def _normalize_dtype_name(dtype_name: str) -> str:
         "e4m3fn": "float8_e4m3fn",
     }
     return aliases.get(lowered, lowered)
+
+
+def _storage_numpy_dtype(dtype_name: str) -> np.dtype:
+    normalized = _normalize_dtype_name(dtype_name)
+    if normalized == "bfloat16":
+        try:
+            return np.dtype("bfloat16")
+        except TypeError:
+            return np.dtype(np.uint16)
+    if normalized == "float8_e4m3fn":
+        return np.dtype(np.uint8)
+    mapping = {
+        "float32": np.dtype(np.float32),
+        "float16": np.dtype(np.float16),
+        "int8": np.dtype(np.int8),
+        "int32": np.dtype(np.int32),
+    }
+    try:
+        return mapping[normalized]
+    except KeyError:
+        raise ValueError(f"Unsupported logical dtype '{dtype_name}'.") from None
+
+
+def _wrap_storage_array(array: np.ndarray, logical_dtype: str) -> Any:
+    normalized = _normalize_dtype_name(logical_dtype)
+    if normalized == "bfloat16" and np.dtype(array.dtype) != np.dtype("bfloat16"):
+        return asdtype(array, "bfloat16")
+    if normalized == "float8_e4m3fn":
+        return asdtype(array, "float8_e4m3fn")
+    return array
+
+
+def _graph_output_tensor(
+    output_shape: tuple[int, ...],
+    output_dtype_name: str,
+    out: Any | None,
+) -> Any:
+    normalized_dtype = _normalize_dtype_name(output_dtype_name)
+    if out is None:
+        storage = np.empty(output_shape, dtype=_storage_numpy_dtype(normalized_dtype))
+        return _wrap_storage_array(storage, normalized_dtype)
+
+    shape = getattr(out, "shape", None)
+    if shape is None:
+        raise ValueError("@mc.fused output tensor does not expose a shape.")
+    actual_shape = tuple(int(dim) for dim in shape)
+    if actual_shape != output_shape:
+        raise ValueError(
+            f"Output shape mismatch for @mc.fused: expected {output_shape}, got {actual_shape}."
+        )
+
+    try:
+        actual_dtype = _logical_dtype_name(out, 0)
+    except TypeError:
+        actual_dtype = ""
+
+    if actual_dtype != normalized_dtype:
+        if isinstance(out, np.ndarray):
+            storage_dtype = np.dtype(out.dtype)
+            if normalized_dtype == "bfloat16" and storage_dtype == np.dtype(np.uint16):
+                out = asdtype(out, "bfloat16")
+                actual_dtype = "bfloat16"
+            elif normalized_dtype == "float8_e4m3fn" and storage_dtype == np.dtype(np.uint8):
+                out = asdtype(out, "float8_e4m3fn")
+                actual_dtype = "float8_e4m3fn"
+        if actual_dtype != normalized_dtype:
+            display_dtype = actual_dtype or getattr(getattr(out, "dtype", None), "name", None)
+            raise ValueError(
+                "Output dtype mismatch for @mc.fused: "
+                f"expected {normalized_dtype}, got {display_dtype}."
+            )
+    return out
 
 
 def _tensor_symbol(params: list[str], idx: int) -> str:
@@ -291,6 +418,75 @@ def _build_runtime_ir(
     return runtime_ir
 
 
+def _resolve_effective_target(target: str | None) -> str:
+    from .config import resolve_launch_options
+
+    resolved = resolve_launch_options(target=target, debug=None, trace=None, validate=None)
+    return _normalize_target(resolved["target"])
+
+
+def _resolve_fused_target(target: str | None) -> str:
+    if target is not None:
+        return _resolve_effective_target(target)
+
+    env_target = os.environ.get("MATCORE_TARGET")
+    if env_target:
+        return _resolve_effective_target(env_target)
+
+    from .config import get_config
+
+    cfg = get_config()
+    if cfg.default_target != "x86-auto":
+        return _normalize_target(cfg.default_target)
+    return _normalize_target("nvidia-dgpu:sm_89")
+
+
+def _analyze_tensor_residency(arrays: tuple[Any, ...]) -> tuple[bool, bool]:
+    has_device = any(isinstance(a, DeviceTensor) for a in arrays)
+    has_host = any(not isinstance(a, DeviceTensor) for a in arrays)
+    return has_device, has_host
+
+
+def _has_quantized_device_tensor(array: Any) -> bool:
+    if not isinstance(array, DeviceTensor):
+        return False
+    quant_obj = getattr(array, "matcore_quantization", None)
+    if isinstance(quant_obj, dict):
+        if bool(quant_obj.get("enabled", False)):
+            return True
+        if quant_obj.get("scale") is not None or quant_obj.get("zero_point") is not None:
+            return True
+    if bool(getattr(array, "matcore_quant_enabled", False)):
+        return True
+    return hasattr(array, "matcore_scale") or hasattr(array, "matcore_zero_point")
+
+
+def _validate_tensor_residency(arrays: tuple[Any, ...], *, api_name: str) -> bool:
+    has_device, has_host = _analyze_tensor_residency(arrays)
+    if has_device and has_host:
+        raise TypeError(
+            f"{api_name}() does not support mixed host/device tensors. "
+            "Use mc.to_device() on all tensors or none."
+        )
+    if any(_has_quantized_device_tensor(array) for array in arrays):
+        raise ValueError(
+            "Quantized DeviceTensors are not yet supported. "
+            "Upload plain int8 tensors with mc.to_device() or keep quantized tensors "
+            "on the host path."
+        )
+    return has_device
+
+
+def _require_device_tensor_target(
+    has_device_tensors: bool, normalized_target: str, *, api_name: str
+) -> None:
+    if has_device_tensors and not normalized_target.startswith("nvidia-dgpu"):
+        raise ValueError(
+            "DeviceTensors are only supported with nvidia-dgpu target (v1). "
+            f"Got target={normalized_target!r} for {api_name}()."
+        )
+
+
 @dataclass(frozen=True)
 class _LogicalDTypeDescriptor:
     name: str
@@ -383,6 +579,7 @@ class MatCoreASTVisitor(ast.NodeVisitor):
         self.params: list[str] = []
         self.loops: list[dict[str, Any]] = []
         self.ops: list[dict[str, Any]] = []
+        self._namespace_roots: set[str] = {"mc"}
         self._inside_kernel = False
 
     def build(self, module: ast.Module) -> dict[str, Any]:
@@ -397,6 +594,11 @@ class MatCoreASTVisitor(ast.NodeVisitor):
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         if node.name != self.kernel_name:
             return
+        for decorator in node.decorator_list:
+            if isinstance(decorator, ast.Attribute) and decorator.attr == "kernel":
+                root = _expr_to_source(decorator.value)
+                if root is not None:
+                    self._namespace_roots.add(root)
         self._inside_kernel = True
         self.params = _extract_params(node.args)
         self.generic_visit(node)
@@ -447,13 +649,18 @@ class MatCoreASTVisitor(ast.NodeVisitor):
             op = self._call_to_op(node.value)
             if op["op"] == "store":
                 self.ops.append(op)
+            elif op["op"] != "assign":
+                raise RuntimeError(
+                    f"Standalone mc.{op['op']}(...) is not allowed in kernel bodies; "
+                    "assign the result to a variable first."
+                )
 
     def _value_to_op(self, value: ast.AST | None) -> dict[str, Any]:
         if value is None:
             return {"op": "assign", "output": None, "value": None}
         if isinstance(value, ast.Call):
             call_op = self._call_to_op(value)
-            if call_op["op"] in {"load", "matmul"}:
+            if call_op["op"] in {"load", "matmul", "transpose", "elementwise", "cast"}:
                 return call_op
             return {"op": "assign", "output": None, "value": _expr_to_source(value)}
         if isinstance(value, ast.BinOp) and isinstance(value.op, ast.MatMult):
@@ -507,11 +714,106 @@ class MatCoreASTVisitor(ast.NodeVisitor):
                 "rhs": _expr_to_source(args[1]) if len(args) > 1 else None,
             }
 
+        if self._is_marker(fn, "transpose"):
+            if len(args) != 1 or kwargs:
+                raise RuntimeError("mc.transpose(x) expects exactly 1 positional argument.")
+            return {
+                "op": "transpose",
+                "output": None,
+                "input": _expr_to_source(args[0]),
+            }
+
+        if self._is_marker(fn, "add"):
+            if len(args) != 2 or kwargs:
+                raise RuntimeError("mc.add(x, y) expects exactly 2 positional arguments.")
+            return {
+                "op": "elementwise",
+                "output": None,
+                "kind": "add",
+                "lhs": _expr_to_source(args[0]),
+                "rhs": _expr_to_source(args[1]),
+            }
+
+        for unary_kind in (
+            "relu",
+            "exp",
+            "log",
+            "sqrt",
+            "tanh",
+            "sigmoid",
+            "gelu",
+            "neg",
+            "abs",
+            "softmax",
+            "sin",
+            "cos",
+            "rsqrt",
+        ):
+            if self._is_marker(fn, unary_kind):
+                if len(args) != 1 or kwargs:
+                    raise RuntimeError(
+                        f"mc.{unary_kind}(x) expects exactly 1 positional argument."
+                    )
+                return {
+                    "op": "elementwise",
+                    "output": None,
+                    "kind": unary_kind,
+                    "lhs": _expr_to_source(args[0]),
+                    "rhs": None,
+                }
+
+        for binary_kind in ("sub", "mul", "div", "min", "max"):
+            if self._is_marker(fn, binary_kind):
+                if len(args) != 2 or kwargs:
+                    raise RuntimeError(
+                        f"mc.{binary_kind}(x, y) expects exactly 2 positional arguments."
+                    )
+                return {
+                    "op": "elementwise",
+                    "output": None,
+                    "kind": binary_kind,
+                    "lhs": _expr_to_source(args[0]),
+                    "rhs": _expr_to_source(args[1]),
+                }
+
+        if self._is_marker(fn, "cast"):
+            if len(args) < 1 or len(args) > 2:
+                raise RuntimeError(
+                    "mc.cast(x, 'float32') expects exactly 2 arguments (dtype can be keyword)."
+                )
+            if len(kwargs) > 1 or (len(kwargs) == 1 and "dtype" not in kwargs):
+                raise RuntimeError("mc.cast only supports the 'dtype' keyword argument.")
+            dtype_node = kwargs.get("dtype")
+            if dtype_node is not None and len(args) > 1:
+                raise RuntimeError("mc.cast dtype must be provided once (positional or keyword).")
+            if dtype_node is None and len(args) == 2:
+                dtype_node = args[1]
+            target_dtype = _literal_str(dtype_node)
+            if target_dtype is None:
+                raise RuntimeError(
+                    "mc.cast(...): target dtype must be a string literal, "
+                    "for example mc.cast(x, 'float32')."
+                )
+            return {
+                "op": "cast",
+                "output": None,
+                "input": _expr_to_source(args[0]),
+                "target_dtype": target_dtype,
+            }
+
+        if isinstance(call.func, ast.Name) and call.func.id in _KERNEL_HELPER_NAMES:
+            raise RuntimeError(
+                f"Kernel helper '{call.func.id}' must be namespace-qualified. "
+                f"Use mc.{call.func.id}(...) or the same alias used for @mc.kernel."
+            )
+
         return {"op": "assign", "output": None, "value": _expr_to_source(call)}
 
-    @staticmethod
-    def _is_marker(fn: str, marker: str) -> bool:
-        return fn == marker or fn.endswith(f".{marker}")
+    def _is_marker(self, fn: str, marker: str) -> bool:
+        if not fn.endswith(f".{marker}"):
+            return False
+        root = fn[: -(len(marker) + 1)]
+        return root in self._namespace_roots or root.startswith("mc")
 
 
 @dataclass(frozen=True)
@@ -562,6 +864,90 @@ def matmul(*_: Any, **__: Any) -> Any:
     _marker_error("matmul")
 
 
+def transpose(*_: Any, **__: Any) -> Any:
+    _marker_error("transpose")
+
+
+def add(*_: Any, **__: Any) -> Any:
+    _marker_error("add")
+
+
+def relu(*_: Any, **__: Any) -> Any:
+    _marker_error("relu")
+
+
+def exp(*_: Any, **__: Any) -> Any:
+    _marker_error("exp")
+
+
+def log(*_: Any, **__: Any) -> Any:
+    _marker_error("log")
+
+
+def sqrt(*_: Any, **__: Any) -> Any:
+    _marker_error("sqrt")
+
+
+def tanh_op(*_: Any, **__: Any) -> Any:
+    _marker_error("tanh")
+
+
+def sigmoid(*_: Any, **__: Any) -> Any:
+    _marker_error("sigmoid")
+
+
+def gelu(*_: Any, **__: Any) -> Any:
+    _marker_error("gelu")
+
+
+def sub(*_: Any, **__: Any) -> Any:
+    _marker_error("sub")
+
+
+def mul(*_: Any, **__: Any) -> Any:
+    _marker_error("mul")
+
+
+def div(*_: Any, **__: Any) -> Any:
+    _marker_error("div")
+
+
+def neg(*_: Any, **__: Any) -> Any:
+    _marker_error("neg")
+
+
+def abs_op(*_: Any, **__: Any) -> Any:
+    _marker_error("abs")
+
+
+def softmax(*_: Any, **__: Any) -> Any:
+    _marker_error("softmax")
+
+
+def min_op(*_: Any, **__: Any) -> Any:
+    _marker_error("min")
+
+
+def max_op(*_: Any, **__: Any) -> Any:
+    _marker_error("max")
+
+
+def sin(*_: Any, **__: Any) -> Any:
+    _marker_error("sin")
+
+
+def cos(*_: Any, **__: Any) -> Any:
+    _marker_error("cos")
+
+
+def rsqrt(*_: Any, **__: Any) -> Any:
+    _marker_error("rsqrt")
+
+
+def cast(*_: Any, **__: Any) -> Any:
+    _marker_error("cast")
+
+
 def _get_native_module() -> Any:
     try:
         module = importlib.import_module(f"{__package__}.{_NATIVE_MODULE_NAME}")
@@ -578,193 +964,1204 @@ def _get_native_module() -> Any:
     return module
 
 
-def _optional_import_cupy() -> Any | None:
-    try:
-        return importlib.import_module("cupy")
-    except Exception:
-        return None
+def _build_observability_options(
+    kernel_obj: MatCoreKernel,
+    target: str,
+    debug: bool,
+    trace: str,
+) -> dict[str, Any]:
+    """Build observability keyword arguments for the native module."""
+    env_debug_dir = os.environ.get("MATCORE_DEBUG_DIR", "")
+    env_session = os.environ.get("MATCORE_DEBUG_SESSION", "")
 
+    if not debug and trace == "none":
+        return {}
 
-def _nvidia_target_requested(target: str) -> bool:
-    return target.split(":", 1)[0] == "nvidia-dgpu"
+    if env_session:
+        session_id = env_session
+    else:
+        hasher = hashlib.sha256()
+        hasher.update(kernel_obj.source.encode("utf-8"))
+        hasher.update(target.encode("utf-8"))
+        hasher.update(str(time.time_ns()).encode("utf-8"))
+        session_id = hasher.hexdigest()[:16]
 
+    if env_debug_dir:
+        output_dir = os.path.join(env_debug_dir, session_id)
+    else:
+        output_dir = os.path.join(".matcore_debug", session_id)
 
-def _stored_arg_indices(kernel_obj: MatCoreKernel) -> set[int]:
-    stored_symbols = {
-        str(op.get("tensor"))
-        for op in kernel_obj.ir.get("ops", [])
-        if isinstance(op, dict) and op.get("op") == "store" and op.get("tensor") is not None
-    }
     return {
-        idx
-        for idx, param in enumerate(kernel_obj.ir.get("params", []))
-        if param in stored_symbols
+        "debug": debug,
+        "trace": trace,
+        "session_id": session_id,
+        "debug_dir": output_dir,
     }
 
 
-def _view_metadata(array: MatCoreTensorView) -> dict[str, Any]:
-    return {
-        "dtype": array.matcore_dtype,
-        "scale": getattr(array, "matcore_scale", None),
-        "zero_point": getattr(array, "matcore_zero_point", None),
-        "quant_enabled": getattr(array, "matcore_quant_enabled", None),
-    }
-
-
-def _stage_nvidia_arrays(
-    kernel_obj: MatCoreKernel, arrays: tuple[Any, ...]
-) -> tuple[tuple[Any, ...], list[tuple[Any, Any]]]:
-    cp = _optional_import_cupy()
-    stored_indices = _stored_arg_indices(kernel_obj)
-    staged_arrays: list[Any] = []
-    copybacks: list[tuple[Any, Any]] = []
-    for idx, array in enumerate(arrays):
-        underlying = array._array if isinstance(array, MatCoreTensorView) else array
-        is_stored_output = idx in stored_indices
-        cuda_ready = hasattr(array, "__cuda_array_interface__") or hasattr(
-            underlying, "__cuda_array_interface__"
-        )
-        if cuda_ready:
-            if is_stored_output:
-                underlying.fill(0)
-            staged_arrays.append(array)
-            continue
-
-        if cp is None:
-            raise RuntimeError(
-                "nvidia-dgpu execution requires CuPy to stage host arrays to CUDA."
-            )
-
-        if is_stored_output:
-            device_array = cp.zeros_like(underlying)
-        else:
-            device_array = cp.asarray(underlying)
-        if isinstance(array, MatCoreTensorView):
-            staged_array = MatCoreTensorView(device_array, **_view_metadata(array))
-        else:
-            staged_array = device_array
-        staged_arrays.append(staged_array)
-        if is_stored_output:
-            copybacks.append((underlying, device_array))
-    return tuple(staged_arrays), copybacks
-
-
-def _copy_back_staged_arrays(copybacks: list[tuple[Any, Any]]) -> None:
-    if not copybacks:
+def _report_trace_output(trace: str, obs_options: dict[str, Any]) -> None:
+    if trace == "none":
         return
-    cp = _optional_import_cupy()
-    if cp is None:
-        raise RuntimeError("CuPy became unavailable before staged output copy-back.")
-    for host_array, device_array in copybacks:
+    debug_dir = str(obs_options.get("debug_dir", ""))
+    if not debug_dir:
+        return
+    session_id = str(obs_options.get("session_id", "session"))
+    metadata_path = os.path.join(debug_dir, "session_metadata.json")
+    trace_path = ""
+    if trace == "json":
+        trace_path = os.path.join(debug_dir, f"{session_id}_trace.json")
+    elif trace == "chrome":
+        trace_path = os.path.join(debug_dir, "trace.json")
+
+    duration_ms: int | None = None
+    events: int | None = None
+    if os.path.isfile(metadata_path):
         try:
-            cp.asnumpy(device_array, out=host_array)
-        except TypeError:
-            host_array[...] = cp.asnumpy(device_array)
+            with open(metadata_path, "r", encoding="utf-8") as fh:
+                metadata = json.load(fh)
+            duration_ms = int(metadata.get("duration_ms", 0))
+            events = int(metadata.get("trace_event_count", 0))
+        except Exception:
+            duration_ms = None
+            events = None
+
+    if duration_ms is not None and events is not None:
+        print(
+            f"MatCore trace: mode={trace} duration={duration_ms}ms events={events} dir={debug_dir}",
+            file=sys.stderr,
+        )
+    else:
+        print(f"MatCore trace: mode={trace} dir={debug_dir}", file=sys.stderr)
+    if trace_path:
+        print(f"MatCore trace file: {trace_path}", file=sys.stderr)
 
 
-def _align_up(value: int, alignment: int) -> int:
-    return ((value + alignment - 1) // alignment) * alignment
+def _kernel_has_matmul(kernel_ir: dict[str, Any]) -> bool:
+    return any(op.get("op") == "matmul" for op in kernel_ir.get("ops", []))
 
 
-def _wrap_like(original: Any, underlying: Any) -> Any:
-    if isinstance(original, MatCoreTensorView):
-        return MatCoreTensorView(underlying, **_view_metadata(original))
-    return underlying
+def _matmul_tensors(arrays: tuple[Any, ...], kernel_ir: dict[str, Any]) -> tuple[Any, Any, Any]:
+    if not _kernel_has_matmul(kernel_ir):
+        raise ValueError("Kernel IR does not contain a matmul operation.")
+    params = [str(param) for param in kernel_ir.get("params", [])]
+    symbol_to_tensor = {
+        params[idx]: array for idx, array in enumerate(arrays) if idx < len(params)
+    }
+    ops = kernel_ir.get("ops", [])
+    load_sources: dict[str, str] = {}
+    matmul_op: dict[str, Any] | None = None
+    for op in ops:
+        if op.get("op") == "load":
+            output = op.get("output")
+            tensor = op.get("tensor")
+            if isinstance(output, str) and isinstance(tensor, str):
+                load_sources[output] = tensor
+        elif matmul_op is None and op.get("op") == "matmul":
+            matmul_op = op
+
+    if matmul_op is None:
+        raise ValueError("Kernel IR does not contain a matmul operation.")
+
+    lhs_symbol = matmul_op.get("lhs")
+    rhs_symbol = matmul_op.get("rhs")
+    if isinstance(lhs_symbol, str):
+        lhs_symbol = load_sources.get(lhs_symbol, lhs_symbol)
+    if isinstance(rhs_symbol, str):
+        rhs_symbol = load_sources.get(rhs_symbol, rhs_symbol)
+
+    out_symbol: str | None = None
+    matmul_value = matmul_op.get("output")
+    for op in ops:
+        if op.get("op") == "store" and op.get("value") == matmul_value:
+            tensor = op.get("tensor")
+            if isinstance(tensor, str):
+                out_symbol = tensor
+                break
+    if out_symbol is None and isinstance(matmul_value, str) and matmul_value in symbol_to_tensor:
+        out_symbol = matmul_value
+
+    lhs = symbol_to_tensor.get(lhs_symbol) if isinstance(lhs_symbol, str) else None
+    rhs = symbol_to_tensor.get(rhs_symbol) if isinstance(rhs_symbol, str) else None
+    out = symbol_to_tensor.get(out_symbol) if isinstance(out_symbol, str) else None
+
+    if lhs is None and len(arrays) >= 1:
+        lhs = arrays[0]
+    if rhs is None and len(arrays) >= 2:
+        rhs = arrays[1]
+    if out is None and len(arrays) >= 3:
+        out = arrays[2]
+    if lhs is None or rhs is None or out is None:
+        raise ValueError("Matmul kernels require resolvable lhs, rhs, and output tensors.")
+    return lhs, rhs, out
 
 
-def _maybe_pad_nvidia_matmul(
-    kernel_obj: MatCoreKernel, arrays: tuple[Any, ...]
-) -> tuple[tuple[Any, ...], Any | None]:
-    if len(arrays) != 3:
-        return arrays, None
-    if sum(1 for op in kernel_obj.ir.get("ops", []) if op.get("op") == "matmul") != 1:
-        return arrays, None
-
-    lhs, rhs, out = arrays
-    lhs_base = lhs._array if isinstance(lhs, MatCoreTensorView) else lhs
-    rhs_base = rhs._array if isinstance(rhs, MatCoreTensorView) else rhs
-    out_base = out._array if isinstance(out, MatCoreTensorView) else out
-    if getattr(lhs_base, "ndim", None) != 2 or getattr(rhs_base, "ndim", None) != 2:
-        return arrays, None
-    if getattr(out_base, "ndim", None) != 2:
-        return arrays, None
-    if np.dtype(lhs_base.dtype).name != "float16" or np.dtype(rhs_base.dtype).name != "float16":
-        return arrays, None
-    if np.dtype(out_base.dtype).name != "float16":
-        return arrays, None
-
-    m, k = lhs_base.shape
-    rhs_k, n = rhs_base.shape
-    if rhs_k != k or out_base.shape != (m, n):
-        return arrays, None
-
-    padded_m = _align_up(m, 16)
-    padded_k = _align_up(k, 16)
-    padded_n = _align_up(n, 8)
-    if (padded_m, padded_k, padded_n) == (m, k, n):
-        return arrays, None
-
-    cp = _optional_import_cupy()
-    if cp is None:
-        raise RuntimeError("nvidia-dgpu padding fallback requires CuPy.")
-
-    lhs_device = cp.asarray(lhs_base)
-    rhs_device = cp.asarray(rhs_base)
-    out_device = cp.asarray(out_base)
-    lhs_padded = cp.zeros((padded_m, padded_k), dtype=lhs_device.dtype)
-    rhs_padded = cp.zeros((padded_k, padded_n), dtype=rhs_device.dtype)
-    out_padded = cp.zeros((padded_m, padded_n), dtype=out_device.dtype)
-    lhs_padded[:m, :k] = lhs_device
-    rhs_padded[:k, :n] = rhs_device
-
-    def finalize() -> None:
-        out_device[...] = out_padded[:m, :n]
-
-    return (
-        (
-            _wrap_like(lhs, lhs_padded),
-            _wrap_like(rhs, rhs_padded),
-            _wrap_like(out, out_padded),
-        ),
-        finalize,
-    )
+def _shape_of_rank2(array: Any, label: str) -> tuple[int, int]:
+    shape = getattr(array, "shape", None)
+    if shape is None:
+        raise ValueError(f"{label} tensor does not expose a shape.")
+    normalized_shape = tuple(int(dim) for dim in shape)
+    if len(normalized_shape) != 2:
+        raise ValueError(
+            f"{label} tensor must be rank-2 for matmul, got shape {normalized_shape}."
+        )
+    return normalized_shape[0], normalized_shape[1]
 
 
-def _fallback_nvidia_target(normalized_target: str, arrays: tuple[Any, ...]) -> str:
-    if not _nvidia_target_requested(normalized_target):
-        return normalized_target
+def _warn_non_contiguous(array: Any, idx: int) -> None:
+    flags = getattr(array, "flags", None)
+    c_contiguous = bool(getattr(flags, "c_contiguous", False)) if flags is not None else False
+    if not c_contiguous:
+        warnings.warn(
+            f"Tensor argument {idx} is not C-contiguous; this may hurt performance.",
+            stacklevel=3,
+        )
+
+
+def _warn_if_non_finite(array: Any, label: str) -> None:
+    if hasattr(array, "matcore_dtype"):
+        return
+    inspected = np.asarray(array)
+    if not np.issubdtype(inspected.dtype, np.floating):
+        return
+    if not np.isfinite(inspected).all():
+        warnings.warn(f"{label} contains NaN or Inf values.", stacklevel=3)
+
+
+def _validate_matmul_dtypes(
+    lhs_dtype: str, rhs_dtype: str, out_dtype: str, target: str
+) -> None:
+    if lhs_dtype != rhs_dtype:
+        raise ValueError(
+            f"Matmul dtype mismatch: lhs dtype '{lhs_dtype}' != rhs dtype '{rhs_dtype}'."
+        )
+    if lhs_dtype == "int32":
+        raise ValueError("Matmul dtype mismatch: int32 inputs are not supported for matmul.")
+    if lhs_dtype == "float8_e4m3fn":
+        if out_dtype != "float32":
+            raise ValueError(
+                "float8_e4m3fn matmul requires float32 output/accumulation for MLIR 18.1.3 FP8 WGMMA."
+            )
+        if not target.startswith("nvidia-dgpu"):
+            raise ValueError("float8_e4m3fn matmul is currently limited to nvidia-dgpu.")
+        return
+    allowed_outputs: dict[str, set[str]] = {
+        "float32": {"float32"},
+        "float16": {"float16", "float32"},
+        "bfloat16": {"bfloat16", "float32"},
+        "int8": {"int32"},
+    }
+    if lhs_dtype in allowed_outputs and out_dtype not in allowed_outputs[lhs_dtype]:
+        expected = ", ".join(sorted(allowed_outputs[lhs_dtype]))
+        raise ValueError(
+            f"Matmul dtype mismatch: input dtype '{lhs_dtype}' requires output dtype "
+            f"to be one of [{expected}], got '{out_dtype}'."
+        )
+    if lhs_dtype not in allowed_outputs:
+        raise ValueError(
+            f"Unsupported matmul dtype combination: lhs='{lhs_dtype}', rhs='{rhs_dtype}', out='{out_dtype}'."
+        )
+
+
+def _validate_tensors(arrays: tuple[Any, ...], kernel_ir: dict[str, Any], target: str) -> None:
     for idx, array in enumerate(arrays):
-        if _logical_dtype_name(array, idx) == "int8":
-            return "x86-avx512"
-    return normalized_target
+        _warn_non_contiguous(array, idx)
+        _warn_if_non_finite(array, f"Tensor argument {idx}")
+
+    if not _kernel_has_matmul(kernel_ir):
+        return
+
+    lhs, rhs, out = _matmul_tensors(arrays, kernel_ir)
+    lhs_rows, lhs_cols = _shape_of_rank2(lhs, "LHS")
+    rhs_rows, rhs_cols = _shape_of_rank2(rhs, "RHS")
+    out_rows, out_cols = _shape_of_rank2(out, "Output")
+
+    if lhs_cols != rhs_rows:
+        raise ValueError(
+            "Matmul shape mismatch: lhs.shape[1] must equal rhs.shape[0], "
+            f"got lhs.shape={getattr(lhs, 'shape', None)} and rhs.shape={getattr(rhs, 'shape', None)}."
+        )
+    expected_out_shape = (lhs_rows, rhs_cols)
+    actual_out_shape = (out_rows, out_cols)
+    if actual_out_shape != expected_out_shape:
+        raise ValueError(
+            "Output shape mismatch: expected output shape "
+            f"{expected_out_shape} from lhs/rhs, got {actual_out_shape}."
+        )
+
+    lhs_dtype = _logical_dtype_name(lhs, 0)
+    rhs_dtype = _logical_dtype_name(rhs, 1)
+    out_dtype = _logical_dtype_name(out, 2)
+    _validate_matmul_dtypes(lhs_dtype, rhs_dtype, out_dtype, target)
+
+
+def _resolve_output_tensor(arrays: tuple[Any, ...], kernel_ir: dict[str, Any]) -> Any:
+    params = [str(param) for param in kernel_ir.get("params", [])]
+    symbol_to_tensor = {
+        params[idx]: array for idx, array in enumerate(arrays) if idx < len(params)
+    }
+    for op in reversed(kernel_ir.get("ops", [])):
+        if op.get("op") != "store":
+            continue
+        tensor_symbol = op.get("tensor")
+        if isinstance(tensor_symbol, str) and tensor_symbol in symbol_to_tensor:
+            return symbol_to_tensor[tensor_symbol]
+    if arrays:
+        return arrays[-1]
+    raise ValueError("No output tensor could be resolved for validation.")
+
+
+def _validate_output(result: Any, arrays: tuple[Any, ...], kernel_ir: dict[str, Any]) -> None:
+    del result
+    output_tensor = _resolve_output_tensor(arrays, kernel_ir)
+    if hasattr(output_tensor, "matcore_dtype"):
+        return
+    output_arr = np.asarray(output_tensor)
+    if np.issubdtype(output_arr.dtype, np.floating) and not np.isfinite(output_arr).all():
+        warnings.warn("Output contains NaN or Inf values.", stacklevel=3)
+    if output_arr.dtype == np.dtype(np.float32) and output_arr.size > 0:
+        finite_mask = np.isfinite(output_arr)
+        if finite_mask.any():
+            max_abs = float(np.max(np.abs(output_arr[finite_mask])))
+            if max_abs > 1e15:
+                warnings.warn(
+                    f"Output magnitude is unusually large for float32 (max abs={max_abs:.3e}).",
+                    stacklevel=3,
+                )
+
+
+def _prepare_launch(
+    kernel_obj: MatCoreKernel,
+    arrays: tuple[Any, ...],
+    *,
+    target: str | None,
+    quant: dict[str, Any] | None,
+    debug: bool | None,
+    trace: str | None,
+    validate: bool | None,
+) -> tuple[dict[str, Any], str, dict[str, Any], bool]:
+    from .config import resolve_launch_options
+
+    resolved = resolve_launch_options(
+        target=target, debug=debug, trace=trace, validate=validate
+    )
+    normalized_target = _normalize_target(resolved["target"])
+    runtime_ir = _build_runtime_ir(kernel_obj, arrays, quant)
+    obs_options = _build_observability_options(
+        kernel_obj, normalized_target, resolved["debug"], resolved["trace"]
+    )
+    return runtime_ir, normalized_target, obs_options, bool(resolved["validate"])
+
+
+def _launch_immediate(
+    runtime_ir: dict[str, Any],
+    normalized_target: str,
+    arrays: tuple[Any, ...],
+    obs_options: dict[str, Any],
+) -> Any:
+    native = _get_native_module()
+    try:
+        return native.compile_and_run(runtime_ir, normalized_target, *arrays, **obs_options)
+    finally:
+        if obs_options:
+            _report_trace_output(str(obs_options.get("trace", "none")), obs_options)
 
 
 def launch(
     kernel_obj: MatCoreKernel,
     *arrays: Any,
-    target: str = "x86-auto",
+    target: str | None = None,
     quant: dict[str, Any] | None = None,
+    debug: bool | None = None,
+    trace: str | None = None,
+    validate: bool | None = None,
 ) -> Any:
     if not isinstance(kernel_obj, MatCoreKernel):
         raise TypeError("mc.launch expects a kernel object returned by @mc.kernel.")
-    normalized_target = _fallback_nvidia_target(
-        _normalize_target(target), arrays
+
+    has_device = _validate_tensor_residency(arrays, api_name="mc.launch")
+
+    runtime_ir, normalized_target, obs_options, validation_enabled = _prepare_launch(
+        kernel_obj,
+        arrays,
+        target=target,
+        quant=quant,
+        debug=debug,
+        trace=trace,
+        validate=validate,
     )
-    native = _get_native_module()
-    runtime_arrays = arrays
-    copybacks: list[tuple[Any, Any]] = []
-    finalize_nvidia_padding = None
-    if _nvidia_target_requested(normalized_target):
-        runtime_arrays, copybacks = _stage_nvidia_arrays(kernel_obj, arrays)
-        runtime_arrays, finalize_nvidia_padding = _maybe_pad_nvidia_matmul(
-            kernel_obj, runtime_arrays
+    _require_device_tensor_target(has_device, normalized_target, api_name="mc.launch")
+    if has_device and len(arrays) > 2 and isinstance(arrays[-1], DeviceTensor):
+        # The MLIR module skips linalg.fill for device-resident output, so
+        # the caller must pre-zero it for the accumulation (C += A @ B).
+        arrays[-1].zero_()
+    if validation_enabled:
+        _validate_tensors(arrays, runtime_ir, normalized_target)
+    from .graph import get_active_graph
+
+    active_graph = get_active_graph()
+    if active_graph is not None:
+        active_graph.add_node(
+            runtime_ir,
+            arrays,
+            target=normalized_target,
+            obs_options=obs_options,
+            validation_enabled=validation_enabled,
         )
-    runtime_ir = _build_runtime_ir(kernel_obj, runtime_arrays, quant)
-    native.compile_and_run(runtime_ir, normalized_target, *runtime_arrays)
-    if finalize_nvidia_padding is not None:
-        finalize_nvidia_padding()
-    _copy_back_staged_arrays(copybacks)
-    return None
+        return None
+    launch_result = _launch_immediate(runtime_ir, normalized_target, arrays, obs_options)
+    if validation_enabled:
+        _validate_output(launch_result, arrays, runtime_ir)
+    return launch_result
+
+
+def _graph_context_manager() -> Any:
+    from .graph import graph as graph_context
+
+    return graph_context()
+
+
+def create_plan(
+    kernel_obj: MatCoreKernel,
+    *template_tensors: Any,
+    target: str | None = None,
+    graph_mode: bool = False,
+) -> Any:
+    """Create a pre-compiled execution plan. Expensive (JIT compiles) — call once.
+
+    The returned plan object can be executed repeatedly with near-zero overhead
+    via mc.execute_plan(). Plans are shape-locked: tensors must have identical
+    dtype, shape, strides, and residency on every execute_plan() call.
+
+    Set graph_mode=True to enable CUDA graph capture on first execute_plan().
+    Subsequent calls replay the captured graph with near-zero dispatch overhead.
+
+    Usage:
+        plan = mc.create_plan(kernel, dA, dB, dC, target="nvidia-dgpu:sm_89")
+        mc.execute_plan(plan, dA, dB, dC)  # near-zero overhead
+        mc.execute_plan(plan, dA, dB, dC)  # reuse compiled kernel
+
+        # With CUDA graphs:
+        plan = mc.create_plan(kernel, dA, dB, dC, target="nvidia-dgpu:sm_89", graph_mode=True)
+        mc.execute_plan(plan, dA, dB, dC)  # captures graph
+        mc.execute_plan(plan, dA, dB, dC)  # replays graph (~0.005ms)
+    """
+    if not isinstance(kernel_obj, MatCoreKernel):
+        raise TypeError("mc.create_plan expects a kernel object returned by @mc.kernel.")
+
+    has_device = _validate_tensor_residency(template_tensors, api_name="mc.create_plan")
+
+    runtime_ir, normalized_target, _, _ = _prepare_launch(
+        kernel_obj,
+        template_tensors,
+        target=target,
+        quant=None,
+        debug=None,
+        trace=None,
+        validate=None,
+    )
+    _require_device_tensor_target(has_device, normalized_target, api_name="mc.create_plan")
+
+    native = _get_native_module()
+    return native.create_plan(
+        runtime_ir, normalized_target, *template_tensors,
+        graph_mode=graph_mode,
+    )
+
+
+def execute_plan(plan: Any, *tensors: Any) -> None:
+    """Execute a pre-compiled plan with near-zero overhead.
+
+    Skips ALL Python IR building, target normalization, cache key computation,
+    and C++ dict parsing. Goes directly to the cached compiled kernel.
+
+    The plan validates that tensor metadata matches what was frozen at create time.
+    """
+    native = _get_native_module()
+    native.execute_plan(plan, *tensors)
+
+
+@dataclasses.dataclass
+class TraceValue:
+    """Describes a tensor value in the trace graph."""
+
+    id: int
+    symbol: str
+    dtype: str
+    shape: tuple
+    kind: str = "intermediate"
+    storage_hint: str = "auto"
+    producer: int = -1
+    consumers: list = dataclasses.field(default_factory=list)
+
+
+@dataclasses.dataclass
+class TraceNode:
+    """A single operation in the trace graph."""
+
+    id: int
+    op: str
+    inputs: list
+    outputs: list
+    attrs: dict = dataclasses.field(default_factory=dict)
+
+
+def _numpy_dtype_to_str(dtype: Any) -> str:
+    """Convert numpy dtype to MatcoreDSL dtype string."""
+    mapping = {
+        np.float32: "float32",
+        np.float16: "float16",
+        np.int32: "int32",
+        np.int8: "int8",
+    }
+    for np_dt, name in mapping.items():
+        if dtype == np_dt or dtype == np.dtype(np_dt):
+            return name
+    return str(dtype)
+
+
+def _infer_traced_matmul_dtype(lhs_dtype: str, rhs_dtype: str) -> str:
+    lhs = _normalize_dtype_name(lhs_dtype)
+    rhs = _normalize_dtype_name(rhs_dtype)
+    if lhs != rhs:
+        raise TypeError(
+            f"Tracer matmul requires matching lhs/rhs dtypes, got {lhs!r} and {rhs!r}."
+        )
+    if lhs == "int8":
+        return "int32"
+    if lhs == "float8_e4m3fn":
+        return "float32"
+    return lhs
+
+
+class FusionTraceBuilder:
+    """Builds a trace graph by recording operations symbolically."""
+
+    def __init__(self):
+        self._values: list[TraceValue] = []
+        self._nodes: list[TraceNode] = []
+        self._next_value_id = 0
+        self._next_node_id = 0
+
+    def _new_value(
+        self,
+        symbol: str,
+        dtype: str,
+        shape: tuple,
+        kind: str = "intermediate",
+        producer: int = -1,
+    ) -> int:
+        vid = self._next_value_id
+        self._next_value_id += 1
+        self._values.append(
+            TraceValue(
+                id=vid,
+                symbol=symbol,
+                dtype=dtype,
+                shape=shape,
+                kind=kind,
+                producer=producer,
+            )
+        )
+        return vid
+
+    def _new_node(
+        self,
+        op: str,
+        input_ids: list,
+        output_ids: list,
+        attrs: dict | None = None,
+    ) -> int:
+        nid = self._next_node_id
+        self._next_node_id += 1
+        node = TraceNode(id=nid, op=op, inputs=list(input_ids), outputs=list(output_ids), attrs=attrs or {})
+        self._nodes.append(node)
+        for vid in input_ids:
+            self._values[vid].consumers.append(nid)
+        for vid in output_ids:
+            self._values[vid].producer = nid
+        return nid
+
+    def add_input(self, symbol: str, tensor: Any) -> "TracerTensor":
+        """Register an input tensor and return a TracerTensor."""
+        dtype = _logical_dtype_name(tensor, 0)
+        shape = tuple(tensor.shape)
+        vid = self._new_value(symbol, dtype, shape, kind="input")
+        return TracerTensor(vid, self, dtype=dtype, shape=shape)
+
+    def add_matmul(
+        self,
+        lhs: "TracerTensor",
+        rhs: "TracerTensor",
+        rhs_transposed: bool = False,
+    ) -> "TracerTensor":
+        """Record a matmul operation."""
+        lhs_shape = lhs.shape
+        rhs_shape = rhs.shape
+        out_shape = (lhs_shape[0], rhs_shape[1])
+        out_dtype = _infer_traced_matmul_dtype(lhs.dtype, rhs.dtype)
+        out_vid = self._new_value(f"mm_{self._next_node_id}", out_dtype, out_shape)
+        self._new_node(
+            "matmul",
+            [lhs.value_id, rhs.value_id],
+            [out_vid],
+            {"transpose_rhs": rhs_transposed},
+        )
+        return TracerTensor(out_vid, self, dtype=out_dtype, shape=out_shape)
+
+    def add_cast(self, x: "TracerTensor", target_dtype: str) -> "TracerTensor":
+        normalized = _normalize_dtype_name(target_dtype)
+        if normalized not in SUPPORTED_INPUT_DTYPES:
+            raise TypeError(
+                f"Unsupported cast dtype '{target_dtype}'. "
+                f"Supported dtypes: {', '.join(SUPPORTED_INPUT_DTYPES)}"
+            )
+        out_vid = self._new_value(f"cast_{self._next_node_id}", normalized, x.shape)
+        self._new_node("cast", [x.value_id], [out_vid], {"target_dtype": normalized})
+        return TracerTensor(out_vid, self, dtype=normalized, shape=x.shape)
+
+    def add_elementwise_unary(self, op: str, x: "TracerTensor") -> "TracerTensor":
+        """Record a unary elementwise op (exp, relu, log, etc.)."""
+        out_vid = self._new_value(f"{op}_{self._next_node_id}", x.dtype, x.shape)
+        self._new_node(op, [x.value_id], [out_vid])
+        return TracerTensor(out_vid, self, dtype=x.dtype, shape=x.shape)
+
+    def add_elementwise_binary(self, op: str, a: "TracerTensor", b: "TracerTensor") -> "TracerTensor":
+        """Record a binary elementwise op (add, mul, sub, div, min, max)."""
+        out_vid = self._new_value(f"{op}_{self._next_node_id}", a.dtype, a.shape)
+        self._new_node(op, [a.value_id, b.value_id], [out_vid])
+        return TracerTensor(out_vid, self, dtype=a.dtype, shape=a.shape)
+
+    def add_softmax(self, x: "TracerTensor", axis: int = -1) -> "TracerTensor":
+        """Record a softmax operation."""
+        out_vid = self._new_value(f"softmax_{self._next_node_id}", x.dtype, x.shape)
+        self._new_node("softmax", [x.value_id], [out_vid], {"axis": axis})
+        return TracerTensor(out_vid, self, dtype=x.dtype, shape=x.shape)
+
+    def finish(self, outputs: Any) -> dict:
+        """Finalize the trace and return a serializable graph dict."""
+        if not isinstance(outputs, (list, tuple)):
+            outputs = [outputs]
+
+        input_ids = [v.id for v in self._values if v.kind == "input"]
+        output_ids = []
+        for output in outputs:
+            if isinstance(output, TracerTensor):
+                self._values[output.value_id].kind = "output"
+                output_ids.append(output.value_id)
+            else:
+                raise ValueError(f"@mc.fused must return TracerTensor(s), got {type(output)}")
+
+        topo = []
+        visited = set()
+
+        def visit(nid: int) -> None:
+            if nid in visited:
+                return
+            visited.add(nid)
+            node = self._nodes[nid]
+            for inp_vid in node.inputs:
+                prod = self._values[inp_vid].producer
+                if prod >= 0:
+                    visit(prod)
+            topo.append(nid)
+
+        for oid in output_ids:
+            prod = self._values[oid].producer
+            if prod >= 0:
+                visit(prod)
+
+        return {
+            "version": "graph_v2",
+            "values": [
+                {
+                    "id": v.id,
+                    "symbol": v.symbol,
+                    "dtype": v.dtype,
+                    "shape": list(v.shape),
+                    "kind": v.kind,
+                    "storage_hint": v.storage_hint,
+                    "producer": v.producer,
+                    "consumers": v.consumers,
+                }
+                for v in self._values
+            ],
+            "nodes": [
+                {
+                    "id": n.id,
+                    "op": n.op,
+                    "inputs": n.inputs,
+                    "outputs": n.outputs,
+                    "attrs": n.attrs,
+                }
+                for n in self._nodes
+            ],
+            "input_values": input_ids,
+            "output_values": output_ids,
+            "topo_order": topo,
+        }
+
+
+class TracerTensor:
+    """A symbolic tensor that records operations in a FusionTraceBuilder."""
+
+    def __init__(
+        self,
+        value_id: int,
+        builder: FusionTraceBuilder,
+        dtype: str = "float32",
+        shape: tuple = (),
+    ):
+        self.value_id = value_id
+        self._builder = builder
+        self.dtype = dtype
+        self.shape = shape
+        self._transposed = False
+
+    @property
+    def T(self) -> "TracerTensor":
+        """Return a transposed view (lazy, for matmul fusion)."""
+        t = TracerTensor(
+            self.value_id,
+            self._builder,
+            dtype=self.dtype,
+            shape=(self.shape[1], self.shape[0]),
+        )
+        t._transposed = not self._transposed
+        return t
+
+    def __matmul__(self, other: Any) -> "TracerTensor":
+        if not isinstance(other, TracerTensor):
+            raise TypeError(f"Cannot matmul TracerTensor with {type(other)}")
+        rhs_transposed = other._transposed
+        return self._builder.add_matmul(self, other, rhs_transposed=rhs_transposed)
+
+    def __add__(self, other: Any) -> "TracerTensor":
+        other = self._ensure_tracer(other)
+        return self._builder.add_elementwise_binary("add", self, other)
+
+    def __radd__(self, other: Any) -> "TracerTensor":
+        other = self._ensure_tracer(other)
+        return self._builder.add_elementwise_binary("add", other, self)
+
+    def __sub__(self, other: Any) -> "TracerTensor":
+        other = self._ensure_tracer(other)
+        return self._builder.add_elementwise_binary("sub", self, other)
+
+    def __rsub__(self, other: Any) -> "TracerTensor":
+        other = self._ensure_tracer(other)
+        return self._builder.add_elementwise_binary("sub", other, self)
+
+    def __mul__(self, other: Any) -> "TracerTensor":
+        other = self._ensure_tracer(other)
+        return self._builder.add_elementwise_binary("mul", self, other)
+
+    def __rmul__(self, other: Any) -> "TracerTensor":
+        other = self._ensure_tracer(other)
+        return self._builder.add_elementwise_binary("mul", other, self)
+
+    def __truediv__(self, other: Any) -> "TracerTensor":
+        other = self._ensure_tracer(other)
+        return self._builder.add_elementwise_binary("div", self, other)
+
+    def __neg__(self) -> "TracerTensor":
+        return self._builder.add_elementwise_unary("neg", self)
+
+    def __abs__(self) -> "TracerTensor":
+        return self._builder.add_elementwise_unary("abs", self)
+
+    def _ensure_tracer(self, other: Any) -> "TracerTensor":
+        if isinstance(other, TracerTensor):
+            return other
+        raise TypeError(
+            f"Cannot operate TracerTensor with {type(other)}; "
+            "scalar broadcasting not yet supported in tracer"
+        )
+
+
+def _is_runtime_tensor(value: Any) -> bool:
+    return isinstance(value, (DeviceTensor, MatCoreTensorView, np.ndarray))
+
+
+def _contiguous_element_strides(shape: tuple[int, ...]) -> tuple[int, ...]:
+    strides: list[int] = []
+    acc = 1
+    for dim in reversed(shape):
+        strides.append(acc)
+        acc *= int(dim)
+    return tuple(reversed(strides))
+
+
+def _allocate_output_for_shape(
+    output_shape: tuple[int, ...],
+    output_dtype_name: str,
+    out: Any | None,
+    *,
+    device: bool,
+) -> Any:
+    if device:
+        native = _get_native_module()
+        num_elements = 1
+        for d in output_shape:
+            num_elements *= int(d)
+        size_bytes = num_elements * _DTYPE_STORAGE_BYTES[output_dtype_name]
+        handle = native.matcore_device_alloc(size_bytes)
+        return DeviceTensor(
+            handle,
+            output_shape,
+            output_dtype_name,
+            _contiguous_element_strides(output_shape),
+            size_bytes,
+        )
+    return _graph_output_tensor(output_shape, output_dtype_name, out)
+
+
+def _validate_block_attn_res_signature(
+    blocks: Any,
+    partial: Any,
+    query: Any,
+    *,
+    block_count: int,
+    has_partial: bool,
+    eps: float,
+) -> tuple[tuple[int, ...], str]:
+    del has_partial
+    block_shape = tuple(int(d) for d in getattr(blocks, "shape", ()))
+    partial_shape = tuple(int(d) for d in getattr(partial, "shape", ()))
+    query_shape = tuple(int(d) for d in getattr(query, "shape", ()))
+    if len(block_shape) != 4:
+        raise ValueError("mc.block_attn_res blocks must have shape [MAX_BLOCKS, B, T, D].")
+    if len(partial_shape) != 3:
+        raise ValueError("mc.block_attn_res partial must have shape [B, T, D].")
+    if len(query_shape) != 1:
+        raise ValueError("mc.block_attn_res query must have shape [D].")
+    max_blocks, batch, tokens, width = block_shape
+    if partial_shape != (batch, tokens, width):
+        raise ValueError(
+            "mc.block_attn_res partial shape must match blocks trailing [B, T, D]."
+        )
+    if query_shape[0] != width:
+        raise ValueError("mc.block_attn_res query width must match D.")
+    if max_blocks <= 0 or max_blocks > 32:
+        raise ValueError("mc.block_attn_res v1 requires 1 <= MAX_BLOCKS <= 32.")
+    if block_count < 0 or block_count > max_blocks:
+        raise ValueError("mc.block_attn_res block_count must be in [0, MAX_BLOCKS].")
+    if eps <= 0.0:
+        raise ValueError("mc.block_attn_res eps must be positive.")
+
+    dtypes = [
+        _normalize_dtype_name(_logical_dtype_name(blocks, 0)),
+        _normalize_dtype_name(_logical_dtype_name(partial, 1)),
+        _normalize_dtype_name(_logical_dtype_name(query, 2)),
+    ]
+    if dtypes != ["float32", "float32", "float32"]:
+        raise TypeError("BlockAttnRes v1 supports float32 inputs only.")
+    return partial_shape, "float32"
+
+
+class RegionTraceBuilder:
+    """Builds the v1 structured-region IR for runtime-specialized JIT programs."""
+
+    def __init__(self):
+        self._values: list[TraceValue] = []
+        self._nodes: list[TraceNode] = []
+        self._next_value_id = 0
+        self._next_node_id = 0
+
+    def _new_value(
+        self,
+        symbol: str,
+        dtype: str,
+        shape: tuple[int, ...],
+        kind: str = "intermediate",
+        producer: int = -1,
+    ) -> int:
+        vid = self._next_value_id
+        self._next_value_id += 1
+        self._values.append(
+            TraceValue(
+                id=vid,
+                symbol=symbol,
+                dtype=dtype,
+                shape=tuple(shape),
+                kind=kind,
+                producer=producer,
+            )
+        )
+        return vid
+
+    def _new_node(
+        self,
+        op: str,
+        input_ids: list[int],
+        output_ids: list[int],
+        attrs: dict[str, Any] | None = None,
+    ) -> int:
+        nid = self._next_node_id
+        self._next_node_id += 1
+        node = TraceNode(
+            id=nid, op=op, inputs=list(input_ids), outputs=list(output_ids),
+            attrs=attrs or {},
+        )
+        self._nodes.append(node)
+        for vid in input_ids:
+            self._values[vid].consumers.append(nid)
+        for vid in output_ids:
+            self._values[vid].producer = nid
+        return nid
+
+    def add_input(self, symbol: str, tensor: Any) -> "RegionTensor":
+        dtype = _logical_dtype_name(tensor, len(self._values))
+        shape = tuple(int(d) for d in tensor.shape)
+        vid = self._new_value(symbol, dtype, shape, kind="input")
+        return RegionTensor(vid, self, dtype=dtype, shape=shape)
+
+    def add_block_attn_res(
+        self,
+        blocks: "RegionTensor",
+        partial: "RegionTensor",
+        query: "RegionTensor",
+        *,
+        block_count: int,
+        has_partial: bool = True,
+        eps: float = 1.0e-6,
+    ) -> "RegionTensor":
+        output_shape, output_dtype = _validate_block_attn_res_signature(
+            blocks, partial, query,
+            block_count=int(block_count),
+            has_partial=bool(has_partial),
+            eps=float(eps),
+        )
+        out_vid = self._new_value(
+            f"block_attn_res_{self._next_node_id}", output_dtype, output_shape
+        )
+        self._new_node(
+            "block_attn_res",
+            [blocks.value_id, partial.value_id, query.value_id],
+            [out_vid],
+            {
+                "block_count": int(block_count),
+                "has_partial": bool(has_partial),
+                "eps": float(eps),
+            },
+        )
+        return RegionTensor(out_vid, self, dtype=output_dtype, shape=output_shape)
+
+    def finish(self, outputs: Any) -> dict[str, Any]:
+        if not isinstance(outputs, (list, tuple)):
+            outputs = [outputs]
+        input_ids = [v.id for v in self._values if v.kind == "input"]
+        output_ids: list[int] = []
+        for output in outputs:
+            if not isinstance(output, RegionTensor):
+                raise ValueError(f"@mc.jit must return RegionTensor(s), got {type(output)}")
+            self._values[output.value_id].kind = "output"
+            output_ids.append(output.value_id)
+
+        topo: list[int] = []
+        visited: set[int] = set()
+
+        def visit(nid: int) -> None:
+            if nid in visited:
+                return
+            visited.add(nid)
+            node = self._nodes[nid]
+            for inp_vid in node.inputs:
+                prod = self._values[inp_vid].producer
+                if prod >= 0:
+                    visit(prod)
+            topo.append(nid)
+
+        for oid in output_ids:
+            prod = self._values[oid].producer
+            if prod >= 0:
+                visit(prod)
+
+        return {
+            "version": "region_v1",
+            "values": [
+                {
+                    "id": v.id,
+                    "symbol": v.symbol,
+                    "dtype": v.dtype,
+                    "shape": list(v.shape),
+                    "kind": v.kind,
+                    "storage_hint": v.storage_hint,
+                    "producer": v.producer,
+                    "consumers": v.consumers,
+                }
+                for v in self._values
+            ],
+            "nodes": [
+                {
+                    "id": n.id,
+                    "op": n.op,
+                    "inputs": n.inputs,
+                    "outputs": n.outputs,
+                    "attrs": n.attrs,
+                }
+                for n in self._nodes
+            ],
+            "input_values": input_ids,
+            "output_values": output_ids,
+            "topo_order": topo,
+        }
+
+
+class RegionTensor:
+    """Symbolic tensor for the structured `@mc.jit` RegionV1 path."""
+
+    def __init__(
+        self,
+        value_id: int,
+        builder: RegionTraceBuilder,
+        dtype: str = "float32",
+        shape: tuple[int, ...] = (),
+    ):
+        self.value_id = value_id
+        self._builder = builder
+        self.dtype = dtype
+        self.shape = tuple(shape)
+
+
+def _execute_region(
+    *,
+    kernel_name: str,
+    region: dict[str, Any],
+    tensor_args: tuple[Any, ...],
+    target: str | None,
+    out: Any | None,
+    debug: bool,
+) -> Any:
+    if debug:
+        print("=== Region Trace IR ===")
+        print(json.dumps(region, indent=2))
+
+    output_values = list(region.get("output_values", []))
+    if len(output_values) != 1:
+        raise ValueError("@mc.jit currently supports exactly one region output.")
+    output_id = int(output_values[0])
+    output_desc = next(
+        (v for v in region.get("values", []) if int(v.get("id", -1)) == output_id),
+        None,
+    )
+    if output_desc is None:
+        raise ValueError("Region output descriptor is missing.")
+
+    output_shape = tuple(int(dim) for dim in output_desc.get("shape", []))
+    output_dtype_name = _normalize_dtype_name(str(output_desc.get("dtype", "float32")))
+
+    has_device = _validate_tensor_residency(tensor_args, api_name="@mc.jit")
+    normalized_target = _resolve_fused_target(target)
+    _require_device_tensor_target(has_device, normalized_target, api_name="@mc.jit")
+    if not normalized_target.startswith("nvidia-dgpu"):
+        raise ValueError("RegionV1 JIT currently supports nvidia-dgpu targets only.")
+
+    output_tensor = _allocate_output_for_shape(
+        output_shape, output_dtype_name, out, device=has_device
+    )
+    params = [
+        str(v["symbol"])
+        for v in region.get("values", [])
+        if int(v.get("id", -1)) in set(region.get("input_values", []))
+    ]
+    kernel_ir_dict = {
+        "kernel_name": kernel_name,
+        "version": "region_v1",
+        **region,
+        "region": region,
+        "params": params,
+    }
+    native = _get_native_module()
+    obs_options = {"debug": True} if debug else {}
+    native.compile_and_run(
+        kernel_ir_dict, normalized_target, *tensor_args, output_tensor, **obs_options
+    )
+    return output_tensor
+
+
+def block_attn_res(
+    blocks: Any,
+    partial: Any,
+    query: Any,
+    *,
+    block_count: int,
+    has_partial: bool = True,
+    eps: float = 1.0e-6,
+    target: str | None = None,
+    out: Any | None = None,
+    debug: bool = False,
+) -> Any:
+    if isinstance(blocks, RegionTensor) or isinstance(partial, RegionTensor) or isinstance(query, RegionTensor):
+        if not isinstance(blocks, RegionTensor) or not isinstance(partial, RegionTensor) or not isinstance(query, RegionTensor):
+            raise TypeError("mc.block_attn_res cannot mix RegionTensor and real tensors.")
+        return blocks._builder.add_block_attn_res(
+            blocks, partial, query,
+            block_count=int(block_count),
+            has_partial=bool(has_partial),
+            eps=float(eps),
+        )
+
+    _validate_block_attn_res_signature(
+        blocks, partial, query,
+        block_count=int(block_count),
+        has_partial=bool(has_partial),
+        eps=float(eps),
+    )
+    builder = RegionTraceBuilder()
+    t_blocks = builder.add_input("blocks", blocks)
+    t_partial = builder.add_input("partial", partial)
+    t_query = builder.add_input("query", query)
+    result = builder.add_block_attn_res(
+        t_blocks, t_partial, t_query,
+        block_count=int(block_count),
+        has_partial=bool(has_partial),
+        eps=float(eps),
+    )
+    region = builder.finish(result)
+    return _execute_region(
+        kernel_name="block_attn_res_region",
+        region=region,
+        tensor_args=(blocks, partial, query),
+        target=target,
+        out=out,
+        debug=debug,
+    )
+
+
+def jit(fn: Any) -> Any:
+    """Decorator for structured RegionV1 runtime-JIT programs."""
+
+    @functools.wraps(fn)
+    def wrapper(
+        *args: Any,
+        target: str | None = None,
+        out: Any = None,
+        debug: bool = False,
+        **kwargs: Any,
+    ) -> Any:
+        sig = inspect.signature(fn)
+        bound = sig.bind_partial(*args, **kwargs)
+        bound.apply_defaults()
+
+        builder = RegionTraceBuilder()
+        traced_kwargs: dict[str, Any] = {}
+        runtime_tensors: list[Any] = []
+        for name, param in sig.parameters.items():
+            if name not in bound.arguments:
+                continue
+            value = bound.arguments[name]
+            if _is_runtime_tensor(value):
+                traced = builder.add_input(name, value)
+                runtime_tensors.append(value)
+                traced_kwargs[name] = traced
+            else:
+                traced_kwargs[name] = value
+
+        trace_result = fn(**traced_kwargs)
+        region = builder.finish(trace_result)
+        return _execute_region(
+            kernel_name=f"{fn.__name__}_region",
+            region=region,
+            tensor_args=tuple(runtime_tensors),
+            target=target,
+            out=out,
+            debug=debug,
+        )
+
+    wrapper._is_jit = True
+    wrapper._original_fn = fn
+    return wrapper
+
+
+def fused(fn: Any) -> Any:
+    """Decorator that traces a function and executes the fused graph."""
+
+    @functools.wraps(fn)
+    def wrapper(
+        *args: Any,
+        target: str | None = None,
+        out: Any = None,
+        debug: bool = False,
+        **kwargs: Any,
+    ) -> Any:
+        builder = FusionTraceBuilder()
+
+        sig = inspect.signature(fn)
+        param_names = list(sig.parameters.keys())
+
+        has_device = _validate_tensor_residency(args, api_name="@mc.fused")
+        normalized_target = _resolve_fused_target(target)
+        _require_device_tensor_target(has_device, normalized_target, api_name="@mc.fused")
+
+        tracer_args = []
+        for i, arg in enumerate(args):
+            name = param_names[i] if i < len(param_names) else f"arg{i}"
+            if isinstance(arg, (DeviceTensor, MatCoreTensorView, np.ndarray)):
+                tracer_args.append(builder.add_input(name, arg))
+            else:
+                raise TypeError(
+                    "@mc.fused expects numpy arrays, logical tensor views, or "
+                    f"DeviceTensors, got {type(arg)}"
+                )
+
+        trace_result = fn(*tracer_args, **kwargs)
+        graph = builder.finish(trace_result)
+
+        if debug:
+            print("=== Fusion Trace Graph ===")
+            print(json.dumps(graph, indent=2))
+
+        output_values = list(graph.get("output_values", []))
+        if len(output_values) != 1:
+            raise ValueError("@mc.fused currently supports exactly one graph output.")
+
+        output_id = int(output_values[0])
+        output_desc = next((v for v in graph.get("values", []) if int(v.get("id", -1)) == output_id), None)
+        if output_desc is None:
+            raise ValueError("Fused graph output descriptor is missing.")
+
+        output_shape = tuple(int(dim) for dim in output_desc.get("shape", []))
+        output_dtype_name = _normalize_dtype_name(str(output_desc.get("dtype", "float32")))
+
+        if has_device:
+            native = _get_native_module()
+            num_elements = 1
+            for d in output_shape:
+                num_elements *= d
+            element_size = _DTYPE_STORAGE_BYTES[output_dtype_name]
+            size_bytes = num_elements * element_size
+            handle = native.matcore_device_alloc(size_bytes)
+
+            # Compute C-contiguous element strides.
+            strides: list[int] = []
+            acc = 1
+            for d in reversed(output_shape):
+                strides.append(acc)
+                acc *= d
+            strides = list(reversed(strides))
+
+            output_tensor = DeviceTensor(
+                handle, output_shape, output_dtype_name, tuple(strides), size_bytes,
+            )
+            # Zero the output buffer (matmul accumulation needs zeros).
+            output_tensor.zero_()
+        else:
+            output_tensor = _graph_output_tensor(output_shape, output_dtype_name, out)
+
+        kernel_ir_dict = {
+            "kernel_name": f"{fn.__name__}_fused",
+            "version": "graph_v2",
+            **graph,
+            "graph": graph,
+        }
+
+        native = _get_native_module()
+        native.compile_and_run(kernel_ir_dict, normalized_target, *args, output_tensor)
+        return output_tensor
+
+    wrapper._is_fused = True
+    wrapper._original_fn = fn
+    return wrapper
 
 
 class MatCoreNamespace:
@@ -772,10 +2169,296 @@ class MatCoreNamespace:
     supported_input_dtypes = SUPPORTED_INPUT_DTYPES
     kernel = staticmethod(kernel)
     launch = staticmethod(launch)
+    create_plan = staticmethod(create_plan)
+    execute_plan = staticmethod(execute_plan)
+    jit = staticmethod(jit)
+    fused = staticmethod(fused)
+    to_device = staticmethod(to_device)
+    DeviceTensor = DeviceTensor
     asdtype = staticmethod(asdtype)
     load = staticmethod(load)
     store = staticmethod(store)
     matmul = staticmethod(matmul)
+    transpose = staticmethod(transpose)
+    add = staticmethod(add)
+    relu = staticmethod(relu)
+    exp = staticmethod(exp)
+    log = staticmethod(log)
+    sqrt = staticmethod(sqrt)
+    tanh = staticmethod(tanh_op)
+    sigmoid = staticmethod(sigmoid)
+    gelu = staticmethod(gelu)
+    sub = staticmethod(sub)
+    mul = staticmethod(mul)
+    div = staticmethod(div)
+    neg = staticmethod(neg)
+    abs = staticmethod(abs_op)
+    softmax = staticmethod(softmax)
+    block_attn_res = staticmethod(block_attn_res)
+    min = staticmethod(min_op)
+    max = staticmethod(max_op)
+    cast = staticmethod(cast)
+    graph = staticmethod(_graph_context_manager)
+    config = staticmethod(configure)
+    get_config = staticmethod(get_config)
+    reset_config = staticmethod(reset_config)
 
+
+def _elementwise_gpu_unary(op_name: str, x: Any, out: Any = None, target: str = "nvidia-dgpu:sm_89") -> Any:
+    """Run a single unary elementwise op on GPU."""
+    if out is None:
+        out = np.empty_like(x)
+    kernel_ir = {
+        "kernel_name": f"elementwise_{op_name}",
+        "params": ["x", "out"],
+        "loops": [],
+        "ops": [{"op": "elementwise", "kind": op_name, "lhs": "x", "output": "out"}],
+    }
+    normalized_target = _normalize_target(target)
+    native = _get_native_module()
+    native.compile_and_run(kernel_ir, normalized_target, x, out)
+    return out
+
+
+def _elementwise_gpu_binary(
+    op_name: str,
+    a: Any,
+    b: Any,
+    out: Any = None,
+    target: str = "nvidia-dgpu:sm_89",
+) -> Any:
+    """Run a single binary elementwise op on GPU."""
+    if out is None:
+        out = np.empty_like(a)
+    kernel_ir = {
+        "kernel_name": f"elementwise_{op_name}",
+        "params": ["a", "b", "out"],
+        "loops": [],
+        "ops": [{"op": "elementwise", "kind": op_name, "lhs": "a", "rhs": "b", "output": "out"}],
+    }
+    normalized_target = _normalize_target(target)
+    native = _get_native_module()
+    native.compile_and_run(kernel_ir, normalized_target, a, b, out)
+    return out
+
+
+def exp_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("exp", x, out, **kw)
+
+
+def log_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("log", x, out, **kw)
+
+
+def sqrt_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("sqrt", x, out, **kw)
+
+
+def tanh_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("tanh", x, out, **kw)
+
+
+def sigmoid_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("sigmoid", x, out, **kw)
+
+
+def gelu_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("gelu", x, out, **kw)
+
+
+def relu_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("relu", x, out, **kw)
+
+
+def neg_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("neg", x, out, **kw)
+
+
+def abs_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("abs", x, out, **kw)
+
+
+def softmax_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("softmax", x, out, **kw)
+
+
+def sin_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("sin", x, out, **kw)
+
+
+def cos_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("cos", x, out, **kw)
+
+
+def rsqrt_gpu(x: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_unary("rsqrt", x, out, **kw)
+
+
+def add_gpu(a: Any, b: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_binary("add", a, b, out, **kw)
+
+
+def sub_gpu(a: Any, b: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_binary("sub", a, b, out, **kw)
+
+
+def mul_gpu(a: Any, b: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_binary("mul", a, b, out, **kw)
+
+
+def div_gpu(a: Any, b: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_binary("div", a, b, out, **kw)
+
+
+def min_gpu(a: Any, b: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_binary("min", a, b, out, **kw)
+
+
+def max_gpu(a: Any, b: Any, out: Any = None, **kw: Any) -> Any:
+    return _elementwise_gpu_binary("max", a, b, out, **kw)
+
+
+MatCoreNamespace.exp_gpu = staticmethod(exp_gpu)
+MatCoreNamespace.log_gpu = staticmethod(log_gpu)
+MatCoreNamespace.sqrt_gpu = staticmethod(sqrt_gpu)
+MatCoreNamespace.tanh_gpu = staticmethod(tanh_gpu)
+MatCoreNamespace.sigmoid_gpu = staticmethod(sigmoid_gpu)
+MatCoreNamespace.gelu_gpu = staticmethod(gelu_gpu)
+MatCoreNamespace.relu_gpu = staticmethod(relu_gpu)
+MatCoreNamespace.neg_gpu = staticmethod(neg_gpu)
+MatCoreNamespace.abs_gpu = staticmethod(abs_gpu)
+MatCoreNamespace.softmax_gpu = staticmethod(softmax_gpu)
+MatCoreNamespace.sin_gpu = staticmethod(sin_gpu)
+MatCoreNamespace.cos_gpu = staticmethod(cos_gpu)
+MatCoreNamespace.rsqrt_gpu = staticmethod(rsqrt_gpu)
+MatCoreNamespace.add_gpu = staticmethod(add_gpu)
+MatCoreNamespace.sub_gpu = staticmethod(sub_gpu)
+MatCoreNamespace.mul_gpu = staticmethod(mul_gpu)
+MatCoreNamespace.div_gpu = staticmethod(div_gpu)
+MatCoreNamespace.min_gpu = staticmethod(min_gpu)
+MatCoreNamespace.max_gpu = staticmethod(max_gpu)
+
+MatCoreNamespace.exp = staticmethod(exp_gpu)
+MatCoreNamespace.log = staticmethod(log_gpu)
+MatCoreNamespace.sqrt = staticmethod(sqrt_gpu)
+MatCoreNamespace.tanh = staticmethod(tanh_gpu)
+MatCoreNamespace.sigmoid = staticmethod(sigmoid_gpu)
+MatCoreNamespace.gelu = staticmethod(gelu_gpu)
+MatCoreNamespace.relu = staticmethod(relu_gpu)
+MatCoreNamespace.neg = staticmethod(neg_gpu)
+MatCoreNamespace.abs = staticmethod(abs_gpu)
+MatCoreNamespace.softmax = staticmethod(softmax_gpu)
+MatCoreNamespace.sin = staticmethod(sin_gpu)
+MatCoreNamespace.cos = staticmethod(cos_gpu)
+MatCoreNamespace.rsqrt = staticmethod(rsqrt_gpu)
+MatCoreNamespace.add = staticmethod(add_gpu)
+MatCoreNamespace.sub = staticmethod(sub_gpu)
+MatCoreNamespace.mul = staticmethod(mul_gpu)
+MatCoreNamespace.div = staticmethod(div_gpu)
+MatCoreNamespace.min = staticmethod(min_gpu)
+MatCoreNamespace.max = staticmethod(max_gpu)
+
+_parent_module = sys.modules.get(__package__)
+if _parent_module is not None:
+    for _name in (
+        "exp_gpu",
+        "log_gpu",
+        "sqrt_gpu",
+        "tanh_gpu",
+        "sigmoid_gpu",
+        "gelu_gpu",
+        "relu_gpu",
+        "neg_gpu",
+        "abs_gpu",
+        "softmax_gpu",
+        "sin_gpu",
+        "cos_gpu",
+        "rsqrt_gpu",
+        "add_gpu",
+        "sub_gpu",
+        "mul_gpu",
+        "div_gpu",
+        "min_gpu",
+        "max_gpu",
+    ):
+        setattr(_parent_module, _name, globals()[_name])
 
 mc = MatCoreNamespace()
+
+
+def _tracer_aware_unary(op_name: str, gpu_func: Any) -> Any:
+    """Return a function that works both on real tensors and TracerTensors."""
+
+    def f(x: Any, **kwargs: Any) -> Any:
+        if isinstance(x, TracerTensor):
+            return x._builder.add_elementwise_unary(op_name, x)
+        return gpu_func(x, **kwargs)
+
+    f.__name__ = op_name
+    return f
+
+
+def _tracer_aware_binary(op_name: str, gpu_func: Any) -> Any:
+    """Return a function that works both on real tensors and TracerTensors."""
+
+    def f(a: Any, b: Any, **kwargs: Any) -> Any:
+        if isinstance(a, TracerTensor) or isinstance(b, TracerTensor):
+            if not isinstance(a, TracerTensor) or not isinstance(b, TracerTensor):
+                raise TypeError(f"Cannot mix TracerTensor and real tensor in {op_name}")
+            return a._builder.add_elementwise_binary(op_name, a, b)
+        return gpu_func(a, b, **kwargs)
+
+    f.__name__ = op_name
+    return f
+
+
+def _tracer_aware_cast(marker_func: Any) -> Any:
+    def f(x: Any, dtype: str | None = None, **kwargs: Any) -> Any:
+        dtype_kw = kwargs.pop("dtype", None)
+        if kwargs:
+            unexpected = ", ".join(sorted(kwargs))
+            raise TypeError(f"mc.cast got unexpected keyword arguments: {unexpected}")
+        target_dtype = dtype_kw if dtype_kw is not None else dtype
+        if dtype_kw is not None and dtype is not None:
+            raise TypeError("mc.cast dtype must be provided once (positional or keyword).")
+        if target_dtype is None:
+            raise TypeError("mc.cast requires a target dtype.")
+        if isinstance(x, TracerTensor):
+            return x._builder.add_cast(x, str(target_dtype))
+        return marker_func(x, target_dtype)
+
+    f.__name__ = "cast"
+    return f
+
+
+def _tracer_aware_softmax(gpu_func: Any) -> Any:
+    def f(x: Any, axis: int = -1, **kwargs: Any) -> Any:
+        if isinstance(x, TracerTensor):
+            return x._builder.add_softmax(x, axis=axis)
+        return gpu_func(x, axis=axis, **kwargs)
+
+    f.__name__ = "softmax"
+    return f
+
+
+mc.exp = _tracer_aware_unary("exp", exp_gpu)
+mc.log = _tracer_aware_unary("log", log_gpu)
+mc.sqrt = _tracer_aware_unary("sqrt", sqrt_gpu)
+mc.tanh = _tracer_aware_unary("tanh", tanh_gpu)
+mc.sigmoid = _tracer_aware_unary("sigmoid", sigmoid_gpu)
+mc.gelu = _tracer_aware_unary("gelu", gelu_gpu)
+mc.relu = _tracer_aware_unary("relu", relu_gpu)
+mc.neg = _tracer_aware_unary("neg", neg_gpu)
+mc.abs = _tracer_aware_unary("abs", abs_gpu)
+mc.sin = _tracer_aware_unary("sin", sin_gpu)
+mc.cos = _tracer_aware_unary("cos", cos_gpu)
+mc.rsqrt = _tracer_aware_unary("rsqrt", rsqrt_gpu)
+mc.softmax = _tracer_aware_softmax(softmax_gpu)
+mc.block_attn_res = block_attn_res
+mc.add = _tracer_aware_binary("add", add_gpu)
+mc.sub = _tracer_aware_binary("sub", sub_gpu)
+mc.mul = _tracer_aware_binary("mul", mul_gpu)
+mc.div = _tracer_aware_binary("div", div_gpu)
+mc.min = _tracer_aware_binary("min", min_gpu)
+mc.max = _tracer_aware_binary("max", max_gpu)
+mc.cast = _tracer_aware_cast(cast)

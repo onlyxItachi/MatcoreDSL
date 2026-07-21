@@ -4,9 +4,9 @@
 #include <cstdlib>
 #include <cstdint>
 #include <optional>
-#include <sstream>
 #include <string>
 
+#include "transform_builder.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -17,6 +17,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace matcore {
 namespace {
@@ -76,11 +77,20 @@ std::optional<std::int64_t> matchConstantIndex(mlir::Value value) {
   return constant.getSExtValue();
 }
 
-constexpr llvm::StringLiteral kMatcoreStaticBlockSizeAttr(
-    "matcore.static_block_size");
-
-std::string nvidiaMatmulOpName(const MatmulLoweringSignature &signature) {
-  return signature.quantized_i8 ? "linalg.quantized_matmul" : "linalg.matmul";
+std::optional<mlir::Value> findRank2MemRefArgument(mlir::func::FuncOp func,
+                                                    unsigned ordinal) {
+  unsigned seen = 0;
+  for (mlir::BlockArgument arg : func.getArguments()) {
+    auto type = llvm::dyn_cast<mlir::MemRefType>(arg.getType());
+    if (!type || !type.hasRank() || type.getRank() != 2) {
+      continue;
+    }
+    if (seen == ordinal) {
+      return arg;
+    }
+    ++seen;
+  }
+  return std::nullopt;
 }
 
 mlir::Value buildCeilDivIndex(mlir::OpBuilder &builder, mlir::Location loc,
@@ -129,32 +139,51 @@ mlir::Value blockIdForMapping(mlir::gpu::LaunchOp launch,
   }
 }
 
-mlir::Value threadIdForMapping(mlir::gpu::LaunchOp launch,
-                               mlir::gpu::GPUThreadMappingAttr attr) {
-  mlir::gpu::KernelDim3 ids = launch.getThreadIds();
-  switch (attr.getRelativeIndex()) {
-    case 0:
-      return ids.x;
-    case 1:
-      return ids.y;
-    case 2:
-      return ids.z;
-    default:
-      return {};
-  }
-}
+/// Compute split_k_factor for under-filled grids.
+/// Partitions K across gridDim.z so more blocks can run in parallel.
+/// Returns 1 (no split) if the grid already saturates SMs.
+void computeSplitKFactor(NvidiaMappingConfig &config,
+                         int64_t m, int64_t n, int64_t k,
+                         int64_t sm_count) {
+  int64_t grid_mn = ceilDiv(m, config.block_tile_m) *
+                    ceilDiv(n, config.block_tile_n);
+  int64_t k_tiles = k / config.k_tile;
 
-mlir::Value blockSizeForThreadMapping(mlir::gpu::LaunchOp launch,
-                                      mlir::gpu::GPUThreadMappingAttr attr) {
-  switch (attr.getRelativeIndex()) {
-    case 0:
-      return launch.getBlockSizeX();
-    case 1:
-      return launch.getBlockSizeY();
-    case 2:
-      return launch.getBlockSizeZ();
-    default:
-      return {};
+  // Only split if grid doesn't fill SMs and K has enough tiles
+  if (grid_mn >= sm_count || k_tiles < 4) {
+    config.split_k_factor = 1;
+    return;
+  }
+
+  // Target: 1 block per SM minimum (diminishing returns beyond that
+  // because smem limits us to ~2 blocks/SM for current configs)
+  int64_t desired = ceilDiv(sm_count, grid_mn);
+
+  // Prefer ≥3 K-tiles per slice for good double-buffer overlap
+  int64_t max_split_profitable = k_tiles / 3;
+  int64_t split_k = std::min(desired, max_split_profitable);
+
+  // Relax to ≥2 K-tiles per slice if ≥3 doesn't yield a useful split
+  if (split_k < 2) {
+    int64_t max_split_correct = k_tiles / 2;
+    split_k = std::min(desired, max_split_correct);
+  }
+
+  // Ensure split_k divides k_tiles evenly (avoid remainder slices)
+  while (split_k > 1 && (k_tiles % split_k) != 0)
+    split_k--;
+
+  config.split_k_factor = (split_k >= 2) ? split_k : 1;
+
+  if (config.split_k_factor > 1) {
+    int64_t total_blocks = grid_mn * config.split_k_factor;
+    int64_t tiles_per_slice = k_tiles / config.split_k_factor;
+    fprintf(stderr,
+            "[SplitK] grid_mn=%lld, k_tiles=%lld → split_k=%lld "
+            "(total_blocks=%lld, %lld K-tiles/slice)\n",
+            (long long)grid_mn, (long long)k_tiles,
+            (long long)config.split_k_factor,
+            (long long)total_blocks, (long long)tiles_per_slice);
   }
 }
 
@@ -186,27 +215,106 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
   config.block_tile_n = pickTilingFactor(n, 128);
   config.k_tile = pickTilingFactor(k, signature.quantized_i8 ? 32 : 16);
 
-  config.rewrite_to_mma_sync =
-      isTensorCoreMmaSyncType(signature) &&
-      isStaticallyCompatibleMmaSync(m, n, k);
+  const bool statically_compatible_mma =
+      m != mlir::ShapedType::kDynamic && n != mlir::ShapedType::kDynamic &&
+      k != mlir::ShapedType::kDynamic && m >= 16 && n >= 8 && k >= 16 &&
+      (m % 16) == 0 && (n % 8) == 0 && (k % 16) == 0 &&
+      isTensorCoreMmaSyncType(signature);
+  config.rewrite_to_mma_sync = statically_compatible_mma;
   if (config.rewrite_to_mma_sync) {
-    // Keep threadIdx.x as the 32-lane warp used by rewrite_matmul_as_mma_sync,
-    // but let multiple warps cooperate through threadIdx.y/z on a larger CTA
-    // tile. This preserves the working MMA path while increasing on-chip reuse.
-    config.block_tile_m = std::max<std::int64_t>(
-        16, pickTilingFactor(m, 128));
-    config.block_tile_n = std::max<std::int64_t>(
-        8, pickTilingFactor(n, 128));
-    config.thread_tile_m = std::max<std::int64_t>(
-        16, pickTilingFactor(config.block_tile_m, 64));
-    config.thread_tile_n = std::max<std::int64_t>(
-        8, pickTilingFactor(config.block_tile_n, 64));
+    // --- Multi-warp path (V4): adaptive tile selection ---
+    // Two MW configs available:
+    //   128×128 / 16 warps (4×4): highest AI (64 FLOP/byte), 512 threads
+    //    64×64  /  4 warps (2×2): lower AI (32 FLOP/byte), 128 threads
+    // Use 128×128 when grid fills SMs (≥ kSmCount); otherwise fall back to
+    // 64×64 which generates 4× more blocks for better SM utilization.
+    constexpr int64_t kSmCount = 24;  // RTX 4060 Laptop (AD107, sm_89)
+
+    // Try 128×128 / 16-warp first (highest arithmetic intensity)
+    constexpr int64_t kMW128Tile = 128;
+    const bool eligible_128 =
+        m >= kMW128Tile && n >= kMW128Tile &&
+        (m % kMW128Tile) == 0 && (n % kMW128Tile) == 0;
+    if (eligible_128) {
+      auto grid = (m / kMW128Tile) * (n / kMW128Tile);
+      if (grid >= kSmCount) {
+        config.block_tile_m = kMW128Tile;
+        config.block_tile_n = kMW128Tile;
+        config.num_warps = 16;               // 4×4 warp layout
+        config.warp_tile_m = 32;             // Each warp: 32×32
+        config.warp_tile_n = 32;
+        config.k_tile = pickTilingFactor(k, 32);
+        config.mma_micro_k = 16;
+        config.use_vectorize_path = false;
+        config.block_threads_x = 128;        // 128×4×1 = 512 threads
+        config.block_threads_y = 4;
+        config.block_threads_z = 1;
+        config.thread_tile_m = 16;
+        config.thread_tile_n = 8;
+        config.sm_count = kSmCount;
+        computeSplitKFactor(config, m, n, k, kSmCount);
+        return config;
+      }
+    }
+
+    // Fall back to 64×64 / 4-warp for better SM utilization on small grids
+    constexpr int64_t kMW64Tile = 64;
+    constexpr int64_t kMW64MinGrid = 4;
+    const bool eligible_64 =
+        m >= kMW64Tile && n >= kMW64Tile &&
+        (m % kMW64Tile) == 0 && (n % kMW64Tile) == 0;
+    if (eligible_64) {
+      auto grid = (m / kMW64Tile) * (n / kMW64Tile);
+      if (grid >= kMW64MinGrid) {
+        config.block_tile_m = kMW64Tile;
+        config.block_tile_n = kMW64Tile;
+        config.num_warps = 4;                // 2×2 warp layout
+        config.warp_tile_m = 32;             // Each warp: 32×32
+        config.warp_tile_n = 32;
+        config.k_tile = pickTilingFactor(k, 32);
+        config.mma_micro_k = 16;
+        config.use_vectorize_path = false;
+        config.block_threads_x = 64;         // 64×2×1 = 128 threads
+        config.block_threads_y = 2;
+        config.block_threads_z = 1;
+        config.thread_tile_m = 16;
+        config.thread_tile_n = 8;
+        config.sm_count = kSmCount;
+        computeSplitKFactor(config, m, n, k, kSmCount);
+        return config;
+      }
+    }
+
+    // --- Single-warp fallback (V3): occupancy-aware adaptive tiling ---
+    constexpr int64_t kMinGridBlocks = 100;
+
+    struct TileCandidate { int64_t m_pref, n_pref; };
+    constexpr TileCandidate candidates[] = {{64, 64}, {32, 32}};
+
+    config.block_tile_m = 16;
+    config.block_tile_n = 8;
+    for (const auto &c : candidates) {
+      auto tm = pickTilingFactor(m, c.m_pref);
+      auto tn = pickTilingFactor(n, c.n_pref);
+      if (tm >= 16 && tn >= 8) {
+        auto grid = (m / tm) * (n / tn);
+        if (grid >= kMinGridBlocks) {
+          config.block_tile_m = tm;
+          config.block_tile_n = tn;
+          break;
+        }
+      }
+    }
+
+    config.thread_tile_m = 16;
+    config.thread_tile_n = 8;
+    config.block_threads_y = 1;
     config.block_threads_x = 32;
-    config.block_threads_y = std::max<std::int64_t>(
-        1, ceilDiv(config.block_tile_n, config.thread_tile_n));
-    config.block_threads_z = std::max<std::int64_t>(
-        1, ceilDiv(config.block_tile_m, config.thread_tile_m));
-    config.k_tile = pickMmaMacroKTile(k);
+    config.block_threads_z = 1;
+    const bool needs_subtiling =
+        config.block_tile_m > 16 || config.block_tile_n > 8;
+    config.k_tile = needs_subtiling ? pickTilingFactor(k, 32) : 16;
+    config.mma_micro_k = needs_subtiling ? 16 : 0;
     return config;
   }
 
@@ -222,108 +330,47 @@ NvidiaMappingConfig SelectNvidiaMappingConfig(
 }
 
 bool UsesSingleWarpMmaSync(const NvidiaMappingConfig &config) {
-  return config.rewrite_to_mma_sync && config.block_threads_x == 32 &&
-         config.block_threads_y == 1 && config.block_threads_z == 1;
+  return config.rewrite_to_mma_sync && config.num_warps <= 1;
+}
+
+bool UsesMultiWarpMmaSync(const NvidiaMappingConfig &config) {
+  return config.rewrite_to_mma_sync && config.num_warps > 1;
 }
 
 std::string BuildNvidiaTransformMappingSequence(
     const MatmulLoweringSignature &signature,
     const NvidiaMappingConfig &config) {
-  const std::string op_name = nvidiaMatmulOpName(signature);
-  std::ostringstream ir;
-  ir << "module attributes {transform.with_named_sequence} {\n";
-  ir << "  transform.named_sequence @__transform_main"
-        "(%root: !transform.any_op) {\n";
-  ir << "    %func = transform.structured.match ops{[\"func.func\"]} in %root"
-        " : (!transform.any_op) -> !transform.any_op\n";
-  ir << "    %matmul = transform.structured.match ops{[\"" << op_name
-     << "\"]} in %func : (!transform.any_op) -> !transform.any_op\n";
-  ir << "    %block_tiled, %block_forall = transform.structured.tile_using_forall"
-     << " %matmul tile_sizes [" << config.block_tile_m << ", "
-     << config.block_tile_n
-     << ", 0](mapping = [#gpu.block<y>, #gpu.block<x>]) : (!transform.any_op)"
-        " -> (!transform.any_op, !transform.any_op)\n";
-  if (config.rewrite_to_mma_sync) {
-    ir << "    %k_tiled, %k_loop = transform.structured.tile_using_for"
-       << " %block_tiled [0, 0, " << config.k_tile
-       << "] : (!transform.any_op) -> (!transform.any_op, !transform.any_op)\n";
-  } else {
-    ir << "    %c_promoted = transform.structured.promote %block_tiled"
-          " {operands_to_promote = [2], use_full_tiles_by_default,"
-          " memory_space = #gpu.address_space<workgroup>, alignment = 128} :"
-          " (!transform.any_op) -> !transform.any_op\n";
-    ir << "    %k_tiled, %k_loop = transform.structured.tile_using_for"
-       << " %c_promoted [0, 0, " << config.k_tile
-       << "] : (!transform.any_op) -> (!transform.any_op, !transform.any_op)\n";
-  }
-  if (config.rewrite_to_mma_sync) {
-    ir << "    transform.annotate %k_tiled \"matcore.shared_memory_k_macro_tile\""
-          " : !transform.any_op\n";
-  }
-  ir << "    %promoted = transform.structured.promote %k_tiled"
-        " {operands_to_promote = [0, 1], use_full_tiles_by_default,"
-        " memory_space = #gpu.address_space<workgroup>, alignment = 128} :"
-        " (!transform.any_op) -> !transform.any_op\n";
-  if (config.rewrite_to_mma_sync) {
-    ir << "    transform.annotate %promoted \"matcore.shared_memory_swizzled\""
-          " : !transform.any_op\n";
-    ir << "    %warp_tiled, %warp_forall = transform.structured.tile_using_forall"
-       << " %promoted num_threads [" << config.block_threads_z << ", "
-       << config.block_threads_y
-       << "](mapping = [#gpu.thread<z>, #gpu.thread<y>]) : (!transform.any_op)"
-          " -> (!transform.any_op, !transform.any_op)\n";
-    ir << "    %micro_tiled, %micro_m_loop, %micro_n_loop, %micro_k_loop ="
-          " transform.structured.tile_using_for"
-          " %warp_tiled [16, 8, 16]"
-          " : (!transform.any_op) -> (!transform.any_op, !transform.any_op,"
-          " !transform.any_op, !transform.any_op)\n";
-  } else {
-    ir << "    %warp_tiled:2 = transform.structured.tile_using_forall"
-       << " %promoted num_threads [" << config.block_threads_y << ", "
-       << config.block_threads_x
-       << "](mapping = [#gpu.thread<y>, #gpu.thread<x>]) : (!transform.any_op)"
-          " -> (!transform.any_op, !transform.any_op)\n";
-  }
-  ir << "    transform.yield\n";
-  ir << "  }\n";
-  ir << "}\n";
-  return ir.str();
+  mlir::MLIRContext transform_ctx;
+  auto transform_module = BuildNvidiaTransformMappingModule(
+      &transform_ctx, mlir::UnknownLoc::get(&transform_ctx), signature, config);
+  std::string ir;
+  llvm::raw_string_ostream stream(ir);
+  transform_module->print(stream);
+  stream.flush();
+  return ir;
 }
 
 std::string BuildNvidiaThreadMappingSequence(
     const NvidiaMappingConfig &config) {
-  std::ostringstream ir;
-  ir << "module attributes {transform.with_named_sequence} {\n";
-  ir << "  transform.named_sequence @__transform_main"
-        "(%root: !transform.any_op) {\n";
-  ir << "    %launch = transform.structured.match ops{[\"gpu.launch\"]} in %root"
-        " : (!transform.any_op) -> !transform.any_op\n";
-  ir << "    %mapped = transform.gpu.map_nested_forall_to_threads"
-        " %launch block_dims = [" << config.block_threads_x << ", "
-     << config.block_threads_y << ", " << config.block_threads_z
-     << "] sync_after_distribute = true warp_size = 32"
-        " : (!transform.any_op) -> !transform.any_op\n";
-  ir << "    transform.yield\n";
-  ir << "  }\n";
-  ir << "}\n";
-  return ir.str();
+  mlir::MLIRContext transform_ctx;
+  auto transform_module = BuildNvidiaThreadMappingModule(
+      &transform_ctx, mlir::UnknownLoc::get(&transform_ctx), config);
+  std::string ir;
+  llvm::raw_string_ostream stream(ir);
+  transform_module->print(stream);
+  stream.flush();
+  return ir;
 }
 
 std::string BuildNvidiaMmaRewriteSequence() {
-  std::ostringstream ir;
-  ir << "module attributes {transform.with_named_sequence} {\n";
-  ir << "  transform.named_sequence @__transform_main"
-        "(%root: !transform.any_op) {\n";
-  ir << "    %launch = transform.structured.match ops{[\"gpu.launch\"]} in %root"
-        " : (!transform.any_op) -> !transform.any_op\n";
-  ir << "    %matmul = transform.structured.match ops{[\"linalg.matmul\"]} in %launch"
-        " : (!transform.any_op) -> !transform.any_op\n";
-  ir << "    transform.nvgpu.rewrite_matmul_as_mma_sync %matmul"
-        " : (!transform.any_op) -> ()\n";
-  ir << "    transform.yield\n";
-  ir << "  }\n";
-  ir << "}\n";
-  return ir.str();
+  mlir::MLIRContext transform_ctx;
+  auto transform_module = BuildNvidiaMmaRewriteModule(
+      &transform_ctx, mlir::UnknownLoc::get(&transform_ctx));
+  std::string ir;
+  llvm::raw_string_ostream stream(ir);
+  transform_module->print(stream);
+  stream.flush();
+  return ir;
 }
 
 std::string BuildNvidiaAsyncPipelineSequence() {
@@ -626,17 +673,10 @@ struct ConfigureNvidiaLaunchPass
       auto block_y = matchConstantIndex(launch.getBlockSizeY());
       auto block_z = matchConstantIndex(launch.getBlockSizeZ());
 
-      // Preserve mapped launch geometry when already configured. Only fill a
-      // fallback for degenerate launches that still carry 1x1x1.
+      // Preserve any launch geometry already materialized by the mapping
+      // passes. Only fill a 32x1x1 fallback for degenerate 1x1x1 launches.
       if (block_x.has_value() && block_y.has_value() && block_z.has_value() &&
-          *block_x >= 32 && *block_y >= 1 && *block_z >= 1) {
-        launch->setAttr(
-            kMatcoreStaticBlockSizeAttr,
-            builder.getArrayAttr({
-                builder.getI64IntegerAttr(*block_x),
-                builder.getI64IntegerAttr(*block_y),
-                builder.getI64IntegerAttr(*block_z),
-            }));
+          (*block_x != 1 || *block_y != 1 || *block_z != 1)) {
         return;
       }
 

@@ -169,6 +169,12 @@ RequestedTargetProfile ParseRequestedTargetProfile(std::string_view requested_ta
       profile.nvidia_sm_minor = sm->second;
     }
   }
+  if (profile.kind == TargetKind::kAmdIGPU) {
+    const std::string chip = toLower(trim(suffix));
+    if (!chip.empty()) {
+      profile.amd_chip = chip;
+    }
+  }
 
   profile.canonical = CanonicalTargetString(profile);
   return profile;
@@ -227,6 +233,10 @@ std::string CanonicalTargetString(const RequestedTargetProfile &profile) {
     canonical += ":sm_";
     canonical += std::to_string(*profile.nvidia_sm_major);
     canonical += std::to_string(*profile.nvidia_sm_minor);
+  } else if (normalizeTarget(profile.kind) == TargetKind::kAmdIGPU &&
+             !profile.amd_chip.empty()) {
+    canonical += ":";
+    canonical += profile.amd_chip;
   }
   return canonical;
 }

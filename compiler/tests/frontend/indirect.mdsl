@@ -1,0 +1,12 @@
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+
+void rejected_indirect() {
+  float storage[1]{};
+  md::matrix_view A{storage, 1, 1};
+  md::matrix_view B{storage, 1, 1};
+  md::matrix_view C{storage, 1, 1};
+  auto operation = &md::gemm;
+  operation(md::out(C), A, B, {});
+}
