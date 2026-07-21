@@ -1,0 +1,25 @@
+[[maybe_unused]] constexpr int declaration_before_matcore_header = __LINE__;
+
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+
+// UTF-8 before the operation: İzmir, Türkiye.
+inline const char *ordinary_text() {
+  return "a comment-like md::gemm(md::out(C), A, B) is ordinary text";
+}
+
+int range_edges(md::matrix_view &C, const md::matrix_view &A,
+                const md::matrix_view &B) {
+  const int line_before = __LINE__;
+  // md::gemm inside a comment is not an operation.
+  md  ::  gemm /* callee comment */ (
+      md::out(C), /* output comment */
+      A,
+      B,
+      md::policy{
+          .target = md::target::cpu,
+          .fallback = md::fallback::error}); // exact replacement ends here
+  const int line_after = __LINE__;
+  return line_after - line_before + (ordinary_text()[0] == 'a' ? 0 : 1000);
+}

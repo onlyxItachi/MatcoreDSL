@@ -1,0 +1,127 @@
+{
+  "schema": "matcore.ir",
+  "version": 0,
+  "producer": "clang-libtooling-v1",
+  "translation_unit": {
+    "identity": "compiler/tests/frontend/gemm_capture.mdsl",
+    "source_file": "compiler/tests/frontend/gemm_capture.mdsl"
+  },
+  "operations": [
+    {
+      "site_id": "mc_3c5b6d5e7992fb7b249de44210c6415d",
+      "kind": "gemm",
+      "canonical_callee": "matcore::mdsl::gemm",
+      "source": {
+        "file": "compiler/tests/frontend/gemm_capture.mdsl",
+        "line": 21,
+        "column": 3,
+        "byte_offset": 419,
+        "byte_range": {
+          "begin": 419,
+          "end": 550
+        }
+      },
+      "source_argument_ranges": [
+        {
+          "begin": 428,
+          "end": 438
+        },
+        {
+          "begin": 440,
+          "end": 441
+        },
+        {
+          "begin": 443,
+          "end": 444
+        },
+        {
+          "begin": 457,
+          "end": 549
+        }
+      ],
+      "output": {
+        "role": "output",
+        "expression": "C",
+        "dtype": "f32",
+        "rank": 2,
+        "shape": [
+          "?",
+          "?"
+        ],
+        "strides": [
+          "dynamic-columns",
+          "1"
+        ],
+        "layout": "row_major_contiguous",
+        "mutability": "write",
+        "memory_space": "host"
+      },
+      "operands": [
+        {
+          "role": "lhs",
+          "expression": "A",
+          "dtype": "f32",
+          "rank": 2,
+          "shape": [
+            "?",
+            "?"
+          ],
+          "strides": [
+            "dynamic-columns",
+            "1"
+          ],
+          "layout": "row_major_contiguous",
+          "mutability": "read",
+          "memory_space": "host"
+        },
+        {
+          "role": "rhs",
+          "expression": "B",
+          "dtype": "f32",
+          "rank": 2,
+          "shape": [
+            "?",
+            "?"
+          ],
+          "strides": [
+            "dynamic-columns",
+            "1"
+          ],
+          "layout": "row_major_contiguous",
+          "mutability": "read",
+          "memory_space": "host"
+        }
+      ],
+      "alias_requirements": [
+        {
+          "relation": "no_alias",
+          "between": [
+            "output",
+            "lhs"
+          ]
+        },
+        {
+          "relation": "no_alias",
+          "between": [
+            "output",
+            "rhs"
+          ]
+        }
+      ],
+      "effects": {
+        "reads": [
+          "lhs",
+          "rhs"
+        ],
+        "writes": [
+          "output"
+        ],
+        "synchronization": "synchronous"
+      },
+      "policy": {
+        "target": "cpu",
+        "fallback": "error"
+      }
+    }
+  ]
+}

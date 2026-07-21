@@ -1,0 +1,12 @@
+#include <matcore/mdsl.h>
+
+namespace matcore::mdsl {
+inline void gemm(out_arg, const matrix_view &, const matrix_view &, int) {}
+}
+
+namespace md = matcore::mdsl;
+
+void user_overload(md::matrix_view &C, const md::matrix_view &A,
+                   const md::matrix_view &B) {
+  md::gemm(md::out(C), A, B, 7);
+}

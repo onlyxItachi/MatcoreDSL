@@ -1,0 +1,9 @@
+#include <matcore/mdsl.h>
+
+using matcore::mdsl::gemm;
+
+void unqualified(matcore::mdsl::matrix_view &C,
+                 const matcore::mdsl::matrix_view &A,
+                 const matcore::mdsl::matrix_view &B) {
+  gemm(matcore::mdsl::out(C), A, B);
+}

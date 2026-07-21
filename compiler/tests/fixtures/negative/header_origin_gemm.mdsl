@@ -1,0 +1,10 @@
+#include "header_inline_gemm.h"
+
+int main() {
+  float values[3] = {1, 1, 0};
+  matcore::mdsl::matrix_view a{values, 1, 1};
+  matcore::mdsl::matrix_view b{values + 1, 1, 1};
+  matcore::mdsl::matrix_view c{values + 2, 1, 1};
+  header_run_gemm(c, a, b);
+  return 0;
+}

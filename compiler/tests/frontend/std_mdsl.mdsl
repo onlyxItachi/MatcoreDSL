@@ -1,0 +1,6 @@
+#include <matcore/mdsl.h>
+
+void rejected_std_namespace() {
+  std::mdsl::matrix_view value{};
+  (void)value;
+}

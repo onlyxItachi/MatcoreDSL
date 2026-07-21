@@ -23,14 +23,26 @@ struct NvidiaMappingConfig {
   std::int64_t block_threads_x = 16;
   std::int64_t block_threads_y = 8;
   std::int64_t block_threads_z = 1;
-  std::int64_t k_tile = 64;
+  std::int64_t k_tile = 16;
+  std::int64_t mma_micro_k = 0;  // Inner K-tile for mma.sync (0 = no inner tiling)
   bool rewrite_to_mma_sync = false;
+
+  // Multi-warp configuration (V4)
+  std::int64_t num_warps = 1;       // 1 = single-warp (V3), 4 = multi-warp (V4)
+  std::int64_t warp_tile_m = 0;     // Per-warp M tile (0 = not multi-warp)
+  std::int64_t warp_tile_n = 0;     // Per-warp N tile
+  bool use_vectorize_path = false;  // true = vectorize + VectorToGPU
+
+  // Phase J: Hardware-aware occupancy filler
+  std::int64_t split_k_factor = 1;  // 1 = disabled, >1 = partition K across gridDim.z
+  std::int64_t sm_count = 24;       // SM count for target GPU (sm_89 RTX 4060 = 24)
 };
 
 NvidiaMappingConfig SelectNvidiaMappingConfig(
     mlir::linalg::LinalgOp op, const MatmulLoweringSignature &signature);
 
 bool UsesSingleWarpMmaSync(const NvidiaMappingConfig &config);
+bool UsesMultiWarpMmaSync(const NvidiaMappingConfig &config);
 
 std::string BuildNvidiaTransformMappingSequence(
     const MatmulLoweringSignature &signature,

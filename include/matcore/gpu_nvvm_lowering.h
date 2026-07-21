@@ -22,12 +22,18 @@ void ApplyNvidiaThreadMappingToModule(mlir::ModuleOp module,
                                       const NvidiaMappingConfig &config);
 void ApplyNvidiaMmaRewriteToModule(mlir::ModuleOp module);
 void ApplyNvidiaAsyncPipelineToModule(mlir::ModuleOp module);
+void ApplyNvidiaMultiWarpTransformToModule(
+    mlir::ModuleOp module, const MatmulLoweringSignature &signature,
+    const NvidiaMappingConfig &config);
+void ApplyNvidiaMultiWarpThreadMappingToModule(
+    mlir::ModuleOp module, const NvidiaMappingConfig &config);
 
 void VerifyNoResidualNvidiaMatmulOnModule(mlir::ModuleOp module);
 
 void ConfigureNvidiaGenericGpuStage(mlir::PassManager &pm);
 void ConfigureNvidiaVectorToGpuStage(mlir::PassManager &pm);
-void ConfigureNvidiaNvvmStage(mlir::PassManager &pm, llvm::StringRef cubin_chip);
+void ConfigureNvidiaNvvmStage(mlir::PassManager &pm, llvm::StringRef cubin_chip,
+                              ObservabilityContext *obs = nullptr);
 
 std::string DumpModuleIR(mlir::ModuleOp module);
 

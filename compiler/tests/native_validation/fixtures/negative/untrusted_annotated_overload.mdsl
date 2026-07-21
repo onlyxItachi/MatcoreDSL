@@ -1,0 +1,14 @@
+#include <matcore/mdsl.h>
+
+namespace matcore::mdsl {
+[[clang::annotate("matcore.op.gemm")]] inline void
+gemm(out_arg, const matrix_view &, const matrix_view &, long) {}
+}
+
+namespace md = matcore::mdsl;
+
+void untrusted_annotated_overload(md::matrix_view &C,
+                                  const md::matrix_view &A,
+                                  const md::matrix_view &B) {
+  md::gemm(md::out(C), A, B, 7L);
+}

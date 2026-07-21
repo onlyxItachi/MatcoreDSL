@@ -1,0 +1,35 @@
+#include <matcore/mdsl.h>
+
+#include "consumer_value.h"
+
+#include <array>
+#include <cmath>
+#include <iostream>
+
+int main() {
+  namespace md = matcore::mdsl;
+
+  std::array<float, 6> a{1.0F, 2.0F, 3.0F, 4.0F, 5.0F, 6.0F};
+  std::array<float, 6> b{7.0F, 8.0F, 9.0F, 10.0F, 11.0F, 12.0F};
+  std::array<float, 4> c{};
+
+  md::matrix_view a_view{a.data(), 2, 3};
+  md::matrix_view b_view{b.data(), 3, 2};
+  md::matrix_view c_view{c.data(), 2, 2};
+
+  std::cout << "consumer-before\n";
+  std::cout << "consumer-header=" << consumer_header_value << "\n";
+  md::gemm(md::out(c_view), a_view, b_view,
+           md::policy{.target = md::target::cpu,
+                      .fallback = md::fallback::error});
+
+  constexpr std::array<float, 4> expected{58.0F, 64.0F, 139.0F, 154.0F};
+  for (std::size_t index = 0; index < c.size(); ++index) {
+    if (std::fabs(c[index] - expected[index]) > 1.0e-5F) {
+      std::cerr << "consumer mismatch at " << index << "\n";
+      return 1;
+    }
+  }
+  std::cout << "consumer-pass\n";
+  return 0;
+}
