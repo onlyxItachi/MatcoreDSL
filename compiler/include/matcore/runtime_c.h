@@ -23,6 +23,8 @@ extern "C" {
 
 #define MATCORE_RUNTIME_ABI_VERSION_V0 UINT32_C(0)
 #define MATCORE_RUNTIME_MAX_RANK_V0 UINT32_C(8)
+#define MATCORE_RUNTIME_PLAN_ABI_VERSION_V1 UINT32_C(1)
+#define MATCORE_RUNTIME_CPU_GEMM_CANDIDATE_COUNT_V1 UINT32_C(3)
 
 typedef uint32_t matcore_dtype_v0;
 enum {
@@ -113,6 +115,85 @@ typedef struct matcore_status_v0 {
   const char *message;
   uint64_t reserved[2];
 } matcore_status_v0;
+
+typedef uint32_t matcore_cpu_architecture_v1;
+enum {
+  MATCORE_CPU_ARCHITECTURE_UNKNOWN_V1 = 0,
+  MATCORE_CPU_ARCHITECTURE_X86_64_V1 = 1,
+  MATCORE_CPU_ARCHITECTURE_AARCH64_V1 = 2
+};
+
+typedef uint64_t matcore_cpu_feature_bits_v1;
+enum {
+  MATCORE_CPU_FEATURE_PORTABLE_SCALAR_F32_V1 = UINT64_C(1) << 0,
+  MATCORE_CPU_FEATURE_AVX2_V1 = UINT64_C(1) << 1,
+  MATCORE_CPU_FEATURE_FMA_V1 = UINT64_C(1) << 2
+};
+
+typedef uint32_t matcore_cpu_plan_request_v1;
+enum { MATCORE_CPU_PLAN_REQUEST_AUTOMATIC_V1 = 0 };
+
+typedef uint32_t matcore_cpu_plan_status_v1;
+enum {
+  MATCORE_CPU_PLAN_STATUS_SELECTED_V1 = 1,
+  MATCORE_CPU_PLAN_STATUS_NO_LEGAL_VARIANT_V1 = 2,
+  MATCORE_CPU_PLAN_STATUS_FORCED_VARIANT_ILLEGAL_V1 = 3,
+  MATCORE_CPU_PLAN_STATUS_INVALID_PROBLEM_V1 = 4,
+  MATCORE_CPU_PLAN_STATUS_INVALID_CAPABILITIES_V1 = 5
+};
+
+/* stable_id and reason point to process-lifetime, read-only strings. */
+typedef struct matcore_cpu_gemm_candidate_v1 {
+  const char *stable_id;
+  uint32_t legal;
+  uint32_t deterministic_priority;
+  uint64_t estimated_cost;
+  const char *reason;
+  uint64_t reserved[2];
+} matcore_cpu_gemm_candidate_v1;
+
+/*
+ * Fixed-layout, machine-readable result for deterministic automatic CPU GEMM
+ * planning. String pointers are process-lifetime and must not be freed.
+ * Reserved fields are zero. estimated_cost is UINT64_MAX for illegal
+ * candidates. Candidates appear in fixed registry order: reference, tiled,
+ * compiler-vectorized.
+ */
+typedef struct matcore_cpu_gemm_plan_report_v1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t planner_version;
+  matcore_cpu_plan_request_v1 request;
+  matcore_cpu_plan_status_v1 plan_status;
+  matcore_cpu_architecture_v1 architecture;
+  uint32_t capability_detection_complete;
+  uint32_t usable_vector_bits;
+  matcore_cpu_feature_bits_v1 feature_bits;
+  int64_t m;
+  int64_t n;
+  int64_t k;
+  uint32_t minimum_alignment_bytes;
+  uint32_t candidate_count;
+  matcore_cpu_gemm_candidate_v1
+      candidates[MATCORE_RUNTIME_CPU_GEMM_CANDIDATE_COUNT_V1];
+  const char *selected_stable_id;
+  const char *selection_reason;
+  uint64_t reserved[4];
+} matcore_cpu_gemm_plan_report_v1;
+
+/*
+ * Validates the same descriptors and policy as matcore_runtime_gemm_f32_v0,
+ * then returns the deterministic plan without executing or modifying output.
+ * The caller must initialize report abi_version and struct_size; all other
+ * report fields must be zero. No allocation, copy, or ambient diagnostic is
+ * performed.
+ */
+MATCORE_RUNTIME_API matcore_status_v0 matcore_runtime_plan_gemm_f32_v1(
+    const matcore_tensor_desc_v0 *out,
+    const matcore_tensor_desc_v0 *lhs,
+    const matcore_tensor_desc_v0 *rhs,
+    const matcore_policy_v0 *policy,
+    matcore_cpu_gemm_plan_report_v1 *report) MATCORE_RUNTIME_NOEXCEPT;
 
 /*
  * Synchronously computes out = lhs * rhs. Bootstrap v0 accepts only positive

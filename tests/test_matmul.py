@@ -144,8 +144,11 @@ def main() -> None:
         ("x86-auto", np.dtype(np.float32), (2, 2, 2), 7),
         ("x86-auto", np.dtype(np.float32), (9, 13, 5), 11),
         ("x86-avx2", np.dtype(np.float16), (16, 16, 16), 13),
-        ("x86-avx512", np.dtype(np.float16), (24, 16, 12), 17),
     ]
+
+    avx512_ok, avx512_reason = probe_backend_availability("x86-avx512")
+    if avx512_ok:
+        cases.append(("x86-avx512", np.dtype(np.float16), (24, 16, 12), 17))
 
     bfloat16_dtype = maybe_bfloat16_dtype()
     if bfloat16_dtype is not None:
@@ -154,12 +157,18 @@ def main() -> None:
     for target, dtype, shape, seed in cases:
         run_case(target=target, dtype=dtype, shape=shape, seed=seed)
 
-    run_int8_i32_global_quant_case(target="x86-avx512")
-    run_bf16_storage_case(target="x86-avx512")
-    run_fp8_capability_case(
-        target="x86-avx512",
-        expected_substring="float8_e4m3fn matmul is currently limited to nvidia-dgpu",
-    )
+    if avx512_ok:
+        run_int8_i32_global_quant_case(target="x86-avx512")
+        run_bf16_storage_case(target="x86-avx512")
+        run_fp8_capability_case(
+            target="x86-avx512",
+            expected_substring=(
+                "float8_e4m3fn matmul is currently limited to nvidia-dgpu"
+            ),
+        )
+    else:
+        assert avx512_reason is not None and len(avx512_reason) > 0
+        print(f"x86-avx512 unavailable, skipping cases: {avx512_reason}")
 
     nvidia_ok, nvidia_reason = probe_backend_availability("nvidia-dgpu:sm_90")
     if nvidia_ok:

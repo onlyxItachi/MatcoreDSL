@@ -14,6 +14,44 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+find_path(MATCORE_RAPIDJSON_INCLUDE_DIR rapidjson/document.h REQUIRED)
+include(CheckCXXSourceCompiles)
+
+set(CMAKE_REQUIRED_INCLUDES "${MATCORE_RAPIDJSON_INCLUDE_DIR}")
+check_cxx_source_compiles(
+  "#include <rapidjson/document.h>\nint main() { rapidjson::Document document; return document.IsNull() ? 0 : 0; }"
+  MDSLC_RAPIDJSON_HEADER_COMPILES
+)
+if(NOT MDSLC_RAPIDJSON_HEADER_COMPILES)
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR
+      "The installed RapidJSON header is incompatible with ${CMAKE_CXX_COMPILER_ID}; "
+      "install a patched RapidJSON 1.1 package")
+  endif()
+  set(
+    CMAKE_REQUIRED_FLAGS
+    "-fdelayed-template-parsing -Wno-delayed-template-parsing-in-cxx20"
+  )
+  check_cxx_source_compiles(
+    "#include <rapidjson/document.h>\nint main() { rapidjson::Document document; return document.IsNull() ? 0 : 0; }"
+    MDSLC_RAPIDJSON_HEADER_COMPILES_WITH_DELAYED_PARSING
+  )
+  if(NOT MDSLC_RAPIDJSON_HEADER_COMPILES_WITH_DELAYED_PARSING)
+    message(FATAL_ERROR
+      "The installed RapidJSON header is incompatible with Clang and the "
+      "narrow delayed-template-parsing compatibility mode did not compile")
+  endif()
+  set(
+    MDSLC_RAPIDJSON_COMPAT_COMPILE_OPTIONS
+    -fdelayed-template-parsing
+    -Wno-delayed-template-parsing-in-cxx20
+  )
+  message(STATUS
+    "Using source-local compatibility flags for the installed RapidJSON header")
+endif()
+unset(CMAKE_REQUIRED_FLAGS)
+unset(CMAKE_REQUIRED_INCLUDES)
+
 option(
   MDSLC_ENABLE_NATIVE_FRONTEND
   "Build the supported Clang LibTooling frontend"
@@ -133,6 +171,7 @@ add_subdirectory(lib/frontend)
 add_subdirectory(lib/codegen)
 add_subdirectory(tools/matcore-extract)
 add_subdirectory(lib/runtime)
+add_subdirectory(tools/matcore-plan)
 
 add_executable(mdslc_driver tools/mdslc/main.cpp)
 set_property(TARGET mdslc_driver PROPERTY EXPORT_NAME Compiler)
@@ -158,7 +197,7 @@ add_dependencies(mdslc_driver matcore-extract matcore_runtime)
 set_property(TARGET matcore-extract PROPERTY EXPORT_NAME Extractor)
 
 install(
-  TARGETS mdslc_driver matcore-extract matcore_runtime
+  TARGETS mdslc_driver matcore-extract matcore_runtime matcore-plan
   EXPORT MatcoreDSLTargets
   RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
   LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"

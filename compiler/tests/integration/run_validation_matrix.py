@@ -408,6 +408,9 @@ def execute_case(context: Context, case: dict[str, object], work: Path) -> None:
             require(symbol in symbols.stdout, f"missing object symbol: {symbol}")
         verified = run([str(context.extractor), "--verify-ir", str(work / "gemm_v0.matcore.json")], context.repository)
         completed_ok(verified, "saved IR verification")
+        saved_ir = json.loads((work / "gemm_v0.matcore.json").read_text())
+        require(saved_ir.get("version") == 1, "mdslc++ did not save typed Matcore IR v1")
+        require("verified Matcore IR v1" in verified.stdout, "saved IR used the wrong verifier")
         return
 
     if mode == "driver_cpu_external_link":
@@ -808,8 +811,12 @@ def execute_case(context: Context, case: dict[str, object], work: Path) -> None:
         symbols = run(["nm", "-D", "--defined-only", str(library)], work)
         completed_ok(symbols, "runtime dynamic-symbol inspection")
         exported = [line for line in symbols.stdout.splitlines() if line.strip()]
-        require(len(exported) == 1, f"unexpected runtime exports: {exported!r}")
-        require(exported[0].endswith(" T matcore_runtime_gemm_f32_v0"), "runtime GEMM ABI symbol missing")
+        exported_names = [line.split()[-1] for line in exported]
+        require(
+            exported_names
+            == ["matcore_runtime_gemm_f32_v0", "matcore_runtime_plan_gemm_f32_v1"],
+            f"unexpected runtime exports: {exported!r}",
+        )
         return
 
     if mode == "generated_runtime_error":

@@ -1,4 +1,9 @@
-find_path(MATCORE_RAPIDJSON_INCLUDE_DIR rapidjson/document.h REQUIRED)
+# Match the narrow RapidJSON 1.1 sanitizer boundary used by the IR parsers.
+set_source_files_properties(
+  ast_json_frontend.cpp
+  PROPERTIES COMPILE_OPTIONS
+    "-fno-sanitize=pointer-overflow;${MDSLC_RAPIDJSON_COMPAT_COMPILE_OPTIONS}"
+)
 
 add_library(matcore_frontend_common STATIC frontend_common.cpp)
 target_compile_features(matcore_frontend_common PUBLIC cxx_std_20)
