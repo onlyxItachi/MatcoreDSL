@@ -49,6 +49,14 @@ set_target_properties(matcore_runtime PROPERTIES
 )
 
 if(BUILD_TESTING)
+  add_executable(matcore_cpu_benchmark_support_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/cpu_benchmark_support_test.cpp"
+  )
+  target_compile_features(matcore_cpu_benchmark_support_test PRIVATE cxx_std_20)
+  add_test(NAME runtime.cpu.benchmark_support
+    COMMAND matcore_cpu_benchmark_support_test
+  )
+
   add_executable(matcore_runtime_cpu_test
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/runtime_cpu_test.cpp"
   )

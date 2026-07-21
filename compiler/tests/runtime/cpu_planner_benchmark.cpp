@@ -1,14 +1,15 @@
 #include "cpu_planner.h"
+#include "cpu_benchmark_support.h"
 
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
-#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <new>
 #include <string_view>
 #include <vector>
 
@@ -56,18 +57,6 @@ CpuGemmProblemV1 make_problem(std::int64_t m, std::int64_t k, std::int64_t n,
           matcore::mdslc::planner::CpuScalarTypeV1::f32,
           matcore::mdslc::planner::CpuLayoutV1::row_major_contiguous,
           alignment};
-}
-
-bool close_to_reference(const std::vector<float> &actual,
-                        const std::vector<float> &reference) {
-  for (std::size_t index = 0; index < actual.size(); ++index) {
-    const double difference =
-        std::fabs(static_cast<double>(actual[index]) - reference[index]);
-    const double scale =
-        std::max(1.0, std::fabs(static_cast<double>(reference[index])));
-    if (difference > 2.0e-5 * scale) return false;
-  }
-  return true;
 }
 
 double checksum(const std::vector<float> &values) {
@@ -122,10 +111,26 @@ int main(int argc, char **argv) {
     std::cerr << "matrix storage size overflows the address space\n";
     return 2;
   }
-  std::vector<float> a(lhs_elements);
-  std::vector<float> b(rhs_elements);
-  std::vector<float> output(output_elements);
-  std::vector<float> reference(output.size());
+  std::size_t working_set_bytes = 0;
+  if (!matcore::mdslc::test::checkedCpuBenchmarkWorkingSet(
+          lhs_elements, rhs_elements, output_elements, &working_set_bytes)) {
+    std::cerr << "benchmark working set exceeds the explicit 256 MiB limit\n";
+    return 2;
+  }
+  std::vector<float> a;
+  std::vector<float> b;
+  std::vector<float> output;
+  std::vector<float> reference;
+  try {
+    a.resize(lhs_elements);
+    b.resize(rhs_elements);
+    output.resize(output_elements);
+    reference.resize(output_elements);
+  } catch (const std::bad_alloc &) {
+    std::cerr << "benchmark storage allocation failed for "
+              << working_set_bytes << " bytes\n";
+    return 2;
+  }
   for (std::size_t index = 0; index < a.size(); ++index)
     a[index] = static_cast<float>(static_cast<int>(index % 17) - 8) / 16.0F;
   for (std::size_t index = 0; index < b.size(); ++index)
@@ -184,7 +189,8 @@ int main(int argc, char **argv) {
           std::chrono::duration<double, std::milli>(end - begin).count());
     }
     std::sort(milliseconds.begin(), milliseconds.end());
-    const bool correct = close_to_reference(output, reference);
+    const bool correct =
+        matcore::mdslc::test::closeCpuBenchmarkResult(output, reference);
     const double median = milliseconds[milliseconds.size() / 2];
     const double p95 = milliseconds.back();
     std::cout << std::fixed << std::setprecision(4)
