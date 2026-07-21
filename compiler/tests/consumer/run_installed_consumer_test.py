@@ -2,6 +2,7 @@
 
 import argparse
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -203,12 +204,15 @@ def main() -> int:
         ".sites.h",
         ".stubs.cpp",
         ".backend.cpp",
-        "/tmp/mdslc-",
     ):
         if forbidden_dependency in depfile_text:
             raise RuntimeError(
                 f"temporary generated dependency leaked into depfile: {depfile_text}"
             )
+    if re.search(r"/mdslc-[A-Za-z0-9]{6}/", depfile_text):
+        raise RuntimeError(
+            f"temporary MDSLC workspace leaked into depfile: {depfile_text}"
+        )
 
     initial_noop = run(
         [args.cmake, "--build", str(build), "--", "-j2"], capture=True
