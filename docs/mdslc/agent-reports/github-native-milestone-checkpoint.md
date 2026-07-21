@@ -120,3 +120,21 @@ draft PR 3, and create and verify issue 4.
   content was removed.
 - The original `feature/device-resident-tensors` checkout retains its
   pre-existing user-owned dirty state and was not modified.
+
+## GitHub permissions and CI state
+
+The connected GitHub app authenticated as repository owner `onlyxItachi` with
+admin/push permission. Git SSH fetch and push also succeeded. The stale local
+`gh` token did not block any requested checkpoint operation.
+
+Draft PR 3 triggered workflow run `29839161544`. Its single `build-and-test`
+job failed during the legacy root build, before tests, at
+`src/gpu_runtime_symbols.cpp`: the Ubuntu 24.04 runner reported unknown CUDA
+driver types `CUstream`, `CUmodule`, and `CUfunction`. The workflow configures
+the root Python/nanobind/MLIR 18 target; it does not build the standalone
+Clang-21 `compiler/` project validated by this milestone.
+
+This is a visible pre-existing legacy CI blocker. It was not hidden or
+represented as a native MDSLC failure, and no CUDA/legacy production change was
+made during this checkpoint task. The PR remains draft, unmerged, and
+mergeable while the CI conclusion is failure.
