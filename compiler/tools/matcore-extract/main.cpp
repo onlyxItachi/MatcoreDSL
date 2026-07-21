@@ -1,5 +1,6 @@
 #include "../../lib/frontend/frontend.h"
 #include "../../lib/codegen/codegen.h"
+#include "../../lib/ir/matcore_ir_v1.h"
 #include "mdslc_config.h"
 
 #include <unistd.h>
@@ -7,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <cstdlib>
+#include <cstdint>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -33,7 +35,9 @@ struct CommandLine {
   std::string stubs_output;
   std::string backend_output;
   std::string verify_ir;
+  std::uint32_t ir_version = matcore::mdslc::ir::kMatcoreIrVersion;
   bool compiler_was_explicit = false;
+  bool ir_version_was_explicit = false;
 };
 
 std::filesystem::path normalizedPath(const std::filesystem::path &path) {
@@ -149,7 +153,8 @@ void usage(std::ostream &output) {
       << "  --sites-out FILE      generated C++ site declarations\n"
       << "  --stubs-out FILE      generated C++ descriptor stubs\n"
       << "  --backend-out FILE    generated C ABI backend forwarding entries\n"
-      << "  --verify-ir FILE      verify serialized Matcore IR v0 and exit\n"
+      << "  --ir-version N        emit Matcore IR 0 (default) or typed IR 1\n"
+      << "  --verify-ir FILE      verify serialized Matcore IR v0/v1 and exit\n"
       << "  --frontend-info       describe the built frontend modes\n"
       << "\n"
       << "A bare clang++ token after -- is a command-shape placeholder; the "
@@ -165,6 +170,20 @@ bool takeValue(int argc, char **argv, int &index, std::string &destination,
     return false;
   }
   destination = argv[++index];
+  return true;
+}
+
+bool setIrVersion(CommandLine &command, std::string_view value) {
+  if (value == "0") {
+    command.ir_version = matcore::mdslc::ir::kMatcoreIrVersion;
+  } else if (value == "1") {
+    command.ir_version = matcore::mdslc::ir::v1::kMatcoreIrVersion;
+  } else {
+    std::cerr << "matcore-extract: unsupported --ir-version value: " << value
+              << " (expected 0 or 1)\n";
+    return false;
+  }
+  command.ir_version_was_explicit = true;
   return true;
 }
 
@@ -216,6 +235,18 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
       }
     } else if (argument == "--verify-ir") {
       if (!takeValue(argc, argv, index, command.verify_ir, "--verify-ir")) {
+        return std::nullopt;
+      }
+    } else if (argument == "--ir-version") {
+      std::string value;
+      if (!takeValue(argc, argv, index, value, "--ir-version") ||
+          !setIrVersion(command, value)) {
+        return std::nullopt;
+      }
+    } else if (argument.starts_with("--ir-version=")) {
+      if (!setIrVersion(
+              command,
+              argument.substr(std::string("--ir-version=").size()))) {
         return std::nullopt;
       }
     } else if (argument == "--clang") {
@@ -274,7 +305,8 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
     if (!command.frontend.input_path.empty() || !command.ir_output.empty() ||
         !command.rewrite_output.empty() || !command.sites_output.empty() ||
         !command.stubs_output.empty() || !command.backend_output.empty() ||
-        !command.frontend.compiler_arguments.empty()) {
+        !command.frontend.compiler_arguments.empty() ||
+        command.ir_version_was_explicit) {
       std::cerr << "matcore-extract: --verify-ir cannot be combined with "
                    "extraction or generation options\n";
       return std::nullopt;
@@ -427,15 +459,37 @@ int main(int argc, char **argv) {
       std::cerr << command->verify_ir << ": error: unable to read Matcore IR\n";
       return 1;
     }
-    matcore::mdslc::ir::Module module;
     std::string error;
-    if (!matcore::mdslc::ir::parseAndVerifyJson(*encoded, module, error)) {
+    std::uint32_t version = 0;
+    if (!matcore::mdslc::ir::v1::probeJsonVersion(*encoded, version, error)) {
       std::cerr << command->verify_ir << ": error: " << error << '\n';
       return 1;
     }
-    std::cout << "verified Matcore IR v0: " << module.operations.size()
-              << " operation(s)\n";
-    return 0;
+    if (version == matcore::mdslc::ir::kMatcoreIrVersion) {
+      matcore::mdslc::ir::Module module;
+      if (!matcore::mdslc::ir::parseAndVerifyJson(*encoded, module, error)) {
+        std::cerr << command->verify_ir << ": error: " << error << '\n';
+        return 1;
+      }
+      std::cout << "verified Matcore IR v0: " << module.operations.size()
+                << " operation(s)\n";
+      return 0;
+    }
+    if (version == matcore::mdslc::ir::v1::kMatcoreIrVersion) {
+      matcore::mdslc::ir::v1::Module module;
+      if (!matcore::mdslc::ir::v1::parseAndVerifyJson(*encoded, module,
+                                                       error)) {
+        std::cerr << command->verify_ir << ": error: " << error << '\n';
+        return 1;
+      }
+      std::cout << "verified Matcore IR v1: " << module.operations.size()
+                << " operation(s)\n";
+      return 0;
+    }
+    std::cerr << command->verify_ir
+              << ": error: unsupported Matcore IR version " << version
+              << '\n';
+    return 1;
   }
 
   std::unique_ptr<matcore::mdslc::frontend::Frontend> frontend;
@@ -472,8 +526,27 @@ int main(int argc, char **argv) {
               << verification_error << '\n';
     return 1;
   }
+  matcore::mdslc::ir::v1::Module typed_module;
+  if (!matcore::mdslc::ir::v1::fromV0(result.module, typed_module,
+                                       verification_error) ||
+      !matcore::mdslc::ir::v1::verify(typed_module, verification_error)) {
+    std::cerr << command->frontend.input_path
+              << ": error: Matcore IR v0-to-v1 boundary failed: "
+              << verification_error << '\n';
+    return 1;
+  }
+  matcore::mdslc::ir::Module projected_module;
+  if (!matcore::mdslc::ir::v1::projectToV0(
+          typed_module, projected_module, verification_error)) {
+    std::cerr << command->frontend.input_path
+              << ": error: Matcore IR v1-to-v0 lowering projection failed: "
+              << verification_error << '\n';
+    return 1;
+  }
   const std::string json =
-      matcore::mdslc::ir::serializeDeterministicJson(result.module);
+      command->ir_version == matcore::mdslc::ir::v1::kMatcoreIrVersion
+          ? matcore::mdslc::ir::v1::serializeDeterministicJson(typed_module)
+          : matcore::mdslc::ir::serializeDeterministicJson(projected_module);
   if (command->rewrite_output.empty()) {
     return writeAtomically(command->ir_output, json) ? 0 : 1;
   }
@@ -482,9 +555,9 @@ int main(int argc, char **argv) {
       std::filesystem::path(command->sites_output).filename().string();
   matcore::mdslc::codegen::Artifacts artifacts;
   std::string generation_error;
-  if (!matcore::mdslc::codegen::generate(result.module, result.source_snapshot,
-                                         sites_include, artifacts,
-                                         generation_error)) {
+  if (!matcore::mdslc::codegen::generate(
+          projected_module, result.source_snapshot, sites_include, artifacts,
+          generation_error)) {
     std::cerr << command->frontend.input_path
               << ": error: generated artifact validation failed: "
               << generation_error << '\n';

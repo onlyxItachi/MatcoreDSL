@@ -78,6 +78,7 @@ def extraction(
     *,
     frontend: str | None,
     clang: Path,
+    ir_version: int | None = None,
     generate: bool = False,
     extra_compile_arguments: Iterable[str] = (),
 ) -> Extraction:
@@ -86,6 +87,8 @@ def extraction(
     command = [str(extractor)]
     if frontend is not None:
         command.append(f"--frontend={frontend}")
+    if ir_version is not None:
+        command.append(f"--ir-version={ir_version}")
     command.extend(["--input", source_argument(source), "--ir-out", str(ir)])
     host = sites = stubs = backend = None
     if generate:
@@ -127,18 +130,26 @@ def load_ir(result: Extraction) -> dict:  # type: ignore[type-arg]
 
 
 def semantic_ir(document: dict) -> dict:  # type: ignore[type-arg]
-    # Producer is the sole intentional frontend-specific field in IR v0.
+    # Producer is the sole intentional frontend-specific field in IR v0/v1.
     normalized = json.loads(json.dumps(document))
     normalized.pop("producer", None)
     return normalized
 
 
 def validate_ir_ranges(
-    checks: Checks, label: str, document: dict, source: Path, expected_operations: int
+    checks: Checks,
+    label: str,
+    document: dict,
+    source: Path,
+    expected_operations: int,
+    expected_version: int = 0,
 ) -> None:  # type: ignore[type-arg]
     source_bytes = source.read_bytes()
     checks.require(document.get("schema") == "matcore.ir", f"{label}: wrong schema")
-    checks.require(document.get("version") == 0, f"{label}: wrong IR version")
+    checks.require(
+        document.get("version") == expected_version,
+        f"{label}: wrong IR version",
+    )
     operations = document.get("operations", [])
     checks.require(
         len(operations) == expected_operations,
@@ -311,6 +322,62 @@ def positive_parity_case(
             f"{name}: generated {kind} differs between frontends",
         )
     compile_generated(checks, name, native, clang, extractor, extra_compile_arguments)
+
+
+def typed_ir_parity_case(
+    checks: Checks,
+    extractor: Path,
+    clang: Path,
+    temporary: Path,
+    name: str,
+    source: Path,
+    expected_operations: int,
+    extra_compile_arguments: Iterable[str] = (),
+) -> None:
+    native = extraction(
+        extractor,
+        source,
+        temporary / f"{name}-v1" / "native",
+        name,
+        frontend="native",
+        clang=clang,
+        ir_version=1,
+        extra_compile_arguments=extra_compile_arguments,
+    )
+    bootstrap = extraction(
+        extractor,
+        source,
+        temporary / f"{name}-v1" / "bootstrap",
+        name,
+        frontend="ast-json-bootstrap",
+        clang=clang,
+        ir_version=1,
+        extra_compile_arguments=extra_compile_arguments,
+    )
+    checks.require(
+        native.completed.returncode == 0,
+        f"{name}/v1: native extraction failed:\n{native.completed.stderr}",
+    )
+    checks.require(
+        bootstrap.completed.returncode == 0,
+        f"{name}/v1: bootstrap extraction failed:\n{bootstrap.completed.stderr}",
+    )
+    if native.completed.returncode or bootstrap.completed.returncode:
+        return
+    native_document = load_ir(native)
+    bootstrap_document = load_ir(bootstrap)
+    checks.require(
+        semantic_ir(native_document) == semantic_ir(bootstrap_document),
+        f"{name}/v1: native/bootstrap typed semantic IR mismatch",
+    )
+    validate_ir_ranges(
+        checks,
+        f"{name}/native-v1",
+        native_document,
+        source,
+        expected_operations,
+        expected_version=1,
+    )
 
 
 def native_range_case(
@@ -538,6 +605,21 @@ def core_suite(checks: Checks, extractor: Path, clang: Path) -> None:
                 name,
                 lambda name=name, source=source, operation_count=operation_count, extra=extra: (
                     positive_parity_case(
+                        checks,
+                        extractor,
+                        clang,
+                        temporary,
+                        name,
+                        source,
+                        operation_count,
+                        extra,
+                    )
+                ),
+            )
+            checks.case(
+                f"{name}_typed_v1",
+                lambda name=name, source=source, operation_count=operation_count, extra=extra: (
+                    typed_ir_parity_case(
                         checks,
                         extractor,
                         clang,
@@ -970,6 +1052,7 @@ def unavailable_suite(
         driver_bootstrap_ir = bootstrap_root / "driver-bootstrap.matcore.json"
         checks.require(
             driver_bootstrap_ir.is_file()
+            and json.loads(driver_bootstrap_ir.read_text()).get("version") == 1
             and json.loads(driver_bootstrap_ir.read_text()).get("producer")
             == BOOTSTRAP_PRODUCER,
             "explicit bootstrap mdslc++ did not preserve bootstrap provenance",

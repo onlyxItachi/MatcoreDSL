@@ -39,6 +39,19 @@ def frontend_from(arguments: list[str]) -> str:
     return frontends[0]
 
 
+def ir_version_from(arguments: list[str]) -> str:
+    versions = [
+        argument.removeprefix("--ir-version=")
+        for argument in arguments
+        if argument.startswith("--ir-version=")
+    ]
+    if len(versions) != 1:
+        raise RuntimeError(
+            f"expected exactly one extractor IR-version flag: {arguments}"
+        )
+    return versions[0]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--driver", required=True)
@@ -151,6 +164,8 @@ def main() -> int:
             )
         if frontend_from(default_log[0]) != "native":
             raise RuntimeError(f"driver default was not native: {default_log[0]}")
+        if ir_version_from(default_log[0]) != "1":
+            raise RuntimeError(f"driver did not request typed IR v1: {default_log[0]}")
 
         explicit_native = invoke(frontend="native")
         explicit_native_log = read_log(log)
@@ -158,6 +173,8 @@ def main() -> int:
             raise RuntimeError("explicit native frontend was not invoked exactly once")
         if frontend_from(explicit_native_log[0]) != "native":
             raise RuntimeError("explicit native frontend was not forwarded")
+        if ir_version_from(explicit_native_log[0]) != "1":
+            raise RuntimeError("explicit native pipeline did not request typed IR v1")
 
         bootstrap = invoke(frontend="ast-json-bootstrap")
         bootstrap_log = read_log(log)
@@ -165,6 +182,8 @@ def main() -> int:
             raise RuntimeError("bootstrap frontend was not invoked exactly once")
         if frontend_from(bootstrap_log[0]) != "ast-json-bootstrap":
             raise RuntimeError("explicit bootstrap frontend was not forwarded")
+        if ir_version_from(bootstrap_log[0]) != "1":
+            raise RuntimeError("bootstrap pipeline did not request typed IR v1")
 
         rejected_native = invoke(
             environment_updates={"MDSLC_DRIVER_TEST_REJECT_NATIVE": "1"}
