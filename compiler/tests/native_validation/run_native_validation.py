@@ -970,6 +970,7 @@ def unavailable_suite(
         driver_bootstrap_ir = bootstrap_root / "driver-bootstrap.matcore.json"
         checks.require(
             driver_bootstrap_ir.is_file()
+            and json.loads(driver_bootstrap_ir.read_text()).get("version") == 1
             and json.loads(driver_bootstrap_ir.read_text()).get("producer")
             == BOOTSTRAP_PRODUCER,
             "explicit bootstrap mdslc++ did not preserve bootstrap provenance",

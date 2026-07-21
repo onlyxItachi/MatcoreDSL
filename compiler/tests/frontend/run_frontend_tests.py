@@ -39,9 +39,14 @@ NEGATIVE_CASES = {
 }
 
 
-def extraction_command(extractor: Path, source: Path, output: Path) -> list[str]:
-    return [
-        str(extractor),
+def extraction_command(
+    extractor: Path, source: Path, output: Path, ir_version: int | None = None
+) -> list[str]:
+    command = [str(extractor)]
+    if ir_version is not None:
+        command.append(f"--ir-version={ir_version}")
+    command.extend(
+        [
         "--input",
         source.as_posix(),
         "--ir-out",
@@ -52,11 +57,17 @@ def extraction_command(extractor: Path, source: Path, output: Path) -> list[str]
         "-Icompiler/include",
         "-Icompiler/tests/frontend",
         source.as_posix(),
-    ]
+        ]
+    )
+    return command
 
 
 def generation_command(
-    extractor: Path, source: Path, output_root: Path, stem: str
+    extractor: Path,
+    source: Path,
+    output_root: Path,
+    stem: str,
+    ir_version: int | None = None,
 ) -> tuple[list[str], dict[str, Path]]:
     outputs = {
         "ir": output_root / f"{stem}.matcore.json",
@@ -65,7 +76,7 @@ def generation_command(
         "stubs": output_root / f"{stem}.stubs.cpp",
         "backend": output_root / f"{stem}.backend.cpp",
     }
-    command = extraction_command(extractor, source, outputs["ir"])
+    command = extraction_command(extractor, source, outputs["ir"], ir_version)
     separator = command.index("--")
     command[separator:separator] = [
         "--rewrite-out",
@@ -141,6 +152,77 @@ def main() -> int:
         if verified.returncode != 0 or "verified Matcore IR v0" not in verified.stdout:
             failures.append(f"valid serialized IR did not verify: {verified.stderr}")
 
+        typed_output = output_root / "gemm_capture.v1.json"
+        typed = subprocess.run(
+            extraction_command(
+                arguments.extractor,
+                tests / "gemm_capture.mdsl",
+                typed_output,
+                1,
+            ),
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if typed.returncode != 0:
+            failures.append(f"typed v1 extraction failed: {typed.stderr}")
+        else:
+            typed_document = json.loads(typed_output.read_text())
+            typed_operations = typed_document.get("operations", [])
+            if typed_document.get("version") != 1 or len(typed_operations) != 1:
+                failures.append("explicit typed extraction emitted the wrong IR version")
+            else:
+                operation = typed_operations[0]
+                output = operation.get("output", {})
+                operands = operation.get("operands", [])
+                expected_requirements = [
+                    "rank2_gemm",
+                    "f32_arithmetic",
+                    "host_addressable",
+                    "synchronous_execution",
+                ]
+                if operation.get("accumulation_dtype") != "f32":
+                    failures.append("typed IR lost the accumulation dtype")
+                if operation.get("requirements") != expected_requirements:
+                    failures.append("typed IR requirements are incomplete or unordered")
+                if (
+                    output.get("shape")
+                    != [
+                        {"kind": "dynamic", "symbol": "m"},
+                        {"kind": "dynamic", "symbol": "n"},
+                    ]
+                    or output.get("strides")
+                    != [
+                        {"kind": "dynamic", "symbol": "n"},
+                        {"kind": "static", "value": 1},
+                    ]
+                    or output.get("required_alignment_bytes") != 4
+                ):
+                    failures.append("typed IR lost shape, stride, or alignment contracts")
+                if len(operands) != 2 or operands[0].get("shape") != [
+                    {"kind": "dynamic", "symbol": "m"},
+                    {"kind": "dynamic", "symbol": "k"},
+                ] or operands[1].get("shape") != [
+                    {"kind": "dynamic", "symbol": "k"},
+                    {"kind": "dynamic", "symbol": "n"},
+                ]:
+                    failures.append("typed IR lost exact M/K/N relationships")
+            typed_verified = subprocess.run(
+                [str(arguments.extractor), "--verify-ir", str(typed_output)],
+                cwd=repository,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if (
+                typed_verified.returncode != 0
+                or "verified Matcore IR v1" not in typed_verified.stdout
+            ):
+                failures.append(
+                    f"serialized typed IR did not verify: {typed_verified.stderr}"
+                )
+
         malformed_path = output_root / "malformed.json"
         malformed_path.write_text("{broken\n")
         malformed = subprocess.run(
@@ -169,7 +251,7 @@ def main() -> int:
 
         version_path = output_root / "version-mismatch.json"
         version_document = json.loads(golden.read_text())
-        version_document["version"] = 1
+        version_document["version"] = 999
         version_path.write_text(json.dumps(version_document))
         versioned = subprocess.run(
             [str(arguments.extractor), "--verify-ir", str(version_path)],
@@ -178,8 +260,31 @@ def main() -> int:
             capture_output=True,
             check=False,
         )
-        if versioned.returncode == 0 or "expected version 0" not in versioned.stderr:
+        if (
+            versioned.returncode == 0
+            or "unsupported Matcore IR version: 999" not in versioned.stderr
+        ):
             failures.append("version-mismatched serialized IR was not rejected cleanly")
+
+        unsupported_output = output_root / "unsupported-version.json"
+        unsupported = subprocess.run(
+            extraction_command(
+                arguments.extractor,
+                tests / "gemm_capture.mdsl",
+                unsupported_output,
+                2,
+            ),
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if (
+            unsupported.returncode == 0
+            or unsupported_output.exists()
+            or "unsupported --ir-version value: 2" not in unsupported.stderr
+        ):
+            failures.append("unsupported requested IR version did not fail closed")
 
         semantic_mutations = {
             "missing-shape": lambda document: document["operations"][0]["output"].pop(
@@ -655,6 +760,36 @@ def main() -> int:
                         f"generated objects failed relocatable link:\n"
                         f"{combined.stderr}"
                     )
+
+            typed_root = output_root / "typed-generation"
+            typed_root.mkdir()
+            typed_generation, typed_generated = generation_command(
+                arguments.extractor,
+                tests / "gemm_capture.mdsl",
+                typed_root,
+                "gemm_capture",
+                1,
+            )
+            typed_completed = subprocess.run(
+                typed_generation,
+                cwd=repository,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if typed_completed.returncode != 0:
+                failures.append(
+                    f"typed-v1 rewrite generation failed: {typed_completed.stderr}"
+                )
+            elif json.loads(typed_generated["ir"].read_text()).get("version") != 1:
+                failures.append("typed-v1 generated artifact set contains non-v1 IR")
+            elif any(
+                typed_generated[kind].read_bytes() != generated[kind].read_bytes()
+                for kind in ("host", "sites", "stubs", "backend")
+            ):
+                failures.append(
+                    "v1-to-v0 lowering projection changed generated code artifacts"
+                )
 
         second_root = output_root / "second"
         second_root.mkdir()

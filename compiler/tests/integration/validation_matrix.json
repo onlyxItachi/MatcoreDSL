@@ -69,7 +69,7 @@
     {"id":"N18_AMBIGUOUS_POLICY","state":"active","group":"frontend-negative","mode":"extract_reject","source":"compiler/tests/frontend/policy_cast.mdsl","diagnostic":"policy must be the default or an inline policy aggregate"},
     {"id":"N19_UNTRUSTED_HEADER","state":"active","group":"frontend-negative","mode":"extract_reject","source":"compiler/tests/frontend/untrusted_header.mdsl","diagnostic":"compiler's trusted <matcore/mdsl.h> header"},
     {"id":"N20_MALFORMED_IR","state":"active","group":"ir-negative","mode":"verify_ir_reject","source":"compiler/tests/fixtures/negative/malformed_ir.json","diagnostic":"malformed JSON"},
-    {"id":"N20_VERSION_IR","state":"active","group":"ir-negative","mode":"verify_ir_reject","source":"compiler/tests/fixtures/negative/version_mismatch_ir.json","diagnostic":"expected version 0"},
+    {"id":"N20_VERSION_IR","state":"active","group":"ir-negative","mode":"verify_ir_reject","source":"compiler/tests/fixtures/negative/version_mismatch_ir.json","diagnostic":"unsupported Matcore IR version: 999"},
 
     {"id":"FUTURE_CUDA_EXECUTION","state":"future","group":"device","reason":"CUDA execution and cuBLAS lowering are not implemented; all CUDA requests are explicit errors"},
     {"id":"FUTURE_AMD_EXECUTION","state":"future","group":"device","reason":"AMD/HIP implementation is outside bootstrap v0"},
