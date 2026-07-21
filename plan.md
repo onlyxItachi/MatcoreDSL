@@ -44,7 +44,7 @@ lowering-gap error.
 
 ## Tests
 
-- Passed: `ninja -C /home/hamza-usta/MatcoreDSL/build-review`
+- Passed historically: `cmake --build <legacy-build-dir> --parallel 2`
 - New tests:
   - `tests/test_region_ir.py` including invalid native RegionIR verifier cases
   - `tests/test_block_attn_res.py`
