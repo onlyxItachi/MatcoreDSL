@@ -15,19 +15,28 @@ correctness, and passes its declared acceptance suite.
    PPCallbacks, parse/Sema, ASTMatcher, canonical declaration and exact
    annotation authentication, trusted-header identity/ABI checks, and
    SourceManager/Lexer ranges are the validated default.
-4. **Verified bootstrap IR — complete for v0.** Deterministic Matcore JSON IR
-   v0 has a shared serializer, verifier, source locations, conversion boundary,
-   and native/bootstrap differential tests.
-5. **Rewrite, C ABI, and CPU GEMM — complete for v0.** Generated
-   sites/stubs/backend, versioned C runtime, synchronous checked f32 GEMM,
-   combined `.o`, ordinary final link, and independent-oracle execution pass.
-6. **Installation and consumer — complete.** Tools, headers, runtime, CMake
+4. **Typed Matcore IR v1 — complete.** Deterministic JSON v0 remains the
+   compatibility boundary. Every captured operation is upgraded to verified,
+   target-independent IR v1 with typed shape, dtype, accumulation, layout,
+   stride, alignment, memory, mutability, effects, alias, policy,
+   synchronization, requirement, provenance, and source-range contracts. The
+   v0-to-v1 upgrade and lossless v1-to-v0 projection are tested explicitly.
+5. **Deterministic CPU planning — complete for GEMM.** Versioned CPU
+   capability discovery, a fixed reference/tiled/compiler-vectorized registry,
+   fail-closed legality, saturating integer costs, deterministic tie-breaking,
+   selected-plan metadata, and rejection diagnostics are implemented.
+6. **Rewrite, C ABI, and selected CPU GEMM — complete.** Generated
+   sites/stubs/backend retain the stable execution ABI, while runtime dispatch
+   executes the selected legal plan. The additive plan-report ABI and installed
+   `matcore-plan` tool expose decisions without executing or mutating output.
+7. **Installation and consumer — complete.** Tools, headers, runtime, CMake
    package/helper, fresh-prefix external consumer, dependency regeneration,
    relocation, and no-op rebuild pass.
-7. **Adversarial validation — complete for the declared slice.** Release,
+8. **Adversarial validation — complete for the declared slice.** Release,
    Debug, supported sanitizer scope, native/bootstrap parity, fake-header and
-   annotation attacks, source/dependency races, artifact inspection, package,
-   and legacy smoke gates have reproducible evidence.
+   annotation attacks, malformed IR/capability records, source/dependency
+   races, artifact inspection, package, and legacy smoke gates have
+   reproducible evidence.
 
 The architecture verdict is **passed for the standalone native CPU
 frontend/runtime vertical slice**. The AST-JSON producer remains an explicitly
@@ -35,23 +44,20 @@ selected compatibility oracle only; it is never a fallback from native.
 
 ## Next three exact engineering tasks
 
-1. **Freeze the post-JSON high-level IR boundary.** Define one versioned
-   conversion from verified JSON v0 into a typed target-independent Matcore IR,
-   including dynamic dimensions, dtypes, layouts/strides, memory space,
-   effects, alias requirements, policy, synchronization, source locations, and
-   capability requirements. Add verifier and round-trip tests before adding an
-   operation.
-2. **Introduce a CPU capability/planning contract.** Model detected scalar and
-   vector capabilities and make the planner choose explicitly among the
-   validated reference loop, a structured/vector implementation, and an
-   external optimized-library implementation. Each choice needs legality,
-   correctness, artifact, and bounded performance evidence; no silent fallback
-   or global-performance claim.
-3. **Add an explicit NVIDIA library-call milestone only after task 2.** Require
-   device-resident descriptors, target/capability validation, synchronous
-   cuBLAS execution, no hidden migration, no mixed residency, and CPU-oracle
-   correctness. Treat unavailable architectures as errors or clearly labeled
-   compile-only results, never runtime support.
+1. **Freeze Milestone 2 compatibility and CPU portability.** Treat IR v1,
+   planner v1, and the additive plan-report ABI as reviewed contracts. Add
+   actual AArch64 build/runtime evidence and platform-specific capability tests
+   before claiming compiler-vectorized support outside validated x86-64.
+2. **Evaluate an optional external BLAS variant.** Add it only when configure
+   can authenticate a coherent header/library pair. It must be a separately
+   registered implementation with explicit legality, diagnostics, correctness,
+   packaging, and bounded crossover evidence; it must never be required or a
+   silent fallback.
+3. **Add an explicit NVIDIA library-call milestone only after CPU release.**
+   Require device-resident descriptors, target/capability validation,
+   synchronous cuBLAS execution, no hidden migration, no mixed residency, and
+   CPU-oracle correctness. Treat unavailable architectures as errors or
+   clearly labeled compile-only results, never runtime support.
 
 ## Later operation and lowering milestones
 

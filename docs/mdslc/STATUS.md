@@ -1,14 +1,58 @@
 # MDSLC native frontend status
 
-Status date: 2026-07-19
+Status date: 2026-07-21
 
 - Native milestone base: `mdslc/bootstrap-v0` at
   `3e3fa5b2d1990e1c37870f8b2096fbda6128716b`
-- Integration branch: `mdslc/native-libtooling-v1`
-- Independently reviewed implementation evidence head:
-  `f71f1800a1ba70f2b363ff68ecd6632c7ae8fad1`
+- Milestone 1 integration branch: `mdslc/native-libtooling-v1`
+- Milestone 2 branch: `mdslc/matcore-ir-v1-cpu-planner`
+- Milestone 2 pull request: `#5`
 
-## Verdict
+## Milestone 2 verdict
+
+**Typed Matcore IR v1 and deterministic CPU GEMM planning pass local release
+gates and independent review. GitHub checks are the remaining merge gate.**
+
+The native driver now routes every authenticated `matcore::mdsl::gemm` through
+a verified v0-to-v1 boundary. IR v1 carries typed shape, dtype, accumulation,
+layout, stride, alignment, memory, mutability, effects, alias, synchronization,
+policy, requirement, provenance, and exact source-range contracts. Only a
+lossless canonical subset projects into the existing rewrite/codegen and v0
+execution ABI.
+
+The CPU runtime validates descriptors before discovering versioned host
+capabilities. It evaluates a fixed reference/tiled/compiler-vectorized registry,
+rejects illegal variants, applies saturating deterministic integer costs, emits
+complete candidate and selected-plan diagnostics, and executes exactly the
+selected lowering. The additive `matcore_runtime_plan_gemm_f32_v1` query and
+installed `matcore-plan` tool expose the same decision without executing or
+modifying output.
+
+Current validation host capability record:
+
+```text
+x86_64; discovery complete; portable scalar f32, AVX2, FMA; 256 vector bits
+```
+
+Fresh Release with the Ubuntu 24.04 RapidJSON header passed 13/13 CTest tests
+in 60.48 s before the additive object-artifact test. Fresh Debug passed the
+final 14/14 suite in 63.76 s. The ASan/UBSan focused set
+passed 7/7, and a separately instrumented generated GEMM printed
+`MDSLC CPU GEMM PASS`. Five representative benchmark shapes passed independent
+correctness and generous absolute regression guards. Results and exact
+contracts are recorded in
+`docs/mdslc/agent-reports/matcore-ir-v1-cpu-planner-final.md`.
+
+The independent reviewer returned PASS after finding one P1: Debug/default
+could select a vector-named implementation whose `-O0` body was scalar. The
+fix preserves Release `-O3`, enables `-O2` only for Debug/default, and requires
+function-local YMM packed-FMA instructions in an artifact regression test.
+
+No coherent BLAS development package was installed, so the optional BLAS
+adapter was not added and is not required. No accelerator, fusion, or
+autotuning capability is claimed.
+
+## Milestone 1 foundation
 
 **Architecture proof passed for the standalone native CPU frontend/runtime
 vertical slice.**
