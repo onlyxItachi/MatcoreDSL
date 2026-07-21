@@ -5,6 +5,7 @@ on:
     branches:
       - feature/device-resident-tensors
       - mdslc/native-libtooling-v1
+      - mdslc/matcore-ir-v1-cpu-planner
     paths:
       - ".github/workflows/mdslc-native.yml"
       - "AGENTS.md"
