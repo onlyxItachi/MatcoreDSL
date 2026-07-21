@@ -35,6 +35,12 @@ set_property(TARGET matcore_runtime PROPERTY EXPORT_NAME Runtime)
 target_compile_features(matcore_runtime PUBLIC cxx_std_20)
 target_compile_definitions(matcore_runtime PRIVATE MATCORE_RUNTIME_BUILD)
 target_link_libraries(matcore_runtime PRIVATE MatcoreDSL::CpuPlannerV1)
+# The planner may select the AVX2/FMA implementation at runtime. Keep this
+# translation unit optimized even in Debug/default builds so that candidate is
+# actually compiler-vectorized rather than a scalar loop with a vector name.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+  target_compile_options(matcore_runtime PRIVATE -O2)
+endif()
 target_include_directories(matcore_runtime
   PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../include>"
@@ -65,4 +71,20 @@ if(BUILD_TESTING)
     PRIVATE MatcoreDSL::Runtime MatcoreDSL::CpuPlannerV1
   )
   add_test(NAME runtime.cpu.gemm_v0 COMMAND matcore_runtime_cpu_test)
+
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU" AND
+     CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+    find_program(MDSLC_OBJDUMP_EXECUTABLE NAMES objdump)
+    if(MDSLC_OBJDUMP_EXECUTABLE)
+      add_test(
+        NAME runtime.cpu.vectorized_object
+        COMMAND
+          "${CMAKE_COMMAND}"
+          "-DMDSLC_OBJDUMP=${MDSLC_OBJDUMP_EXECUTABLE}"
+          "-DMDSLC_RUNTIME=$<TARGET_FILE:matcore_runtime>"
+          -P
+          "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/cmake/expect_cpu_vectorized_runtime.cmake"
+      )
+    endif()
+  endif()
 endif()
