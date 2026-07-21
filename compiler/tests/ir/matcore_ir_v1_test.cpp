@@ -144,6 +144,29 @@ int main() {
                 std::vector<v1::ValueId>{v1::ValueId::Output},
         "read/write effects must be typed and ordered");
 
+  v1::Module two_operations = typed;
+  v1::Operation independent = operation;
+  independent.site_id = "mc_11111111111111111111111111111111";
+  const std::uint64_t range_shift = operation.call_range.end + 10 -
+                                    operation.call_range.begin;
+  independent.source.offset += range_shift;
+  independent.source.line += 10;
+  independent.call_range.begin += range_shift;
+  independent.call_range.end += range_shift;
+  for (v0::SourceRange &range : independent.argument_ranges) {
+    range.begin += range_shift;
+    range.end += range_shift;
+  }
+  independent.output.source_expression = "Z";
+  independent.operands[0].source_expression = "X";
+  independent.operands[1].source_expression = "Y";
+  two_operations.operations.push_back(std::move(independent));
+  check(v1::verify(two_operations, error),
+        "independent operations may reuse operation-scoped m/k/n symbols");
+  check(two_operations.operations[0].output.type.shape[0].symbol ==
+            two_operations.operations[1].output.type.shape[0].symbol,
+        "same symbol spelling across operations must remain explicitly local");
+
   const std::string v1_json = v1::serializeDeterministicJson(typed);
   const std::string v1_golden =
       readFile(std::string(MDSLC_IR_TEST_SOURCE_DIR) +
@@ -519,6 +542,41 @@ int main() {
   check(!v1::parseAndVerifyJson(malformed, reparsed, error),
         "malformed v1 JSON must fail cleanly");
   checkContains(error, "malformed JSON", "malformed JSON reports parser offset");
+
+  std::string invalid_utf8_v1 = v1_json;
+  const std::size_t v1_expression =
+      invalid_utf8_v1.find("\"expression\": \"C\"");
+  check(v1_expression != std::string::npos,
+        "v1 UTF-8 mutation target must exist");
+  if (v1_expression != std::string::npos) {
+    const std::size_t value_offset =
+        v1_expression + std::string_view("\"expression\": \"").size();
+    invalid_utf8_v1[value_offset] = static_cast<char>(0xff);
+  }
+  check(!v1::probeJsonVersion(invalid_utf8_v1, version, error),
+        "version probing must reject invalid UTF-8 before dispatch");
+  checkContains(error, "malformed JSON",
+                "invalid UTF-8 probe diagnostic must be actionable");
+  check(!v1::parseAndVerifyJson(invalid_utf8_v1, reparsed, error),
+        "v1 parser must reject invalid UTF-8");
+  checkContains(error, "malformed JSON",
+                "invalid UTF-8 v1 diagnostic must be actionable");
+
+  std::string invalid_utf8_v0 = v0_json;
+  const std::size_t v0_expression =
+      invalid_utf8_v0.find("\"expression\": \"C\"");
+  check(v0_expression != std::string::npos,
+        "v0 UTF-8 mutation target must exist");
+  if (v0_expression != std::string::npos) {
+    const std::size_t value_offset =
+        v0_expression + std::string_view("\"expression\": \"").size();
+    invalid_utf8_v0[value_offset] = static_cast<char>(0xff);
+  }
+  v0::Module invalid_utf8_module;
+  check(!v0::parseAndVerifyJson(invalid_utf8_v0, invalid_utf8_module, error),
+        "v0 compatibility parser must also reject invalid UTF-8");
+  checkContains(error, "malformed JSON",
+                "invalid UTF-8 v0 diagnostic must be actionable");
 
   if (failures != 0) {
     std::cerr << failures << " of " << checks << " IR v1 checks failed\n";

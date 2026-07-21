@@ -476,7 +476,8 @@ bool parseOperation(const rapidjson::Value &encoded, Operation &operation,
 
 bool parseDocument(std::string_view json, rapidjson::Document &document,
                    std::string &error) {
-  document.Parse(json.data(), json.size());
+  document.Parse<rapidjson::kParseValidateEncodingFlag>(json.data(),
+                                                        json.size());
   if (!document.HasParseError()) {
     return true;
   }

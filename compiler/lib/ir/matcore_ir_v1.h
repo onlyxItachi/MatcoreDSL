@@ -30,8 +30,11 @@ enum class SemanticRequirement {
 };
 
 // A dimension or stride is either a positive compile-time integer or a
-// positive runtime value identified by a stable semantic symbol. Reusing a
-// symbol expresses equality; no implicit unification is performed.
+// positive runtime value identified by a stable semantic symbol. Dynamic
+// symbols are scoped to their enclosing Operation: reusing a symbol within
+// one operation expresses equality, while the same spelling in another
+// operation has no semantic relationship. No implicit unification is
+// performed.
 struct ScalarExpr {
   enum class Kind { Static, Dynamic };
 
@@ -80,6 +83,9 @@ struct Policy {
 };
 
 struct Operation {
+  // Operation is the structural scope for every dynamic ScalarExpr nested in
+  // this value. Matcore IR v1 intentionally has no module-wide dimension
+  // namespace.
   std::string site_id;
   OperationKind kind = OperationKind::Gemm;
   std::string canonical_callee;
