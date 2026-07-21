@@ -44,6 +44,7 @@ jobs:
             ccache \
             clang-21 \
             cmake \
+            g++-multilib \
             libclang-21-dev \
             libclang-cpp21-dev \
             llvm-21-dev \
