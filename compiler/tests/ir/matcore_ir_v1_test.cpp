@@ -86,6 +86,19 @@ int main() {
   check(v1::verify(typed, error), "upgraded typed v1 must verify");
   check(typed.operations.size() == 1, "upgrade must preserve operation count");
   const v1::Operation &operation = typed.operations.front();
+  check(typed.translation_unit == captured.translation_unit &&
+            typed.source_file == captured.source_file &&
+            typed.producer == captured.producer,
+        "upgrade must preserve module source provenance and producer");
+  check(operation.site_id == captured.operations[0].site_id &&
+            operation.source.file == captured.operations[0].source.file &&
+            operation.source.offset == captured.operations[0].source.offset &&
+            operation.call_range.begin ==
+                captured.operations[0].call_range.begin &&
+            operation.call_range.end == captured.operations[0].call_range.end &&
+            operation.argument_ranges.size() ==
+                captured.operations[0].argument_ranges.size(),
+        "upgrade must preserve stable site and exact source ranges");
   check(operation.kind == v1::OperationKind::Gemm,
         "operation kind must be typed GEMM");
   check(operation.accumulation_dtype == v1::DType::F32,
@@ -136,8 +149,12 @@ int main() {
                 "v1 JSON must serialize semantic requirements");
   check(v1::probeJsonVersion(v1_json, version, error) && version == 1,
         "version probe must identify v1");
-
   v1::Module reparsed;
+  check(!v1::parseAndVerifyJson(v0_json, reparsed, error),
+        "v1 parser must not silently parse or upgrade v0 JSON");
+  checkContains(error, "expected version 1",
+                "wrong exact parser diagnostic must name expected version");
+
   check(v1::parseAndVerifyJson(v1_json, reparsed, error),
         "serialized v1 must parse and verify");
   check(v1::serializeDeterministicJson(reparsed) == v1_json,
@@ -155,6 +172,12 @@ int main() {
   makeStatic(static_shapes.operations[0].operands[1], 3, 4);
   check(v1::verify(static_shapes, error),
         "consistent static GEMM shapes and strides must verify");
+  const std::string static_json =
+      v1::serializeDeterministicJson(static_shapes);
+  v1::Module static_reparsed;
+  check(v1::parseAndVerifyJson(static_json, static_reparsed, error) &&
+            v1::serializeDeterministicJson(static_reparsed) == static_json,
+        "static dimensions and strides must parse/serialize byte-stably");
   check(!v1::projectToV0(static_shapes, projected, error),
         "static typed shapes must not be erased by v0 projection");
   checkContains(error, "losslessly", "lossy static projection must explain why");
