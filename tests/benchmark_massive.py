@@ -68,11 +68,17 @@ def benchmark_target(target: str, a_seed: np.ndarray, b_seed: np.ndarray) -> Non
                     scratch[batch_idx],
                     target=target,
                 )
+            if cp is not None:
+                cp.cuda.Stream.null.synchronize()
             step_times_ms.append((time.perf_counter() - step_start) * 1000.0)
             current, scratch = scratch, current
 
         elapsed_ms = (time.perf_counter() - start) * 1000.0
-        checksum = float(np.sum(current, dtype=np.float64))
+        checksum = (
+            float(cp.asnumpy(cp.sum(current, dtype=cp.float64)))
+            if cp is not None
+            else float(np.sum(current, dtype=np.float64))
+        )
 
         total_matmuls = STEPS * BATCH
         flops_per_matmul = 2 * M * K * N
