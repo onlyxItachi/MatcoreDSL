@@ -1,0 +1,71 @@
+name: mdslc-native
+
+on:
+  push:
+    branches:
+      - feature/device-resident-tensors
+      - mdslc/native-libtooling-v1
+    paths:
+      - ".github/workflows/mdslc-native.yml"
+      - "AGENTS.md"
+      - "compiler/**"
+      - "docs/mdslc/**"
+  pull_request:
+    paths:
+      - ".github/workflows/mdslc-native.yml"
+      - "AGENTS.md"
+      - "compiler/**"
+      - "docs/mdslc/**"
+
+permissions:
+  contents: read
+
+jobs:
+  clang-21-release:
+    name: Clang 21.1.8 standalone Release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add the official LLVM 21 repository
+        run: |
+          sudo install -d -m 0755 /etc/apt/keyrings
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/keyrings/apt.llvm.org.asc >/dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/apt.llvm.org.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+            | sudo tee /etc/apt/sources.list.d/apt.llvm.org.list
+
+      - name: Install the audited compiler tuple
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ccache \
+            clang-21 \
+            cmake \
+            libclang-21-dev \
+            libclang-cpp21-dev \
+            llvm-21-dev \
+            ninja-build \
+            python3 \
+            rapidjson-dev
+          /usr/bin/clang++-21 --version | grep -F "clang version 21.1.8"
+
+      - name: Configure standalone MDSLC
+        run: |
+          cmake -S compiler -B build-mdslc -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=/usr/bin/clang-21 \
+            -DCMAKE_CXX_COMPILER=/usr/bin/clang++-21 \
+            -DMDSLC_CLANGXX_EXECUTABLE=/usr/bin/clang++-21 \
+            -DMDSLC_ENABLE_NATIVE_FRONTEND=ON \
+            -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=ON \
+            -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
+            -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang
+
+      - name: Build standalone MDSLC
+        run: cmake --build build-mdslc --parallel 2
+
+      - name: Test standalone MDSLC
+        run: ctest --test-dir build-mdslc --output-on-failure -j1
