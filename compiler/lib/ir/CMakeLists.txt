@@ -13,6 +13,7 @@ add_library(
   matcore_ir_v1
   STATIC
     matcore_ir_v1.cpp
+    matcore_ir_v1_json.cpp
 )
 target_compile_features(matcore_ir_v1 PUBLIC cxx_std_20)
 target_include_directories(
