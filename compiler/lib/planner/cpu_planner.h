@@ -21,6 +21,19 @@ inline constexpr std::size_t kCpuGemmCandidateCountV1 = 3;
 #define MATCORE_MDSLC_CPU_AVX2_FMA_TARGET
 #endif
 
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer) || \
+    __has_feature(undefined_behavior_sanitizer)
+#define MATCORE_MDSLC_CPU_INSTRUMENTED_BUILD 1
+#else
+#define MATCORE_MDSLC_CPU_INSTRUMENTED_BUILD 0
+#endif
+#elif defined(__SANITIZE_ADDRESS__)
+#define MATCORE_MDSLC_CPU_INSTRUMENTED_BUILD 1
+#else
+#define MATCORE_MDSLC_CPU_INSTRUMENTED_BUILD 0
+#endif
+
 #if defined(__clang__) || defined(__GNUC__)
 #define MATCORE_MDSLC_CPU_RESTRICT __restrict__
 #elif defined(_MSC_VER)
@@ -58,6 +71,10 @@ constexpr bool has_feature(const CpuCapabilitiesV1 &capabilities,
   return (capabilities.features & feature_bit(feature)) != 0;
 }
 
+constexpr bool cpu_compiler_vectorization_build_available_v1() noexcept {
+  return MATCORE_MDSLC_CPU_INSTRUMENTED_BUILD == 0;
+}
+
 inline CpuCapabilitiesV1 discover_cpu_capabilities_v1() noexcept {
   CpuCapabilitiesV1 result;
 #if defined(__x86_64__) || defined(_M_X64)
@@ -65,11 +82,13 @@ inline CpuCapabilitiesV1 discover_cpu_capabilities_v1() noexcept {
 #if (defined(__clang__) || defined(__GNUC__)) && !defined(_MSC_VER)
   __builtin_cpu_init();
   result.detection_complete = true;
-  if (__builtin_cpu_supports("avx2")) {
+  if (cpu_compiler_vectorization_build_available_v1() &&
+      __builtin_cpu_supports("avx2")) {
     result.features |= feature_bit(CpuFeatureV1::avx2);
     result.usable_vector_bits = 256;
   }
-  if (__builtin_cpu_supports("fma")) {
+  if (cpu_compiler_vectorization_build_available_v1() &&
+      __builtin_cpu_supports("fma")) {
     result.features |= feature_bit(CpuFeatureV1::fma);
   }
 #endif
@@ -360,9 +379,9 @@ inline void compiler_vectorized_gemm(
   for (std::int64_t i = 0; i < problem.m; ++i) {
     for (std::int64_t p = 0; p < problem.k; ++p) {
       const float a = lhs[i * problem.k + p];
-#if defined(__clang__)
+#if defined(__clang__) && !MATCORE_MDSLC_CPU_INSTRUMENTED_BUILD
 #pragma clang loop vectorize(enable) vectorize_width(8) interleave(enable)
-#elif defined(__GNUC__)
+#elif defined(__GNUC__) && !MATCORE_MDSLC_CPU_INSTRUMENTED_BUILD
 #pragma GCC ivdep
 #endif
       for (std::int64_t j = 0; j < problem.n; ++j)
@@ -638,5 +657,6 @@ inline std::size_t format_cpu_gemm_plan_v1(const CpuGemmPlanV1 &plan,
 
 #undef MATCORE_MDSLC_CPU_RESTRICT
 #undef MATCORE_MDSLC_CPU_AVX2_FMA_TARGET
+#undef MATCORE_MDSLC_CPU_INSTRUMENTED_BUILD
 
 #endif
