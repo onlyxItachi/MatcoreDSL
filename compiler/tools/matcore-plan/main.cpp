@@ -1,8 +1,8 @@
 #include "cpu_planner.h"
 
 #include <charconv>
-#include <cstdlib>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -129,7 +129,7 @@ std::optional<Options> parseCommandLine(int argc, char **argv) {
   return options;
 }
 
-} // namespace
+}  // namespace
 
 int main(int argc, char **argv) {
   const std::optional<Options> options = parseCommandLine(argc, argv);
