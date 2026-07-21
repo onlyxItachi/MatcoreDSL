@@ -440,7 +440,8 @@ bool parseAndVerifyJson(std::string_view json, Module &module,
   module = Module{};
   error.clear();
   rapidjson::Document document;
-  document.Parse(json.data(), json.size());
+  document.Parse<rapidjson::kParseValidateEncodingFlag>(json.data(),
+                                                        json.size());
   if (document.HasParseError()) {
     error = "malformed JSON at byte " +
             std::to_string(document.GetErrorOffset()) + ": " +
