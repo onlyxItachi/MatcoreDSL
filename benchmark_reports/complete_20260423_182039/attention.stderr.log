@@ -1,8 +1,0 @@
-/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/fa72ebddca4b35edc1259e146a43f875/kernel.o: warning: relocation in read-only section `.ltext'
-/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
-/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/468d037740ac1cbf1a217be23005167b/kernel.o: warning: relocation in read-only section `.ltext'
-/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
-/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/a3d0a88e0b9b13a0b6c5ee5af5e9802d/kernel.o: warning: relocation in read-only section `.ltext'
-/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
-/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/957b799fd4e36d81d415274498f57acc/kernel.o: warning: relocation in read-only section `.ltext'
-/usr/bin/ld: warning: creating DT_TEXTREL in a shared object

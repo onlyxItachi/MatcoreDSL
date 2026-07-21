@@ -2,6 +2,10 @@
 
 Date: 2026-04-29
 
+> Historical engineering record. Commands below are normalized to repository-
+> relative paths; results describe the recorded machine and are not a current
+> performance claim.
+
 ## Objective
 
 Restore the Family C fusion pipeline after two incremental optimization
@@ -17,25 +21,20 @@ route label `score_cached_block_coop_dtile64`.
 ## Validation
 
 ```text
-ninja -C /home/hamza-usta/MatcoreDSL/build-review
+cmake --build <legacy-build-dir> --parallel 2
 env MATCORE_CACHE_DIR=/tmp/matcore_restore_smoke \
-  /home/hamza-usta/MatcoreDSL/.venv/bin/python -u -c \
+  python3 -u -c \
   "import tests.test_family_c as t; print('start-small'); t.test_attention_uses_unscaled_softmax_scores(); print('done-small')"
 env MATCORE_CACHE_DIR=/tmp/matcore_family_c_restore_full \
-  /home/hamza-usta/MatcoreDSL/.venv/bin/python -u \
-  /home/hamza-usta/MatcoreDSL/tests/test_family_c.py
+  python3 -u tests/test_family_c.py
 env MATCORE_CACHE_DIR=/tmp/matcore_fusion_analysis_restore \
-  /home/hamza-usta/MatcoreDSL/.venv/bin/python -u \
-  /home/hamza-usta/MatcoreDSL/tests/test_fusion_analysis.py
+  python3 -u tests/test_fusion_analysis.py
 env MATCORE_CACHE_DIR=/tmp/matcore_fusion_contracts_restore \
-  /home/hamza-usta/MatcoreDSL/.venv/bin/python -u \
-  /home/hamza-usta/MatcoreDSL/tests/test_fusion_contracts.py
+  python3 -u tests/test_fusion_contracts.py
 env MATCORE_CACHE_DIR=/tmp/matcore_family_a_restore \
-  /home/hamza-usta/MatcoreDSL/.venv/bin/python -u \
-  /home/hamza-usta/MatcoreDSL/tests/test_family_a.py
+  python3 -u tests/test_family_a.py
 env MATCORE_CACHE_DIR=/tmp/matcore_family_b_restore \
-  /home/hamza-usta/MatcoreDSL/.venv/bin/python -u \
-  /home/hamza-usta/MatcoreDSL/tests/test_family_b.py
+  python3 -u tests/test_family_b.py
 ```
 
 All listed validation commands passed.
@@ -46,8 +45,7 @@ Command:
 
 ```text
 env MATCORE_CACHE_DIR=/tmp/matcore_bench_restore \
-  /home/hamza-usta/MatcoreDSL/.venv/bin/python -u \
-  /home/hamza-usta/MatcoreDSL/tests/bench_attention.py
+  python3 -u tests/bench_attention.py
 ```
 
 | Shape | MatcoreDSL ms | Torch Naive ms | Torch SDPA ms | max_err |
@@ -75,11 +73,10 @@ Command:
 
 ```text
 env MATCORE_CACHE_DIR=/tmp/matcore_ncu_restore \
-  /usr/local/cuda-13.2/bin/ncu --profile-from-start off \
+  ncu --profile-from-start off \
   --section MemoryWorkloadAnalysis --section SourceCounters \
   --section LaunchStats --launch-count 4 --print-summary per-kernel \
-  /home/hamza-usta/MatcoreDSL/.venv/bin/python -u \
-  /home/hamza-usta/MatcoreDSL/tests/ncu_profile_family_c.py \
+  python3 -u tests/ncu_profile_family_c.py \
   --m 128 --n 128 --d 64 --warmup 1 --profile-iters 1
 ```
 
@@ -108,4 +105,3 @@ Interpretation:
   eight CTAs on a 24-SM GPU.
 - The next safe performance step should be a feature-flagged split-row or
   FlashAttention/MMA-style Family C path, not ad-hoc score-cache padding.
-

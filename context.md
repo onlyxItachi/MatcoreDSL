@@ -86,7 +86,7 @@ Residuals / Block AttnRes style depth attention over packed block history.
 
 ## Verification Checklist
 
-- Passed: `ninja -C /home/hamza-usta/MatcoreDSL/build-review`
+- Passed historically: `cmake --build <legacy-build-dir> --parallel 2`
 - Passed: `/usr/bin/python3 -m pytest tests/test_region_ir.py tests/test_block_attn_res.py -q`
   (covers direct intrinsic, `@mc.jit` native smoke, invalid RegionIR verifier
   cases, and the multi-op lowering gap)

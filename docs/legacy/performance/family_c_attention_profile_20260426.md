@@ -2,6 +2,10 @@
 
 Date: 2026-04-26
 
+> Historical engineering record. Commands below are normalized to repository-
+> relative paths; results describe the recorded machine and are not a current
+> performance claim.
+
 ## Environment
 
 - GPU: NVIDIA GeForce RTX 4060 Laptop GPU
@@ -13,10 +17,10 @@ Date: 2026-04-26
 ## Commands Run
 
 ```text
-/home/hamza-usta/MatcoreDSL/.venv/bin/python /home/hamza-usta/MatcoreDSL/tests/bench_attention.py
-/home/hamza-usta/MatcoreDSL/.venv/bin/python -c "import importlib.util, pathlib; ...; mod.run_family_c()"
-/usr/local/cuda-13.2/bin/ncu --launch-skip 1 --launch-count 1 --section SpeedOfLight --section SchedulerStats --section MemoryWorkloadAnalysis ...
-/usr/local/cuda-13.2/bin/ncu --launch-skip 1 --launch-count 1 --section LaunchStats --section WarpStateStats --section SourceCounters ...
+python3 tests/bench_attention.py
+python3 -c "import importlib.util, pathlib; ...; mod.run_family_c()"
+ncu --launch-skip 1 --launch-count 1 --section SpeedOfLight --section SchedulerStats --section MemoryWorkloadAnalysis ...
+ncu --launch-skip 1 --launch-count 1 --section LaunchStats --section WarpStateStats --section SourceCounters ...
 ```
 
 ## Benchmark Results
@@ -130,10 +134,10 @@ Codex implemented the first incremental kernel change on 2026-04-26:
 Post-change validation:
 
 ```text
-ninja -C /home/hamza-usta/MatcoreDSL/build-review
-/home/hamza-usta/MatcoreDSL/.venv/bin/python tests/test_family_c.py
-/home/hamza-usta/MatcoreDSL/.venv/bin/python tests/test_fusion_analysis.py
-/home/hamza-usta/MatcoreDSL/.venv/bin/python tests/test_fusion_contracts.py
+cmake --build <legacy-build-dir> --parallel 2
+python3 tests/test_family_c.py
+python3 tests/test_fusion_analysis.py
+python3 tests/test_fusion_contracts.py
 ```
 
 Post-change benchmark snapshots:
