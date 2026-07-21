@@ -184,6 +184,56 @@ def test_to_device_rejects_quantized_int8_wrappers() -> None:
         raise AssertionError("Expected mc.to_device to reject quantized int8 wrappers")
 
 
+def test_cuda_array_interface_counts_as_device_resident() -> None:
+    class CudaArray:
+        shape = (2, 2)
+        strides = (8, 4)
+        flags = type("Flags", (), {"c_contiguous": True})()
+        __cuda_array_interface__ = {
+            "shape": shape,
+            "strides": strides,
+            "typestr": "<f4",
+            "data": (1, False),
+            "version": 3,
+        }
+
+    device = CudaArray()
+    wrapped = mc.asdtype(device, "float32")
+    assert frontend._analyze_tensor_residency((device, wrapped)) == (True, False)
+    assert frontend._analyze_tensor_residency((device, np.zeros((2, 2)))) == (
+        True,
+        True,
+    )
+
+
+def test_invalid_cuda_array_interface_does_not_spoof_residency() -> None:
+    class InvalidCudaArray:
+        __cuda_array_interface__ = {"data": "not-a-pointer-tuple", "version": 3}
+
+    assert frontend._analyze_tensor_residency((InvalidCudaArray(),)) == (
+        False,
+        True,
+    )
+
+
+def test_device_validation_does_not_force_numpy_conversion() -> None:
+    class CudaArray:
+        __cuda_array_interface__ = {
+            "shape": (2, 2),
+            "strides": (8, 4),
+            "typestr": "<f4",
+            "data": (1, False),
+            "version": 3,
+        }
+
+        def __array__(self):
+            raise AssertionError("device validation must not copy through NumPy")
+
+    device = CudaArray()
+    frontend._warn_if_non_finite(device, "device")
+    frontend._validate_output(None, (device,), {"params": ["out"], "ops": []})
+
+
 @mc.kernel
 def _int8_kernel(A, B, C):
     lhs = mc.load(A)
@@ -242,6 +292,9 @@ def main() -> None:
     test_fused_rejects_effective_non_nvidia_target_for_device_tensors()
     test_to_device_rejects_non_nvidia_target_before_runtime_import()
     test_to_device_rejects_quantized_int8_wrappers()
+    test_cuda_array_interface_counts_as_device_resident()
+    test_invalid_cuda_array_interface_does_not_spoof_residency()
+    test_device_validation_does_not_force_numpy_conversion()
     test_create_plan_rejects_quantized_device_tensors_before_native_dispatch()
     test_native_create_plan_rejects_quantized_device_tensors()
     print("Frontend contract tests passed")

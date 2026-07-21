@@ -99,22 +99,24 @@ bool quantizationMatches(const QuantizationParams &lhs,
 
 /// Zero the output tensor(s) before invoking the JIT function.
 /// linalg.matmul semantics are C += A*B, so the output must be zeroed
-/// to get C = A*B.  We do this on the host side (memset) rather than
-/// generating linalg.fill in the MLIR IR, because the host-level fill
+/// to get C = A*B. We do this outside generated MLIR—host buffers through
+/// memset and device buffers through the runtime—because a generated fill
 /// creates memref/cf ops that break the NVVM pipeline for multi-warp.
-/// Device-resident outputs are zeroed by the user via DeviceTensor.zero_().
 static void zeroOutputTensors(const std::vector<RuntimeTensorView> &tensors,
                               const LoweredModule &lowered) {
   if (tensors.empty()) return;
 
   auto zero_tensor = [&](const RuntimeTensorView &out) {
-    if (out.is_device_resident) return;  // user's responsibility
     if (!out.data) return;
 
     std::size_t num_elements = 1;
     for (auto dim : out.shape) num_elements *= static_cast<std::size_t>(dim);
     std::size_t byte_size = num_elements * dtypeElementBytes(out.dtype);
-    std::memset(out.data, 0, byte_size);
+    if (out.is_device_resident) {
+      matcore_device_zero_raw(out.data, byte_size);
+    } else {
+      std::memset(out.data, 0, byte_size);
+    }
   };
 
   if (!lowered.output_tensor_indices.empty()) {
@@ -557,7 +559,9 @@ void persistExecutionToDiskCache(const CachedExecution &compiled,
     return;
   }
   linkObjectFileToSharedLibrary(artifacts, compile_target);
-  removeArtifactIfExists(artifacts.object_path);
+  if (!keepDiskCacheObjectFile()) {
+    removeArtifactIfExists(artifacts.object_path);
+  }
   try {
     auto metadata_path = artifacts.artifact_dir / "metadata.json";
     llvm::json::Object metadata_obj{
@@ -835,6 +839,7 @@ MatcorePlan::MatcorePlan(MatcorePlan &&other) noexcept
       execution_(std::move(other.execution_)),
       frozen_meta_(std::move(other.frozen_meta_)),
       has_device_tensors_(other.has_device_tensors_),
+      target_kind_(other.target_kind_),
       cache_key_(std::move(other.cache_key_)),
       graph_mode_(other.graph_mode_),
       graph_stream_(other.graph_stream_),
@@ -857,6 +862,7 @@ MatcorePlan &MatcorePlan::operator=(MatcorePlan &&other) noexcept {
     execution_ = std::move(other.execution_);
     frozen_meta_ = std::move(other.frozen_meta_);
     has_device_tensors_ = other.has_device_tensors_;
+    target_kind_ = other.target_kind_;
     cache_key_ = std::move(other.cache_key_);
     graph_mode_ = other.graph_mode_;
     graph_stream_ = other.graph_stream_;
@@ -897,6 +903,7 @@ MatcorePlan::create(const KernelIR &kernel,
   auto plan = std::unique_ptr<MatcorePlan>(new MatcorePlan());
   plan->generation_id_ = nextGenerationId();
   plan->execution_ = std::move(compiled);
+  plan->target_kind_ = normalizeTarget(target_profile.kind);
 
   // Freeze tensor metadata
   plan->frozen_meta_.reserve(template_tensors.size());

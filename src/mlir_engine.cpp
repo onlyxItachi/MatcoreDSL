@@ -840,15 +840,14 @@ mlir::OwningOpRef<mlir::ModuleOp> buildMatmulModule(
   builder.setInsertionPointToStart(entry_block);
 
   const mlir::Location loc = builder.getUnknownLoc();
-  auto zero = builder.create<mlir::arith::ConstantOp>(
-      loc, builder.getZeroAttr(out_element_type));
+  mlir::Value zero = createTypedZero(builder, loc, out_element_type);
 
   // Check if any tensor is device-resident.
   const bool any_device_resident =
       std::any_of(tensors.begin(), tensors.end(),
                   [](const RuntimeTensorView &t) { return t.is_device_resident; });
 
-  if (useTensorPadMatmul(plan, signature)) {
+  if (useTensorPadMatmul(plan, signature, shape)) {
     const std::int64_t padded_m = roundUpToMultiple(shape.m, 16);
     const std::int64_t padded_k = roundUpToMultiple(shape.k, 16);
     const std::int64_t padded_n = roundUpToMultiple(shape.n, 8);

@@ -805,6 +805,7 @@ ParsedTensor parseTensorArgument(const nb::object &tensor, std::size_t index,
   const bool prefer_cuda_interface =
       matcore::normalizeTarget(target_kind) == matcore::TargetKind::kNvidiaDGPU &&
       nb::hasattr(tensor, "__cuda_array_interface__");
+  parsed.is_device_resident = prefer_cuda_interface;
   const char *interface_name =
       prefer_cuda_interface ? "__cuda_array_interface__" : "__array_interface__";
   nb::object array_interface_obj = tensor.attr(interface_name);
@@ -1522,7 +1523,8 @@ NB_MODULE(_matcore_native, m) {
           keepalive.reserve(tensor_args.size());
           for (std::size_t i = 0; i < tensor_args.size(); ++i) {
             nb::object tensor = nb::borrow<nb::object>(tensor_args[i]);
-            ParsedTensor parsed = parseTensorArgument(tensor, i);
+            ParsedTensor parsed =
+                parseTensorArgument(tensor, i, plan.targetKind());
             keepalive.push_back(tensor);
             matcore::RuntimeTensorView view;
             // Use frozen meta symbols if available

@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -43,12 +44,14 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Pass/PassInstrumentation.h"
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace matcore {
@@ -96,6 +99,62 @@ struct LowerResidualVectorOpsPass
 
 [[noreturn]] void fail(const std::string &message) {
   throw std::runtime_error("MatCore lowering pipeline: " + message);
+}
+
+std::string pipelineDumpPath() {
+  const char *raw = std::getenv("MATCORE_NVIDIA_PIPELINE_DUMP");
+  if (raw == nullptr || *raw == '\0') {
+    raw = std::getenv("MATCORE_PIPELINE_DUMP");
+  }
+  if (raw == nullptr || *raw == '\0') {
+    return {};
+  }
+  return raw;
+}
+
+void overwritePipelineDump(llvm::StringRef path, llvm::StringRef header) {
+  if (path.empty()) {
+    return;
+  }
+  std::error_code ec;
+  llvm::raw_fd_ostream stream(path, ec, llvm::sys::fs::OF_Text);
+  if (ec) {
+    fail("failed to open pipeline dump '" + std::string(path) + "': " +
+         ec.message());
+  }
+  stream << header;
+}
+
+void appendPipelineDump(llvm::StringRef path, llvm::StringRef stage_name,
+                        mlir::ModuleOp module,
+                        const mlir::OpPrintingFlags &printing_flags) {
+  if (path.empty()) {
+    return;
+  }
+  std::error_code ec;
+  llvm::raw_fd_ostream stream(
+      path, ec, llvm::sys::fs::OF_Text | llvm::sys::fs::OF_Append);
+  if (ec) {
+    fail("failed to append pipeline dump '" + std::string(path) + "': " +
+         ec.message());
+  }
+  stream << "\n// ----- " << stage_name << " -----\n";
+  module.print(stream, printing_flags);
+  stream << "\n";
+}
+
+void appendPipelineMarker(llvm::StringRef path, llvm::StringRef marker) {
+  if (path.empty()) {
+    return;
+  }
+  std::error_code ec;
+  llvm::raw_fd_ostream stream(
+      path, ec, llvm::sys::fs::OF_Text | llvm::sys::fs::OF_Append);
+  if (ec) {
+    fail("failed to append pipeline marker '" + std::string(path) + "': " +
+         ec.message());
+  }
+  stream << marker << "\n";
 }
 
 std::optional<int> getFusionRegisterCap(mlir::ModuleOp module) {
@@ -3207,6 +3266,21 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
     return;
   }
 
+  const std::string dump_path =
+      plan.route == LoweringRoute::kNvidiaNvptx ? pipelineDumpPath()
+                                                 : std::string{};
+  mlir::OpPrintingFlags dump_printing_flags;
+  dump_printing_flags.useLocalScope();
+  if (!dump_path.empty()) {
+    module.getContext()->disableMultithreading();
+    overwritePipelineDump(
+        dump_path,
+        "// MatCore NVIDIA lowering pipeline dump (deterministic)\n"
+        "// env: MATCORE_NVIDIA_PIPELINE_DUMP or MATCORE_PIPELINE_DUMP\n");
+    appendPipelineDump(dump_path, "initial-module", module,
+                       dump_printing_flags);
+  }
+
   runFp8WgmmaPreflight(module, plan, signature, obs);
   const std::string resolved_amd_chip =
       amd_chip.empty() ? requestedAmdChip(module) : amd_chip.str();
@@ -3631,21 +3705,6 @@ void runLoweringPipeline(mlir::ModuleOp module, const LoweringPlan &plan,
       run_stage("nvidia-loop-materialization", [&](mlir::PassManager &pm) {
         AddNvidiaLoopMaterializationPasses(pm);
       });
-      run_stage("nvidia-async-copy-preparation", [&](mlir::PassManager &pm) {
-        AddNvidiaAsyncCopyPreparationPasses(pm);
-      });
-      try {
-        appendPipelineDump(dump_path, "before-nvidia-async-pipeline", module,
-                           dump_printing_flags);
-        ApplyNvidiaAsyncPipelineToModule(module);
-        appendPipelineDump(dump_path, "after-nvidia-async-pipeline", module,
-                           dump_printing_flags);
-      } catch (const std::exception &exc) {
-        fail("failed to run lowering pipeline for route " +
-             std::string(routeName(plan.route)) +
-             " at stage 'nvidia-async-pipeline'\n" + exc.what() + "\n" +
-             DumpModuleIR(module));
-      }
       run_stage("nvidia-vector-to-gpu", [&](mlir::PassManager &pm) {
         ConfigureNvidiaVectorToGpuStage(pm);
       });
