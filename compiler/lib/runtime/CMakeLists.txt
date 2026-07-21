@@ -11,6 +11,16 @@ option(
   OFF
 )
 
+function(matcore_enable_debug_cpu_vectorization target_name)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    if(CMAKE_CONFIGURATION_TYPES)
+      target_compile_options(${target_name} PRIVATE "$<$<CONFIG:Debug>:-O2>")
+    elseif(CMAKE_BUILD_TYPE STREQUAL "Debug" OR CMAKE_BUILD_TYPE STREQUAL "")
+      target_compile_options(${target_name} PRIVATE -O2)
+    endif()
+  endif()
+endfunction()
+
 if(NOT TARGET matcore_cpu_planner_v1)
   add_subdirectory(
     "${CMAKE_CURRENT_SOURCE_DIR}/../planner"
@@ -26,9 +36,7 @@ if(MDSLC_BUILD_RUNTIME_BENCHMARKS)
   target_link_libraries(matcore_cpu_planner_benchmark
     PRIVATE MatcoreDSL::CpuPlannerV1
   )
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(matcore_cpu_planner_benchmark PRIVATE -O2)
-  endif()
+  matcore_enable_debug_cpu_vectorization(matcore_cpu_planner_benchmark)
 endif()
 
 add_library(matcore_runtime SHARED cpu_runtime.cpp)
@@ -42,13 +50,7 @@ target_link_libraries(matcore_runtime PRIVATE MatcoreDSL::CpuPlannerV1)
 # unset single-config build type otherwise supply no optimization flag, which
 # would leave this candidate as a scalar loop. Preserve the configured level
 # for Release, RelWithDebInfo, and MinSizeRel.
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-  if(CMAKE_CONFIGURATION_TYPES)
-    target_compile_options(matcore_runtime PRIVATE "$<$<CONFIG:Debug>:-O2>")
-  elseif(CMAKE_BUILD_TYPE STREQUAL "Debug" OR CMAKE_BUILD_TYPE STREQUAL "")
-    target_compile_options(matcore_runtime PRIVATE -O2)
-  endif()
-endif()
+matcore_enable_debug_cpu_vectorization(matcore_runtime)
 target_include_directories(matcore_runtime
   PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../include>"
@@ -78,9 +80,7 @@ if(BUILD_TESTING)
   target_link_libraries(matcore_runtime_cpu_test
     PRIVATE MatcoreDSL::Runtime MatcoreDSL::CpuPlannerV1
   )
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(matcore_runtime_cpu_test PRIVATE -O2)
-  endif()
+  matcore_enable_debug_cpu_vectorization(matcore_runtime_cpu_test)
   add_test(NAME runtime.cpu.gemm_v0 COMMAND matcore_runtime_cpu_test)
 
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU" AND
