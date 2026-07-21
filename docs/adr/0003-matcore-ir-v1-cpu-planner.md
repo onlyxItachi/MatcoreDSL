@@ -24,6 +24,10 @@ It represents operation kind, element and accumulation dtype, structured
 static/dynamic dimensions and strides, layout, memory space, minimum
 alignment, mutability, effects, alias preconditions, synchronization, target
 policy, capability requirements, source provenance, and exact rewrite ranges.
+Dynamic dimension and stride symbols are scoped by their enclosing operation:
+equal spellings express equality only within that operation and never create
+an implicit relationship between independent call sites. JSON text must be
+well-formed UTF-8 in both the v0 compatibility parser and the v1 parser.
 Detected host capabilities and selected implementations are downstream plan
 records and are not embedded in the target-independent IR.
 
