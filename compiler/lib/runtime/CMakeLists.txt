@@ -26,6 +26,9 @@ if(MDSLC_BUILD_RUNTIME_BENCHMARKS)
   target_link_libraries(matcore_cpu_planner_benchmark
     PRIVATE MatcoreDSL::CpuPlannerV1
   )
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(matcore_cpu_planner_benchmark PRIVATE -O2)
+  endif()
 endif()
 
 add_library(matcore_runtime SHARED cpu_runtime.cpp)
@@ -75,9 +78,13 @@ if(BUILD_TESTING)
   target_link_libraries(matcore_runtime_cpu_test
     PRIVATE MatcoreDSL::Runtime MatcoreDSL::CpuPlannerV1
   )
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(matcore_runtime_cpu_test PRIVATE -O2)
+  endif()
   add_test(NAME runtime.cpu.gemm_v0 COMMAND matcore_runtime_cpu_test)
 
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU" AND
+     NOT CMAKE_CXX_FLAGS MATCHES "fsanitize" AND
      CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
     find_program(MDSLC_OBJDUMP_EXECUTABLE NAMES objdump)
     find_program(MDSLC_NM_EXECUTABLE NAMES nm llvm-nm-21)

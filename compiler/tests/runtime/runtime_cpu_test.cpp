@@ -210,6 +210,15 @@ void planner_contract() {
   expect(matcore::mdslc::planner::has_feature(
              detected, CpuFeatureV1::portable_scalar_f32),
          "capability discovery always records portable scalar f32");
+  if (!matcore::mdslc::planner::
+          cpu_compiler_vectorization_build_available_v1()) {
+    expect(!matcore::mdslc::planner::has_feature(detected,
+                                                  CpuFeatureV1::avx2) &&
+               !matcore::mdslc::planner::has_feature(detected,
+                                                      CpuFeatureV1::fma) &&
+               detected.usable_vector_bits == 0,
+           "instrumented builds do not advertise unavailable vectorization");
+  }
 #if defined(__x86_64__)
   expect(detected.architecture == CpuArchitectureV1::x86_64,
          "capability discovery records x86_64");
