@@ -1,0 +1,21 @@
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+
+int main() {
+  float storage[3] = {2.0F, 5.0F, 0.0F};
+  md::matrix_view lhs{storage, 1, 1};
+  md::matrix_view rhs{storage + 1, 1, 1};
+  md::matrix_view output{storage + 2, 1, 1};
+
+  md::gemm(
+      md::out(output),
+      lhs,
+      rhs,
+      md::policy{
+          .target = md::target::cpu,
+          .fallback = md::fallback::error});
+  static_assert(__LINE__ == 18,
+                "MDSLC rewrite changed the original source line mapping");
+  return storage[2] == 10.0F ? 0 : 1;
+}

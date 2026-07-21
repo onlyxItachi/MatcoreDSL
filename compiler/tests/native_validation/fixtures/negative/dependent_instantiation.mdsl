@@ -1,0 +1,14 @@
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+
+template <class Policy>
+void dependent_instantiation(md::matrix_view &C, const md::matrix_view &A,
+                             const md::matrix_view &B, Policy policy) {
+  md::gemm(md::out(C), A, B, policy);
+}
+
+void instantiate(md::matrix_view &C, const md::matrix_view &A,
+                 const md::matrix_view &B) {
+  dependent_instantiation(C, A, B, md::policy{});
+}

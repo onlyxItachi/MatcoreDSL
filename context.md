@@ -1,100 +1,128 @@
-# cuTile / Tile IR Context for MatCore
+# MatcoreDSL Context Notepad
 
-## What cuTile shows
+## Current Objective
 
-cuTile is documented as a Python-based DSL for NVIDIA GPUs. The key pattern is that a kernel is declared with a decorator, and the host launches that kernel separately. The kernel body is not normal host Python control flow; it is source that the compiler/runtime uses to build GPU work.
+Implement runtime-JIT structured tensor programs by adding `region_v1` IR,
+`@mc.jit`, and a first packed Block Attention Residual intrinsic:
+`mc.block_attn_res(blocks, partial, query, block_count=..., has_partial=...)`.
 
-The docs describe `@ct.kernel` as the kernel entry-point marker, and state that kernels cannot be called directly from host code. The host queues execution with `ct.launch(...)`. That means the decorator is used to identify and capture kernel intent, while `ct.launch` is the actual execution boundary.
+This is the architectural bridge from hard-coded Family A/B/C fusion toward a
+programmable tensor-algorithm compiler. The first target is Attention
+Residuals / Block AttnRes style depth attention over packed block history.
 
-Example pattern from the docs:
+## Accepted Decisions
 
-```python
-import cuda.tile as ct
-import cupy
+- Keep existing `@mc.fused` and `KernelGraphIR` unchanged.
+- Add a separate `@mc.jit` path for structured region programs.
+- Add `KernelIRVersion::kRegionV1` and `RegionIR` beside `KernelGraphIR`.
+- V1 only supports a first-class `BlockAttnResOp`.
+- V1 ABI uses packed tensor history:
+  - `blocks`: `[MAX_BLOCKS, B, T, D]`
+  - `partial`: `[B, T, D]`
+  - `query`: `[D]`
+  - output: `[B, T, D]`
+- `block_count`, `has_partial`, and `eps` are compile-time-specialized attrs.
+- V1 dtype is `float32` only.
+- V1 target is NVIDIA GPU only.
 
-TILE_SIZE = 16
+## Key Code Anchors
 
-@ct.kernel
-def vector_add_kernel(a, b, result):
-    block_id = ct.bid(0)
-    a_tile = ct.load(a, index=(block_id,), shape=(TILE_SIZE,))
-    b_tile = ct.load(b, index=(block_id,), shape=(TILE_SIZE,))
-    result_tile = a_tile + b_tile
-    ct.store(result, index=(block_id,), tile=result_tile)
+- Python frontend and exports:
+  - `matcore/frontend.py`
+  - `matcore/__init__.py`
+- IR types:
+  - `include/matcore/kernel_ir.h`
+- Native parsing:
+  - `src/bindings.cpp`
+- Cache key:
+  - `src/cache_manager.cpp`
+- MLIR dispatch:
+  - `src/mlir_engine.cpp`
+- Region verifier:
+  - `include/matcore/region_verifier.h`
+  - `src/region_verifier.cpp`
+- New region emitter:
+  - `include/matcore/region_emitter.h`
+  - `src/region_emitter.cpp`
+  - `src/region_emitter_block_attn_res.cpp`
+- Runtime invocation rank support:
+  - `src/executor.cpp`
+- Build source list:
+  - `CMakeLists.txt`
 
-def vector_add(a: cupy.ndarray, b: cupy.ndarray, result: cupy.ndarray):
-    grid = (ct.cdiv(a.shape[0], TILE_SIZE), 1, 1)
-    ct.launch(cupy.cuda.get_current_stream(), grid, vector_add_kernel, (a, b, result))
-```
+## Implementation State
 
-This same execution model is reinforced in the execution-model docs, which define tile kernels as entry points for tile code and describe execution spaces such as host and tile code. That is the main precedent MatCore can borrow from.
+- RegionV1 is implemented as an additive path; existing `graph_v2` and
+  `@mc.fused` stay unchanged.
+- Python exposes `mc.jit` / `@mc.jit` and direct `mc.block_attn_res(...)`.
+- Native parser/cache/lowering understand `version == "region_v1"`.
+- `ValidateRegionIR` now runs before MLIR emission and rejects malformed value
+  references, bad topo order, invalid output count, dtype/rank/shape mismatch,
+  invalid BlockAttnRes attrs, and runtime tensor descriptor mismatch.
+- `RegionMlirEmitter` supports one `block_attn_res` op and emits one explicit
+  NVIDIA `gpu.launch`.
+- BlockAttnRes score setup is now CTA-parallel: RMS and dot scores use
+  thread-strided `D` loops plus shared-memory tree reductions. The old
+  correctness-first path computed scores in `tid == 0` and caused barrier
+  stalls / lane underutilization.
+- Speculative follow-ups were evaluated and reverted:
+  - shared softmax-weight reuse was numerically correct but did not clear the
+    no-regression bar across large one-forward cases;
+  - an NVVM warp-shuffle reduction prototype was faster but numerically wrong
+    under fresh-cache validation.
+- Disk cache version is now `matcore-phase4-cache-v10-regionv1-block-attn-res-cta-reduce`
+  so the RegionV1 CTA-reduction emitter cannot collide with older cached
+  scalar-score kernels.
+- RegionV1 `debug=True` now forwards to native `compile_and_run`, which enables
+  the existing force-recompile path for debug/profiling runs.
+- `RegionMlirEmitter` now consumes topo-ordered nodes and reports a clear
+  multi-op lowering gap after verifier acceptance instead of assuming
+  `region.nodes.front()`.
+- The lowering pipeline routes `matcore.kernel_type = "region_*"` through the
+  explicit GPU-launch lowering path instead of matmul mapping.
+- Executor generic packed invocation now supports rank 1-4 memref descriptors,
+  which covers `query[D]`, `partial/out[B,T,D]`, and
+  `blocks[MAX_BLOCKS,B,T,D]`.
 
-## Load, store, and matmul
+## Verification Checklist
 
-cuTile uses explicit array/tile movement through `ct.load()` and `ct.store()`. The documentation also shows that tile operations can be combined with arithmetic and matrix multiply.
+- Passed: `ninja -C /home/hamza-usta/MatcoreDSL/build-review`
+- Passed: `/usr/bin/python3 -m pytest tests/test_region_ir.py tests/test_block_attn_res.py -q`
+  (covers direct intrinsic, `@mc.jit` native smoke, invalid RegionIR verifier
+  cases, and the multi-op lowering gap)
+- Passed: `/usr/bin/python3 -m pytest tests/test_frontend_contract.py tests/test_fusion_contracts.py -q`
+- Passed: `/usr/bin/python3 -m pytest tests/test_devtensor_fused.py -q`
+- Nsight Compute on `[16,8,1024,128]`, `block_count=12`, `D=128`:
+  old kernel duration ~5.51 ms, active threads/warp ~3.3, barrier stall ~73.8%;
+  optimized kernel duration ~1.17 ms, active threads/warp ~31.7,
+  compute/memory throughput ~87.5%, achieved occupancy ~98.3%, barrier stall
+  ~36.6%.
+- Fresh-cache large one-forward benchmark after cache v10 hardening:
+  `[8,4,512,128]` 0.317 ms, `[8,8,1024,128]` 0.810 ms,
+  `[16,8,1024,128]` 1.340 ms, `[8,4,1024,256]` 0.510 ms,
+  `[16,8,2048,128]` 3.183 ms. Correctness stayed below ~4.2e-7 max error.
+- Earlier large one-forward benchmark after reduction rewrite:
+  `[8,4,512,128]` 0.284 ms, `[8,8,1024,128]` 0.681 ms,
+  `[16,8,1024,128]` 1.597 ms, `[8,4,1024,256]` 0.409 ms,
+  `[16,8,2048,128]` 2.432 ms. Correctness stayed below ~1.5e-6 max error.
+- Project-local Python environments exist at `.venv` and `.venv_gladiator`.
+  `.venv_gladiator` was repaired to `torch==2.11.0+cu130`, CUDA 13.0,
+  NumPy 2.4.4 for attention-residual benchmarks.
+- Project envs do not currently have `pytest`; use `/usr/bin/python3 -m pytest`
+  for pytest suites unless installing pytest into the project env.
+- `tests/test_family_a.py`
+- `tests/test_family_b.py`
+- `tests/test_family_c.py`
 
-Load/store example from the performance docs:
+## Notes
 
-```python
-import cuda.tile as ct
-
-TILE_SIZE = 16
-
-@ct.kernel
-def load_store_with_hints_kernel(x, y):
-    bid = ct.bid(0)
-    tx = ct.load(
-        x,
-        index=(bid,),
-        shape=(TILE_SIZE,),
-        latency=8,
-    )
-    ct.store(
-        y,
-        index=(bid,),
-        tile=tx,
-        latency=2,
-        allow_tma=False,
-    )
-```
-
-Matmul example from the generated operation docs:
-
-```python
-import cuda.tile as ct
-
-tx = ct.full((2, 4), 3, dtype=ct.float32)
-ty = ct.full((4, 8), 4, dtype=ct.float32)
-
-tz = ct.matmul(tx, ty)
-tz2 = tx @ ty
-```
-
-The same page also documents `ct.mma(x, y, acc)` for fused matrix-multiply-accumulate. This is useful for MatCore because it shows that cuTile distinguishes between a plain matmul and a fused accumulator form:
-
-```python
-acc = ct.full((2, 8), 0, dtype=ct.float32)
-tz = ct.mma(tx, ty, acc)
-```
-
-## Why MatCore should parse AST instead of using a string DSL
-
-MatCore should follow the cuTile pattern of source-first kernel definition, but implement its own front end by parsing Python source into an AST rather than inventing a separate string language.
-
-The practical reasons are:
-
-1. Python decorators already mark kernel entry points cleanly, so MatCore can preserve the normal Python function shape and use `@mc.kernel` as the capture boundary.
-2. AST parsing keeps the syntax aligned with ordinary Python, which means the kernel author writes real Python control flow and expressions instead of inventing a second syntax for loops, indexing, and tensor operations.
-3. A string DSL would throw away Python structure too early. With AST nodes, MatCore can preserve loop bounds, call sites, loads, stores, and matmul expressions as compiler input, which is a better fit for MLIR lowering.
-4. The cuTile docs already separate the host launch boundary from kernel definition. MatCore can keep that model while replacing cuTile’s backend with a source-to-IR pipeline tailored to MLIR.
-
-In short, the AST approach keeps the user-facing syntax Pythonic while giving MatCore a structured intermediate representation that is much easier to lower, validate, and optimize than free-form strings.
-
-## Sources
-
-- https://docs.nvidia.com/cuda/cutile-python
-- https://docs.nvidia.com/cuda/cutile-python/execution.html
-- https://docs.nvidia.com/cuda/cutile-python/performance.html
-- https://docs.nvidia.com/cuda/cutile-python/generated/cuda.tile.matmul.html
-- https://docs.nvidia.com/cuda/cutile-python/generated/cuda.tile.mma.html
-- https://github.com/NVIDIA/cutile-python
+- Do not retry the failed Family C score-padding or naive row-subtile
+  experiments as part of this work.
+- Keep RegionV1 additive; no existing `graph_v2` schema migration in v1.
+- BlockAttnRes v1 is still not fully optimized, but the first NCU-guided
+  reduction rewrite removed the worst `tid == 0` bottleneck.
+- Next performance target remains reduction synchronization: NCU still reports
+  ~36% CTA-barrier stall. Do not re-land the current NVVM shuffle prototype
+  without first adding a focused reduction correctness test for `D >= 128`.
+- Next architecture step is generalizing RegionV1 beyond one intrinsic:
+  true multi-op lowering, control-flow nodes, and symbolic/runtime scalar attrs.

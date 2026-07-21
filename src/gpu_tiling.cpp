@@ -1169,24 +1169,66 @@ NvidiaTileConfig SelectNvidiaTileConfig(
   config.block_tile_n = pickTilingFactor(n, 128);
   config.k_tile = pickTilingFactor(k, signature.quantized_i8 ? 32 : 16);
 
-  config.rewrite_to_mma_sync =
-      IsTensorCoreMmaSyncType(signature) &&
-      IsStaticallyCompatibleMmaSync(m, n, k);
+  const bool statically_compatible_mma =
+      m != mlir::ShapedType::kDynamic && n != mlir::ShapedType::kDynamic &&
+      k != mlir::ShapedType::kDynamic && m >= 16 && n >= 8 && k >= 16 &&
+      (m % 16) == 0 && (n % 8) == 0 && (k % 16) == 0 &&
+      IsTensorCoreMmaSyncType(signature);
+  config.rewrite_to_mma_sync = statically_compatible_mma;
   if (config.rewrite_to_mma_sync) {
-    config.block_tile_m = std::max<std::int64_t>(
-        16, pickTilingFactor(m, 128));
-    config.block_tile_n = std::max<std::int64_t>(
-        8, pickTilingFactor(n, 128));
-    config.thread_tile_m = std::max<std::int64_t>(
-        16, pickTilingFactor(config.block_tile_m, 64));
-    config.thread_tile_n = std::max<std::int64_t>(
-        8, pickTilingFactor(config.block_tile_n, 64));
+    // --- Multi-warp path (V4): 16 warps cooperating per block ---
+    constexpr int64_t kMultiWarpBlockTile = 128;
+    constexpr int64_t kMultiWarpMinGrid = 4;
+    const bool multi_warp_eligible =
+        m >= kMultiWarpBlockTile && n >= kMultiWarpBlockTile &&
+        (m % kMultiWarpBlockTile) == 0 && (n % kMultiWarpBlockTile) == 0;
+
+    if (multi_warp_eligible) {
+      auto grid = (m / kMultiWarpBlockTile) * (n / kMultiWarpBlockTile);
+      if (grid >= kMultiWarpMinGrid) {
+        config.block_tile_m = kMultiWarpBlockTile;
+        config.block_tile_n = kMultiWarpBlockTile;
+        config.num_warps = 16;
+        config.warp_tile_m = 32;
+        config.warp_tile_n = 32;
+        config.k_tile = pickTilingFactor(k, 32);        config.mma_micro_k = 16;
+        config.use_vectorize_path = true;
+        config.block_threads_x = 128;
+        config.block_threads_y = 4;
+        config.thread_tile_m = 16;
+        config.thread_tile_n = 8;
+        return config;
+      }
+    }
+
+    // --- Single-warp fallback (V3) ---
+    constexpr int64_t kMinGridBlocks = 100;
+    struct TileCandidate { int64_t m_pref, n_pref; };
+    constexpr TileCandidate candidates[] = {{64, 64}, {32, 32}};
+
+    config.block_tile_m = 16;
+    config.block_tile_n = 8;
+    for (const auto &c : candidates) {
+      auto tm = pickTilingFactor(m, c.m_pref);
+      auto tn = pickTilingFactor(n, c.n_pref);
+      if (tm >= 16 && tn >= 8) {
+        auto grid = (m / tm) * (n / tn);
+        if (grid >= kMinGridBlocks) {
+          config.block_tile_m = tm;
+          config.block_tile_n = tn;
+          break;
+        }
+      }
+    }
+
+    config.thread_tile_m = 16;
+    config.thread_tile_n = 8;
+    config.block_threads_y = 1;
     config.block_threads_x = 32;
-    config.block_threads_y = std::max<std::int64_t>(
-        1, ceilDiv(config.block_tile_n, config.thread_tile_n));
-    config.block_threads_z = std::max<std::int64_t>(
-        1, ceilDiv(config.block_tile_m, config.thread_tile_m));
-    config.k_tile = std::max<std::int64_t>(16, pickTilingFactor(k, 64));
+    const bool needs_subtiling =
+        config.block_tile_m > 16 || config.block_tile_n > 8;
+    config.k_tile = needs_subtiling ? pickTilingFactor(k, 32) : 16;
+    config.mma_micro_k = needs_subtiling ? 16 : 0;
     return config;
   }
 

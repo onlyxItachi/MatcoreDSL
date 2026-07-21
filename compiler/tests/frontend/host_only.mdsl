@@ -1,0 +1,6 @@
+template <class T>
+constexpr T host_add(T lhs, T rhs) {
+  return lhs + rhs;
+}
+
+static_assert(host_add(2, 3) == 5);

@@ -1,0 +1,64 @@
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=16)
+[FusionEpilogue] Fallback: creating separate epilogue kernel (1 ops)
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/2362ccd4437d9ce87b055363eb13ecdc/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=16)
+[FusionEpilogue] Fallback: creating separate epilogue kernel (1 ops)
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/80ea48a95871418e7dc66bfae570ad6c/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=16)
+[FusionEpilogue] Fallback: creating separate epilogue kernel (1 ops)
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/e8f96d33509e336c282c7590c816f014/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=16)
+[FusionEpilogue] Fallback: creating separate epilogue kernel (1 ops)
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/ef8a5cf6ec7657b5a2a7e3c1d12c124e/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=16)
+[FusionEpilogue] Fallback: creating separate epilogue kernel (1 ops)
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/b154cd91c7f613db3d618febf59b7458/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=16)
+[FusionEpilogue] Fallback: creating separate epilogue kernel (1 ops)
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/04e61f999d8712e38d1a68bf8528bd10/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=16)
+[FusionEpilogue] Fallback: creating separate epilogue kernel (1 ops)
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/0acc8f854c86af01672faf0c9c417193/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=16)
+[FusionEpilogue] Fallback: creating separate epilogue kernel (1 ops)
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/9e6aa9cc566732250e15115fae7495e0/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=16)
+[FusionEpilogue] Fallback: creating separate epilogue kernel (1 ops)
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/ac378304037e36d58b824cbcc75c71bd/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=16)
+[FusionEpilogue] Fallback: creating separate epilogue kernel (1 ops)
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/0b8491d3641f285fb097be5ae1544e38/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=16)
+[FusionEpilogue] Fallback: creating separate epilogue kernel (1 ops)
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/1f399981622073db02f23def3330c486/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+[TagKLoop] Tagged 1 K-loop(s) (k_tile=16)
+[FusionEpilogue] Fallback: creating separate epilogue kernel (1 ops)
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/7420cf2a94f8a55e24da68f87d50c2f0/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/1c85ea7d57cc7c125f6b96dd93af0a2c/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/694aa37418061b7df56309fb3d5a1cd5/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/d313ed8be220ca6a5f957f82a5861774/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/e3f9503d79300149f70bb8642f73a8e3/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/ad6e608fed8879ca9649e9b5901c8731/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/ab3241cf012d5677eca6e178979b5681/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/4be0f996568d42f8c2da2a11bf7b90c8/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object
+/usr/bin/ld: /home/hamza-usta/MatcoreDSL/.matcore_cache/97c09f6bce6d9ca7b6f154d44bccb1e1/kernel.o: warning: relocation in read-only section `.ltext'
+/usr/bin/ld: warning: creating DT_TEXTREL in a shared object

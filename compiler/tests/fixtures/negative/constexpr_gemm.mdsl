@@ -1,0 +1,11 @@
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+
+constexpr int evaluate(md::matrix_view &c, const md::matrix_view &a,
+                       const md::matrix_view &b) {
+  md::gemm(md::out(c), a, b);
+  return 0;
+}
+
+int main() { return 0; }

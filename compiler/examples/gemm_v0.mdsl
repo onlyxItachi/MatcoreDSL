@@ -1,0 +1,47 @@
+#include <matcore/mdsl.h>
+
+#include <cmath>
+#include <iostream>
+
+namespace md = matcore::mdsl;
+
+void reference_gemm(const float *lhs, const float *rhs, double *output,
+                    int rows, int reduction, int columns) {
+  for (int inner = 0; inner < reduction; ++inner) {
+    for (int column = 0; column < columns; ++column) {
+      for (int row = 0; row < rows; ++row) {
+        output[row * columns + column] +=
+            static_cast<double>(lhs[row * reduction + inner]) *
+            static_cast<double>(rhs[inner * columns + column]);
+      }
+    }
+  }
+}
+
+int main() {
+  float lhs_data[6] = {1.0F, 2.0F, 3.0F, 4.0F, 5.0F, 6.0F};
+  float rhs_data[6] = {7.0F, 8.0F, 9.0F, 10.0F, 11.0F, 12.0F};
+  float output_data[4] = {};
+  double oracle_data[4] = {};
+  reference_gemm(lhs_data, rhs_data, oracle_data, 2, 3, 2);
+
+  md::matrix_view lhs{lhs_data, 2, 3};
+  md::matrix_view rhs{rhs_data, 3, 2};
+  md::matrix_view output{output_data, 2, 2};
+  std::cout << "host-before\n";
+  md::gemm(md::out(output), lhs, rhs,
+           md::policy{.target = md::target::cpu,
+                      .fallback = md::fallback::error});
+
+  for (int index = 0; index < 4; ++index) {
+    if (std::fabs(static_cast<double>(output_data[index]) -
+                  oracle_data[index]) > 1.0e-6) {
+      std::cerr << "GEMM mismatch at " << index << ": got "
+                << output_data[index] << ", expected " << oracle_data[index]
+                << '\n';
+      return 1;
+    }
+  }
+  std::cout << "MDSLC CPU GEMM PASS\n";
+  return 0;
+}

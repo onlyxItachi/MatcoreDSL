@@ -1,0 +1,9 @@
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+#define NATIVE_VALIDATION_GEMM(C, A, B) md::gemm(md::out(C), A, B)
+
+void macro(md::matrix_view &C, const md::matrix_view &A,
+           const md::matrix_view &B) {
+  NATIVE_VALIDATION_GEMM(C, A, B);
+}

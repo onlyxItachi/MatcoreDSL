@@ -1,0 +1,9 @@
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+
+md::matrix_view make_view();
+
+void rejected_side_effect(md::matrix_view &C, const md::matrix_view &B) {
+  md::gemm(md::out(C), make_view(), B);
+}

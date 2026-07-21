@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "transform_builder.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Conversion/SCFToGPU/SCFToGPUPass.h"
 #include "mlir/Conversion/VectorToGPU/VectorToGPU.h"
@@ -25,6 +26,7 @@
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Transforms/Passes.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -58,32 +60,49 @@ void addGpuCommonModulePasses(mlir::PassManager &pm, std::int64_t index_bitwidth
 }
 
 void applyNamedSequenceToModule(mlir::ModuleOp module,
-                                const std::string &transform_ir,
+                                mlir::ModuleOp transform_module,
                                 const char *phase_name) {
-  auto transform_module =
-      mlir::parseSourceString<mlir::ModuleOp>(transform_ir, module.getContext());
-  if (!transform_module) {
-    fail(std::string("failed to parse ") + phase_name + ":\n" + transform_ir);
-  }
-
-  auto entry_point = transform_module->lookupSymbol<mlir::transform::NamedSequenceOp>(
+  auto entry_point = transform_module.lookupSymbol<mlir::transform::NamedSequenceOp>(
       mlir::transform::TransformDialect::kTransformEntryPointSymbolName);
   if (!entry_point) {
     fail(std::string("failed to build ") + phase_name + " entry point");
   }
 
-  module->setAttr(mlir::transform::TransformDialect::kWithNamedSequenceAttrName,
-                  mlir::UnitAttr::get(module.getContext()));
+  auto named_sequence_attr =
+      mlir::transform::TransformDialect::kWithNamedSequenceAttrName;
+  mlir::Attribute previous_attr = module->getAttr(named_sequence_attr);
+  module->setAttr(named_sequence_attr, mlir::UnitAttr::get(module.getContext()));
+
+  mlir::Operation *cloned_entry = nullptr;
+  std::string cloned_entry_name;
   {
     mlir::OpBuilder builder(module.getContext());
     builder.setInsertionPointToEnd(module.getBody());
-    builder.clone(*entry_point);
+    cloned_entry = builder.clone(*entry_point);
+    auto cloned_named_sequence =
+        llvm::cast<mlir::transform::NamedSequenceOp>(cloned_entry);
+    unsigned symbol_suffix = 0;
+    do {
+      cloned_entry_name = "__matcore_transform_entry_" +
+                          std::to_string(symbol_suffix++);
+    } while (module.lookupSymbol<mlir::transform::NamedSequenceOp>(
+        cloned_entry_name));
+    cloned_named_sequence.setSymName(cloned_entry_name);
   }
+  auto cleanup = llvm::make_scope_exit([&] {
+    if (cloned_entry && cloned_entry->getParentOp()) {
+      cloned_entry->erase();
+    }
+    if (previous_attr) {
+      module->setAttr(named_sequence_attr, previous_attr);
+    } else {
+      module->removeAttr(named_sequence_attr);
+    }
+  });
 
   mlir::PassManager pm(module.getContext());
   mlir::transform::InterpreterPassOptions options;
-  options.entryPoint =
-      mlir::transform::TransformDialect::kTransformEntryPointSymbolName.str();
+  options.entryPoint = cloned_entry_name;
   options.disableExpensiveChecks = false;
   pm.addPass(mlir::transform::createInterpreterPass(options));
 
@@ -100,15 +119,6 @@ void applyNamedSequenceToModule(mlir::ModuleOp module,
     fail(std::string("failed to apply ") + phase_name +
          (diagnostics.empty() ? std::string() : ":\n" + diagnostics));
   }
-
-  llvm::SmallVector<mlir::Operation *, 2> transform_symbols;
-  module.walk([&](mlir::transform::NamedSequenceOp op) {
-    transform_symbols.push_back(op.getOperation());
-  });
-  for (mlir::Operation *op : llvm::reverse(transform_symbols)) {
-    op->erase();
-  }
-  module->removeAttr(mlir::transform::TransformDialect::kWithNamedSequenceAttrName);
 }
 
 }  // namespace
@@ -149,9 +159,10 @@ void ApplyNvidiaMmaTransformToModule(mlir::ModuleOp module,
     return;
   }
 
-  const std::string transform_ir =
-      BuildNvidiaTransformMappingSequence(signature, config);
-  applyNamedSequenceToModule(module, transform_ir, "NVIDIA MMA transform sequence");
+  auto transform_module = BuildNvidiaTransformMappingModule(
+      module.getContext(), module.getLoc(), signature, config);
+  applyNamedSequenceToModule(module, *transform_module,
+                             "NVIDIA MMA transform sequence");
 }
 
 void ApplyNvidiaThreadMappingToModule(mlir::ModuleOp module,
@@ -171,7 +182,9 @@ void ApplyNvidiaThreadMappingToModule(mlir::ModuleOp module,
     return;
   }
 
-  applyNamedSequenceToModule(module, BuildNvidiaThreadMappingSequence(config),
+  auto transform_module = BuildNvidiaThreadMappingModule(
+      module.getContext(), module.getLoc(), config);
+  applyNamedSequenceToModule(module, *transform_module,
                              "NVIDIA thread mapping sequence");
 }
 
@@ -191,7 +204,9 @@ void ApplyNvidiaMmaRewriteToModule(mlir::ModuleOp module) {
     return;
   }
 
-  applyNamedSequenceToModule(module, BuildNvidiaMmaRewriteSequence(),
+  auto transform_module =
+      BuildNvidiaMmaRewriteModule(module.getContext(), module.getLoc());
+  applyNamedSequenceToModule(module, *transform_module,
                              "NVIDIA MMA rewrite sequence");
 }
 
@@ -211,7 +226,12 @@ void ApplyNvidiaAsyncPipelineToModule(mlir::ModuleOp module) {
     return;
   }
 
-  applyNamedSequenceToModule(module, BuildNvidiaAsyncPipelineSequence(),
+  auto transform_module = mlir::parseSourceString<mlir::ModuleOp>(
+      BuildNvidiaAsyncPipelineSequence(), module.getContext());
+  if (!transform_module) {
+    fail("failed to parse NVIDIA async pipeline transform module");
+  }
+  applyNamedSequenceToModule(module, *transform_module,
                              "NVIDIA async pipeline sequence");
 }
 
@@ -225,6 +245,43 @@ void VerifyNoResidualNvidiaMatmulOnModule(mlir::ModuleOp module) {
   if (residual_matmul) {
     fail("NVIDIA lowering left a residual linalg matmul");
   }
+}
+
+void ApplyNvidiaMultiWarpTransformToModule(
+    mlir::ModuleOp module, const MatmulLoweringSignature &signature,
+    const NvidiaMappingConfig &config) {
+  mlir::DialectRegistry registry;
+  RegisterNvidiaTransformDialects(registry);
+  module.getContext()->appendDialectRegistry(registry);
+  module.getContext()->loadDialect<mlir::transform::TransformDialect>();
+
+  auto transform_module = BuildNvidiaMultiWarpTransformModule(
+      module.getContext(), module.getLoc(), signature, config);
+  applyNamedSequenceToModule(module, *transform_module,
+                             "NVIDIA multi-warp transform sequence");
+}
+
+void ApplyNvidiaMultiWarpThreadMappingToModule(
+    mlir::ModuleOp module, const NvidiaMappingConfig &config) {
+  mlir::DialectRegistry registry;
+  RegisterNvidiaTransformDialects(registry);
+  module.getContext()->appendDialectRegistry(registry);
+  module.getContext()->loadDialect<mlir::transform::TransformDialect>();
+
+  bool has_launch = false;
+  module.walk([&](mlir::Operation *op) {
+    if (!has_launch && llvm::isa<mlir::gpu::LaunchOp>(op)) {
+      has_launch = true;
+    }
+  });
+  if (!has_launch) {
+    return;
+  }
+
+  auto transform_module = BuildNvidiaMultiWarpThreadMappingModule(
+      module.getContext(), module.getLoc(), config);
+  applyNamedSequenceToModule(module, *transform_module,
+                             "NVIDIA multi-warp thread mapping sequence");
 }
 
 void ConfigureNvidiaGenericGpuStage(mlir::PassManager &pm) {
@@ -245,16 +302,85 @@ void ConfigureNvidiaVectorToGpuStage(mlir::PassManager &pm) {
   pm.addPass(mlir::createCSEPass());
 }
 
-void ConfigureNvidiaNvvmStage(mlir::PassManager &pm, llvm::StringRef cubin_chip) {
-  mlir::gpu::GPUToNVVMPipelineOptions nvvm_opts;
-  nvvm_opts.indexBitWidth = 64;
-  nvvm_opts.cubinTriple = "nvptx64-nvidia-cuda";
-  nvvm_opts.cubinChip = cubin_chip.str();
-  nvvm_opts.cubinFormat = "fatbin";
-  nvvm_opts.optLevel = 2;
-  nvvm_opts.kernelUseBarePtrCallConv = false;
-  nvvm_opts.hostUseBarePtrCallConv = false;
-  mlir::gpu::buildLowerToNVVMPassPipeline(pm, nvvm_opts);
+void ConfigureNvidiaNvvmStage(mlir::PassManager &pm, llvm::StringRef cubin_chip,
+                              ObservabilityContext * /*obs*/) {
+  // Custom NVVM pipeline that handles gpu.alloc/memcpy/dealloc from the
+  // GpuDataStagingPass.  The stock buildLowerToNVVMPassPipeline runs
+  // convert-func-to-llvm BEFORE gpu-to-llvm, which breaks the memref-typed
+  // staging ops (unrealized_conversion_casts that can't be reconciled).
+  // Our pipeline moves gpu-to-llvm BEFORE convert-func-to-llvm so the staging
+  // ops are lowered while their operands are still memref-typed.
+
+  // Phase 1: Kernel outlining — separate GPU code from host code.
+  pm.addPass(mlir::createConvertNVGPUToNVVMPass());
+  pm.addPass(mlir::createGpuKernelOutliningPass());
+
+  // Phase 2: Host-side scalar/vector lowering (memrefs stay as-is).
+  pm.addPass(mlir::createConvertVectorToSCFPass());
+  pm.addPass(mlir::createConvertSCFToCFPass());
+  pm.addPass(mlir::createConvertNVVMToLLVMPass());
+  pm.addPass(mlir::createConvertMathToLLVMPass());
+  pm.addPass(mlir::memref::createExpandStridedMetadataPass());
+  pm.addPass(mlir::createLowerAffinePass());
+  pm.addPass(mlir::createArithToLLVMConversionPass());
+
+  mlir::ConvertIndexToLLVMPassOptions idx_opts;
+  idx_opts.indexBitwidth = 64;
+  pm.addPass(mlir::createConvertIndexToLLVMPass(idx_opts));
+
+  // Phase 3: Attach NVVM target to gpu.module (needed by serialisation).
+  mlir::GpuNVVMAttachTargetOptions target_opts;
+  target_opts.triple = "nvptx64-nvidia-cuda";
+  target_opts.chip = cubin_chip.str();
+  target_opts.optLevel = 2;
+  pm.addPass(mlir::createGpuNVVMAttachTarget(target_opts));
+
+  // Phase 4: GPU-module internal lowering (NVVM + reconcile inside module).
+  {
+    auto &gpu_pm = pm.nest<mlir::gpu::GPUModuleOp>();
+    gpu_pm.addPass(mlir::createStripDebugInfoPass());
+    mlir::ConvertGpuOpsToNVVMOpsOptions nvvm_conv_opts;
+    nvvm_conv_opts.indexBitwidth = 64;
+    nvvm_conv_opts.useBarePtrCallConv = false;
+    gpu_pm.addPass(mlir::createConvertGpuOpsToNVVMOps(nvvm_conv_opts));
+    gpu_pm.addPass(mlir::createCanonicalizerPass());
+    gpu_pm.addPass(mlir::createCSEPass());
+    gpu_pm.addPass(mlir::createReconcileUnrealizedCastsPass());
+  }
+
+  // Phase 5: Host-side GPU memory ops → LLVM runtime calls.
+  // Converts gpu.alloc/memcpy/dealloc → mgpuMemAlloc/mgpuMemcpy/mgpuMemFree.
+  // MUST run BEFORE convert-func-to-llvm so staging ops have memref-typed operands.
+  // NOTE: gpu.launch_func is NOT converted here — it's handled later by
+  // MLIR-to-LLVM-IR translation in the ExecutionEngine (together with gpu.binary).
+  pm.addPass(mlir::createGpuToLLVMConversionPass());
+
+  // Phase 5b: Immediately finalize remaining host ops → LLVM.
+  // GpuToLLVMConversionPass (Phase 5) partially converts function types via its
+  // LLVMTypeConverter.  If we defer memref/cf/func lowering to after binary
+  // serialisation (Phase 6), the mixed type state creates unrealized_conversion_casts
+  // that ReconcileUnrealizedCasts cannot resolve (the host-level linalg.fill loop
+  // produces memref.alloc + cf.br that reference LLVM-typed values from Phase 5).
+  // By running these passes immediately after Phase 5, all host ops are converted
+  // within a consistent type-conversion context.
+  pm.addPass(mlir::createFinalizeMemRefToLLVMConversionPass());
+  pm.addPass(mlir::createConvertControlFlowToLLVMPass());
+  pm.addPass(mlir::createConvertFuncToLLVMPass());
+  pm.addPass(mlir::createCanonicalizerPass());
+  pm.addPass(mlir::createCSEPass());
+  pm.addPass(mlir::createReconcileUnrealizedCastsPass());
+
+  // Phase 6: Serialise gpu.module → gpu.binary (fatbin).
+  // The gpu.binary + gpu.launch_func pair is translated to LLVM IR
+  // by ExecutionEngine's GPUDialectLLVMIRTranslationInterface.
+  mlir::GpuModuleToBinaryPassOptions bin_opts;
+  bin_opts.compilationTarget = "fatbin";
+  pm.addPass(mlir::createGpuModuleToBinaryPass(bin_opts));
+
+  // Phase 7: Final cleanup after binary serialisation.
+  pm.addPass(mlir::createCanonicalizerPass());
+  pm.addPass(mlir::createCSEPass());
+  pm.addPass(mlir::createReconcileUnrealizedCastsPass());
 }
 
 }  // namespace matcore

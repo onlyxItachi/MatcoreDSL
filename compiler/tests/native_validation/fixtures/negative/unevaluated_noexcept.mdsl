@@ -1,0 +1,8 @@
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+
+void unevaluated_noexcept(md::matrix_view &C, const md::matrix_view &A,
+                          const md::matrix_view &B) {
+  (void)noexcept(md::gemm(md::out(C), A, B, md::policy{}));
+}

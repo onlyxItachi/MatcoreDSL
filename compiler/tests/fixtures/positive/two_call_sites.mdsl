@@ -1,0 +1,14 @@
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+
+int main() {
+  float values[4] = {2, 3, 0, 0};
+  md::matrix_view a{values, 1, 1};
+  md::matrix_view b{values + 1, 1, 1};
+  md::matrix_view first{values + 2, 1, 1};
+  md::matrix_view second{values + 3, 1, 1};
+  md::gemm(md::out(first), a, b);
+  md::gemm(md::out(second), a, b);
+  return values[2] == 6 && values[3] == 6 ? 0 : 1;
+}

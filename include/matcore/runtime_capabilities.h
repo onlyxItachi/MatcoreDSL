@@ -25,11 +25,27 @@ struct NvidiaRuntimeCapabilities {
 struct RuntimeCapabilities {
   X86RuntimeCapabilities x86;
   NvidiaRuntimeCapabilities nvidia;
+  bool nvidia_probed = false;   // Lazy: true after detectNvidiaRuntime() called
+  bool rocm_probed = false;     // Lazy: true after detectRocmRuntime() called
+  bool rocm_library_available = false;
+  bool rocm_device_present = false;
   bool rocm_runtime_available = false;
   bool npu_runtime_available = false;
 };
 
+enum class GpuPreflightStatus { kPass, kFail, kAdvisoryWarning };
+
+struct GpuPreflightResult {
+  GpuPreflightStatus status = GpuPreflightStatus::kFail;
+  std::string diagnostic;
+};
+
 RuntimeCapabilities DetectRuntimeCapabilities();
+RuntimeCapabilities &cachedRuntimeCapabilities();
+void probeNvidiaIfNeeded(RuntimeCapabilities &runtime);
+GpuPreflightResult gpuPreflightCheck(TargetKind target);
+bool acquireGpuBackendClaim(TargetKind target, std::string *denial_reason);
+void releaseGpuBackendClaim(TargetKind target);
 bool SupportsX86Feature(const RuntimeCapabilities &runtime,
                         std::string_view feature);
 bool CanExecuteOnHost(const RuntimeCapabilities &runtime,

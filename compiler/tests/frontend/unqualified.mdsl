@@ -1,0 +1,11 @@
+#include <matcore/mdsl.h>
+
+using matcore::mdsl::gemm;
+
+void rejected_unqualified() {
+  float storage[1]{};
+  matcore::mdsl::matrix_view A{storage, 1, 1};
+  matcore::mdsl::matrix_view B{storage, 1, 1};
+  matcore::mdsl::matrix_view C{storage, 1, 1};
+  gemm(matcore::mdsl::out(C), A, B);
+}

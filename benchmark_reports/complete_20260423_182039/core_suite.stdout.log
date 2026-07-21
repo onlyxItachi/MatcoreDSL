@@ -1,0 +1,18 @@
+== Phase 1: CPU Gate ==
+CPU Gate:     PASS (8.101 ms (speedup=0.86x, checksum=-1.142326e+03))
+
+== Phase 2: GPU Preflight ==
+NVIDIA Pre:   PASS (NVIDIA GeForce RTX 4060 Laptop GPU, driver 595.45.04)
+AMD Pre:      PASS (AMD Radeon Graphics)
+
+== Phase 3: Benchmarks ==
+
+=== MatcoreDSL Benchmark Suite ===
+CPU Gate:     PASS (8.101 ms (speedup=0.86x, checksum=-1.142326e+03))
+NVIDIA Pre:   PASS (NVIDIA GeForce RTX 4060 Laptop GPU, driver 595.45.04)
+AMD Pre:      PASS (AMD Radeon Graphics)
+CPU Bench:    PASS (2 commands)
+NVIDIA Bench: PASS (cold=298.844 ms, steady=8.985 ms, ongoing=3.807 ms, peak=0.0881 TFLOP/s)
+AMD Bench:    FAIL (MatCore[cold]: RuntimeError: MatCore lowering pipeline: === MatCore Pass Failure Diagnostic ===)
+Massive:      FAIL (FAILED after 16.311 ms (RuntimeError: MatCore lowering pipeline: === MatCore Pass Failure Diagnostic ===)
+Overall:      FAIL
