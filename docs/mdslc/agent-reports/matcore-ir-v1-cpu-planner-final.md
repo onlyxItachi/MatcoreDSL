@@ -25,7 +25,7 @@ autotuning work is included.
 
 Local implementation and validation verdict: **PASS**. The independent review
 also returned **PASS** after finding and fixing one Debug-lowering defect.
-Final GitHub results are recorded below before merge.
+PR #5 is the authoritative record for final hosted checks.
 
 ## Exact Matcore IR v1 schema
 
@@ -294,4 +294,4 @@ completed 29/29 steps; selected tests passed 7/7; Release and Debug runtime plus
 artifact checks each passed 2/2; emitted v1, adversarial mutations, native
 execution, C ABI, no-allocation, and oracle probes passed.
 
-GitHub PR #5 check results are updated here after the final documentation push.
+GitHub PR #5 is the authoritative record for the final hosted check results.

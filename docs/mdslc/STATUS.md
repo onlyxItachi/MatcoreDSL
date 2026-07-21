@@ -11,7 +11,7 @@ Status date: 2026-07-21
 ## Milestone 2 verdict
 
 **Typed Matcore IR v1 and deterministic CPU GEMM planning pass local release
-gates and independent review. GitHub checks are the remaining merge gate.**
+gates and independent review. PR #5 enforces the hosted gates before merge.**
 
 The native driver now routes every authenticated `matcore::mdsl::gemm` through
 a verified v0-to-v1 boundary. IR v1 carries typed shape, dtype, accumulation,
