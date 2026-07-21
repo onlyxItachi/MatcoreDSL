@@ -1,12 +1,39 @@
-build/
+# CMake/Ninja build trees and generated metadata.
+/build/
+/build[-_.]*/
+/cmake-build[-_.]*/
+/install/
+/install[-_.]*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+build.ninja
+.ninja_deps
+.ninja_log
+compile_commands.json
+CTestTestfile.cmake
+Testing/
+
 .deps/
-.matcore_cache/
+/.matcore_cache*/
+/custom-cache-root/
+
+# Generated benchmark runs and agent-local context are not source inputs.
+/benchmark_reports/
+/memory/
+
 .venv_gladiator/
 .venv/
 __pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 *.pyc
 *.pyo
 *.so
+*.so.*
 *.dylib
 *.dll
 *.o
@@ -15,5 +42,14 @@ __pycache__/
 *.cubin
 *.fatbin
 *.ptx
+*.log
+
+# MDSLC --save-temps output.
+*.host.cpp
+*.host-overlay.yaml
+*.matcore.json
+*.sites.h
+*.stubs.cpp
+*.backend.cpp
 .matcore_debug/
 .matcore_ir_dump/

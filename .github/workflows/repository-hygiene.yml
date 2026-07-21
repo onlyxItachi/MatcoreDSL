@@ -1,0 +1,19 @@
+name: repository-hygiene
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tracked-generated-output:
+    name: Reject tracked generated output
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tracked paths and ignore policy
+        run: bash tests/check_repository_hygiene.sh
