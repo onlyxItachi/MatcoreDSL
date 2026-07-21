@@ -84,6 +84,46 @@ void run_shape(std::int64_t m, std::int64_t k, std::int64_t n) {
            "GEMM matches independent oracle");
 }
 
+void run_aligned_shape() {
+  constexpr std::int64_t m = 24;
+  constexpr std::int64_t k = 24;
+  constexpr std::int64_t n = 24;
+  alignas(64) std::array<float, static_cast<std::size_t>(m * k)> a{};
+  alignas(64) std::array<float, static_cast<std::size_t>(k * n)> b{};
+  alignas(64) std::array<float, static_cast<std::size_t>(m * n)> c{};
+  std::vector<double> oracle(static_cast<std::size_t>(m * n), 0.0);
+  for (std::size_t index = 0; index < a.size(); ++index)
+    a[index] = static_cast<float>(static_cast<int>(index % 9) - 4) / 3.0F;
+  for (std::size_t index = 0; index < b.size(); ++index)
+    b[index] = static_cast<float>(static_cast<int>(index % 7) - 3) / 5.0F;
+  for (std::int64_t i = 0; i < m; ++i)
+    for (std::int64_t j = 0; j < n; ++j)
+      for (std::int64_t p = 0; p < k; ++p)
+        oracle[static_cast<std::size_t>(i * n + j)] +=
+            static_cast<double>(a[static_cast<std::size_t>(i * k + p)]) *
+            static_cast<double>(b[static_cast<std::size_t>(p * n + j)]);
+
+  auto out = desc(c.data(), m, n, MATCORE_MUTABILITY_READ_WRITE_V0);
+  auto lhs = desc(a.data(), m, k);
+  auto rhs = desc(b.data(), k, n);
+  const auto p = policy();
+  const auto result = matcore_runtime_gemm_f32_v0(&out, &lhs, &rhs, &p);
+  expect(result.code == MATCORE_STATUS_OK_V0,
+         "64-byte-aligned GEMM returns success");
+  for (std::size_t index = 0; index < c.size(); ++index)
+    expect(std::fabs(static_cast<double>(c[index]) - oracle[index]) < 1.0e-5,
+           "64-byte-aligned GEMM matches independent oracle");
+
+  const auto output_before = c;
+  matcore_cpu_gemm_plan_report_v1 report{};
+  report.abi_version = MATCORE_RUNTIME_PLAN_ABI_VERSION_V1;
+  report.struct_size = sizeof(report);
+  expect(matcore_runtime_plan_gemm_f32_v1(&out, &lhs, &rhs, &p, &report)
+             .code == MATCORE_STATUS_OK_V0 &&
+             report.minimum_alignment_bytes >= 64 && c == output_before,
+         "aligned runtime query preserves output and alignment metadata");
+}
+
 using matcore::mdslc::planner::CpuArchitectureV1;
 using matcore::mdslc::planner::CpuCapabilitiesV1;
 using matcore::mdslc::planner::CpuFeatureV1;
@@ -148,6 +188,19 @@ void planner_contract() {
              registry[0].stable_id != registry[2].stable_id &&
              registry[1].stable_id != registry[2].stable_id,
          "registry stable IDs are unique");
+  expect(registry[0].required_features ==
+             feature_bit(CpuFeatureV1::portable_scalar_f32) &&
+             registry[1].required_features ==
+                 feature_bit(CpuFeatureV1::portable_scalar_f32) &&
+             registry[2].required_features ==
+                 (feature_bit(CpuFeatureV1::portable_scalar_f32) |
+                  feature_bit(CpuFeatureV1::avx2) |
+                  feature_bit(CpuFeatureV1::fma)),
+         "registry feature requirements are fixed and exact");
+  expect(registry[0].deterministic_priority == 30 &&
+             registry[1].deterministic_priority == 20 &&
+             registry[2].deterministic_priority == 10,
+         "registry priorities define a stable final tie-break");
 
   const auto detected =
       matcore::mdslc::planner::discover_cpu_capabilities_v1();
@@ -626,6 +679,7 @@ int main() {
   run_shape(16, 16, 16);
   run_shape(33, 35, 37);
   run_shape(64, 7, 19);
+  run_aligned_shape();
   planner_contract();
   forced_variant_correctness();
   runtime_plan_report();
