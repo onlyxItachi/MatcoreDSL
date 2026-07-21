@@ -75,12 +75,14 @@ if(BUILD_TESTING)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU" AND
      CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
     find_program(MDSLC_OBJDUMP_EXECUTABLE NAMES objdump)
-    if(MDSLC_OBJDUMP_EXECUTABLE)
+    find_program(MDSLC_NM_EXECUTABLE NAMES nm llvm-nm-21)
+    if(MDSLC_OBJDUMP_EXECUTABLE AND MDSLC_NM_EXECUTABLE)
       add_test(
         NAME runtime.cpu.vectorized_object
         COMMAND
           "${CMAKE_COMMAND}"
           "-DMDSLC_OBJDUMP=${MDSLC_OBJDUMP_EXECUTABLE}"
+          "-DMDSLC_NM=${MDSLC_NM_EXECUTABLE}"
           "-DMDSLC_RUNTIME=$<TARGET_FILE:matcore_runtime>"
           -P
           "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/cmake/expect_cpu_vectorized_runtime.cmake"
