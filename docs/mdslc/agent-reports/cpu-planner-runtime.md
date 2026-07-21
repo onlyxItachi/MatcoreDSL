@@ -61,7 +61,8 @@ The registry order and stable IDs are:
    x86 AVX2/FMA target function, with scalar/vector tails.
 
 Common legality requires positive M/N/K, f32 elements and accumulation,
-row-major contiguous layout, and float-aligned storage. Reference and tiled
+row-major contiguous layout, and a power-of-two storage alignment of at least
+`alignof(float)`. Reference and tiled
 require portable scalar f32. Compiler-vectorized additionally requires
 complete discovery, x86_64, AVX2, FMA, and at least 256 usable vector bits.
 Every rejection has a stable actionable reason. A forced illegal internal
@@ -157,6 +158,8 @@ Results:
 - sanitizer tail benchmark: all three variants correct, no finding;
 - Clang 21 C++ compilation with `-Wall -Wextra -Wpedantic -Werror`: passed;
 - public runtime header C11 compilation with the same warning policy: passed;
+- benchmark dimension products fail cleanly before allocation when their
+  storage size would overflow the address space;
 - fresh full standalone build: 21/21 build steps passed;
 - full CTest: seven tests passed; the integration matrix had 62 passes and one
   expected cross-lane assertion failure because its export whitelist predates

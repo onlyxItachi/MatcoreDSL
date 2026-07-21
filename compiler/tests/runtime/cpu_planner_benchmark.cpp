@@ -29,6 +29,17 @@ bool parse_positive(const char *text, std::int64_t *value) {
   return true;
 }
 
+bool checked_element_count(std::int64_t rows, std::int64_t columns,
+                           std::size_t *count) {
+  const auto unsigned_rows = static_cast<std::uint64_t>(rows);
+  const auto unsigned_columns = static_cast<std::uint64_t>(columns);
+  constexpr auto max_elements =
+      std::numeric_limits<std::size_t>::max() / sizeof(float);
+  if (unsigned_rows > max_elements / unsigned_columns) return false;
+  *count = static_cast<std::size_t>(unsigned_rows * unsigned_columns);
+  return true;
+}
+
 CpuGemmProblemV1 make_problem(std::int64_t m, std::int64_t k, std::int64_t n,
                               const float *a, const float *b,
                               const float *c) {
@@ -102,9 +113,18 @@ int main(int argc, char **argv) {
     return 2;
   }
 
-  std::vector<float> a(static_cast<std::size_t>(m * k));
-  std::vector<float> b(static_cast<std::size_t>(k * n));
-  std::vector<float> output(static_cast<std::size_t>(m * n));
+  std::size_t lhs_elements = 0;
+  std::size_t rhs_elements = 0;
+  std::size_t output_elements = 0;
+  if (!checked_element_count(m, k, &lhs_elements) ||
+      !checked_element_count(k, n, &rhs_elements) ||
+      !checked_element_count(m, n, &output_elements)) {
+    std::cerr << "matrix storage size overflows the address space\n";
+    return 2;
+  }
+  std::vector<float> a(lhs_elements);
+  std::vector<float> b(rhs_elements);
+  std::vector<float> output(output_elements);
   std::vector<float> reference(output.size());
   for (std::size_t index = 0; index < a.size(); ++index)
     a[index] = static_cast<float>(static_cast<int>(index % 17) - 8) / 16.0F;

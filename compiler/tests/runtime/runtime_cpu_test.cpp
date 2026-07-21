@@ -320,6 +320,13 @@ void planner_contract() {
          "unsupported planner dtype is rejected");
   expect(invalid.selection_reason == "variant supports only f32 elements",
          "invalid planner problem is actionable");
+  auto invalid_alignment = problem(4, 4, 4, 6);
+  const auto invalid_alignment_plan =
+      matcore::mdslc::planner::plan_cpu_gemm_v1(invalid_alignment, vector);
+  expect(invalid_alignment_plan.status == CpuPlanStatusV1::invalid_problem &&
+             invalid_alignment_plan.selection_reason ==
+                 "minimum alignment must be a power of two",
+         "non-power-of-two alignment contract is rejected");
 
   auto incompatible_capabilities = vector_capabilities();
   incompatible_capabilities.version = 99;
