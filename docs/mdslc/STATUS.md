@@ -7,6 +7,30 @@ Status date: 2026-07-21
 - Milestone 1 integration branch: `mdslc/native-libtooling-v1`
 - Milestone 2 branch: `mdslc/matcore-ir-v1-cpu-planner`
 - Milestone 2 pull request: `#5`
+- Milestone 3 integration branch: `mdslc/mainline-integration-v2`
+- Milestone 3 draft pull request: `#6`, targeting `main`
+- Milestone 3 tracker: GitHub milestone `#1`
+
+## Milestone 3 mainline checkpoint
+
+**Local history-preserving consolidation passed; hosted PR checks and final
+merge remain the publication gate.**
+
+The integration branch starts from `origin/main`, contains the historical
+`feature/device-resident-tensors` line and the complete reviewed MDSLC lineage,
+and uses ordinary merge commits. It does not rebase, squash, force-update, or
+delete either history. The `compiler/` tree is byte-identical to the accepted
+Milestone 2 commit.
+
+Fresh committed-tree Release and Debug standalone suites each passed 14/14.
+A coherent temporary MLIR 18 legacy build linked successfully; the meaningful
+legacy regression set passed 68 pytest-compatible cases, 4 CUDA graph cases,
+the CPU dtype/shape matrix, 24 elementwise GPU cases, and 7 softmax GPU cases.
+The machine's prior MLIR 22 package surface was restored after that proof.
+
+The integration decision and full evidence are recorded in
+`docs/adr/0004-mdslc-mainline-history-consolidation.md` and
+`docs/mdslc/agent-reports/mainline-consolidation-validation.md`.
 
 ## Milestone 2 verdict
 
