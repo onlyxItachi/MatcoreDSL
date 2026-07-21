@@ -122,6 +122,8 @@ struct CudaDriverApi {
   using CuMemsetD16AsyncFn =
       CUresult (*)(CUdeviceptr, unsigned short, size_t, CUstream);
   using CuMemHostRegisterFn = CUresult (*)(void *, size_t, unsigned int);
+  using CuPointerGetAttributeFn =
+      CUresult (*)(void *, CUpointer_attribute, CUdeviceptr);
   // V2: Event + stream capture symbols for stream-correct execution
   using CuEventCreateFn = CUresult (*)(CUevent *, unsigned int);
   using CuEventRecordFn = CUresult (*)(CUevent, CUstream);
@@ -198,6 +200,8 @@ struct CudaDriverApi {
         loadSymbol<CuMemsetD16AsyncFn>(handle, "cuMemsetD16Async");
     api.cuMemHostRegister =
         loadSymbol<CuMemHostRegisterFn>(handle, "cuMemHostRegister_v2");
+    api.cuPointerGetAttribute = loadSymbol<CuPointerGetAttributeFn>(
+        handle, "cuPointerGetAttribute");
     // V2: Event + stream capture symbols
     api.cuEventCreate =
         loadSymbol<CuEventCreateFn>(handle, "cuEventCreate");
@@ -254,6 +258,7 @@ struct CudaDriverApi {
   CuMemsetD32AsyncFn cuMemsetD32Async = nullptr;
   CuMemsetD16AsyncFn cuMemsetD16Async = nullptr;
   CuMemHostRegisterFn cuMemHostRegister = nullptr;
+  CuPointerGetAttributeFn cuPointerGetAttribute = nullptr;
   // V2: Event + stream capture symbols
   CuEventCreateFn cuEventCreate = nullptr;
   CuEventRecordFn cuEventRecord = nullptr;
@@ -781,16 +786,39 @@ MATCORE_GPU_RUNTIME_EXPORT void mgpuMemFree(void *ptr, CUstream stream) {
   GpuMemoryPool::instance().release(ptr, stream);
 }
 
-// V2 SAFETY: Uses cuMemcpyAsync with the execution stream. This is required
-// for CUDA graph stream capture — synchronous cuMemcpy cannot be captured.
-// The staging pass inserts explicit gpu.wait barriers, so async is safe here.
+// V2 SAFETY: Uses direction-specific asynchronous copies on the execution
+// stream. This is required for CUDA graph stream capture; synchronous copies
+// cannot be captured. The staging pass inserts explicit gpu.wait barriers.
 MATCORE_GPU_RUNTIME_EXPORT void mgpuMemcpy(void *dst, void *src,
                                            size_t sizeBytes, CUstream stream) {
+  if (sizeBytes == 0 || dst == src) {
+    return;
+  }
+
   ScopedContext scoped_context;
-  checkCuda(CudaDriverApi::instance().cuMemcpyAsync(
-                reinterpret_cast<CUdeviceptr>(dst),
-                reinterpret_cast<CUdeviceptr>(src), sizeBytes, stream),
-            "cuMemcpyAsync");
+  CudaDriverApi &api = CudaDriverApi::instance();
+  const PointerKind dst_kind = classifyPointer(dst);
+  const PointerKind src_kind = classifyPointer(src);
+  if (dst_kind == PointerKind::kDevice && src_kind == PointerKind::kDevice) {
+    checkCuda(api.cuMemcpyDtoDAsync(reinterpret_cast<CUdeviceptr>(dst),
+                                    reinterpret_cast<CUdeviceptr>(src),
+                                    sizeBytes, stream),
+              "cuMemcpyDtoDAsync");
+    return;
+  }
+  if (dst_kind == PointerKind::kDevice) {
+    checkCuda(api.cuMemcpyHtoDAsync(reinterpret_cast<CUdeviceptr>(dst), src,
+                                    sizeBytes, stream),
+              "cuMemcpyHtoDAsync");
+    return;
+  }
+  if (src_kind == PointerKind::kDevice) {
+    checkCuda(api.cuMemcpyDtoHAsync(dst, reinterpret_cast<CUdeviceptr>(src),
+                                    sizeBytes, stream),
+              "cuMemcpyDtoHAsync");
+    return;
+  }
+  std::memcpy(dst, src, sizeBytes);
 }
 
 MATCORE_GPU_RUNTIME_EXPORT void mgpuMemset32(void *dst, unsigned int value,

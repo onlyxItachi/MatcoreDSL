@@ -441,14 +441,28 @@ def _resolve_fused_target(target: str | None) -> str:
     return _normalize_target("nvidia-dgpu:sm_89")
 
 
+def _is_device_resident_tensor(array: Any) -> bool:
+    if isinstance(array, DeviceTensor):
+        return True
+    try:
+        interface = getattr(array, "__cuda_array_interface__", None)
+    except Exception:
+        return False
+    if not isinstance(interface, dict):
+        return False
+    data = interface.get("data")
+    return isinstance(data, tuple) and len(data) >= 1 and isinstance(data[0], int)
+
+
 def _analyze_tensor_residency(arrays: tuple[Any, ...]) -> tuple[bool, bool]:
-    has_device = any(isinstance(a, DeviceTensor) for a in arrays)
-    has_host = any(not isinstance(a, DeviceTensor) for a in arrays)
+    residency = tuple(_is_device_resident_tensor(array) for array in arrays)
+    has_device = any(residency)
+    has_host = any(not is_device for is_device in residency)
     return has_device, has_host
 
 
 def _has_quantized_device_tensor(array: Any) -> bool:
-    if not isinstance(array, DeviceTensor):
+    if not _is_device_resident_tensor(array):
         return False
     quant_obj = getattr(array, "matcore_quantization", None)
     if isinstance(quant_obj, dict):
@@ -1118,7 +1132,7 @@ def _warn_non_contiguous(array: Any, idx: int) -> None:
 
 
 def _warn_if_non_finite(array: Any, label: str) -> None:
-    if hasattr(array, "matcore_dtype"):
+    if hasattr(array, "matcore_dtype") or _is_device_resident_tensor(array):
         return
     inspected = np.asarray(array)
     if not np.issubdtype(inspected.dtype, np.floating):
@@ -1213,7 +1227,9 @@ def _resolve_output_tensor(arrays: tuple[Any, ...], kernel_ir: dict[str, Any]) -
 def _validate_output(result: Any, arrays: tuple[Any, ...], kernel_ir: dict[str, Any]) -> None:
     del result
     output_tensor = _resolve_output_tensor(arrays, kernel_ir)
-    if hasattr(output_tensor, "matcore_dtype"):
+    if hasattr(output_tensor, "matcore_dtype") or _is_device_resident_tensor(
+        output_tensor
+    ):
         return
     output_arr = np.asarray(output_tensor)
     if np.issubdtype(output_arr.dtype, np.floating) and not np.isfinite(output_arr).all():

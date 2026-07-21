@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include <optional>
+#include <sstream>
 #include <string>
 
 #include "transform_builder.h"
@@ -77,6 +78,9 @@ std::optional<std::int64_t> matchConstantIndex(mlir::Value value) {
   return constant.getSExtValue();
 }
 
+constexpr llvm::StringLiteral kMatcoreStaticBlockSizeAttr(
+    "matcore.static_block_size");
+
 std::optional<mlir::Value> findRank2MemRefArgument(mlir::func::FuncOp func,
                                                     unsigned ordinal) {
   unsigned seen = 0;
@@ -134,6 +138,35 @@ mlir::Value blockIdForMapping(mlir::gpu::LaunchOp launch,
       return ids.y;
     case 2:
       return ids.z;
+    default:
+      return {};
+  }
+}
+
+mlir::Value threadIdForMapping(mlir::gpu::LaunchOp launch,
+                               mlir::gpu::GPUThreadMappingAttr attr) {
+  mlir::gpu::KernelDim3 ids = launch.getThreadIds();
+  switch (attr.getRelativeIndex()) {
+    case 0:
+      return ids.x;
+    case 1:
+      return ids.y;
+    case 2:
+      return ids.z;
+    default:
+      return {};
+  }
+}
+
+mlir::Value blockSizeForThreadMapping(mlir::gpu::LaunchOp launch,
+                                      mlir::gpu::GPUThreadMappingAttr attr) {
+  switch (attr.getRelativeIndex()) {
+    case 0:
+      return launch.getBlockSizeX();
+    case 1:
+      return launch.getBlockSizeY();
+    case 2:
+      return launch.getBlockSizeZ();
     default:
       return {};
   }
@@ -677,6 +710,13 @@ struct ConfigureNvidiaLaunchPass
       // passes. Only fill a 32x1x1 fallback for degenerate 1x1x1 launches.
       if (block_x.has_value() && block_y.has_value() && block_z.has_value() &&
           (*block_x != 1 || *block_y != 1 || *block_z != 1)) {
+        launch->setAttr(
+            kMatcoreStaticBlockSizeAttr,
+            builder.getArrayAttr({
+                builder.getI64IntegerAttr(*block_x),
+                builder.getI64IntegerAttr(*block_y),
+                builder.getI64IntegerAttr(*block_z),
+            }));
         return;
       }
 

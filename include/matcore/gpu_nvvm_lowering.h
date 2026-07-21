@@ -21,6 +21,7 @@ void ApplyNvidiaMmaTransformToModule(mlir::ModuleOp module,
 void ApplyNvidiaThreadMappingToModule(mlir::ModuleOp module,
                                       const NvidiaMappingConfig &config);
 void ApplyNvidiaMmaRewriteToModule(mlir::ModuleOp module);
+void ApplyNvidiaAsyncPipelineToModule(mlir::ModuleOp module);
 void ApplyNvidiaMultiWarpTransformToModule(
     mlir::ModuleOp module, const MatmulLoweringSignature &signature,
     const NvidiaMappingConfig &config);

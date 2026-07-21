@@ -68,6 +68,9 @@ public:
   /// Whether this plan has device-resident tensors.
   bool hasDeviceTensors() const { return has_device_tensors_; }
 
+  /// Normalized target used to compile this plan.
+  TargetKind targetKind() const { return target_kind_; }
+
   /// Number of tensors expected.
   size_t numTensors() const { return frozen_meta_.size(); }
 
@@ -91,6 +94,7 @@ private:
   std::shared_ptr<CachedExecution> execution_;
   std::vector<FrozenTensorMeta> frozen_meta_;
   bool has_device_tensors_ = false;
+  TargetKind target_kind_ = TargetKind::kX86Auto;
   std::string cache_key_;
 
   // V2 Pillar 2: CUDA Graph support

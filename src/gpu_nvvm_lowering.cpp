@@ -24,6 +24,7 @@
 #include "mlir/Dialect/Transform/Transforms/Passes.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Diagnostics.h"
+#include "mlir/Parser/Parser.h"
 #include "mlir/Transforms/Passes.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
@@ -225,7 +226,12 @@ void ApplyNvidiaAsyncPipelineToModule(mlir::ModuleOp module) {
     return;
   }
 
-  applyNamedSequenceToModule(module, BuildNvidiaAsyncPipelineSequence(),
+  auto transform_module = mlir::parseSourceString<mlir::ModuleOp>(
+      BuildNvidiaAsyncPipelineSequence(), module.getContext());
+  if (!transform_module) {
+    fail("failed to parse NVIDIA async pipeline transform module");
+  }
+  applyNamedSequenceToModule(module, *transform_module,
                              "NVIDIA async pipeline sequence");
 }
 
