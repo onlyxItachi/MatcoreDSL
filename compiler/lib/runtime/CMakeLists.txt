@@ -35,11 +35,16 @@ set_property(TARGET matcore_runtime PROPERTY EXPORT_NAME Runtime)
 target_compile_features(matcore_runtime PUBLIC cxx_std_20)
 target_compile_definitions(matcore_runtime PRIVATE MATCORE_RUNTIME_BUILD)
 target_link_libraries(matcore_runtime PRIVATE MatcoreDSL::CpuPlannerV1)
-# The planner may select the AVX2/FMA implementation at runtime. Keep this
-# translation unit optimized even in Debug/default builds so that candidate is
-# actually compiler-vectorized rather than a scalar loop with a vector name.
+# The planner may select the AVX2/FMA implementation at runtime. Debug and an
+# unset single-config build type otherwise supply no optimization flag, which
+# would leave this candidate as a scalar loop. Preserve the configured level
+# for Release, RelWithDebInfo, and MinSizeRel.
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-  target_compile_options(matcore_runtime PRIVATE -O2)
+  if(CMAKE_CONFIGURATION_TYPES)
+    target_compile_options(matcore_runtime PRIVATE "$<$<CONFIG:Debug>:-O2>")
+  elseif(CMAKE_BUILD_TYPE STREQUAL "Debug" OR CMAKE_BUILD_TYPE STREQUAL "")
+    target_compile_options(matcore_runtime PRIVATE -O2)
+  endif()
 endif()
 target_include_directories(matcore_runtime
   PUBLIC
