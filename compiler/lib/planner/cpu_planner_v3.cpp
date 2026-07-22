@@ -163,6 +163,82 @@ cpu_gemm_variant_registry_v3() noexcept {
   return kCpuGemmVariantRegistryV3;
 }
 
+CpuPlannerCapabilityProjectionV1 project_cpu_capabilities_v2_for_planner_v1(
+    const platform::CpuCapabilitiesV2 &capabilities) noexcept {
+  CpuPlannerCapabilityProjectionV1 result;
+  const platform::CpuCapabilitiesValidationV2 validation =
+      platform::validate_cpu_capabilities_v2(capabilities);
+  result.valid = validation.valid;
+  result.reason = validation.reason;
+  if (!validation.valid) return result;
+
+  result.baseline.version = kCpuCapabilitiesVersionV1;
+  switch (capabilities.architecture) {
+    case platform::ArchitectureKindV1::x86_64:
+      result.baseline.architecture = CpuArchitectureV1::x86_64;
+      break;
+    case platform::ArchitectureKindV1::aarch64:
+      result.baseline.architecture = CpuArchitectureV1::aarch64;
+      break;
+    case platform::ArchitectureKindV1::unknown:
+      result.baseline.architecture = CpuArchitectureV1::unknown;
+      break;
+  }
+  result.baseline.detection_complete =
+      capabilities.architecture != platform::ArchitectureKindV1::unknown &&
+      platform::domain_complete_v2(capabilities.hardware,
+                                   capabilities.architecture) &&
+      platform::domain_complete_v2(capabilities.os_enabled,
+                                   capabilities.architecture) &&
+      platform::domain_complete_v2(capabilities.compiler,
+                                   capabilities.architecture);
+  result.baseline.features = 0;
+  if (platform::has_usable_feature_v2(
+          capabilities, platform::CpuFeatureV2::portable_scalar_f32)) {
+    result.baseline.features |= feature_bit(CpuFeatureV1::portable_scalar_f32);
+  }
+  if (platform::has_usable_feature_v2(capabilities,
+                                      platform::CpuFeatureV2::avx2)) {
+    result.baseline.features |= feature_bit(CpuFeatureV1::avx2);
+  }
+  if (platform::has_usable_feature_v2(capabilities,
+                                      platform::CpuFeatureV2::fma)) {
+    result.baseline.features |= feature_bit(CpuFeatureV1::fma);
+  }
+  result.baseline.usable_vector_bits = capabilities.usable_vector_bits;
+
+  result.avx512f_hardware = platform::feature_available(
+      capabilities.hardware, platform::CpuFeatureV2::avx512f);
+  result.avx512f_os_enabled = platform::feature_available(
+      capabilities.os_enabled, platform::CpuFeatureV2::avx512f);
+  result.avx512f_compiler_supported = platform::feature_available(
+      capabilities.compiler, platform::CpuFeatureV2::avx512f);
+  result.avx512f_implementation_available = platform::feature_available(
+      capabilities.implementation, platform::CpuFeatureV2::avx512f);
+  result.avx512f_runtime_validated =
+      platform::has_runtime_validated_feature_v2(
+          capabilities, platform::CpuFeatureV2::avx512f);
+  return result;
+}
+
+CpuPlannerTopologyViewV1 project_cpu_topology_v1_for_planner_v1(
+    const platform::CpuTopologyV1 &topology,
+    std::uint32_t available_processors_override) noexcept {
+  CpuPlannerTopologyViewV1 result;
+  const platform::CpuTopologyValidationV1 validation =
+      platform::validate_cpu_topology_v1(topology);
+  result.discovery_complete = validation.valid && topology.discovery_complete;
+  result.logical_processors = platform::logical_cpu_count_v1(topology);
+  result.physical_cores = platform::physical_core_count_v1(topology);
+  result.available_processors =
+      available_processors_override == 0 ? result.logical_processors
+                                         : available_processors_override;
+  result.numa_nodes = platform::numa_node_count_v1(topology);
+  if (result.available_processors > result.logical_processors)
+    result.discovery_complete = false;
+  return result;
+}
+
 CpuGemmPlanV3 plan_cpu_gemm_v3(
     const CpuGemmProblemV1 &problem,
     const CpuCapabilitiesV1 &baseline_capabilities,
@@ -411,6 +487,58 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
           ? "lowest deterministic static cost; ties use priority then registry order"
           : "explicit legal variant request";
   return plan;
+}
+
+CpuGemmPlanV3 plan_cpu_gemm_v3(
+    const CpuGemmProblemV1 &problem,
+    const platform::CpuCapabilitiesV2 &capabilities,
+    const platform::CpuTopologyV1 &topology,
+    const CpuThreadPolicyV1 &thread_policy,
+    const CpuGemmImplementationResourcesV2 &resources,
+    CpuGemmRequestV3 request,
+    std::uint32_t available_processors_override) noexcept {
+  const CpuPlannerCapabilityProjectionV1 capability =
+      project_cpu_capabilities_v2_for_planner_v1(capabilities);
+  const CpuPlannerTopologyViewV1 topology_view =
+      project_cpu_topology_v1_for_planner_v1(
+          topology, available_processors_override);
+  CpuGemmImplementationResourcesV2 normalized = resources;
+  normalized.avx512f_hardware = capability.avx512f_hardware;
+  normalized.avx512f_os_enabled = capability.avx512f_os_enabled;
+  normalized.avx512f_compiler_supported =
+      capability.avx512f_compiler_supported;
+  normalized.native_packed_avx512_fma_compiled =
+      normalized.native_packed_avx512_fma_compiled &&
+      capability.avx512f_implementation_available;
+  normalized.native_parallel_avx512_fma_compiled =
+      normalized.native_parallel_avx512_fma_compiled &&
+      capability.avx512f_implementation_available;
+  normalized.native_packed_avx512_fma_runtime_validated =
+      normalized.native_packed_avx512_fma_runtime_validated &&
+      capability.avx512f_runtime_validated;
+
+  if (!capability.valid) {
+    CpuGemmPlanV3 invalid;
+    invalid.problem = problem;
+    invalid.baseline_capabilities = capability.baseline;
+    invalid.topology = topology_view;
+    invalid.thread_policy = thread_policy;
+    invalid.resources = normalized;
+    invalid.request = request;
+    invalid.status = CpuPlanStatusV1::invalid_capabilities;
+    invalid.selection_reason = capability.reason;
+    for (std::size_t index = 0; index < invalid.candidates.size(); ++index) {
+      invalid.candidates[index].variant = kCpuGemmVariantRegistryV3[index].variant;
+      invalid.candidates[index].stable_id =
+          kCpuGemmVariantRegistryV3[index].stable_id;
+      invalid.candidates[index].deterministic_priority =
+          kCpuGemmVariantRegistryV3[index].deterministic_priority;
+      invalid.candidates[index].reason = capability.reason;
+    }
+    return invalid;
+  }
+  return plan_cpu_gemm_v3(problem, capability.baseline, topology_view,
+                          thread_policy, normalized, request);
 }
 
 std::size_t format_cpu_gemm_plan_v3(const CpuGemmPlanV3 &plan,

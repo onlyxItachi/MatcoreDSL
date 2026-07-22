@@ -8,6 +8,7 @@
 namespace {
 
 namespace planner = matcore::mdslc::planner;
+namespace platform = matcore::mdslc::platform;
 
 int failures = 0;
 
@@ -63,6 +64,47 @@ planner::CpuGemmImplementationResourcesV2 resources() {
   result.native_parallel_avx2_shared_workspace_bytes = 262144;
   result.native_parallel_avx2_per_worker_workspace_bytes = 131072;
   result.native_parallel_avx2_workspace_alignment = 64;
+  return result;
+}
+
+platform::CpuCapabilitiesV2 synthetic_capabilities_v2() {
+  const std::uint64_t vector =
+      platform::feature_bit(platform::CpuFeatureV2::portable_scalar_f32) |
+      platform::feature_bit(platform::CpuFeatureV2::avx2) |
+      platform::feature_bit(platform::CpuFeatureV2::fma) |
+      platform::feature_bit(platform::CpuFeatureV2::avx512f) |
+      platform::feature_bit(platform::CpuFeatureV2::avx512dq) |
+      platform::feature_bit(platform::CpuFeatureV2::avx512bw) |
+      platform::feature_bit(platform::CpuFeatureV2::avx512vl);
+  platform::CpuCapabilitiesV2 result;
+  result.architecture = platform::ArchitectureKindV1::x86_64;
+  result.hardware = {platform::kKnownCpuFeatureBitsV2, vector};
+  result.os_enabled = {platform::kKnownCpuFeatureBitsV2, vector};
+  result.compiler = {platform::kKnownCpuFeatureBitsV2, vector};
+  result.implementation = {platform::kKnownCpuFeatureBitsV2, vector};
+  result.runtime_validation = {platform::kKnownCpuFeatureBitsV2, vector};
+  result.os_xstate_mask_known = true;
+  result.os_xstate_mask = (UINT64_C(1) << 1) | (UINT64_C(1) << 2) |
+                          (UINT64_C(1) << 5) | (UINT64_C(1) << 6) |
+                          (UINT64_C(1) << 7);
+  result.usable_vector_bits = 512;
+  return result;
+}
+
+platform::CpuTopologyV1 synthetic_topology_v1() {
+  platform::CpuTopologyV1 result;
+  result.architecture = platform::ArchitectureKindV1::x86_64;
+  result.discovery_complete = true;
+  result.logical_processors = {
+      {0, 0, 0, 0, 0, true}, {1, 1, 0, 0, 0, true},
+      {2, 2, 0, 0, 0, true}, {3, 3, 0, 0, 0, true},
+      {4, 0, 0, 0, 1, true}, {5, 1, 0, 0, 1, true},
+      {6, 2, 0, 0, 1, true}, {7, 3, 0, 0, 1, true},
+  };
+  result.numa_nodes = {{0, {0, 1, 2, 3, 4, 5, 6, 7}}};
+  result.cache_groups = {
+      {3, platform::CpuCacheTypeV1::unified, 8388608, 64,
+       {0, 1, 2, 3, 4, 5, 6, 7}}};
   return result;
 }
 
@@ -237,12 +279,70 @@ void avx512_fail_closed_and_determinism() {
          "automatic planner and full candidate diagnostic are deterministic");
 }
 
+void versioned_capability_and_topology_projection() {
+  const auto capabilities = synthetic_capabilities_v2();
+  const auto machine_topology = synthetic_topology_v1();
+  const auto capability =
+      planner::project_cpu_capabilities_v2_for_planner_v1(capabilities);
+  const auto topology_view = planner::project_cpu_topology_v1_for_planner_v1(
+      machine_topology, 3);
+  expect(capability.valid && capability.avx512f_hardware &&
+             capability.avx512f_os_enabled &&
+             capability.avx512f_compiler_supported &&
+             capability.avx512f_implementation_available &&
+             capability.avx512f_runtime_validated &&
+             capability.baseline.usable_vector_bits == 512,
+         "capability v2 domains project without losing AVX-512 legality facts");
+  expect(topology_view.discovery_complete &&
+             topology_view.logical_processors == 8 &&
+             topology_view.physical_cores == 4 &&
+             topology_view.available_processors == 3 &&
+             topology_view.numa_nodes == 1,
+         "topology v1 projects deterministic counts and affinity ceiling");
+
+  auto available = resources();
+  available.native_packed_avx512_fma_compiled = true;
+  available.native_packed_avx512_fma_runtime_validated = true;
+  available.native_packed_avx512_workspace_size_valid = true;
+  available.native_packed_avx512_workspace_bytes = 393216;
+  available.native_packed_avx512_workspace_alignment = 64;
+  available.native_parallel_avx512_fma_compiled = true;
+  available.native_parallel_avx512_workspace_size_valid = true;
+  available.native_parallel_avx512_shared_workspace_bytes = 262144;
+  available.native_parallel_avx512_per_worker_workspace_bytes = 131072;
+  available.native_parallel_avx512_workspace_alignment = 64;
+  const auto projected = planner::plan_cpu_gemm_v3(
+      problem(1024, 1024, 1024), capabilities, machine_topology,
+      policy(8, 0, true), available,
+      planner::CpuGemmRequestV3::force_native_parallel_avx512_fma, 3);
+  expect(projected.status == planner::CpuPlanStatusV1::selected &&
+             projected.candidates[7].actual_threads == 3,
+         "planner consumes versioned capability/topology records and affinity limit");
+
+  auto unvalidated = capabilities;
+  unvalidated.runtime_validation.available &=
+      ~(platform::feature_bit(platform::CpuFeatureV2::avx512f) |
+        platform::feature_bit(platform::CpuFeatureV2::avx512dq) |
+        platform::feature_bit(platform::CpuFeatureV2::avx512bw) |
+        platform::feature_bit(platform::CpuFeatureV2::avx512vl));
+  unvalidated.usable_vector_bits = 512;
+  const auto rejected = planner::plan_cpu_gemm_v3(
+      problem(1024, 1024, 1024), unvalidated, machine_topology,
+      policy(4), available,
+      planner::CpuGemmRequestV3::force_native_packed_avx512_fma);
+  expect(rejected.status == planner::CpuPlanStatusV1::forced_variant_illegal &&
+             rejected.candidates[5].reason ==
+                 "native packed AVX-512 implementation is not runtime-validated",
+         "capability projection cannot be bypassed by optimistic resources");
+}
+
 }  // namespace
 
 int main() {
   registry_and_parallel_policy();
   parallel_rejection_boundaries();
   avx512_fail_closed_and_determinism();
+  versioned_capability_and_topology_projection();
   if (failures != 0) {
     std::cerr << failures << " planner v3 checks failed\n";
     return 1;

@@ -2,6 +2,8 @@
 #define MATCORE_MDSLC_PLANNER_CPU_PLANNER_V3_H
 
 #include "cpu_planner_v2.h"
+#include "cpu_capability_v2.h"
+#include "cpu_topology_v1.h"
 
 #include <array>
 #include <cstddef>
@@ -142,6 +144,24 @@ struct CpuGemmPlanV3 {
   std::string_view selection_reason;
 };
 
+struct CpuPlannerCapabilityProjectionV1 {
+  bool valid = false;
+  std::string_view reason;
+  CpuCapabilitiesV1 baseline;
+  bool avx512f_hardware = false;
+  bool avx512f_os_enabled = false;
+  bool avx512f_compiler_supported = false;
+  bool avx512f_implementation_available = false;
+  bool avx512f_runtime_validated = false;
+};
+
+CpuPlannerCapabilityProjectionV1 project_cpu_capabilities_v2_for_planner_v1(
+    const platform::CpuCapabilitiesV2 &capabilities) noexcept;
+
+CpuPlannerTopologyViewV1 project_cpu_topology_v1_for_planner_v1(
+    const platform::CpuTopologyV1 &topology,
+    std::uint32_t available_processors_override = 0) noexcept;
+
 const std::array<CpuGemmVariantRecordV3, kCpuGemmCandidateCountV3> &
 cpu_gemm_variant_registry_v3() noexcept;
 
@@ -152,6 +172,15 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
     const CpuThreadPolicyV1 &thread_policy,
     const CpuGemmImplementationResourcesV2 &resources,
     CpuGemmRequestV3 request = CpuGemmRequestV3::automatic) noexcept;
+
+CpuGemmPlanV3 plan_cpu_gemm_v3(
+    const CpuGemmProblemV1 &problem,
+    const platform::CpuCapabilitiesV2 &capabilities,
+    const platform::CpuTopologyV1 &topology,
+    const CpuThreadPolicyV1 &thread_policy,
+    const CpuGemmImplementationResourcesV2 &resources,
+    CpuGemmRequestV3 request = CpuGemmRequestV3::automatic,
+    std::uint32_t available_processors_override = 0) noexcept;
 
 std::size_t format_cpu_gemm_plan_v3(const CpuGemmPlanV3 &plan,
                                     char *output,
