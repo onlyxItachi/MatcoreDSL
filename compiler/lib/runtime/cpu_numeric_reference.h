@@ -46,6 +46,12 @@ CpuNumericReferenceStatusV1 cpu_reference_gemm_bf16_f32_v1(
     const CpuTypedGemmShapeV1 &shape, const BFloat16V1 *lhs,
     const BFloat16V1 *rhs, float *out) noexcept;
 
+// Storage-form entry point for the public C ABI's uint16_t BF16 payload.
+// It has identical arithmetic and validation semantics without type-punning.
+CpuNumericReferenceStatusV1 cpu_reference_gemm_bf16_storage_f32_v1(
+    const CpuTypedGemmShapeV1 &shape, const std::uint16_t *lhs,
+    const std::uint16_t *rhs, float *out) noexcept;
+
 // Row-major I8 x I8 -> I32. Each signed product is exact. Accumulation and the
 // final output are defined modulo 2^32, avoiding signed-overflow undefined
 // behavior and matching non-saturating integer dot-product semantics.

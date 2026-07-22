@@ -2,6 +2,7 @@
 
 #include "cpu_backend_registry.h"
 #include "cpu_gemm_backend.h"
+#include "cpu_numeric_reference.h"
 #include "cpu_openblas.h"
 #include "cpu_planner.h"
 #include "cpu_planner_v2.h"
@@ -50,6 +51,32 @@ bool reserved_is_zero(const std::uint64_t (&reserved)[Size]) noexcept {
     }
   }
   return true;
+}
+
+matcore_status_v0 validate_cpu_policy_v0(
+    const matcore_policy_v0 *policy) noexcept {
+  if (policy == nullptr) {
+    return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
+                  "GEMM policy must be non-null");
+  }
+  if (!valid_header(policy->abi_version, policy->struct_size,
+                    sizeof(matcore_policy_v0))) {
+    return status(MATCORE_STATUS_ABI_MISMATCH_V0,
+                  "policy ABI version or size mismatch");
+  }
+  if (!reserved_is_zero(policy->reserved)) {
+    return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
+                  "policy reserved fields must be zero");
+  }
+  if (policy->target != MATCORE_TARGET_CPU_V0) {
+    return status(MATCORE_STATUS_UNSUPPORTED_TARGET_V0,
+                  "CPU GEMM v0 requires target=cpu");
+  }
+  if (policy->fallback != MATCORE_FALLBACK_ERROR_V0) {
+    return status(MATCORE_STATUS_UNSUPPORTED_FALLBACK_V0,
+                  "CPU GEMM v0 requires fallback=error");
+  }
+  return status(MATCORE_STATUS_OK_V0, "ok");
 }
 
 matcore_status_v0 validate_tensor(const matcore_tensor_desc_v0 &tensor,
@@ -151,25 +178,10 @@ matcore_status_v0 validate_gemm_v0(const matcore_tensor_desc_v0 *out,
     return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
                   "GEMM descriptors and policy must be non-null");
   }
-  if (!valid_header(policy->abi_version, policy->struct_size,
-                    sizeof(matcore_policy_v0))) {
-    return status(MATCORE_STATUS_ABI_MISMATCH_V0,
-                  "policy ABI version or size mismatch");
-  }
-  if (!reserved_is_zero(policy->reserved)) {
-    return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
-                  "policy reserved fields must be zero");
-  }
-  if (policy->target != MATCORE_TARGET_CPU_V0) {
-    return status(MATCORE_STATUS_UNSUPPORTED_TARGET_V0,
-                  "CPU GEMM v0 requires target=cpu");
-  }
-  if (policy->fallback != MATCORE_FALLBACK_ERROR_V0) {
-    return status(MATCORE_STATUS_UNSUPPORTED_FALLBACK_V0,
-                  "CPU GEMM v0 requires fallback=error");
-  }
+  matcore_status_v0 result = validate_cpu_policy_v0(policy);
+  if (result.code != MATCORE_STATUS_OK_V0) return result;
 
-  matcore_status_v0 result = validate_tensor(*out, "output data is null");
+  result = validate_tensor(*out, "output data is null");
   if (result.code != MATCORE_STATUS_OK_V0) return result;
   result = validate_tensor(*lhs, "left input data is null");
   if (result.code != MATCORE_STATUS_OK_V0) return result;
@@ -670,6 +682,176 @@ bool execute_legacy_variant(
       legacy_plan, validated.lhs, validated.rhs, validated.out);
 }
 
+std::size_t dtype_size_v0(matcore_dtype_v0 dtype) noexcept {
+  switch (dtype) {
+    case MATCORE_DTYPE_BF16_V0:
+      return sizeof(matcore_bf16_v1);
+    case MATCORE_DTYPE_I8_V0:
+      return sizeof(std::int8_t);
+    case MATCORE_DTYPE_F32_V0:
+      return sizeof(float);
+    case MATCORE_DTYPE_I32_V0:
+      return sizeof(std::int32_t);
+    default:
+      return 0;
+  }
+}
+
+matcore_status_v0 validate_typed_tensor_v1(
+    const matcore_tensor_desc_v0 &tensor, matcore_dtype_v0 expected_dtype,
+    const char *null_message) noexcept {
+  if (!valid_header(tensor.abi_version, tensor.struct_size,
+                    sizeof(matcore_tensor_desc_v0))) {
+    return status(MATCORE_STATUS_ABI_MISMATCH_V0,
+                  "typed tensor descriptor ABI version or size mismatch");
+  }
+  if (!reserved_is_zero(tensor.reserved)) {
+    return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
+                  "typed tensor descriptor reserved fields must be zero");
+  }
+  if (tensor.data == nullptr)
+    return status(MATCORE_STATUS_INVALID_ARGUMENT_V0, null_message);
+  if (tensor.dtype != expected_dtype) {
+    return status(MATCORE_STATUS_UNSUPPORTED_DTYPE_V0,
+                  "typed GEMM tensor dtype does not match the entry point");
+  }
+  if (tensor.rank != 2) {
+    return status(MATCORE_STATUS_UNSUPPORTED_RANK_V0,
+                  "typed GEMM requires rank-2 tensors");
+  }
+  if (tensor.dims[0] <= 0 || tensor.dims[1] <= 0) {
+    return status(MATCORE_STATUS_INVALID_SHAPE_V0,
+                  "typed GEMM dimensions must be positive");
+  }
+  if (tensor.strides[1] != 1 || tensor.strides[0] != tensor.dims[1]) {
+    return status(MATCORE_STATUS_UNSUPPORTED_LAYOUT_V0,
+                  "typed GEMM requires row-major contiguous tensors");
+  }
+  if (!valid_memory_space(tensor.memory_space) ||
+      tensor.memory_space != MATCORE_MEMORY_SPACE_HOST_V0) {
+    return status(MATCORE_STATUS_UNSUPPORTED_MEMORY_SPACE_V0,
+                  "typed CPU GEMM accepts host tensors only");
+  }
+  if (!valid_mutability(tensor.mutability)) {
+    return status(MATCORE_STATUS_UNSUPPORTED_MUTABILITY_V0,
+                  "typed tensor descriptor has invalid mutability");
+  }
+  const std::size_t alignment = dtype_size_v0(expected_dtype);
+  if (alignment == 0 ||
+      reinterpret_cast<std::uintptr_t>(tensor.data) % alignment != 0) {
+    return status(MATCORE_STATUS_INVALID_ALIGNMENT_V0,
+                  "typed tensor data violates its natural alignment");
+  }
+  return status(MATCORE_STATUS_OK_V0, "ok");
+}
+
+bool typed_byte_range_v1(const matcore_tensor_desc_v0 &tensor,
+                         std::uintptr_t *begin,
+                         std::uintptr_t *end) noexcept {
+  const auto rows = static_cast<std::uint64_t>(tensor.dims[0]);
+  const auto columns = static_cast<std::uint64_t>(tensor.dims[1]);
+  const auto element_bytes = static_cast<std::uint64_t>(dtype_size_v0(tensor.dtype));
+  constexpr auto maximum = std::numeric_limits<std::uint64_t>::max();
+  if (element_bytes == 0 || rows > maximum / columns) return false;
+  const std::uint64_t elements = rows * columns;
+  if (elements > maximum / element_bytes) return false;
+  const std::uint64_t bytes = elements * element_bytes;
+  const auto address = reinterpret_cast<std::uintptr_t>(tensor.data);
+  if (bytes > std::numeric_limits<std::uintptr_t>::max() - address)
+    return false;
+  *begin = address;
+  *end = address + static_cast<std::uintptr_t>(bytes);
+  return true;
+}
+
+struct ValidatedTypedGemmV1 {
+  matcore::mdslc::runtime::CpuTypedGemmShapeV1 shape;
+  const void *lhs = nullptr;
+  const void *rhs = nullptr;
+  void *out = nullptr;
+};
+
+matcore_status_v0 validate_typed_gemm_v1(
+    const matcore_tensor_desc_v0 *out,
+    const matcore_tensor_desc_v0 *lhs,
+    const matcore_tensor_desc_v0 *rhs,
+    const matcore_policy_v0 *policy,
+    matcore_dtype_v0 output_dtype,
+    matcore_dtype_v0 input_dtype,
+    ValidatedTypedGemmV1 *validated) noexcept {
+  if (out == nullptr || lhs == nullptr || rhs == nullptr || validated == nullptr) {
+    return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
+                  "typed GEMM descriptors must be non-null");
+  }
+  matcore_status_v0 result = validate_cpu_policy_v0(policy);
+  if (result.code != MATCORE_STATUS_OK_V0) return result;
+  result = validate_typed_tensor_v1(*out, output_dtype, "typed output data is null");
+  if (result.code != MATCORE_STATUS_OK_V0) return result;
+  result = validate_typed_tensor_v1(*lhs, input_dtype, "typed left input data is null");
+  if (result.code != MATCORE_STATUS_OK_V0) return result;
+  result = validate_typed_tensor_v1(*rhs, input_dtype, "typed right input data is null");
+  if (result.code != MATCORE_STATUS_OK_V0) return result;
+  if (out->mutability != MATCORE_MUTABILITY_READ_WRITE_V0) {
+    return status(MATCORE_STATUS_OUTPUT_NOT_MUTABLE_V0,
+                  "typed GEMM output must be mutable");
+  }
+  const std::int64_t m = lhs->dims[0];
+  const std::int64_t k = lhs->dims[1];
+  const std::int64_t n = rhs->dims[1];
+  if (rhs->dims[0] != k || out->dims[0] != m || out->dims[1] != n) {
+    return status(MATCORE_STATUS_SHAPE_MISMATCH_V0,
+                  "typed GEMM shapes must be lhs[M,K], rhs[K,N], out[M,N]");
+  }
+  std::uintptr_t out_begin = 0;
+  std::uintptr_t out_end = 0;
+  std::uintptr_t lhs_begin = 0;
+  std::uintptr_t lhs_end = 0;
+  std::uintptr_t rhs_begin = 0;
+  std::uintptr_t rhs_end = 0;
+  if (!typed_byte_range_v1(*out, &out_begin, &out_end) ||
+      !typed_byte_range_v1(*lhs, &lhs_begin, &lhs_end) ||
+      !typed_byte_range_v1(*rhs, &rhs_begin, &rhs_end)) {
+    return status(MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0,
+                  "typed tensor byte range overflows the address space");
+  }
+  if (overlaps(out_begin, out_end, lhs_begin, lhs_end) ||
+      overlaps(out_begin, out_end, rhs_begin, rhs_end)) {
+    return status(MATCORE_STATUS_ALIAS_VIOLATION_V0,
+                  "typed GEMM output must not overlap either input");
+  }
+  validated->shape = {matcore::mdslc::runtime::kCpuNumericReferenceVersionV1,
+                      m, n, k};
+  validated->lhs = lhs->data;
+  validated->rhs = rhs->data;
+  validated->out = out->data;
+  return status(MATCORE_STATUS_OK_V0, "ok");
+}
+
+matcore_status_v0 numeric_reference_status_v1(
+    matcore::mdslc::runtime::CpuNumericReferenceStatusV1 result) noexcept {
+  using NumericStatus =
+      matcore::mdslc::runtime::CpuNumericReferenceStatusV1;
+  switch (result) {
+    case NumericStatus::success:
+      return status(MATCORE_STATUS_OK_V0, "ok");
+    case NumericStatus::invalid_problem:
+    case NumericStatus::null_pointer:
+      return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
+                    "typed reference GEMM received an invalid argument");
+    case NumericStatus::invalid_pointer_alignment:
+      return status(MATCORE_STATUS_INVALID_ALIGNMENT_V0,
+                    "typed reference GEMM alignment contract failed");
+    case NumericStatus::alias_violation:
+      return status(MATCORE_STATUS_ALIAS_VIOLATION_V0,
+                    "typed reference GEMM buffers overlap illegally");
+    case NumericStatus::arithmetic_overflow:
+      return status(MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0,
+                    "typed reference GEMM size arithmetic overflowed");
+  }
+  return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
+                "typed reference GEMM returned an unknown status");
+}
+
 }  // namespace
 
 extern "C" MATCORE_RUNTIME_API matcore_status_v0
@@ -1059,6 +1241,42 @@ matcore_runtime_gemm_f32_execute_prepacked_b_v1(
   populate_report_v2(
       plan, matcore::mdslc::runtime::openblas_provider_info_v1(), report);
   return status(MATCORE_STATUS_OK_V0, "ok");
+}
+
+extern "C" MATCORE_RUNTIME_API matcore_status_v0
+matcore_runtime_gemm_bf16_f32_reference_v1(
+    const matcore_tensor_desc_v0 *out, const matcore_tensor_desc_v0 *lhs,
+    const matcore_tensor_desc_v0 *rhs,
+    const matcore_policy_v0 *policy) noexcept {
+  ValidatedTypedGemmV1 validated;
+  const matcore_status_v0 validation = validate_typed_gemm_v1(
+      out, lhs, rhs, policy, MATCORE_DTYPE_F32_V0,
+      MATCORE_DTYPE_BF16_V0, &validated);
+  if (validation.code != MATCORE_STATUS_OK_V0) return validation;
+  return numeric_reference_status_v1(
+      matcore::mdslc::runtime::cpu_reference_gemm_bf16_storage_f32_v1(
+          validated.shape,
+          static_cast<const std::uint16_t *>(validated.lhs),
+          static_cast<const std::uint16_t *>(validated.rhs),
+          static_cast<float *>(validated.out)));
+}
+
+extern "C" MATCORE_RUNTIME_API matcore_status_v0
+matcore_runtime_gemm_i8_i32_reference_v1(
+    const matcore_tensor_desc_v0 *out, const matcore_tensor_desc_v0 *lhs,
+    const matcore_tensor_desc_v0 *rhs,
+    const matcore_policy_v0 *policy) noexcept {
+  ValidatedTypedGemmV1 validated;
+  const matcore_status_v0 validation = validate_typed_gemm_v1(
+      out, lhs, rhs, policy, MATCORE_DTYPE_I32_V0, MATCORE_DTYPE_I8_V0,
+      &validated);
+  if (validation.code != MATCORE_STATUS_OK_V0) return validation;
+  return numeric_reference_status_v1(
+      matcore::mdslc::runtime::cpu_reference_gemm_i8_i32_v1(
+          validated.shape,
+          static_cast<const std::int8_t *>(validated.lhs),
+          static_cast<const std::int8_t *>(validated.rhs),
+          static_cast<std::int32_t *>(validated.out)));
 }
 
 extern "C" MATCORE_RUNTIME_API matcore_status_v0

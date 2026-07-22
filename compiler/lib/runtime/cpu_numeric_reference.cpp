@@ -102,6 +102,31 @@ CpuNumericReferenceStatusV1 validate_buffers(
   return CpuNumericReferenceStatusV1::success;
 }
 
+template <typename Storage, typename Decode>
+CpuNumericReferenceStatusV1 execute_bf16_reference(
+    const CpuTypedGemmShapeV1 &shape, const Storage *lhs,
+    const Storage *rhs, float *out, Decode decode) noexcept {
+  std::size_t m = 0;
+  std::size_t n = 0;
+  std::size_t k = 0;
+  auto status = dimensions(shape, &m, &n, &k);
+  if (status != CpuNumericReferenceStatusV1::success) return status;
+  status = validate_buffers(lhs, rhs, out, m, n, k);
+  if (status != CpuNumericReferenceStatusV1::success) return status;
+
+  for (std::size_t row = 0; row < m; ++row) {
+    for (std::size_t column = 0; column < n; ++column) {
+      float accumulator = 0.0F;
+      for (std::size_t p = 0; p < k; ++p) {
+        accumulator = std::fma(decode(lhs[row * k + p]),
+                               decode(rhs[p * n + column]), accumulator);
+      }
+      out[row * n + column] = accumulator;
+    }
+  }
+  return CpuNumericReferenceStatusV1::success;
+}
+
 }  // namespace
 
 BFloat16V1 bfloat16_from_float_v1(float value) noexcept {
@@ -143,26 +168,17 @@ std::string_view cpu_numeric_reference_status_message_v1(
 CpuNumericReferenceStatusV1 cpu_reference_gemm_bf16_f32_v1(
     const CpuTypedGemmShapeV1 &shape, const BFloat16V1 *lhs,
     const BFloat16V1 *rhs, float *out) noexcept {
-  std::size_t m = 0;
-  std::size_t n = 0;
-  std::size_t k = 0;
-  auto status = dimensions(shape, &m, &n, &k);
-  if (status != CpuNumericReferenceStatusV1::success) return status;
-  status = validate_buffers(lhs, rhs, out, m, n, k);
-  if (status != CpuNumericReferenceStatusV1::success) return status;
+  return execute_bf16_reference(
+      shape, lhs, rhs, out,
+      [](BFloat16V1 value) { return bfloat16_to_float_v1(value); });
+}
 
-  for (std::size_t row = 0; row < m; ++row) {
-    for (std::size_t column = 0; column < n; ++column) {
-      float accumulator = 0.0F;
-      for (std::size_t p = 0; p < k; ++p) {
-        accumulator =
-            std::fma(bfloat16_to_float_v1(lhs[row * k + p]),
-                     bfloat16_to_float_v1(rhs[p * n + column]), accumulator);
-      }
-      out[row * n + column] = accumulator;
-    }
-  }
-  return CpuNumericReferenceStatusV1::success;
+CpuNumericReferenceStatusV1 cpu_reference_gemm_bf16_storage_f32_v1(
+    const CpuTypedGemmShapeV1 &shape, const std::uint16_t *lhs,
+    const std::uint16_t *rhs, float *out) noexcept {
+  return execute_bf16_reference(shape, lhs, rhs, out, [](std::uint16_t value) {
+    return bfloat16_to_float_v1(BFloat16V1{value});
+  });
 }
 
 CpuNumericReferenceStatusV1 cpu_reference_gemm_i8_i32_v1(

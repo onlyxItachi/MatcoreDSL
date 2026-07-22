@@ -165,6 +165,20 @@ if(BUILD_TESTING)
     COMMAND matcore_numeric_reference_test
   )
 
+  add_executable(matcore_typed_runtime_c_api_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/typed_runtime_c_api_test.cpp"
+  )
+  target_compile_features(matcore_typed_runtime_c_api_test PRIVATE cxx_std_20)
+  target_link_libraries(matcore_typed_runtime_c_api_test
+    PRIVATE MatcoreDSL::Runtime
+  )
+  target_compile_options(matcore_typed_runtime_c_api_test PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+  )
+  add_test(NAME runtime.c_abi.typed_reference_v1
+    COMMAND matcore_typed_runtime_c_api_test
+  )
+
   add_executable(matcore_packed_avx2_test
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/packed/packed_gemm_test.cpp"
   )
