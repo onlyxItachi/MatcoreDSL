@@ -96,7 +96,14 @@ std::string generateStubs(const ir::Module &module,
 
   output << "\n#include <cstdint>\n"
             "#include <stdexcept>\n"
-            "#include <string>\n\n";
+            "#include <string>\n\n"
+            "#if defined(__clang__) || defined(__GNUC__)\n"
+            "// Clang lowers this to ELF weak or COFF WeakExternal. The host,\n"
+            "// stub, and backend objects must still be linked together.\n"
+            "#define MATCORE_MDSLC_WEAK __attribute__((weak))\n"
+            "#else\n"
+            "#error \"MDSLC generated weak sites require Clang/GNU attributes\"\n"
+            "#endif\n\n";
   for (const ir::Operation &operation : module.operations) {
     output << "extern \"C\" matcore_status_v0 "
            << backendFunction(operation)
@@ -164,7 +171,7 @@ std::string generateStubs(const ir::Module &module,
             "} // namespace\n\n";
 
   for (const ir::Operation &operation : module.operations) {
-    output << "__attribute__((weak)) " << declaration(operation, false)
+    output << "MATCORE_MDSLC_WEAK " << declaration(operation, false)
            << " {\n"
               "  const ::matcore::mdsl::matrix_view empty_output{};\n"
               "  const ::matcore::mdsl::matrix_view &output_view =\n"
@@ -190,6 +197,7 @@ std::string generateStubs(const ir::Module &module,
            << "\");\n"
               "}\n";
   }
+  output << "\n#undef MATCORE_MDSLC_WEAK\n";
   return output.str();
 }
 
@@ -200,9 +208,15 @@ std::string generateBackend(const ir::Module &module) {
     output << "\n// No Matcore backend entries in this translation unit.\n";
     return output.str();
   }
-  output << '\n';
+  output << "\n#if defined(__clang__) || defined(__GNUC__)\n"
+            "// Clang emits a COFF WeakExternal on Windows and an ELF weak\n"
+            "// definition on Linux. This is not a DLL ABI boundary.\n"
+            "#define MATCORE_MDSLC_WEAK __attribute__((weak))\n"
+            "#else\n"
+            "#error \"MDSLC generated weak backends require Clang/GNU attributes\"\n"
+            "#endif\n\n";
   for (const ir::Operation &operation : module.operations) {
-    output << "extern \"C\" __attribute__((weak)) matcore_status_v0 "
+    output << "extern \"C\" MATCORE_MDSLC_WEAK matcore_status_v0 "
            << backendFunction(operation)
            << "(const matcore_tensor_desc_v0 *output,\n"
               "    const matcore_tensor_desc_v0 *lhs,\n"
@@ -211,6 +225,7 @@ std::string generateBackend(const ir::Module &module) {
               "  return matcore_runtime_gemm_f32_v0(output, lhs, rhs, policy);\n"
               "}\n";
   }
+  output << "\n#undef MATCORE_MDSLC_WEAK\n";
   return output.str();
 }
 
