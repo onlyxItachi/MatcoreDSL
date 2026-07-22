@@ -100,6 +100,15 @@ std::string_view topology_reason(
   if (topology.logical_processors == 0 || topology.physical_cores == 0 ||
       topology.available_processors == 0 || topology.numa_nodes == 0)
     return "complete CPU topology counts must be positive";
+  if (!topology.numa_node_ids_complete ||
+      topology.numa_nodes > kCpuPlannerReportedNumaNodeLimitV1)
+    return "complete CPU topology NUMA-node IDs are required";
+  for (std::uint32_t index = 0; index < topology.numa_nodes; ++index) {
+    if (topology.numa_node_ids[index] == platform::kUnknownTopologyIdV1 ||
+        (index != 0 && topology.numa_node_ids[index] <=
+                           topology.numa_node_ids[index - 1]))
+      return "CPU topology NUMA-node IDs must be known, unique, and sorted";
+  }
   if (topology.physical_cores > topology.logical_processors)
     return "physical core count exceeds logical processor count";
   if (topology.available_processors > topology.logical_processors)
@@ -116,16 +125,112 @@ std::string_view thread_policy_reason(
   return {};
 }
 
+bool known_affinity(platform::CpuAffinityPolicyV1 affinity) noexcept {
+  switch (affinity) {
+    case platform::CpuAffinityPolicyV1::compact:
+    case platform::CpuAffinityPolicyV1::scatter:
+    case platform::CpuAffinityPolicyV1::local_first:
+      return true;
+  }
+  return false;
+}
+
+bool known_numa_policy(CpuPlannerNumaPolicyV1 policy) noexcept {
+  switch (policy) {
+    case CpuPlannerNumaPolicyV1::single_node:
+    case CpuPlannerNumaPolicyV1::local_first:
+      return true;
+  }
+  return false;
+}
+
+std::string_view numa_policy_name(CpuPlannerNumaPolicyV1 policy) noexcept {
+  switch (policy) {
+    case CpuPlannerNumaPolicyV1::single_node:
+      return "single-node";
+    case CpuPlannerNumaPolicyV1::local_first:
+      return "local-first";
+  }
+  return "invalid";
+}
+
+std::string_view placement_reason(
+    const CpuPlannerTopologyViewV1 &topology,
+    const CpuPlannerPlacementEvidenceV1 &placement) noexcept {
+  if (placement.version != kCpuPlannerPlacementEvidenceVersionV1)
+    return "CPU placement evidence version is unsupported";
+  if (!placement.evidence_complete)
+    return "complete CPU placement evidence is required for parallel planning";
+  if (!known_affinity(placement.affinity) ||
+      !known_numa_policy(placement.numa))
+    return "CPU placement policy is invalid";
+  if (placement.local_logical_processor_capacity == 0 ||
+      placement.local_physical_core_capacity == 0 ||
+      placement.local_physical_core_capacity >
+          placement.local_logical_processor_capacity ||
+      placement.local_logical_processor_capacity >
+          topology.logical_processors ||
+      placement.local_physical_core_capacity > topology.physical_cores)
+    return "CPU placement local capacity is invalid";
+  if (placement.selected_numa_node_count == 0 ||
+      placement.selected_numa_node_count > topology.numa_nodes ||
+      placement.selected_numa_node_count >
+          kCpuPlannerReportedNumaNodeLimitV1)
+    return "CPU placement selected NUMA-node count is invalid";
+  for (std::uint32_t index = 0;
+       index < placement.selected_numa_node_count; ++index) {
+    if (placement.selected_numa_nodes[index] ==
+            platform::kUnknownTopologyIdV1 ||
+        (index != 0 && placement.selected_numa_nodes[index] <=
+                           placement.selected_numa_nodes[index - 1]))
+      return "CPU placement NUMA-node IDs must be known, unique, and sorted";
+    if (!std::binary_search(topology.numa_node_ids.begin(),
+                            topology.numa_node_ids.begin() +
+                                topology.numa_nodes,
+                            placement.selected_numa_nodes[index]))
+      return "CPU placement references a NUMA node absent from topology";
+  }
+  if (placement.crosses_numa_nodes !=
+      (placement.selected_numa_node_count > 1))
+    return "CPU placement cross-NUMA evidence is inconsistent";
+  if (placement.affinity_applied && !placement.affinity_requested)
+    return "CPU affinity cannot be applied when it was not requested";
+  if (placement.affinity_requested && !placement.affinity_applied)
+    return "requested CPU affinity was not completely applied";
+  if (placement.numa == CpuPlannerNumaPolicyV1::single_node &&
+      placement.crosses_numa_nodes)
+    return "single-node NUMA policy cannot cross NUMA nodes";
+  if (placement.numa == CpuPlannerNumaPolicyV1::single_node &&
+      topology.numa_nodes > 1 && !placement.affinity_applied)
+    return "multi-node single-node policy requires applied affinity";
+  if (placement.crosses_numa_nodes &&
+      !placement.caller_first_touch_required)
+    return "cross-NUMA placement must expose caller-owned first touch";
+  return {};
+}
+
+std::uint32_t local_thread_capacity(
+    const CpuThreadPolicyV1 &policy,
+    const CpuPlannerPlacementEvidenceV1 &placement) noexcept {
+  return policy.allow_smt ? placement.local_logical_processor_capacity
+                          : placement.local_physical_core_capacity;
+}
+
 std::uint32_t policy_thread_ceiling(
     const CpuPlannerTopologyViewV1 &topology,
     const CpuThreadPolicyV1 &policy,
-    const CpuGemmImplementationResourcesV2 &resources) noexcept {
+    const CpuGemmImplementationResourcesV2 &resources,
+    const CpuPlannerPlacementEvidenceV1 &placement) noexcept {
   std::uint32_t result = policy.requested_threads;
   if (policy.maximum_threads != 0) result = std::min(result, policy.maximum_threads);
   result = std::min(result, resources.execution_context_worker_capacity);
   result = std::min(result, topology.available_processors);
   result = std::min(result, policy.allow_smt ? topology.logical_processors
                                              : topology.physical_cores);
+  if (placement.evidence_complete &&
+      placement.numa == CpuPlannerNumaPolicyV1::single_node) {
+    result = std::min(result, local_thread_capacity(policy, placement));
+  }
   return result;
 }
 
@@ -152,7 +257,8 @@ bool total_parallel_workspace(std::uint64_t shared_bytes,
 }
 
 std::uint64_t parallel_cost(const CpuGemmProblemV1 &problem,
-                            std::uint32_t threads, bool avx512) noexcept {
+                            std::uint32_t threads, bool avx512,
+                            bool crosses_numa_nodes) noexcept {
   const std::uint64_t work = detail::operation_count(problem);
   const std::uint64_t compute_factor = avx512 ? 1 : 2;
   const std::uint64_t compute = divide_round_up(
@@ -167,10 +273,23 @@ std::uint64_t parallel_cost(const CpuGemmProblemV1 &problem,
       detail::saturating_multiply(static_cast<std::uint64_t>(problem.k),
                                   static_cast<std::uint64_t>(problem.n)),
       6);
-  return detail::saturating_add(
+  std::uint64_t result = detail::saturating_add(
       detail::saturating_add(compute, detail::saturating_add(a_pack, b_pack)),
       detail::saturating_add(UINT64_C(200000),
                              detail::saturating_multiply(threads, 20000)));
+  if (crosses_numa_nodes) {
+    // Cross-node execution is permitted only through explicit evidence.  The
+    // planner applies a conservative static penalty for remote output traffic,
+    // shared packed-B reads, and coordination.  This is deterministic policy,
+    // not an assertion about a particular NUMA fabric's measured bandwidth.
+    const std::uint64_t remote_compute = divide_round_up(work, 4);
+    const std::uint64_t remote_packing = detail::saturating_multiply(b_pack, 2);
+    result = detail::saturating_add(
+        result, detail::saturating_add(
+                    detail::saturating_add(remote_compute, remote_packing),
+                    UINT64_C(250000)));
+  }
+  return result;
 }
 
 std::uint64_t avx512_single_cost(const CpuGemmProblemV1 &problem) noexcept {
@@ -190,6 +309,73 @@ std::uint64_t external_cost(const CpuGemmProblemV1 &problem,
   if (problem.m == 1) return std::numeric_limits<std::uint64_t>::max();
   return detail::saturating_add(
       divide_round_up(detail::operation_count(problem), threads), 2000);
+}
+
+void populate_resource_metadata(
+    CpuCandidateDecisionV3 *decision,
+    const CpuGemmImplementationResourcesV2 &resources) noexcept {
+  if (decision == nullptr) return;
+  switch (decision->variant) {
+    case CpuGemmVariantV3::reference:
+    case CpuGemmVariantV3::tiled:
+      decision->runtime_validated = true;
+      break;
+    case CpuGemmVariantV3::compiler_vectorized:
+      decision->runtime_validated =
+          resources.native_packed_avx2_fma_runtime_validated;
+      break;
+    case CpuGemmVariantV3::external_openblas:
+      decision->runtime_validated = resources.baseline.openblas_linked;
+      break;
+    case CpuGemmVariantV3::native_packed_avx2_fma:
+      decision->runtime_validated =
+          resources.native_packed_avx2_fma_runtime_validated;
+      if (resources.baseline.native_packed_workspace_size_valid) {
+        decision->required_workspace_bytes =
+            resources.baseline.native_packed_workspace_bytes;
+        decision->shared_workspace_bytes =
+            resources.baseline.native_packed_workspace_bytes;
+        decision->required_workspace_alignment =
+            resources.baseline.native_packed_workspace_alignment;
+      }
+      break;
+    case CpuGemmVariantV3::native_packed_avx512_fma:
+      decision->runtime_validated =
+          resources.native_packed_avx512_fma_runtime_validated;
+      if (resources.native_packed_avx512_workspace_size_valid) {
+        decision->required_workspace_bytes =
+            resources.native_packed_avx512_workspace_bytes;
+        decision->shared_workspace_bytes =
+            resources.native_packed_avx512_workspace_bytes;
+        decision->required_workspace_alignment =
+            resources.native_packed_avx512_workspace_alignment;
+      }
+      break;
+    case CpuGemmVariantV3::native_parallel_avx2_fma:
+      decision->runtime_validated =
+          resources.native_packed_avx2_fma_runtime_validated;
+      if (resources.native_parallel_avx2_workspace_size_valid) {
+        decision->shared_workspace_bytes =
+            resources.native_parallel_avx2_shared_workspace_bytes;
+        decision->per_worker_workspace_bytes =
+            resources.native_parallel_avx2_per_worker_workspace_bytes;
+        decision->required_workspace_alignment =
+            resources.native_parallel_avx2_workspace_alignment;
+      }
+      break;
+    case CpuGemmVariantV3::native_parallel_avx512_fma:
+      decision->runtime_validated =
+          resources.native_packed_avx512_fma_runtime_validated;
+      if (resources.native_parallel_avx512_workspace_size_valid) {
+        decision->shared_workspace_bytes =
+            resources.native_parallel_avx512_shared_workspace_bytes;
+        decision->per_worker_workspace_bytes =
+            resources.native_parallel_avx512_per_worker_workspace_bytes;
+        decision->required_workspace_alignment =
+            resources.native_parallel_avx512_workspace_alignment;
+      }
+      break;
+  }
 }
 
 }  // namespace
@@ -278,8 +464,19 @@ CpuPlannerTopologyViewV1 project_cpu_topology_v1_for_planner_v1(
       available_processors_override == 0 ? result.logical_processors
                                          : available_processors_override;
   result.numa_nodes = platform::numa_node_count_v1(topology);
+  result.numa_node_ids_complete =
+      topology.numa_nodes.size() <= kCpuPlannerReportedNumaNodeLimitV1;
+  if (result.numa_node_ids_complete) {
+    for (std::size_t index = 0; index < topology.numa_nodes.size(); ++index) {
+      result.numa_node_ids[index] = topology.numa_nodes[index].node_id;
+    }
+  }
   if (result.available_processors > result.logical_processors)
     result.discovery_complete = false;
+  if (available_processors_override != 0 &&
+      available_processors_override != result.logical_processors)
+    result.discovery_complete = false;
+  if (!result.numa_node_ids_complete) result.discovery_complete = false;
   return result;
 }
 
@@ -289,12 +486,14 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
     const CpuPlannerTopologyViewV1 &topology,
     const CpuThreadPolicyV1 &thread_policy,
     const CpuGemmImplementationResourcesV2 &resources,
-    CpuGemmRequestV3 request) noexcept {
+    CpuGemmRequestV3 request,
+    const CpuPlannerPlacementEvidenceV1 &placement) noexcept {
   CpuGemmPlanV3 plan;
   plan.problem = problem;
   plan.baseline_capabilities = baseline_capabilities;
   plan.topology = topology;
   plan.thread_policy = thread_policy;
+  plan.placement = placement;
   plan.resources = resources;
   plan.request = request;
 
@@ -311,6 +510,9 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
   }
 
   const std::string_view topology_error = topology_reason(topology);
+  const std::string_view placement_error =
+      topology_error.empty() ? placement_reason(topology, placement)
+                             : topology_error;
   const std::uint64_t macro_tiles =
       problem.m > 0
           ? (static_cast<std::uint64_t>(problem.m) +
@@ -319,7 +521,8 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
           : 0;
   const std::uint32_t thread_ceiling =
       topology_error.empty()
-          ? policy_thread_ceiling(topology, thread_policy, resources)
+          ? policy_thread_ceiling(topology, thread_policy, resources,
+                                  placement)
           : 0;
 
   bool found = false;
@@ -334,6 +537,7 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
     decision.stable_id = record.stable_id;
     decision.deterministic_priority = record.deterministic_priority;
     populate_requirement_metadata(&decision);
+    populate_resource_metadata(&decision, resources);
     if (plan.status == CpuPlanStatusV1::invalid_problem ||
         plan.status == CpuPlanStatusV1::invalid_capabilities) {
       decision.reason = plan.selection_reason;
@@ -442,8 +646,25 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
     } else {
       const bool avx512 = record.variant ==
                           CpuGemmVariantV3::native_parallel_avx512_fma;
-      if (!topology_error.empty())
-        decision.reason = topology_error;
+      const std::uint32_t actual_threads = static_cast<std::uint32_t>(
+          std::min<std::uint64_t>(thread_ceiling, macro_tiles));
+      decision.actual_threads = actual_threads;
+      std::uint64_t total_workspace = 0;
+      if (decision.shared_workspace_bytes != 0 &&
+          decision.per_worker_workspace_bytes != 0 && actual_threads != 0 &&
+          total_parallel_workspace(decision.shared_workspace_bytes,
+                                   decision.per_worker_workspace_bytes,
+                                   actual_threads, &total_workspace)) {
+        decision.required_workspace_bytes = total_workspace;
+      }
+      if (placement.evidence_complete && placement.crosses_numa_nodes) {
+        decision.crosses_numa_nodes =
+            placement.affinity != platform::CpuAffinityPolicyV1::local_first ||
+            actual_threads > local_thread_capacity(thread_policy, placement);
+      }
+
+      if (!placement_error.empty())
+        decision.reason = placement_error;
       else if (!resources.execution_context_available ||
                resources.execution_context_worker_capacity == 0)
         decision.reason = "persistent CPU execution context is unavailable";
@@ -490,8 +711,6 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
                !has_feature(baseline_capabilities, CpuFeatureV1::fma))
         decision.reason = "parallel AVX-512 F32 requires FMA";
       else {
-        const std::uint32_t actual_threads = static_cast<std::uint32_t>(
-            std::min<std::uint64_t>(thread_ceiling, macro_tiles));
         if (actual_threads < 2)
           decision.reason = "parallel candidate requires at least two output macro-tiles and workers";
         else if (divide_round_up(detail::operation_count(problem),
@@ -499,37 +718,21 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
                  kCpuParallelMinimumWorkPerThreadV1)
           decision.reason = "parallel work per thread is below the deterministic threshold";
         else {
-          const std::uint64_t shared_workspace =
-              avx512
-                  ? resources.native_parallel_avx512_shared_workspace_bytes
-                  : resources.native_parallel_avx2_shared_workspace_bytes;
-          const std::uint64_t per_worker =
-              avx512
-                  ? resources.native_parallel_avx512_per_worker_workspace_bytes
-                  : resources.native_parallel_avx2_per_worker_workspace_bytes;
-          const std::uint32_t alignment =
-              avx512 ? resources.native_parallel_avx512_workspace_alignment
-                     : resources.native_parallel_avx2_workspace_alignment;
-          std::uint64_t total_workspace = 0;
-          if (shared_workspace == 0 || per_worker == 0)
+          if (decision.shared_workspace_bytes == 0 ||
+              decision.per_worker_workspace_bytes == 0)
             decision.reason = "parallel workspace requirements must be nonzero";
-          else if (alignment < 32 || (alignment & (alignment - 1U)) != 0)
+          else if (decision.required_workspace_alignment < 32 ||
+                   (decision.required_workspace_alignment &
+                    (decision.required_workspace_alignment - 1U)) != 0)
             decision.reason = "parallel per-worker workspace alignment is invalid";
-          else if (!total_parallel_workspace(shared_workspace, per_worker,
-                                              actual_threads,
-                                              &total_workspace))
+          else if (decision.required_workspace_bytes == 0)
             decision.reason = "parallel workspace requirement overflowed";
           else {
             decision.legal = true;
             decision.reason = "legal";
-            decision.actual_threads = actual_threads;
-            decision.required_workspace_bytes = total_workspace;
-            decision.required_workspace_alignment = alignment;
-            decision.shared_workspace_bytes = shared_workspace;
-            decision.per_worker_workspace_bytes = per_worker;
-            decision.runtime_validated = true;
             decision.estimated_cost =
-                parallel_cost(problem, actual_threads, avx512);
+                parallel_cost(problem, actual_threads, avx512,
+                              decision.crosses_numa_nodes);
           }
         }
       }
@@ -577,7 +780,8 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
     const CpuThreadPolicyV1 &thread_policy,
     const CpuGemmImplementationResourcesV2 &resources,
     CpuGemmRequestV3 request,
-    std::uint32_t available_processors_override) noexcept {
+    std::uint32_t available_processors_override,
+    const CpuPlannerPlacementEvidenceV1 &placement) noexcept {
   const CpuPlannerCapabilityProjectionV1 capability =
       project_cpu_capabilities_v2_for_planner_v1(capabilities);
   const CpuPlannerTopologyViewV1 topology_view =
@@ -615,6 +819,7 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
     invalid.baseline_capabilities = capability.baseline;
     invalid.topology = topology_view;
     invalid.thread_policy = thread_policy;
+    invalid.placement = placement;
     invalid.resources = normalized;
     invalid.request = request;
     invalid.status = CpuPlanStatusV1::invalid_capabilities;
@@ -626,12 +831,13 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
       invalid.candidates[index].deterministic_priority =
           kCpuGemmVariantRegistryV3[index].deterministic_priority;
       populate_requirement_metadata(&invalid.candidates[index]);
+      populate_resource_metadata(&invalid.candidates[index], normalized);
       invalid.candidates[index].reason = capability.reason;
     }
     return invalid;
   }
   return plan_cpu_gemm_v3(problem, capability.baseline, topology_view,
-                          thread_policy, normalized, request);
+                          thread_policy, normalized, request, placement);
 }
 
 std::size_t format_cpu_gemm_plan_v3(const CpuGemmPlanV3 &plan,
@@ -645,12 +851,47 @@ std::size_t format_cpu_gemm_plan_v3(const CpuGemmPlanV3 &plan,
   writer.number(plan.thread_policy.requested_threads);
   writer.text(" max-threads=");
   writer.number(plan.thread_policy.maximum_threads);
+  writer.text(" allow-smt=");
+  writer.text(plan.thread_policy.allow_smt ? "true" : "false");
+  writer.text(" external-provider-parallelism=");
+  writer.text(plan.thread_policy.external_provider_parallelism_active
+                  ? "true"
+                  : "false");
   writer.text(" physical-cores=");
   writer.number(plan.topology.physical_cores);
   writer.text(" logical-processors=");
   writer.number(plan.topology.logical_processors);
+  writer.text(" available-processors=");
+  writer.number(plan.topology.available_processors);
   writer.text(" numa-nodes=");
   writer.number(plan.topology.numa_nodes);
+  writer.text(" placement-complete=");
+  writer.text(plan.placement.evidence_complete ? "true" : "false");
+  writer.text(" affinity-requested=");
+  writer.text(plan.placement.affinity_requested ? "true" : "false");
+  writer.text(" affinity-applied=");
+  writer.text(plan.placement.affinity_applied ? "true" : "false");
+  writer.text(" affinity=");
+  writer.text(platform::to_string(plan.placement.affinity));
+  writer.text(" numa-policy=");
+  writer.text(numa_policy_name(plan.placement.numa));
+  writer.text(" local-logical-capacity=");
+  writer.number(plan.placement.local_logical_processor_capacity);
+  writer.text(" local-physical-capacity=");
+  writer.number(plan.placement.local_physical_core_capacity);
+  writer.text(" selected-numa-nodes=[");
+  for (std::uint32_t index = 0;
+       index < plan.placement.selected_numa_node_count &&
+       index < kCpuPlannerReportedNumaNodeLimitV1;
+       ++index) {
+    if (index != 0) writer.character(',');
+    writer.number(plan.placement.selected_numa_nodes[index]);
+  }
+  writer.character(']');
+  writer.text(" cross-numa=");
+  writer.text(plan.placement.crosses_numa_nodes ? "true" : "false");
+  writer.text(" caller-first-touch=");
+  writer.text(plan.placement.caller_first_touch_required ? "true" : "false");
   writer.text(" status=");
   writer.number(static_cast<std::uint64_t>(plan.status));
   writer.text(" selected=");
@@ -663,27 +904,35 @@ std::size_t format_cpu_gemm_plan_v3(const CpuGemmPlanV3 &plan,
     const CpuCandidateDecisionV3 &candidate = plan.candidates[index];
     writer.text(candidate.stable_id);
     writer.character(':');
-    if (candidate.legal) {
-      writer.text("legal:cost=");
-      writer.number(candidate.estimated_cost);
-      writer.text(":workspace=");
-      writer.number(candidate.required_workspace_bytes);
-      writer.text(":shared-workspace=");
-      writer.number(candidate.shared_workspace_bytes);
-      writer.text(":per-worker-workspace=");
-      writer.number(candidate.per_worker_workspace_bytes);
-      writer.text(":alignment=");
-      writer.number(candidate.required_workspace_alignment);
-      writer.text(":threads=");
-      writer.number(candidate.actual_threads);
-      writer.text(":runtime-validated=");
-      writer.text(candidate.runtime_validated ? "true" : "false");
-      writer.text(":required-features=");
-      writer.number(candidate.required_hardware_features);
-    } else {
-      writer.text("rejected:");
-      writer.text(candidate.reason);
-    }
+    writer.text(candidate.legal ? "legal" : "rejected");
+    writer.text(":reason=");
+    writer.text(candidate.reason);
+    writer.text(":cost=");
+    writer.number(candidate.estimated_cost);
+    writer.text(":priority=");
+    writer.number(candidate.deterministic_priority);
+    writer.text(":workspace=");
+    writer.number(candidate.required_workspace_bytes);
+    writer.text(":shared-workspace=");
+    writer.number(candidate.shared_workspace_bytes);
+    writer.text(":per-worker-workspace=");
+    writer.number(candidate.per_worker_workspace_bytes);
+    writer.text(":alignment=");
+    writer.number(candidate.required_workspace_alignment);
+    writer.text(":threads=");
+    writer.number(candidate.actual_threads);
+    writer.text(":runtime-validated=");
+    writer.text(candidate.runtime_validated ? "true" : "false");
+    writer.text(":required-hardware=");
+    writer.number(candidate.required_hardware_features);
+    writer.text(":required-os=");
+    writer.number(candidate.required_os_features);
+    writer.text(":required-compiler=");
+    writer.number(candidate.required_compiler_features);
+    writer.text(":required-implementation=");
+    writer.number(candidate.required_implementation_features);
+    writer.text(":cross-numa=");
+    writer.text(candidate.crosses_numa_nodes ? "true" : "false");
   }
   writer.character(']');
   return writer.finish();

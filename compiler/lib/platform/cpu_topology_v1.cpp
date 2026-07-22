@@ -4,6 +4,7 @@
 #include <charconv>
 #include <cctype>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <set>

@@ -16,7 +16,9 @@ namespace matcore::mdslc::planner {
 inline constexpr std::uint32_t kCpuPlannerVersionV3 = 3;
 inline constexpr std::uint32_t kCpuPlannerTopologyViewVersionV1 = 1;
 inline constexpr std::uint32_t kCpuThreadPolicyVersionV1 = 1;
+inline constexpr std::uint32_t kCpuPlannerPlacementEvidenceVersionV1 = 1;
 inline constexpr std::size_t kCpuGemmCandidateCountV3 = 8;
+inline constexpr std::size_t kCpuPlannerReportedNumaNodeLimitV1 = 16;
 inline constexpr std::uint64_t kCpuParallelMinimumWorkPerThreadV1 =
     UINT64_C(1) << 20;
 
@@ -53,6 +55,9 @@ struct CpuPlannerTopologyViewV1 {
   std::uint32_t physical_cores = 0;
   std::uint32_t available_processors = 0;
   std::uint32_t numa_nodes = 0;
+  bool numa_node_ids_complete = false;
+  std::array<std::uint32_t, kCpuPlannerReportedNumaNodeLimitV1>
+      numa_node_ids{};
 };
 
 struct CpuThreadPolicyV1 {
@@ -61,6 +66,35 @@ struct CpuThreadPolicyV1 {
   std::uint32_t maximum_threads = 0;
   bool allow_smt = false;
   bool external_provider_parallelism_active = false;
+};
+
+enum class CpuPlannerNumaPolicyV1 : std::uint8_t {
+  single_node = 0,
+  local_first = 1,
+};
+
+/*
+ * Placement is injected evidence, never inferred by the planner.  A complete
+ * record describes the worker context that will execute the plan.  The two
+ * local capacities are measured after any scheduler/cpuset restriction and
+ * distinguish physical-core and SMT-enabled ceilings.  Selected NUMA IDs are
+ * fixed-size to keep planning allocation-free and noexcept.
+ */
+struct CpuPlannerPlacementEvidenceV1 {
+  std::uint32_t version = kCpuPlannerPlacementEvidenceVersionV1;
+  bool evidence_complete = false;
+  bool affinity_requested = false;
+  bool affinity_applied = false;
+  platform::CpuAffinityPolicyV1 affinity =
+      platform::CpuAffinityPolicyV1::compact;
+  CpuPlannerNumaPolicyV1 numa = CpuPlannerNumaPolicyV1::single_node;
+  std::uint32_t local_logical_processor_capacity = 0;
+  std::uint32_t local_physical_core_capacity = 0;
+  std::uint32_t selected_numa_node_count = 0;
+  std::array<std::uint32_t, kCpuPlannerReportedNumaNodeLimitV1>
+      selected_numa_nodes{};
+  bool crosses_numa_nodes = false;
+  bool caller_first_touch_required = false;
 };
 
 struct CpuGemmImplementationResourcesV2 {
@@ -135,6 +169,7 @@ struct CpuCandidateDecisionV3 {
   std::uint64_t required_compiler_features = 0;
   std::uint64_t required_implementation_features = 0;
   bool runtime_validated = false;
+  bool crosses_numa_nodes = false;
 };
 
 struct CpuGemmPlanV3 {
@@ -144,6 +179,7 @@ struct CpuGemmPlanV3 {
   CpuCapabilitiesV1 baseline_capabilities;
   CpuPlannerTopologyViewV1 topology;
   CpuThreadPolicyV1 thread_policy;
+  CpuPlannerPlacementEvidenceV1 placement;
   CpuGemmImplementationResourcesV2 resources;
   CpuGemmRequestV3 request = CpuGemmRequestV3::automatic;
   std::array<CpuCandidateDecisionV3, kCpuGemmCandidateCountV3> candidates{};
@@ -172,6 +208,9 @@ CpuPlannerCapabilityProjectionV1 project_cpu_capabilities_v2_for_planner_v1(
 
 CpuPlannerTopologyViewV1 project_cpu_topology_v1_for_planner_v1(
     const platform::CpuTopologyV1 &topology,
+    // A count-only restriction cannot establish physical-core or NUMA
+    // membership and therefore makes parallel topology evidence incomplete.
+    // Call restrict_cpu_topology_v1 first for parallel planning.
     std::uint32_t available_processors_override = 0) noexcept;
 
 const std::array<CpuGemmVariantRecordV3, kCpuGemmCandidateCountV3> &
@@ -183,7 +222,8 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
     const CpuPlannerTopologyViewV1 &topology,
     const CpuThreadPolicyV1 &thread_policy,
     const CpuGemmImplementationResourcesV2 &resources,
-    CpuGemmRequestV3 request = CpuGemmRequestV3::automatic) noexcept;
+    CpuGemmRequestV3 request = CpuGemmRequestV3::automatic,
+    const CpuPlannerPlacementEvidenceV1 &placement = {}) noexcept;
 
 CpuGemmPlanV3 plan_cpu_gemm_v3(
     const CpuGemmProblemV1 &problem,
@@ -192,7 +232,8 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
     const CpuThreadPolicyV1 &thread_policy,
     const CpuGemmImplementationResourcesV2 &resources,
     CpuGemmRequestV3 request = CpuGemmRequestV3::automatic,
-    std::uint32_t available_processors_override = 0) noexcept;
+    std::uint32_t available_processors_override = 0,
+    const CpuPlannerPlacementEvidenceV1 &placement = {}) noexcept;
 
 std::size_t format_cpu_gemm_plan_v3(const CpuGemmPlanV3 &plan,
                                     char *output,
