@@ -7,6 +7,10 @@
 #include <limits>
 #include <string_view>
 
+#if defined(__clang__) && defined(_MSC_VER) && defined(_M_X64)
+#include <intrin.h>
+#endif
+
 namespace matcore::mdslc::planner {
 
 inline constexpr std::uint32_t kCpuCapabilitiesVersionV1 = 1;
@@ -88,6 +92,38 @@ inline CpuCapabilitiesV1 discover_cpu_capabilities_v1() noexcept {
   }
   if (__builtin_cpu_supports("fma")) {
     result.features |= feature_bit(CpuFeatureV1::fma);
+  }
+#elif defined(__clang__) && defined(_MSC_VER) && defined(_M_X64)
+  // clang-cl cannot use Clang's GNU-runtime __builtin_cpu_* implementation:
+  // the MSVC ABI distribution does not provide its __cpu_model symbols. Probe
+  // the same v1 AVX2/FMA contract directly and require the XMM/YMM OS state
+  // before reporting either ISA feature as execution-safe.
+  int maximum[4]{};
+  __cpuidex(maximum, 0, 0);
+  if (maximum[0] >= 1) {
+    int leaf1[4]{};
+    int leaf7[4]{};
+    __cpuidex(leaf1, 1, 0);
+    result.detection_complete = true;
+    if (maximum[0] >= 7) __cpuidex(leaf7, 7, 0);
+    const bool hardware_avx =
+        (static_cast<std::uint32_t>(leaf1[2]) & (UINT32_C(1) << 28U)) != 0;
+    const bool hardware_fma =
+        (static_cast<std::uint32_t>(leaf1[2]) & (UINT32_C(1) << 12U)) != 0;
+    const bool osxsave =
+        (static_cast<std::uint32_t>(leaf1[2]) & (UINT32_C(1) << 27U)) != 0;
+    const bool hardware_avx2 =
+        (static_cast<std::uint32_t>(leaf7[1]) & (UINT32_C(1) << 5U)) != 0;
+    constexpr std::uint64_t required_xstate =
+        (UINT64_C(1) << 1U) | (UINT64_C(1) << 2U);
+    const bool os_avx_state =
+        osxsave && (_xgetbv(0) & required_xstate) == required_xstate;
+    if (hardware_avx && hardware_avx2 && os_avx_state) {
+      result.features |= feature_bit(CpuFeatureV1::avx2);
+      result.usable_vector_bits = 256;
+    }
+    if (hardware_avx && hardware_fma && os_avx_state)
+      result.features |= feature_bit(CpuFeatureV1::fma);
   }
 #endif
 #elif defined(__aarch64__) || defined(_M_ARM64)
