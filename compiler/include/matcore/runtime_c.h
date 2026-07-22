@@ -209,6 +209,27 @@ enum {
   MATCORE_CPU_NUMA_LOCAL_FIRST_V1 = 1
 };
 
+/*
+ * Explicit scheduler-thread policy. PHYSICAL_CORES_ONLY selects at most one
+ * logical processor from each physical core. ALLOW permits sibling logical
+ * processors after the process-affinity mask has been applied.
+ */
+typedef uint32_t matcore_cpu_smt_policy_v1;
+enum {
+  MATCORE_CPU_SMT_PHYSICAL_CORES_ONLY_V1 = 0,
+  MATCORE_CPU_SMT_ALLOW_V1 = 1
+};
+
+typedef uint32_t matcore_cpu_affinity_status_v1;
+enum {
+  MATCORE_CPU_AFFINITY_STATUS_NOT_REQUESTED_V1 = 0,
+  MATCORE_CPU_AFFINITY_STATUS_COMPLETE_V1 = 1,
+  MATCORE_CPU_AFFINITY_STATUS_INVALID_CONFIGURATION_V1 = 2,
+  MATCORE_CPU_AFFINITY_STATUS_UNAVAILABLE_V1 = 3,
+  MATCORE_CPU_AFFINITY_STATUS_APPLICATION_FAILED_V1 = 4,
+  MATCORE_CPU_AFFINITY_STATUS_PARTIALLY_APPLIED_V1 = 5
+};
+
 typedef uint32_t matcore_cpu_plan_request_v1;
 enum { MATCORE_CPU_PLAN_REQUEST_AUTOMATIC_V1 = 0 };
 
@@ -352,6 +373,8 @@ typedef struct matcore_cpu_gemm_execution_options_v2 {
   uint32_t requested_threads;
   matcore_cpu_affinity_policy_v1 affinity_policy;
   matcore_cpu_numa_policy_v1 numa_policy;
+  matcore_cpu_smt_policy_v1 smt_policy;
+  uint32_t reserved0;
   uint64_t flags;
   uint64_t reserved[4];
 } matcore_cpu_gemm_execution_options_v2;
@@ -365,6 +388,8 @@ typedef struct matcore_cpu_gemm_candidate_v3 {
   uint32_t required_workspace_alignment;
   uint64_t estimated_cost;
   uint64_t required_workspace_bytes;
+  uint64_t shared_workspace_bytes;
+  uint64_t per_worker_workspace_bytes;
   matcore_cpu_feature_bits_v2 required_hardware_features;
   matcore_cpu_feature_bits_v2 required_os_features;
   matcore_cpu_feature_bits_v2 required_compiler_features;
@@ -402,11 +427,15 @@ typedef struct matcore_cpu_gemm_plan_report_v3 {
   uint32_t selected_workspace_alignment;
   matcore_cpu_affinity_policy_v1 selected_affinity_policy;
   matcore_cpu_numa_policy_v1 selected_numa_policy;
+  matcore_cpu_smt_policy_v1 selected_smt_policy;
+  uint32_t numa_memory_placement_applied;
   uint32_t topology_discovery_complete;
   uint32_t logical_cpu_count;
   uint32_t physical_core_count;
   uint32_t socket_count;
   uint32_t numa_node_count;
+  uint32_t available_logical_cpu_count;
+  uint32_t available_physical_core_count;
   matcore_cpu_gemm_candidate_v3
       candidates[MATCORE_RUNTIME_CPU_GEMM_CANDIDATE_COUNT_V3];
   const char *selected_stable_id;
@@ -438,6 +467,8 @@ typedef struct matcore_gemm_workspace_requirements_v2 {
   const char *selected_stable_id;
   matcore_cpu_affinity_policy_v1 affinity_policy;
   matcore_cpu_numa_policy_v1 numa_policy;
+  matcore_cpu_smt_policy_v1 smt_policy;
+  uint32_t reserved0;
   uint64_t reserved[4];
 } matcore_gemm_workspace_requirements_v2;
 
@@ -447,7 +478,7 @@ typedef struct matcore_cpu_execution_context_options_v1 {
   uint32_t requested_threads;
   matcore_cpu_affinity_policy_v1 affinity_policy;
   matcore_cpu_numa_policy_v1 numa_policy;
-  uint32_t reserved0;
+  matcore_cpu_smt_policy_v1 smt_policy;
   uint64_t flags;
   uint64_t reserved[4];
 } matcore_cpu_execution_context_options_v1;
@@ -460,11 +491,24 @@ typedef struct matcore_cpu_execution_context_report_v1 {
   uint32_t persistent_worker_count;
   matcore_cpu_affinity_policy_v1 affinity_policy;
   matcore_cpu_numa_policy_v1 numa_policy;
+  matcore_cpu_smt_policy_v1 smt_policy;
   uint32_t topology_discovery_complete;
   uint32_t logical_cpu_count;
   uint32_t physical_core_count;
   uint32_t socket_count;
   uint32_t numa_node_count;
+  uint32_t available_logical_cpu_count;
+  uint32_t available_physical_core_count;
+  uint32_t process_affinity_discovery_complete;
+  int32_t process_affinity_platform_error;
+  matcore_cpu_affinity_status_v1 worker_affinity_status;
+  uint32_t affinity_requested_workers;
+  uint32_t affinity_applied_workers;
+  uint32_t affinity_first_failed_worker;
+  uint32_t affinity_first_failed_cpu;
+  int32_t affinity_platform_error;
+  uint32_t affinity_complete;
+  uint32_t numa_memory_placement_applied;
   uint64_t execution_generation;
   uint64_t reserved[4];
 } matcore_cpu_execution_context_report_v1;
@@ -610,6 +654,13 @@ MATCORE_RUNTIME_API matcore_status_v0
 matcore_runtime_cpu_execution_context_create_v1(
     const matcore_cpu_execution_context_options_v1 *options,
     matcore_cpu_execution_context_v1 **context,
+    matcore_cpu_execution_context_report_v1 *report)
+    MATCORE_RUNTIME_NOEXCEPT;
+
+/* Returns the fixed worker, affinity, topology, and submission state. */
+MATCORE_RUNTIME_API matcore_status_v0
+matcore_runtime_cpu_execution_context_query_v1(
+    matcore_cpu_execution_context_v1 *context,
     matcore_cpu_execution_context_report_v1 *report)
     MATCORE_RUNTIME_NOEXCEPT;
 

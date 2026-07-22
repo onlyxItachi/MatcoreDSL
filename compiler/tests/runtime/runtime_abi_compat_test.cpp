@@ -50,12 +50,12 @@ static_assert(sizeof(matcore_gemm_workspace_requirements_v1) == 64);
 static_assert(sizeof(matcore_gemm_prepacked_b_requirements_v1) == 72);
 static_assert(sizeof(matcore_packed_b_desc_v1) == 112);
 static_assert(sizeof(matcore_cpu_capabilities_v2) == 160);
-static_assert(sizeof(matcore_cpu_gemm_execution_options_v2) == 64);
-static_assert(sizeof(matcore_cpu_gemm_candidate_v3) == 104);
-static_assert(sizeof(matcore_cpu_gemm_plan_report_v3) == 1176);
-static_assert(sizeof(matcore_gemm_workspace_requirements_v2) == 88);
+static_assert(sizeof(matcore_cpu_gemm_execution_options_v2) == 72);
+static_assert(sizeof(matcore_cpu_gemm_candidate_v3) == 120);
+static_assert(sizeof(matcore_cpu_gemm_plan_report_v3) == 1320);
+static_assert(sizeof(matcore_gemm_workspace_requirements_v2) == 96);
 static_assert(sizeof(matcore_cpu_execution_context_options_v1) == 64);
-static_assert(sizeof(matcore_cpu_execution_context_report_v1) == 88);
+static_assert(sizeof(matcore_cpu_execution_context_report_v1) == 144);
 
 static_assert(offsetof(matcore_tensor_desc_v0, data) == 8);
 static_assert(offsetof(matcore_tensor_desc_v0, dims) == 24);
@@ -82,10 +82,24 @@ static_assert(
     offsetof(matcore_gemm_prepacked_b_requirements_v1,
              execution_workspace_bytes) == 24);
 static_assert(offsetof(matcore_packed_b_desc_v1, provenance) == 72);
-static_assert(offsetof(matcore_cpu_gemm_candidate_v3, reason) == 80);
-static_assert(offsetof(matcore_cpu_gemm_plan_report_v3, candidates) == 272);
+static_assert(offsetof(matcore_cpu_gemm_execution_options_v2, smt_policy) ==
+              24);
+static_assert(offsetof(matcore_cpu_gemm_candidate_v3,
+                       shared_workspace_bytes) == 40);
+static_assert(offsetof(matcore_cpu_gemm_candidate_v3,
+                       per_worker_workspace_bytes) == 48);
+static_assert(offsetof(matcore_cpu_gemm_candidate_v3,
+                       required_hardware_features) == 56);
+static_assert(offsetof(matcore_cpu_gemm_candidate_v3, reason) == 96);
+static_assert(offsetof(matcore_cpu_gemm_plan_report_v3, candidates) == 288);
 static_assert(offsetof(matcore_cpu_gemm_plan_report_v3, selected_stable_id) ==
-              1104);
+              1248);
+static_assert(offsetof(matcore_cpu_execution_context_report_v1,
+                       available_logical_cpu_count) == 52);
+static_assert(offsetof(matcore_cpu_execution_context_report_v1,
+                       worker_affinity_status) == 68);
+static_assert(offsetof(matcore_cpu_execution_context_report_v1,
+                       execution_generation) == 104);
 #endif
 
 static_assert(MATCORE_STATUS_INVALID_ALIGNMENT_V0 == 16);

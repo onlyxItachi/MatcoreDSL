@@ -13,6 +13,7 @@
 #include "cpu_planner_v3.h"
 #include "cpu_capability_v2.h"
 #include "cpu_topology_v1.h"
+#include "thread_affinity_v1.h"
 
 #include <algorithm>
 #include <array>
@@ -22,6 +23,7 @@
 #include <memory>
 #include <new>
 #include <utility>
+#include <vector>
 
 static_assert(matcore::mdslc::planner::kCpuGemmCandidateCountV1 ==
                   MATCORE_RUNTIME_CPU_GEMM_CANDIDATE_COUNT_V1,
@@ -37,11 +39,18 @@ struct matcore_cpu_execution_context_v1 {
   std::uint64_t magic = 0;
   std::unique_ptr<matcore::mdslc::runtime::CpuExecutionContextV1> workers;
   matcore::mdslc::platform::CpuCapabilitiesV2 capabilities;
+  // The complete system topology is retained only for diagnostics. Planning
+  // and placement use the process-affinity-restricted topology below.
   matcore::mdslc::platform::CpuTopologyV1 topology;
+  matcore::mdslc::platform::CpuTopologyV1 available_topology;
+  bool process_affinity_discovery_complete = false;
+  std::int32_t process_affinity_platform_error = 0;
   matcore_cpu_affinity_policy_v1 affinity_policy =
       MATCORE_CPU_AFFINITY_NONE_V1;
   matcore_cpu_numa_policy_v1 numa_policy =
       MATCORE_CPU_NUMA_SINGLE_NODE_V1;
+  matcore_cpu_smt_policy_v1 smt_policy =
+      MATCORE_CPU_SMT_PHYSICAL_CORES_ONLY_V1;
 };
 
 namespace {
@@ -1114,7 +1123,12 @@ matcore_status_v0 validate_context_options_v1(
     return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
                   "CPU execution-context NUMA policy is unsupported");
   }
-  if (options->reserved0 != 0 || options->flags != 0 ||
+  if (options->smt_policy != MATCORE_CPU_SMT_PHYSICAL_CORES_ONLY_V1 &&
+      options->smt_policy != MATCORE_CPU_SMT_ALLOW_V1) {
+    return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
+                  "CPU execution-context SMT policy is unsupported");
+  }
+  if (options->flags != 0 ||
       !reserved_is_zero(options->reserved)) {
     return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
                   "CPU execution-context flags and reserved fields must be zero");
@@ -1135,16 +1149,48 @@ matcore_status_v0 validate_empty_context_report_v1(
   }
   if (report->requested_threads != 0 || report->actual_worker_count != 0 ||
       report->persistent_worker_count != 0 || report->affinity_policy != 0 ||
-      report->numa_policy != 0 ||
+      report->numa_policy != 0 || report->smt_policy != 0 ||
       report->topology_discovery_complete != 0 ||
       report->logical_cpu_count != 0 || report->physical_core_count != 0 ||
       report->socket_count != 0 || report->numa_node_count != 0 ||
+      report->available_logical_cpu_count != 0 ||
+      report->available_physical_core_count != 0 ||
+      report->process_affinity_discovery_complete != 0 ||
+      report->process_affinity_platform_error != 0 ||
+      report->worker_affinity_status != 0 ||
+      report->affinity_requested_workers != 0 ||
+      report->affinity_applied_workers != 0 ||
+      report->affinity_first_failed_worker != 0 ||
+      report->affinity_first_failed_cpu != 0 ||
+      report->affinity_platform_error != 0 ||
+      report->affinity_complete != 0 ||
+      report->numa_memory_placement_applied != 0 ||
       report->execution_generation != 0 ||
       !reserved_is_zero(report->reserved)) {
     return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
                   "CPU execution-context report output fields must be zero");
   }
   return status(MATCORE_STATUS_OK_V0, "ok");
+}
+
+matcore_cpu_affinity_status_v1 to_c_affinity_status_v1(
+    matcore::mdslc::runtime::CpuWorkerAffinityStatusV1 source) noexcept {
+  using Status = matcore::mdslc::runtime::CpuWorkerAffinityStatusV1;
+  switch (source) {
+    case Status::not_requested:
+      return MATCORE_CPU_AFFINITY_STATUS_NOT_REQUESTED_V1;
+    case Status::complete:
+      return MATCORE_CPU_AFFINITY_STATUS_COMPLETE_V1;
+    case Status::invalid_configuration:
+      return MATCORE_CPU_AFFINITY_STATUS_INVALID_CONFIGURATION_V1;
+    case Status::unavailable:
+      return MATCORE_CPU_AFFINITY_STATUS_UNAVAILABLE_V1;
+    case Status::application_failed:
+      return MATCORE_CPU_AFFINITY_STATUS_APPLICATION_FAILED_V1;
+    case Status::partially_applied:
+      return MATCORE_CPU_AFFINITY_STATUS_PARTIALLY_APPLIED_V1;
+  }
+  return MATCORE_CPU_AFFINITY_STATUS_APPLICATION_FAILED_V1;
 }
 
 void populate_context_report_v1(
@@ -1159,6 +1205,7 @@ void populate_context_report_v1(
   output.persistent_worker_count = info.actual_worker_count;
   output.affinity_policy = context.affinity_policy;
   output.numa_policy = context.numa_policy;
+  output.smt_policy = context.smt_policy;
   output.topology_discovery_complete =
       context.topology.discovery_complete ? 1U : 0U;
   output.logical_cpu_count =
@@ -1169,6 +1216,26 @@ void populate_context_report_v1(
       matcore::mdslc::platform::socket_count_v1(context.topology);
   output.numa_node_count =
       matcore::mdslc::platform::numa_node_count_v1(context.topology);
+  output.available_logical_cpu_count =
+      matcore::mdslc::platform::logical_cpu_count_v1(
+          context.available_topology);
+  output.available_physical_core_count =
+      matcore::mdslc::platform::physical_core_count_v1(
+          context.available_topology);
+  output.process_affinity_discovery_complete =
+      context.process_affinity_discovery_complete ? 1U : 0U;
+  output.process_affinity_platform_error =
+      context.process_affinity_platform_error;
+  output.worker_affinity_status =
+      to_c_affinity_status_v1(info.affinity.status);
+  output.affinity_requested_workers = info.affinity.requested_workers;
+  output.affinity_applied_workers = info.affinity.applied_workers;
+  output.affinity_first_failed_worker = info.affinity.first_failed_worker;
+  output.affinity_first_failed_cpu = info.affinity.first_failed_cpu;
+  output.affinity_platform_error = info.affinity.platform_error;
+  output.affinity_complete = info.affinity.complete ? 1U : 0U;
+  output.numa_memory_placement_applied =
+      info.affinity.numa_memory_placement_applied ? 1U : 0U;
   output.execution_generation = info.completed_submissions;
   *report = output;
 }
@@ -1183,13 +1250,21 @@ matcore::mdslc::platform::CpuAffinityPolicyV1 placement_affinity_v1(
              : matcore::mdslc::platform::CpuAffinityPolicyV1::compact;
 }
 
-matcore_status_v0 select_context_worker_count_v1(
+struct ContextPlacementV1 {
+  matcore::mdslc::platform::CpuTopologyV1 available_topology;
+  matcore::mdslc::platform::CpuPlacementPlanV1 plan;
+  std::uint32_t worker_count = 0;
+  std::vector<std::uint32_t> worker_cpu_ids;
+};
+
+matcore_status_v0 select_context_placement_v1(
     const matcore_cpu_execution_context_options_v1 &options,
     const matcore::mdslc::platform::CpuTopologyV1 &topology,
-    std::uint32_t *worker_count) {
-  if (worker_count == nullptr)
+    const matcore::mdslc::platform::ThreadAffinityInventoryV1 &inventory,
+    ContextPlacementV1 *selection) {
+  if (selection == nullptr)
     return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
-                  "CPU execution-context worker output must be non-null");
+                  "CPU execution-context placement output must be non-null");
   const auto topology_validation =
       matcore::mdslc::platform::validate_cpu_topology_v1(topology);
   if (!topology_validation.valid || !topology.discovery_complete ||
@@ -1197,33 +1272,64 @@ matcore_status_v0 select_context_worker_count_v1(
     return status(MATCORE_STATUS_UNSUPPORTED_CAPABILITY_V0,
                   "complete CPU topology is required to create a context");
   }
-  const std::uint32_t physical =
-      matcore::mdslc::platform::physical_core_count_v1(topology);
-  std::uint32_t candidate = std::min(options.requested_threads, physical);
+  if (!inventory.backend_available || !inventory.discovery_complete ||
+      inventory.platform_error != 0 ||
+      inventory.allowed_logical_cpus.empty()) {
+    return status(MATCORE_STATUS_UNSUPPORTED_CAPABILITY_V0,
+                  "complete process CPU-affinity discovery is required to create a context");
+  }
+  auto restricted = matcore::mdslc::platform::restrict_cpu_topology_v1(
+      topology, inventory.allowed_logical_cpus);
+  if (!restricted) {
+    return status(MATCORE_STATUS_UNSUPPORTED_CAPABILITY_V0,
+                  "process CPU-affinity mask cannot be projected onto the discovered topology");
+  }
+
+  const std::uint32_t available =
+      options.smt_policy == MATCORE_CPU_SMT_ALLOW_V1
+          ? matcore::mdslc::platform::logical_cpu_count_v1(
+                restricted.topology)
+          : matcore::mdslc::platform::physical_core_count_v1(
+                restricted.topology);
+  const std::uint32_t candidate =
+      std::min(options.requested_threads, available);
   if (candidate == 0)
     return status(MATCORE_STATUS_UNSUPPORTED_CAPABILITY_V0,
-                  "CPU topology exposes no physical worker capacity");
+                  "process CPU-affinity mask exposes no legal worker capacity");
+
+  const bool explicit_worker_affinity =
+      options.affinity_policy != MATCORE_CPU_AFFINITY_NONE_V1 ||
+      options.numa_policy == MATCORE_CPU_NUMA_LOCAL_FIRST_V1;
+  if (!explicit_worker_affinity && restricted.topology.numa_nodes.size() > 1) {
+    return status(MATCORE_STATUS_UNSUPPORTED_CAPABILITY_V0,
+                  "a multi-node process mask requires explicit worker affinity; NUMA page placement is not implemented");
+  }
 
   matcore::mdslc::platform::CpuPlacementRequestV1 request;
   request.affinity =
       placement_affinity_v1(options.affinity_policy, options.numa_policy);
   request.smt =
-      matcore::mdslc::platform::CpuSmtPolicyV1::physical_cores_only;
-  request.preferred_numa_node = topology.numa_nodes.front().node_id;
+      options.smt_policy == MATCORE_CPU_SMT_ALLOW_V1
+          ? matcore::mdslc::platform::CpuSmtPolicyV1::allow_smt
+          : matcore::mdslc::platform::CpuSmtPolicyV1::physical_cores_only;
+  request.preferred_numa_node =
+      restricted.topology.numa_nodes.front().node_id;
   request.allow_cross_numa = false;
-  while (candidate != 0) {
-    request.requested_workers = candidate;
-    const auto placement =
-        matcore::mdslc::platform::plan_cpu_placement_v1(topology, request);
-    if (placement.status ==
-        matcore::mdslc::platform::CpuPlacementStatusV1::selected) {
-      *worker_count = placement.actual_workers;
-      return status(MATCORE_STATUS_OK_V0, "ok");
-    }
-    --candidate;
+  request.requested_workers = candidate;
+  auto placement = matcore::mdslc::platform::plan_cpu_placement_v1(
+      restricted.topology, request);
+  if (placement.status !=
+      matcore::mdslc::platform::CpuPlacementStatusV1::selected) {
+    return status(MATCORE_STATUS_UNSUPPORTED_CAPABILITY_V0,
+                  "requested worker policy has no legal process-mask-local single-node placement");
   }
-  return status(MATCORE_STATUS_UNSUPPORTED_CAPABILITY_V0,
-                "CPU topology has no legal single-node worker placement");
+  ContextPlacementV1 output;
+  output.available_topology = std::move(restricted.topology);
+  output.worker_count = placement.actual_workers;
+  if (explicit_worker_affinity) output.worker_cpu_ids = placement.logical_cpus;
+  output.plan = std::move(placement);
+  *selection = std::move(output);
+  return status(MATCORE_STATUS_OK_V0, "ok");
 }
 
 matcore_status_v0 validate_execution_options_v2(
@@ -1243,11 +1349,13 @@ matcore_status_v0 validate_execution_options_v2(
     return status(MATCORE_STATUS_INVALID_THREAD_COUNT_V0,
                   "CPU GEMM v2 requested thread count must be positive");
   if (options->affinity_policy != context.affinity_policy ||
-      options->numa_policy != context.numa_policy) {
+      options->numa_policy != context.numa_policy ||
+      options->smt_policy != context.smt_policy) {
     return status(MATCORE_STATUS_INVALID_EXECUTION_CONTEXT_V0,
-                  "CPU GEMM policy does not match the fixed execution context");
+                  "CPU GEMM affinity, NUMA, or SMT policy does not match the fixed execution context");
   }
-  if (options->flags != 0 || !reserved_is_zero(options->reserved)) {
+  if (options->reserved0 != 0 || options->flags != 0 ||
+      !reserved_is_zero(options->reserved)) {
     return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
                   "CPU GEMM v2 flags and reserved fields must be zero");
   }
@@ -1295,6 +1403,8 @@ bool empty_candidate_report_v3(
          candidate.required_workspace_alignment == 0 &&
          candidate.estimated_cost == 0 &&
          candidate.required_workspace_bytes == 0 &&
+         candidate.shared_workspace_bytes == 0 &&
+         candidate.per_worker_workspace_bytes == 0 &&
          candidate.required_hardware_features == 0 &&
          candidate.required_os_features == 0 &&
          candidate.required_compiler_features == 0 &&
@@ -1326,9 +1436,13 @@ matcore_status_v0 validate_empty_report_v3(
       report->selected_workspace_alignment != 0 ||
       report->selected_affinity_policy != 0 ||
       report->selected_numa_policy != 0 ||
+      report->selected_smt_policy != 0 ||
+      report->numa_memory_placement_applied != 0 ||
       report->topology_discovery_complete != 0 ||
       report->logical_cpu_count != 0 || report->physical_core_count != 0 ||
       report->socket_count != 0 || report->numa_node_count != 0 ||
+      report->available_logical_cpu_count != 0 ||
+      report->available_physical_core_count != 0 ||
       report->selected_stable_id != nullptr ||
       report->selection_reason != nullptr ||
       report->external_provider != nullptr ||
@@ -1366,6 +1480,7 @@ matcore_status_v0 validate_empty_workspace_requirements_v2(
       requirements->shared_workspace_bytes != 0 ||
       requirements->selected_stable_id != nullptr ||
       requirements->affinity_policy != 0 || requirements->numa_policy != 0 ||
+      requirements->smt_policy != 0 || requirements->reserved0 != 0 ||
       !reserved_is_zero(requirements->reserved)) {
     return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
                   "CPU GEMM v2 workspace output fields must be zero");
@@ -1373,49 +1488,14 @@ matcore_status_v0 validate_empty_workspace_requirements_v2(
   return status(MATCORE_STATUS_OK_V0, "ok");
 }
 
-std::uint64_t candidate_required_features_v3(
-    matcore::mdslc::planner::CpuGemmVariantV3 variant) noexcept {
-  using Variant = matcore::mdslc::planner::CpuGemmVariantV3;
-  const std::uint64_t portable =
-      MATCORE_CPU_FEATURE_PORTABLE_SCALAR_F32_V2;
-  switch (variant) {
-    case Variant::reference:
-    case Variant::tiled:
-    case Variant::external_openblas:
-      return portable;
-    case Variant::compiler_vectorized:
-    case Variant::native_packed_avx2_fma:
-    case Variant::native_parallel_avx2_fma:
-      return portable | MATCORE_CPU_FEATURE_AVX2_V2 |
-             MATCORE_CPU_FEATURE_FMA_V2;
-    case Variant::native_packed_avx512_fma:
-    case Variant::native_parallel_avx512_fma:
-      return portable | MATCORE_CPU_FEATURE_FMA_V2 |
-             MATCORE_CPU_FEATURE_AVX512F_V2;
-  }
-  return 0;
-}
-
-bool candidate_runtime_validated_v3(
-    matcore::mdslc::planner::CpuGemmVariantV3 variant,
-    const matcore::mdslc::platform::CpuCapabilitiesV2 &capabilities) noexcept {
-  if (variant ==
-      matcore::mdslc::planner::CpuGemmVariantV3::external_openblas) {
-    // Provider legality is authenticated independently, but this process has
-    // not executed a provider-specific numerical self-test during discovery.
-    return false;
-  }
-  const std::uint64_t required = candidate_required_features_v3(variant);
-  return required != 0 &&
-         (capabilities.runtime_validation.available & required) == required;
-}
-
 void populate_report_v3(
     const matcore::mdslc::planner::CpuGemmPlanV3 &plan,
     const matcore::mdslc::platform::CpuCapabilitiesV2 &capabilities,
     const matcore::mdslc::platform::CpuTopologyV1 &topology,
+    const matcore::mdslc::platform::CpuTopologyV1 &available_topology,
     matcore_cpu_affinity_policy_v1 affinity,
     matcore_cpu_numa_policy_v1 numa,
+    matcore_cpu_smt_policy_v1 smt,
     const matcore::mdslc::runtime::OpenBlasProviderInfoV1 &provider,
     matcore_cpu_gemm_plan_report_v3 *report) noexcept {
   matcore_cpu_gemm_plan_report_v3 output{};
@@ -1437,6 +1517,10 @@ void populate_report_v3(
   output.candidate_count = static_cast<std::uint32_t>(plan.candidates.size());
   output.selected_affinity_policy = affinity;
   output.selected_numa_policy = numa;
+  output.selected_smt_policy = smt;
+  // v1 applies only scheduler affinity. It performs no NUMA allocation,
+  // binding, migration, first-touch, or interleaving operation.
+  output.numa_memory_placement_applied = 0;
   output.topology_discovery_complete = topology.discovery_complete ? 1U : 0U;
   output.logical_cpu_count =
       matcore::mdslc::platform::logical_cpu_count_v1(topology);
@@ -1445,11 +1529,13 @@ void populate_report_v3(
   output.socket_count = matcore::mdslc::platform::socket_count_v1(topology);
   output.numa_node_count =
       matcore::mdslc::platform::numa_node_count_v1(topology);
+  output.available_logical_cpu_count =
+      matcore::mdslc::platform::logical_cpu_count_v1(available_topology);
+  output.available_physical_core_count =
+      matcore::mdslc::platform::physical_core_count_v1(available_topology);
   for (std::size_t index = 0; index < plan.candidates.size(); ++index) {
     const auto &source = plan.candidates[index];
     auto &destination = output.candidates[index];
-    const std::uint64_t required =
-        candidate_required_features_v3(source.variant);
     destination.stable_id = source.stable_id.data();
     destination.legal = source.legal ? 1U : 0U;
     destination.deterministic_priority = source.deterministic_priority;
@@ -1458,12 +1544,17 @@ void populate_report_v3(
         source.required_workspace_alignment;
     destination.estimated_cost = source.estimated_cost;
     destination.required_workspace_bytes = source.required_workspace_bytes;
-    destination.required_hardware_features = required;
-    destination.required_os_features = required;
-    destination.required_compiler_features = required;
-    destination.required_implementation_features = required;
-    destination.runtime_validated =
-        candidate_runtime_validated_v3(source.variant, capabilities) ? 1U : 0U;
+    destination.shared_workspace_bytes = source.shared_workspace_bytes;
+    destination.per_worker_workspace_bytes =
+        source.per_worker_workspace_bytes;
+    destination.required_hardware_features =
+        source.required_hardware_features;
+    destination.required_os_features = source.required_os_features;
+    destination.required_compiler_features =
+        source.required_compiler_features;
+    destination.required_implementation_features =
+        source.required_implementation_features;
+    destination.runtime_validated = source.runtime_validated ? 1U : 0U;
     destination.reason = source.reason.data();
   }
   output.selected_stable_id =
@@ -1530,6 +1621,8 @@ AdvancedGemmPlanV3 make_advanced_gemm_plan_v3(
       baseline.native_packed_avx2_fma_compiled &&
       self_tests.packed_avx2_f32;
   matcore::mdslc::runtime::CpuRuntimeValidationEvidenceV1 validation;
+  validation.packed_avx2_f32_runtime_validated =
+      self_tests.packed_avx2_f32;
   validation.packed_avx512_f32_runtime_validated =
       self_tests.packed_avx512_f32;
   auto resources =
@@ -1541,11 +1634,12 @@ AdvancedGemmPlanV3 make_advanced_gemm_plan_v3(
   matcore::mdslc::planner::CpuThreadPolicyV1 thread_policy;
   thread_policy.requested_threads = options.requested_threads;
   thread_policy.maximum_threads = context.workers->info().actual_worker_count;
-  thread_policy.allow_smt = false;
+  thread_policy.allow_smt =
+      context.smt_policy == MATCORE_CPU_SMT_ALLOW_V1;
   thread_policy.external_provider_parallelism_active = false;
   auto plan = matcore::mdslc::planner::plan_cpu_gemm_v3(
-      validated.problem, context.capabilities, context.topology, thread_policy,
-      resources, request);
+      validated.problem, context.capabilities, context.available_topology,
+      thread_policy, resources, request);
   return {plan, resources};
 }
 
@@ -1570,23 +1664,10 @@ bool selected_workspace_breakdown_v2(
   const auto &candidate = advanced.plan.candidates[index];
   WorkspaceBreakdownV2 result;
   result.total = candidate.required_workspace_bytes;
+  result.shared = candidate.shared_workspace_bytes;
+  result.per_worker = candidate.per_worker_workspace_bytes;
   result.alignment = candidate.required_workspace_alignment;
   result.threads = candidate.actual_threads;
-  using Variant = matcore::mdslc::planner::CpuGemmVariantV3;
-  if (candidate.variant == Variant::native_parallel_avx2_fma) {
-    result.shared =
-        advanced.resources.native_parallel_avx2_shared_workspace_bytes;
-    result.per_worker =
-        advanced.resources.native_parallel_avx2_per_worker_workspace_bytes;
-  } else if (candidate.variant == Variant::native_parallel_avx512_fma) {
-    result.shared =
-        advanced.resources.native_parallel_avx512_shared_workspace_bytes;
-    result.per_worker =
-        advanced.resources.native_parallel_avx512_per_worker_workspace_bytes;
-  } else if (candidate.variant == Variant::native_packed_avx2_fma ||
-             candidate.variant == Variant::native_packed_avx512_fma) {
-    result.per_worker = result.total;
-  }
   if (result.per_worker != 0 &&
       result.threads >
           (std::numeric_limits<std::uint64_t>::max() - result.shared) /
@@ -1604,6 +1685,7 @@ void populate_workspace_requirements_v2(
     const WorkspaceBreakdownV2 &breakdown,
     matcore_cpu_affinity_policy_v1 affinity,
     matcore_cpu_numa_policy_v1 numa,
+    matcore_cpu_smt_policy_v1 smt,
     matcore_gemm_workspace_requirements_v2 *requirements) noexcept {
   matcore_gemm_workspace_requirements_v2 output{};
   output.abi_version = MATCORE_RUNTIME_EXECUTION_OPTIONS_ABI_VERSION_V2;
@@ -1616,6 +1698,7 @@ void populate_workspace_requirements_v2(
   output.selected_stable_id = plan.selected_id.data();
   output.affinity_policy = affinity;
   output.numa_policy = numa;
+  output.smt_policy = smt;
   *requirements = output;
 }
 
@@ -1772,16 +1855,21 @@ matcore_runtime_cpu_execution_context_create_v1(
     }
     auto topology =
         matcore::mdslc::platform::discover_linux_cpu_topology_v1();
-    std::uint32_t worker_count = 0;
-    matcore_status_v0 placement =
-        select_context_worker_count_v1(*options, topology, &worker_count);
+    const auto process_affinity =
+        matcore::mdslc::platform::discover_current_thread_affinity_v1();
+    ContextPlacementV1 selected_placement;
+    matcore_status_v0 placement = select_context_placement_v1(
+        *options, topology, process_affinity, &selected_placement);
     if (placement.code != MATCORE_STATUS_OK_V0) return placement;
 
     matcore::mdslc::runtime::CpuExecutionStatusV1 worker_status{};
+    matcore::mdslc::runtime::CpuWorkerAffinityReportV1 worker_affinity;
+    matcore::mdslc::runtime::CpuExecutionContextConfigV1 worker_config;
+    worker_config.requested_threads = options->requested_threads;
+    worker_config.maximum_threads = selected_placement.worker_count;
+    worker_config.worker_cpu_ids = selected_placement.worker_cpu_ids;
     auto workers = matcore::mdslc::runtime::CpuExecutionContextV1::create(
-        {matcore::mdslc::runtime::kCpuExecutionContextVersionV1,
-         options->requested_threads, worker_count},
-        &worker_status);
+        worker_config, &worker_status, &worker_affinity);
     if (workers == nullptr ||
         worker_status != matcore::mdslc::runtime::CpuExecutionStatusV1::success) {
       return status(MATCORE_STATUS_EXECUTOR_FAILURE_V0,
@@ -1796,8 +1884,14 @@ matcore_runtime_cpu_execution_context_create_v1(
     created->workers = std::move(workers);
     created->capabilities = capabilities;
     created->topology = std::move(topology);
+    created->available_topology =
+        std::move(selected_placement.available_topology);
+    created->process_affinity_discovery_complete =
+        process_affinity.discovery_complete;
+    created->process_affinity_platform_error = process_affinity.platform_error;
     created->affinity_policy = options->affinity_policy;
     created->numa_policy = options->numa_policy;
+    created->smt_policy = options->smt_policy;
     populate_context_report_v1(*created, report);
     *context = created;
     return status(MATCORE_STATUS_OK_V0, "ok");
@@ -1859,7 +1953,8 @@ matcore_runtime_gemm_f32_context_workspace_size_v2(
   const AdvancedGemmPlanV3 advanced =
       make_advanced_gemm_plan_v3(*context, validated, *options, request);
   populate_report_v3(advanced.plan, context->capabilities, context->topology,
-                     context->affinity_policy, context->numa_policy,
+                     context->available_topology, context->affinity_policy,
+                     context->numa_policy, context->smt_policy,
                      matcore::mdslc::runtime::openblas_provider_info_v1(),
                      report);
   if (advanced.plan.status !=
@@ -1872,7 +1967,7 @@ matcore_runtime_gemm_f32_context_workspace_size_v2(
                   "CPU GEMM v2 workspace breakdown is inconsistent");
   populate_workspace_requirements_v2(
       advanced.plan, breakdown, context->affinity_policy,
-      context->numa_policy, requirements);
+      context->numa_policy, context->smt_policy, requirements);
   return status(MATCORE_STATUS_OK_V0, "ok");
 }
 
@@ -1900,7 +1995,8 @@ matcore_runtime_gemm_f32_execute_context_v2(
   const AdvancedGemmPlanV3 advanced =
       make_advanced_gemm_plan_v3(*context, validated, *options, request);
   populate_report_v3(advanced.plan, context->capabilities, context->topology,
-                     context->affinity_policy, context->numa_policy,
+                     context->available_topology, context->affinity_policy,
+                     context->numa_policy, context->smt_policy,
                      matcore::mdslc::runtime::openblas_provider_info_v1(),
                      report);
   if (advanced.plan.status !=

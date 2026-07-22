@@ -310,6 +310,20 @@ if(BUILD_TESTING)
     COMMAND matcore_runtime_abi_compat_test
   )
 
+  add_executable(matcore_public_context_c_api_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/public_context_c_api_test.cpp"
+  )
+  target_compile_features(matcore_public_context_c_api_test PRIVATE cxx_std_20)
+  target_link_libraries(matcore_public_context_c_api_test
+    PRIVATE MatcoreDSL::Runtime
+  )
+  target_compile_options(matcore_public_context_c_api_test PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+  )
+  add_test(NAME runtime.c_abi.public_context_v1
+    COMMAND matcore_public_context_c_api_test
+  )
+
   add_executable(matcore_cpu_benchmark_support_test
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/cpu_benchmark_support_test.cpp"
   )

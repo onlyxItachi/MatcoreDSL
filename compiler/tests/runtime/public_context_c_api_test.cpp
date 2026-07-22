@@ -11,13 +11,9 @@
 #include <string_view>
 #include <vector>
 
-// This additive declaration is integrated into runtime_c.h by the integration
-// owner. Keeping the test-side declaration here lets this isolated lane prove
-// the implementation without editing the shared public header concurrently.
-extern "C" MATCORE_RUNTIME_API matcore_status_v0
-matcore_runtime_cpu_execution_context_query_v1(
-    matcore_cpu_execution_context_v1 *context,
-    matcore_cpu_execution_context_report_v1 *report) noexcept;
+#if defined(__linux__)
+#include <sched.h>
+#endif
 
 namespace {
 
@@ -87,8 +83,10 @@ matcore_tensor_desc_v0 tensor(void *data, std::int64_t rows,
 
 matcore_cpu_gemm_execution_options_v2 execution_options(
     matcore_cpu_gemm_request_v3 request, std::uint32_t threads,
-    matcore_cpu_affinity_policy_v1 affinity = MATCORE_CPU_AFFINITY_NONE_V1,
-    matcore_cpu_numa_policy_v1 numa = MATCORE_CPU_NUMA_SINGLE_NODE_V1) {
+    matcore_cpu_affinity_policy_v1 affinity = MATCORE_CPU_AFFINITY_COMPACT_V1,
+    matcore_cpu_numa_policy_v1 numa = MATCORE_CPU_NUMA_SINGLE_NODE_V1,
+    matcore_cpu_smt_policy_v1 smt =
+        MATCORE_CPU_SMT_PHYSICAL_CORES_ONLY_V1) {
   matcore_cpu_gemm_execution_options_v2 result{};
   result.abi_version = MATCORE_RUNTIME_EXECUTION_OPTIONS_ABI_VERSION_V2;
   result.struct_size = sizeof(result);
@@ -96,6 +94,23 @@ matcore_cpu_gemm_execution_options_v2 execution_options(
   result.requested_threads = threads;
   result.affinity_policy = affinity;
   result.numa_policy = numa;
+  result.smt_policy = smt;
+  return result;
+}
+
+matcore_cpu_execution_context_options_v1 context_options(
+    std::uint32_t threads,
+    matcore_cpu_affinity_policy_v1 affinity = MATCORE_CPU_AFFINITY_COMPACT_V1,
+    matcore_cpu_numa_policy_v1 numa = MATCORE_CPU_NUMA_SINGLE_NODE_V1,
+    matcore_cpu_smt_policy_v1 smt =
+        MATCORE_CPU_SMT_PHYSICAL_CORES_ONLY_V1) {
+  matcore_cpu_execution_context_options_v1 result{};
+  result.abi_version = MATCORE_RUNTIME_EXECUTION_CONTEXT_ABI_VERSION_V1;
+  result.struct_size = sizeof(result);
+  result.requested_threads = threads;
+  result.affinity_policy = affinity;
+  result.numa_policy = numa;
+  result.smt_policy = smt;
   return result;
 }
 
@@ -228,12 +243,7 @@ void capability_contract(matcore_cpu_capabilities_v2 *detected) {
 
 matcore_cpu_execution_context_v1 *create_context(
     matcore_cpu_execution_context_report_v1 *created_report) {
-  matcore_cpu_execution_context_options_v1 options{};
-  options.abi_version = MATCORE_RUNTIME_EXECUTION_CONTEXT_ABI_VERSION_V1;
-  options.struct_size = sizeof(options);
-  options.requested_threads = 4;
-  options.affinity_policy = MATCORE_CPU_AFFINITY_NONE_V1;
-  options.numa_policy = MATCORE_CPU_NUMA_SINGLE_NODE_V1;
+  auto options = context_options(4);
   matcore_cpu_execution_context_v1 *context = nullptr;
   *created_report = empty_context_report();
   const auto result = matcore_runtime_cpu_execution_context_create_v1(
@@ -245,8 +255,34 @@ matcore_cpu_execution_context_v1 *create_context(
              created_report->actual_worker_count <= 4 &&
              created_report->persistent_worker_count ==
                  created_report->actual_worker_count &&
+             created_report->smt_policy ==
+                 MATCORE_CPU_SMT_PHYSICAL_CORES_ONLY_V1 &&
+             created_report->actual_worker_count <=
+                 created_report->available_physical_core_count &&
              created_report->execution_generation == 0,
          "creation report exposes fixed persistent worker state");
+  expect(created_report->topology_discovery_complete == 1 &&
+             created_report->process_affinity_discovery_complete == 1 &&
+             created_report->process_affinity_platform_error == 0 &&
+             created_report->available_logical_cpu_count > 0 &&
+             created_report->available_logical_cpu_count <=
+                 created_report->logical_cpu_count &&
+             created_report->available_physical_core_count > 0 &&
+             created_report->available_physical_core_count <=
+                 created_report->physical_core_count,
+         "creation report distinguishes system topology from process availability");
+  expect(created_report->worker_affinity_status ==
+                 MATCORE_CPU_AFFINITY_STATUS_COMPLETE_V1 &&
+             created_report->affinity_requested_workers ==
+                 created_report->actual_worker_count &&
+             created_report->affinity_applied_workers ==
+                 created_report->actual_worker_count &&
+             created_report->affinity_first_failed_worker == UINT32_MAX &&
+             created_report->affinity_first_failed_cpu == UINT32_MAX &&
+             created_report->affinity_platform_error == 0 &&
+             created_report->affinity_complete == 1 &&
+             created_report->numa_memory_placement_applied == 0,
+         "compact placement reports strict worker affinity without claiming NUMA page placement");
 
   auto invalid_options = options;
   invalid_options.reserved[0] = 1;
@@ -257,15 +293,44 @@ matcore_cpu_execution_context_v1 *create_context(
                  .code == MATCORE_STATUS_INVALID_ARGUMENT_V0 &&
              invalid_context == nullptr && invalid_report.requested_threads == 0,
          "context creation rejects reserved options without publishing state");
+
+  auto invalid_smt = options;
+  invalid_smt.smt_policy = UINT32_MAX;
+  matcore_cpu_execution_context_v1 *invalid_smt_context = nullptr;
+  auto invalid_smt_report = empty_context_report();
+  expect(matcore_runtime_cpu_execution_context_create_v1(
+             &invalid_smt, &invalid_smt_context, &invalid_smt_report)
+                 .code == MATCORE_STATUS_INVALID_ARGUMENT_V0 &&
+             invalid_smt_context == nullptr,
+         "context creation rejects an unknown SMT policy");
   return context;
+}
+
+const matcore_cpu_gemm_candidate_v3 *selected_candidate(
+    const matcore_cpu_gemm_plan_report_v3 &report) {
+  if (report.selected_stable_id == nullptr) return nullptr;
+  for (std::uint32_t index = 0; index < report.candidate_count; ++index) {
+    if (report.candidates[index].stable_id != nullptr &&
+        std::strcmp(report.candidates[index].stable_id,
+                    report.selected_stable_id) == 0) {
+      return &report.candidates[index];
+    }
+  }
+  return nullptr;
 }
 
 bool run_variant(matcore_cpu_execution_context_v1 *context,
                  GemmFixture &fixture,
                  matcore_cpu_gemm_request_v3 request,
                  std::uint32_t threads,
-                 matcore_cpu_gemm_plan_report_v3 *executed_report = nullptr) {
-  const auto options = execution_options(request, threads);
+                 matcore_cpu_gemm_plan_report_v3 *executed_report = nullptr,
+                 matcore_cpu_affinity_policy_v1 affinity =
+                     MATCORE_CPU_AFFINITY_COMPACT_V1,
+                 matcore_cpu_numa_policy_v1 numa =
+                     MATCORE_CPU_NUMA_SINGLE_NODE_V1,
+                 matcore_cpu_smt_policy_v1 smt =
+                     MATCORE_CPU_SMT_PHYSICAL_CORES_ONLY_V1) {
+  const auto options = execution_options(request, threads, affinity, numa, smt);
   auto requirements = empty_workspace_requirements();
   auto query_report = empty_plan_report();
   const auto policy = cpu_policy();
@@ -273,6 +338,44 @@ bool run_variant(matcore_cpu_execution_context_v1 *context,
       context, &fixture.out_desc, &fixture.lhs_desc, &fixture.rhs_desc,
       &policy, &options, &requirements, &query_report);
   if (query.code != MATCORE_STATUS_OK_V0) return false;
+  const auto *query_candidate = selected_candidate(query_report);
+  expect(query_candidate != nullptr && query_candidate->legal == 1 &&
+             query_candidate->runtime_validated == 1,
+         "selected candidate carries direct legality and runtime evidence");
+  if (query_candidate != nullptr) {
+    const bool workspace_consistent =
+        query_candidate->per_worker_workspace_bytes == 0
+            ? query_candidate->shared_workspace_bytes ==
+                  query_candidate->required_workspace_bytes
+            : query_candidate->actual_threads <=
+                      (UINT64_MAX - query_candidate->shared_workspace_bytes) /
+                          query_candidate->per_worker_workspace_bytes &&
+                  query_candidate->shared_workspace_bytes +
+                          query_candidate->per_worker_workspace_bytes *
+                              query_candidate->actual_threads ==
+                      query_candidate->required_workspace_bytes;
+    expect(workspace_consistent &&
+               requirements.workspace_bytes ==
+                   query_candidate->required_workspace_bytes &&
+               requirements.shared_workspace_bytes ==
+                   query_candidate->shared_workspace_bytes &&
+               requirements.per_worker_workspace_bytes ==
+                   query_candidate->per_worker_workspace_bytes,
+           "candidate and workspace reports preserve one planner-owned breakdown");
+    expect(query_candidate->required_hardware_features != 0 &&
+               query_candidate->required_os_features != 0 &&
+               query_candidate->required_compiler_features != 0 &&
+               query_candidate->required_implementation_features != 0,
+           "selected candidate reports all four direct capability domains");
+  }
+  expect(query_report.selected_affinity_policy == affinity &&
+             query_report.selected_numa_policy == numa &&
+             query_report.selected_smt_policy == smt &&
+             query_report.numa_memory_placement_applied == 0 &&
+             requirements.affinity_policy == affinity &&
+             requirements.numa_policy == numa &&
+             requirements.smt_policy == smt,
+         "plan and workspace diagnostics preserve affinity, NUMA, and SMT policy");
   AlignedStorage workspace(static_cast<std::size_t>(requirements.workspace_bytes));
   expect(workspace.data() != nullptr, "test workspace allocation succeeds");
   if (workspace.data() == nullptr) return false;
@@ -289,6 +392,21 @@ bool run_variant(matcore_cpu_execution_context_v1 *context,
              std::strcmp(report.selected_stable_id,
                          requirements.selected_stable_id) == 0,
          "workspace query and execution select the same stable variant");
+  const auto *executed_candidate = selected_candidate(report);
+  expect(executed_candidate != nullptr && query_candidate != nullptr &&
+             executed_candidate->shared_workspace_bytes ==
+                 query_candidate->shared_workspace_bytes &&
+             executed_candidate->per_worker_workspace_bytes ==
+                 query_candidate->per_worker_workspace_bytes &&
+             executed_candidate->required_hardware_features ==
+                 query_candidate->required_hardware_features &&
+             executed_candidate->required_os_features ==
+                 query_candidate->required_os_features &&
+             executed_candidate->required_compiler_features ==
+                 query_candidate->required_compiler_features &&
+             executed_candidate->required_implementation_features ==
+                 query_candidate->required_implementation_features,
+         "query and execute preserve identical planner candidate evidence");
   expect(fixture.correct(), "forced public context variant is numerically correct");
   if (executed_report != nullptr) *executed_report = report;
   return execution.code == MATCORE_STATUS_OK_V0;
@@ -305,9 +423,22 @@ void strict_preflight_and_old_abi(matcore_cpu_execution_context_v1 *context) {
       context, &fixture.out_desc, &fixture.lhs_desc, &fixture.rhs_desc,
       &policy, &options, &requirements, &report);
   if (query.code == MATCORE_STATUS_OK_V0) {
+    const auto &packed_candidate = report.candidates[4];
     expect(requirements.workspace_bytes > 0 &&
                requirements.workspace_alignment >= 32,
            "packed query exposes explicit caller workspace");
+    const std::uint64_t avx2_fma =
+        MATCORE_CPU_FEATURE_AVX2_V2 | MATCORE_CPU_FEATURE_FMA_V2;
+    expect(packed_candidate.runtime_validated == 1 &&
+               (packed_candidate.required_hardware_features & avx2_fma) ==
+                   avx2_fma &&
+               (packed_candidate.required_os_features & avx2_fma) ==
+                   avx2_fma &&
+               (packed_candidate.required_compiler_features & avx2_fma) ==
+                   avx2_fma &&
+               (packed_candidate.required_implementation_features &
+                avx2_fma) == avx2_fma,
+           "packed AVX2 candidate exposes direct four-domain runtime evidence");
     AlignedStorage workspace(
         static_cast<std::size_t>(requirements.workspace_bytes) + 64U);
     fixture.reset();
@@ -360,6 +491,19 @@ void strict_preflight_and_old_abi(matcore_cpu_execution_context_v1 *context) {
              invalid_report.planner_version == 0 &&
              invalid_requirements.workspace_bytes == 0,
          "v2 option reserved fields fail before output report mutation");
+
+  auto mismatched_smt = options;
+  mismatched_smt.smt_policy = MATCORE_CPU_SMT_ALLOW_V1;
+  auto mismatched_requirements = empty_workspace_requirements();
+  auto mismatched_report = empty_plan_report();
+  expect(matcore_runtime_gemm_f32_context_workspace_size_v2(
+             context, &fixture.out_desc, &fixture.lhs_desc, &fixture.rhs_desc,
+             &policy, &mismatched_smt, &mismatched_requirements,
+             &mismatched_report)
+                 .code == MATCORE_STATUS_INVALID_EXECUTION_CONTEXT_V0 &&
+             mismatched_report.planner_version == 0 &&
+             mismatched_requirements.workspace_bytes == 0,
+         "execution SMT policy must match the fixed context");
 
   GemmFixture legacy(7, 5, 9);
   expect(matcore_runtime_gemm_f32_v0(&legacy.out_desc, &legacy.lhs_desc,
@@ -441,6 +585,97 @@ void runtime_variants_and_generation(
          "context query enforces strict empty report input");
 }
 
+void affinity_smt_and_process_mask_contract() {
+  const struct PolicyCase {
+    matcore_cpu_affinity_policy_v1 affinity;
+    matcore_cpu_numa_policy_v1 numa;
+    matcore_cpu_smt_policy_v1 smt;
+    std::string_view name;
+  } cases[] = {
+      {MATCORE_CPU_AFFINITY_SCATTER_V1,
+       MATCORE_CPU_NUMA_SINGLE_NODE_V1, MATCORE_CPU_SMT_ALLOW_V1,
+       "scatter plus allow-SMT"},
+      {MATCORE_CPU_AFFINITY_NONE_V1, MATCORE_CPU_NUMA_LOCAL_FIRST_V1,
+       MATCORE_CPU_SMT_PHYSICAL_CORES_ONLY_V1, "local-first"},
+  };
+  for (const auto &entry : cases) {
+    auto options = context_options(2, entry.affinity, entry.numa, entry.smt);
+    auto report = empty_context_report();
+    matcore_cpu_execution_context_v1 *context = nullptr;
+    const auto created = matcore_runtime_cpu_execution_context_create_v1(
+        &options, &context, &report);
+    expect(created.code == MATCORE_STATUS_OK_V0 && context != nullptr,
+           entry.name);
+    if (context == nullptr) continue;
+    expect(report.affinity_policy == entry.affinity &&
+               report.numa_policy == entry.numa &&
+               report.smt_policy == entry.smt &&
+               report.worker_affinity_status ==
+                   MATCORE_CPU_AFFINITY_STATUS_COMPLETE_V1 &&
+               report.affinity_requested_workers ==
+                   report.actual_worker_count &&
+               report.affinity_applied_workers ==
+                   report.actual_worker_count &&
+               report.affinity_complete == 1 &&
+               report.numa_memory_placement_applied == 0,
+           "explicit placement is applied while NUMA page placement stays false");
+    expect(matcore_runtime_cpu_execution_context_destroy_v1(context).code ==
+               MATCORE_STATUS_OK_V0,
+           "policy-specific context destroys cleanly");
+  }
+
+#if defined(__linux__)
+  cpu_set_t original;
+  CPU_ZERO(&original);
+  if (sched_getaffinity(0, sizeof(original), &original) != 0) {
+    expect(false, "Linux process-affinity mask is discoverable");
+    return;
+  }
+  int selected_cpu = -1;
+  for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+    if (CPU_ISSET(cpu, &original)) {
+      selected_cpu = cpu;
+      break;
+    }
+  }
+  expect(selected_cpu >= 0, "Linux process-affinity mask is nonempty");
+  if (selected_cpu < 0) return;
+
+  cpu_set_t narrowed;
+  CPU_ZERO(&narrowed);
+  CPU_SET(selected_cpu, &narrowed);
+  if (sched_setaffinity(0, sizeof(narrowed), &narrowed) != 0) {
+    expect(false, "Linux process-affinity mask can be narrowed for testing");
+    return;
+  }
+  auto options = context_options(4, MATCORE_CPU_AFFINITY_COMPACT_V1,
+                                 MATCORE_CPU_NUMA_SINGLE_NODE_V1,
+                                 MATCORE_CPU_SMT_ALLOW_V1);
+  auto report = empty_context_report();
+  matcore_cpu_execution_context_v1 *context = nullptr;
+  const auto created = matcore_runtime_cpu_execution_context_create_v1(
+      &options, &context, &report);
+  const int restore_result =
+      sched_setaffinity(0, sizeof(original), &original);
+  expect(restore_result == 0,
+         "Linux process-affinity mask is restored after testing");
+  expect(created.code == MATCORE_STATUS_OK_V0 && context != nullptr,
+         "context creation respects a narrowed process-affinity mask");
+  if (context != nullptr) {
+    expect(report.available_logical_cpu_count == 1 &&
+               report.available_physical_core_count == 1 &&
+               report.actual_worker_count == 1 &&
+               report.affinity_requested_workers == 1 &&
+               report.affinity_applied_workers == 1 &&
+               report.affinity_complete == 1,
+           "process mask limits available topology, workers, and strict affinity");
+    expect(matcore_runtime_cpu_execution_context_destroy_v1(context).code ==
+               MATCORE_STATUS_OK_V0,
+           "process-mask-limited context destroys cleanly");
+  }
+#endif
+}
+
 }  // namespace
 
 int main() {
@@ -455,6 +690,7 @@ int main() {
                MATCORE_STATUS_OK_V0,
            "public execution context destroys and joins workers");
   }
+  affinity_smt_and_process_mask_contract();
   expect(matcore_runtime_cpu_execution_context_destroy_v1(nullptr).code ==
              MATCORE_STATUS_INVALID_EXECUTION_CONTEXT_V0,
          "null context destruction is rejected cleanly");
