@@ -2,6 +2,12 @@
 
 Audit date: 2026-07-19
 
+> Historical audit snapshot. The commit IDs, dirty-checkout observations, and
+> remaining constraints below describe the pre-history-sanitation bootstrap
+> environment. They are preserved as provenance and are not the current
+> repository status. Current milestone state belongs in `STATUS.md` and the
+> milestone-specific preflight/review reports.
+
 ## Repository state
 
 The original repository audit observed:
@@ -112,7 +118,7 @@ a configuration/default-invocation error, never a bootstrap fallback.
 No CUDA, cuBLAS, HIP, Metal, NPU, or other accelerator backend was compiled or
 executed in native frontend v1.
 
-## Remaining environmental constraints
+## Constraints observed at this audit
 
 There is no Clang/LibTooling dependency blocker for the standalone native CPU
 slice. Two unrelated constraints remain:

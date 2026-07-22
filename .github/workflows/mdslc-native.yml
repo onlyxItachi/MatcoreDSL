@@ -2,9 +2,6 @@ name: mdslc-native
 
 on:
   push:
-    branches:
-      - feature/device-resident-tensors
-      - mdslc/native-libtooling-v1
     paths:
       - ".github/workflows/mdslc-native.yml"
       - "AGENTS.md"
@@ -22,9 +19,19 @@ permissions:
 
 jobs:
   clang-21-release:
-    name: Clang 21.1.8 standalone Release
+    name: Clang 21.1.8 Release (${{ matrix.openblas_label }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - openblas_label: OpenBLAS required
+            openblas_enable: "ON"
+            openblas_require: "ON"
+          - openblas_label: OpenBLAS explicitly disabled
+            openblas_enable: "OFF"
+            openblas_require: "OFF"
 
     steps:
       - uses: actions/checkout@v4
@@ -49,9 +56,64 @@ jobs:
             libclang-cpp21-dev \
             llvm-21-dev \
             ninja-build \
+            pkg-config \
             python3 \
             rapidjson-dev
           /usr/bin/clang++-21 --version | grep -F "clang version 21.1.8"
+
+      - name: Build the verified OpenBLAS 0.3.32 provider
+        if: matrix.openblas_require == 'ON'
+        env:
+          OPENBLAS_VERSION: "0.3.32"
+          OPENBLAS_SHA256: "f8a1138e01fddca9e4c29f9684fd570ba39dedc9ca76055e1425d5d4b1a4a766"
+        run: |
+          archive="${RUNNER_TEMP}/OpenBLAS-${OPENBLAS_VERSION}.tar.gz"
+          source_dir="${RUNNER_TEMP}/OpenBLAS-${OPENBLAS_VERSION}-source"
+          install_prefix="${RUNNER_TEMP}/OpenBLAS-${OPENBLAS_VERSION}-install"
+
+          wget --https-only --tries=3 --output-document="${archive}" \
+            "https://github.com/OpenMathLib/OpenBLAS/releases/download/v${OPENBLAS_VERSION}/OpenBLAS-${OPENBLAS_VERSION}.tar.gz"
+          printf '%s  %s\n' "${OPENBLAS_SHA256}" "${archive}" \
+            | sha256sum --check --strict
+
+          install -d "${source_dir}"
+          tar --extract --gzip --file="${archive}" \
+            --directory="${source_dir}" --strip-components=1
+
+          openblas_build_options=(
+            CC=/usr/bin/clang-21
+            HOSTCC=/usr/bin/clang-21
+            BINARY=64
+            INTERFACE64=0
+            DYNAMIC_ARCH=0
+            TARGET=GENERIC
+            USE_THREAD=1
+            USE_OPENMP=0
+            NUM_THREADS=64
+            ONLY_CBLAS=1
+            NOFORTRAN=1
+            NO_STATIC=1
+            BUILD_SINGLE=1
+          )
+          make --directory="${source_dir}" --jobs=2 \
+            "${openblas_build_options[@]}"
+          make --directory="${source_dir}" \
+            PREFIX="${install_prefix}" \
+            "${openblas_build_options[@]}" install
+
+          export PKG_CONFIG_PATH="${install_prefix}/lib/pkgconfig"
+          test "$(pkg-config --modversion openblas)" = "${OPENBLAS_VERSION}"
+          pkg-config --cflags --libs openblas
+          nm --dynamic "${install_prefix}/lib/libopenblas.so" \
+            | grep -E ' T cblas_sgemm$'
+          nm --dynamic "${install_prefix}/lib/libopenblas.so" \
+            | grep -E ' T openblas_set_num_threads_local$'
+
+          {
+            echo "MDSLC_CI_OPENBLAS_PREFIX=${install_prefix}"
+            echo "PKG_CONFIG_PATH=${PKG_CONFIG_PATH}"
+            echo "LD_LIBRARY_PATH=${install_prefix}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+          } >> "${GITHUB_ENV}"
 
       - name: Configure standalone MDSLC
         run: |
@@ -62,11 +124,32 @@ jobs:
             -DMDSLC_CLANGXX_EXECUTABLE=/usr/bin/clang++-21 \
             -DMDSLC_ENABLE_NATIVE_FRONTEND=ON \
             -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=ON \
+            -DMDSLC_ENABLE_OPENBLAS=${{ matrix.openblas_enable }} \
+            -DMDSLC_REQUIRE_OPENBLAS=${{ matrix.openblas_require }} \
             -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
-            -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang
+            -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang \
+            | tee build-mdslc-configure.log
+
+          if [[ "${{ matrix.openblas_require }}" == "ON" ]]; then
+            grep -E "MDSLC OpenBLAS variant: .+ via pkg-config" \
+              build-mdslc-configure.log
+          else
+            grep -F "MDSLC OpenBLAS variant: unavailable (optional)" \
+              build-mdslc-configure.log
+          fi
 
       - name: Build standalone MDSLC
         run: cmake --build build-mdslc --parallel 2
+
+      - name: Authenticate the configured BLAS linkage
+        run: |
+          if [[ "${{ matrix.openblas_require }}" == "ON" ]]; then
+            ldd build-mdslc/lib/libmatcore_runtime.so \
+              | grep -F "${MDSLC_CI_OPENBLAS_PREFIX}/lib/libopenblas.so.0"
+          elif ldd build-mdslc/lib/libmatcore_runtime.so | grep -qi openblas; then
+            echo "OpenBLAS leaked into the explicitly disabled build" >&2
+            exit 1
+          fi
 
       - name: Test standalone MDSLC
         run: ctest --test-dir build-mdslc --output-on-failure -j1

@@ -1,9 +1,14 @@
 #include "benchmark.h"
+#include "thread_affinity_v1.h"
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <numeric>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -12,6 +17,7 @@
 namespace {
 
 namespace bench = matcore::mdslc::bench;
+namespace platform = matcore::mdslc::platform;
 int failures = 0;
 
 void expect(bool condition, std::string_view message) {
@@ -20,6 +26,222 @@ void expect(bool condition, std::string_view message) {
     std::cerr << "FAIL: " << message << '\n';
   }
 }
+
+std::vector<std::uint32_t> parse_cpu_ids(std::string_view diagnostic,
+                                         std::string_view label) {
+  std::vector<std::uint32_t> result;
+  const std::size_t begin = diagnostic.find(label);
+  if (begin == std::string_view::npos) return result;
+  const std::size_t values_begin = begin + label.size();
+  const std::size_t values_end = diagnostic.find(']', values_begin);
+  if (values_end == std::string_view::npos) return result;
+  std::size_t cursor = values_begin;
+  while (cursor < values_end) {
+    const std::size_t comma = diagnostic.find(',', cursor);
+    const std::size_t end = std::min(comma, values_end);
+    std::uint64_t value = 0;
+    if (end == cursor) return {};
+    for (std::size_t index = cursor; index < end; ++index) {
+      const char character = diagnostic[index];
+      if (character < '0' || character > '9') return {};
+      value = value * 10 + static_cast<unsigned>(character - '0');
+      if (value > std::numeric_limits<std::uint32_t>::max()) return {};
+    }
+    result.push_back(static_cast<std::uint32_t>(value));
+    if (comma == std::string_view::npos || comma >= values_end) break;
+    cursor = comma + 1;
+  }
+  return result;
+}
+
+class RecordingRunner final : public bench::GemmRunnerV1 {
+ private:
+  struct ExecutionState final : bench::RunnerPlanStateV1 {
+    bool fail = false;
+    std::uint32_t corrupt_execution = 0;
+    mutable std::uint32_t executions = 0;
+  };
+
+ public:
+  enum class PlanDrift {
+    none,
+    legal,
+    selected_variant,
+    reason,
+    diagnostic,
+    timing_scope,
+    comparable,
+    planner_version,
+    actual_threads,
+    workspace_bytes,
+    shared_workspace_bytes,
+    per_worker_workspace_bytes,
+    workspace_alignment,
+    prepacked_b_bytes,
+    packing_required,
+    supports_prepacked_b,
+    persistent_context,
+    smt_policy,
+    affinity_policy,
+    worker_affinity_applied,
+    worker_affinity_user_requested,
+    worker_affinity_policy_induced,
+    affinity_diagnostic,
+  };
+
+  explicit RecordingRunner(bool fail_reverse_selected = false,
+                           PlanDrift drift = PlanDrift::none,
+                           bool corrupt_forward_validation = false,
+                           bool corrupt_reverse_validation = false)
+      : fail_reverse_selected_(fail_reverse_selected),
+        drift_(drift),
+        corrupt_forward_validation_(corrupt_forward_validation),
+        corrupt_reverse_validation_(corrupt_reverse_validation) {}
+
+  bench::RunnerEnvironmentV1 environment() const override { return {}; }
+
+  std::vector<std::string> variant_ids() const override {
+    return {"test.forward-first", "test.selected", "test.reverse-first"};
+  }
+
+  bench::RunnerPlanV1 plan(
+      const bench::GemmShapeV1 &, std::uint32_t, std::uint32_t,
+      std::string_view requested_variant, bench::PackingModeV1,
+      bench::SmtPolicyV2, bench::AffinityPolicyV2) const override {
+    plan_requests_.emplace_back(requested_variant);
+    bench::RunnerPlanV1 result;
+    result.legal = true;
+    result.selected_variant = requested_variant == "auto"
+                                  ? "test.selected"
+                                  : std::string(requested_variant);
+    result.reason = "recording runner accepts the requested variant";
+    result.diagnostic = "deterministic benchmark-order test double";
+    result.timing_scope = "complete-call";
+    result.complete_implementation_comparison = true;
+    result.planner_version = 3;
+    result.actual_threads = 1;
+    result.workspace_alignment = 1;
+    if (requested_variant == "test.selected") {
+      ++selected_plan_count_;
+      if (selected_plan_count_ == 2) {
+        switch (drift_) {
+          case PlanDrift::none: break;
+          case PlanDrift::legal: result.legal = false; break;
+          case PlanDrift::selected_variant:
+            result.selected_variant = "test.misattributed";
+            break;
+          case PlanDrift::reason: result.reason += " drift"; break;
+          case PlanDrift::diagnostic: result.diagnostic += " drift"; break;
+          case PlanDrift::timing_scope: result.timing_scope += "-drift"; break;
+          case PlanDrift::comparable:
+            result.complete_implementation_comparison = false;
+            break;
+          case PlanDrift::planner_version: result.planner_version = 4; break;
+          case PlanDrift::actual_threads: result.actual_threads = 2; break;
+          case PlanDrift::workspace_bytes: result.workspace_bytes = 64; break;
+          case PlanDrift::shared_workspace_bytes:
+            result.shared_workspace_bytes = 16;
+            break;
+          case PlanDrift::per_worker_workspace_bytes:
+            result.per_worker_workspace_bytes = 16;
+            break;
+          case PlanDrift::workspace_alignment:
+            result.workspace_alignment = 2;
+            break;
+          case PlanDrift::prepacked_b_bytes:
+            result.prepacked_b_bytes = 16;
+            break;
+          case PlanDrift::packing_required: result.packing_required = true; break;
+          case PlanDrift::supports_prepacked_b:
+            result.supports_prepacked_b = true;
+            break;
+          case PlanDrift::persistent_context:
+            result.persistent_execution_context = true;
+            break;
+          case PlanDrift::smt_policy: result.smt_policy = "drift"; break;
+          case PlanDrift::affinity_policy:
+            result.affinity_policy = "drift";
+            break;
+          case PlanDrift::worker_affinity_applied:
+            result.worker_affinity_applied = true;
+            break;
+          case PlanDrift::worker_affinity_user_requested:
+            result.worker_affinity_user_requested = true;
+            break;
+          case PlanDrift::worker_affinity_policy_induced:
+            result.worker_affinity_policy_induced = true;
+            break;
+          case PlanDrift::affinity_diagnostic:
+            result.affinity_diagnostic = "drift";
+            break;
+        }
+      }
+      auto state = std::make_shared<ExecutionState>();
+      state->fail = fail_reverse_selected_ && selected_plan_count_ == 3;
+      if (corrupt_forward_validation_ && selected_plan_count_ == 2)
+        state->corrupt_execution = 6;
+      if (corrupt_reverse_validation_ && selected_plan_count_ == 3)
+        state->corrupt_execution = 3;
+      result.state = std::move(state);
+    }
+    return result;
+  }
+
+  bool prepare(const bench::RunnerPlanV1 &, const bench::GemmShapeV1 &,
+               const float *, const float *, std::span<std::byte>,
+               std::span<std::byte>, bool, std::string &) const override {
+    return true;
+  }
+
+  bool execute(const bench::RunnerPlanV1 &plan,
+               const bench::GemmShapeV1 &shape, const float *lhs,
+               const float *rhs, float *output, std::span<std::byte>,
+               std::span<const std::byte>, bool,
+               std::string &error) const override {
+    const auto state =
+        std::dynamic_pointer_cast<const ExecutionState>(plan.state);
+    if (state != nullptr && state->fail) {
+      error = "recording runner injected reverse-pass failure";
+      return false;
+    }
+    for (std::int64_t row = 0; row < shape.m; ++row) {
+      for (std::int64_t column = 0; column < shape.n; ++column) {
+        float sum = 0.0F;
+        for (std::int64_t inner = 0; inner < shape.k; ++inner) {
+          sum += lhs[row * shape.k + inner] *
+                 rhs[inner * shape.n + column];
+        }
+        output[row * shape.n + column] = sum;
+      }
+    }
+    if (state != nullptr) {
+      ++state->executions;
+      // With no warmups, a one-nanosecond floor, and three samples, execution
+      // 1 is the probe. Forward placement runs timing at 2-4 and validation at
+      // 5-7, so execution 6 is its second validation. Reverse placement runs
+      // validation at 2-4 and timing at 5-7, so execution 3 is its second
+      // validation. In either case a later invocation would restore output.
+      if (state->corrupt_execution != 0 &&
+          state->executions == state->corrupt_execution)
+        output[0] += 100.0F;
+    }
+    return true;
+  }
+
+  bool synchronize(std::string &) const override { return true; }
+
+  const std::vector<std::string> &plan_requests() const noexcept {
+    return plan_requests_;
+  }
+
+ private:
+  bool fail_reverse_selected_ = false;
+  PlanDrift drift_ = PlanDrift::none;
+  bool corrupt_forward_validation_ = false;
+  bool corrupt_reverse_validation_ = false;
+  mutable std::uint32_t selected_plan_count_ = 0;
+  mutable std::vector<std::string> plan_requests_;
+};
 
 }  // namespace
 
@@ -128,6 +350,111 @@ int main() {
          "sub-floor timing is retained but rejected for performance claims");
 
   auto runner = bench::make_planner_runner_v1();
+  const auto registered_variants = runner->variant_ids();
+  expect(registered_variants.size() == 8 &&
+             registered_variants[5] ==
+                 "cpu.native-packed.avx512-fma.f32.v1" &&
+             registered_variants[6] ==
+                 "cpu.native-parallel.avx2-fma.f32.v1" &&
+             registered_variants[7] ==
+                 "cpu.native-parallel.avx512-fma.f32.v1",
+         "benchmark exposes the stable planner-v3 eight-variant registry");
+  const auto runner_environment = runner->environment();
+  expect(runner_environment.capability_record_version == 2 &&
+             runner_environment.topology_record_version == 1 &&
+             runner_environment.available_processors > 0 &&
+             runner_environment.worker_affinity_applied &&
+             !runner_environment.worker_affinity_user_requested &&
+             runner_environment.worker_affinity_policy_induced &&
+             !runner_environment.capability_record.empty() &&
+             !runner_environment.topology_record.empty() &&
+             runner_environment.capability_runtime_validation_source.find(
+                 "authenticated independently") != std::string::npos,
+         "runner exposes versioned capability, topology, and validation-source metadata");
+  if (runner_environment.physical_cores >= 2) {
+    std::string compact_affinity_diagnostic;
+    for (const auto policy : {bench::AffinityPolicyV2::compact,
+                              bench::AffinityPolicyV2::scatter,
+                              bench::AffinityPolicyV2::local_first}) {
+      const auto affinity_plan = runner->plan(
+          {256, 128, 128}, 64, 2,
+          "cpu.native-parallel.avx2-fma.f32.v1",
+          bench::PackingModeV1::include,
+          bench::SmtPolicyV2::physical_cores_only, policy);
+      expect(affinity_plan.legal && affinity_plan.worker_affinity_applied &&
+                 affinity_plan.affinity_diagnostic.find("cpu_ids=[") !=
+                     std::string::npos &&
+                 affinity_plan.affinity_diagnostic.find(
+                     "numa_memory_placement=false") != std::string::npos,
+                 "explicit affinity uses a strict persistent worker context and "
+                 "does not claim NUMA memory placement");
+      if (policy == bench::AffinityPolicyV2::compact)
+        compact_affinity_diagnostic = affinity_plan.affinity_diagnostic;
+    }
+#if defined(__linux__)
+    if (runner_environment.physical_cores >= 3) {
+      const auto caller_affinity =
+          platform::discover_current_thread_affinity_v1();
+      const auto worker_ids =
+          parse_cpu_ids(compact_affinity_diagnostic, "cpu_ids=[");
+      const auto caller_ids =
+          parse_cpu_ids(compact_affinity_diagnostic, "reserved_cpu_ids=[");
+      expect(caller_affinity.discovery_complete &&
+                 caller_affinity.allowed_logical_cpus.size() == 1 &&
+                 caller_ids.size() >= 1 &&
+                 std::find(caller_ids.begin(), caller_ids.end(),
+                           caller_affinity.allowed_logical_cpus.front()) !=
+                     caller_ids.end() &&
+                 std::find(worker_ids.begin(), worker_ids.end(),
+                           caller_affinity.allowed_logical_cpus.front()) ==
+                     worker_ids.end() &&
+                 std::none_of(caller_ids.begin(), caller_ids.end(),
+                              [&](std::uint32_t caller_cpu) {
+                                return std::find(worker_ids.begin(),
+                                                 worker_ids.end(), caller_cpu) !=
+                                       worker_ids.end();
+                              }) &&
+                 compact_affinity_diagnostic.find(
+                     "benchmark caller scheduler affinity applied") !=
+                     std::string::npos &&
+                 compact_affinity_diagnostic.find(
+                     "dedicated_physical_core=true") != std::string::npos,
+             "bound benchmark execution pins its caller to a dedicated spare "
+             "physical core outside the worker CPU set");
+      const auto refreshed_environment = runner->environment();
+      expect(refreshed_environment.worker_affinity_source.find(
+                 "benchmark caller scheduler affinity applied") !=
+                     std::string::npos &&
+                 refreshed_environment.topology_record.find(
+                     "benchmark_caller_affinity=") != std::string::npos,
+             "runner environment reports the authenticated benchmark caller "
+             "placement");
+    }
+#endif
+    const auto affinity_serial_plan = runner->plan(
+        {64, 64, 64}, 64, 2, "cpu.reference.f32.v1",
+        bench::PackingModeV1::include,
+        bench::SmtPolicyV2::physical_cores_only,
+        bench::AffinityPolicyV2::compact);
+    expect(affinity_serial_plan.legal &&
+               affinity_serial_plan.worker_affinity_applied &&
+               affinity_serial_plan.worker_affinity_user_requested &&
+               !affinity_serial_plan.worker_affinity_policy_induced &&
+               affinity_serial_plan.timing_scope.find(
+                   "pinned persistent worker 0") != std::string::npos,
+           "serial variants dispatch through pinned worker zero when affinity "
+           "is explicitly requested");
+    const auto bound_auto_plan = runner->plan(
+        {64, 64, 64}, 64, 2, "auto", bench::PackingModeV1::include,
+        bench::SmtPolicyV2::physical_cores_only,
+        bench::AffinityPolicyV2::compact);
+    expect(bound_auto_plan.legal &&
+               (bound_auto_plan.selected_variant !=
+                    "cpu.external.openblas.f32.v1" ||
+                bound_auto_plan.actual_threads == 1),
+           "automatic planning permits only single-thread OpenBLAS when "
+           "exact bound-worker placement is active");
+  }
   bench::BenchmarkOptionsV1 run_options;
   run_options.profile = bench::ProfileV1::custom;
   run_options.shapes = {{2, 3, 2}};
@@ -147,8 +474,233 @@ int main() {
                  "cpu.reference.f32.v1" &&
              report.results[0].correctness.passed &&
              report.results[0].correctness.oracle_mode == "full-double" &&
-             report.results[0].timing.valid,
+             report.results[0].timing.valid &&
+             report.results[0].plan.planner_version == 3 &&
+             report.results[0].plan.smt_policy == "physical-cores-only" &&
+             report.results[0].plan.worker_affinity_applied &&
+             !report.results[0].plan.worker_affinity_user_requested &&
+             report.results[0].plan.worker_affinity_policy_induced &&
+             report.results[0].correctness.timed_final_output_authenticated &&
+             report.results[0].correctness
+                     .untimed_validation_executions_checked >= 3 &&
+             report.results[0].correctness.untimed_validation_scope.find(
+                 "separate untimed validation phase") != std::string::npos &&
+             bench::timing_aggregation_boundary_name_v3(
+                 report.results[0].timing_aggregation_boundary) ==
+                 "one-clock-pair-per-aggregate-repetition-block",
          "benchmark result identifies the variant and passes independent oracle");
+
+  auto scaling_options = run_options;
+  scaling_options.compare_one_thread = true;
+  bench::BenchmarkReportV1 scaling_report;
+  expect(bench::run_benchmarks_v1(scaling_options, *runner, scaling_report,
+                                  error) &&
+             scaling_report.results[0].scaling.valid &&
+             scaling_report.results[0].scaling.speedup_over_one_thread == 1.0 &&
+             scaling_report.results[0].scaling.parallel_efficiency == 1.0,
+         "explicit one-thread comparison records a deterministic unit baseline");
+
+  auto regret_options = run_options;
+  regret_options.requested_variant = "auto";
+  regret_options.planner_regret = true;
+  regret_options.measured_iterations = 1;
+  bench::BenchmarkReportV1 regret_report;
+  expect(bench::run_benchmarks_v1(regret_options, *runner, regret_report,
+                                  error) &&
+             regret_report.results[0].planner_regret.valid &&
+             regret_report.results[0].planner_regret.candidates.size() == 8 &&
+             regret_report.results[0].planner_regret.regret >= 1.0 &&
+             bench::regret_aggregation_method_name_v3(
+                 regret_report.results[0].planner_regret.aggregation_method) ==
+                 "arithmetic-mean-of-forward-and-reverse-pass-medians",
+         "planner regret balances forward/reverse registry passes and reports "
+         "selected over fastest");
+
+  RecordingRunner recording_runner;
+  auto balanced_options = run_options;
+  balanced_options.requested_variant = "auto";
+  balanced_options.planner_regret = true;
+  balanced_options.measured_iterations = 1;
+  bench::BenchmarkReportV1 balanced_report;
+  expect(bench::run_benchmarks_v1(balanced_options, recording_runner,
+                                  balanced_report, error),
+         "recording runner completes balanced planner-regret measurement");
+  const std::vector<std::string> expected_plan_order = {
+      "auto", "test.forward-first", "test.selected", "test.reverse-first",
+      "test.forward-first", "test.selected", "test.reverse-first",
+      "test.reverse-first", "test.selected", "test.forward-first"};
+  const auto &balanced_regret = balanced_report.results[0].planner_regret;
+  const auto selected_candidate = std::find_if(
+      balanced_regret.candidates.begin(), balanced_regret.candidates.end(),
+      [](const bench::RegretCandidateResultV3 &candidate) {
+        return candidate.variant == "test.selected";
+      });
+  expect(recording_runner.plan_requests() == expected_plan_order,
+         "after stable candidate preflight, regret measurements run in a "
+         "complete forward pass followed by the exact reverse pass");
+  expect(balanced_regret.valid &&
+             balanced_regret.candidates.size() == 3 &&
+             balanced_regret.candidates[0].variant == "test.forward-first" &&
+             balanced_regret.candidates[1].variant == "test.selected" &&
+             balanced_regret.candidates[2].variant == "test.reverse-first" &&
+             selected_candidate != balanced_regret.candidates.end() &&
+             selected_candidate->selected_variant == "test.selected" &&
+             selected_candidate->timing_scope == "complete-call" &&
+             selected_candidate->actual_threads == 1 &&
+             selected_candidate->workspace_alignment == 1 &&
+             selected_candidate->plan_authenticated &&
+             balanced_regret.selected_balanced_estimate_seconds ==
+                 selected_candidate->balanced_estimate_seconds &&
+             selected_candidate->forward_pass_median_seconds > 0.0 &&
+             selected_candidate->reverse_pass_median_seconds > 0.0 &&
+             selected_candidate->balanced_estimate_seconds ==
+                 std::midpoint(
+                     selected_candidate->forward_pass_median_seconds,
+                     selected_candidate->reverse_pass_median_seconds) &&
+             selected_candidate
+                     ->forward_pass_untimed_validation_executions_checked >= 1 &&
+             selected_candidate
+                     ->reverse_pass_untimed_validation_executions_checked >= 1 &&
+             selected_candidate->forward_pass_untimed_validation_placement ==
+                 bench::UntimedValidationPlacementV3::after_timing &&
+             selected_candidate->reverse_pass_untimed_validation_placement ==
+                 bench::UntimedValidationPlacementV3::before_timing &&
+             selected_candidate->measurement_reason.find(
+                 "mirrored after forward timing and before reverse timing") !=
+                 std::string::npos,
+         "regret output keeps stable registry order and derives the selected "
+         "timing from the same balanced passes as every alternative");
+  std::ostringstream balanced_encoded;
+  bench::write_json_v1(balanced_report, balanced_encoded);
+  const std::string balanced_json = balanced_encoded.str();
+  expect(balanced_json.find(
+             "\"aggregation_method\": "
+             "\"arithmetic-mean-of-forward-and-reverse-pass-medians\"") !=
+                 std::string::npos &&
+             balanced_json.find("\"forward_pass_median_seconds\"") !=
+                 std::string::npos &&
+             balanced_json.find("\"reverse_pass_median_seconds\"") !=
+                 std::string::npos &&
+             balanced_json.find("\"balanced_estimate_seconds\"") !=
+                 std::string::npos &&
+             balanced_json.find("\"selected_median_seconds\"") ==
+                 std::string::npos &&
+             balanced_json.find("\"fastest_legal_median_seconds\"") ==
+                 std::string::npos,
+         "schema v3 names pass medians and the derived balanced estimate "
+         "without representing an arithmetic mean as a median");
+
+  RecordingRunner reverse_failure_runner(/*fail_reverse_selected=*/true);
+  bench::BenchmarkReportV1 rejected_balanced_report;
+  std::string rejected_balanced_error;
+  expect(!bench::run_benchmarks_v1(balanced_options, reverse_failure_runner,
+                                   rejected_balanced_report,
+                                   rejected_balanced_error) &&
+             rejected_balanced_error.find(
+                 "planner-regret reverse pass candidate failed for "
+                 "test.selected") != std::string::npos,
+         "a failed reverse candidate pass rejects the planner-regret run with "
+         "the pass and variant identified");
+
+  const std::array plan_drift_cases = {
+      std::pair{RecordingRunner::PlanDrift::reason, "selection_reason"},
+      std::pair{RecordingRunner::PlanDrift::diagnostic, "plan_diagnostic"},
+      std::pair{RecordingRunner::PlanDrift::timing_scope, "timing_scope"},
+      std::pair{RecordingRunner::PlanDrift::comparable,
+                "complete_implementation_comparison"},
+      std::pair{RecordingRunner::PlanDrift::planner_version,
+                "planner_version"},
+      std::pair{RecordingRunner::PlanDrift::actual_threads, "actual_threads"},
+      std::pair{RecordingRunner::PlanDrift::workspace_bytes,
+                "workspace_bytes"},
+      std::pair{RecordingRunner::PlanDrift::shared_workspace_bytes,
+                "shared_workspace_bytes"},
+      std::pair{RecordingRunner::PlanDrift::per_worker_workspace_bytes,
+                "per_worker_workspace_bytes"},
+      std::pair{RecordingRunner::PlanDrift::workspace_alignment,
+                "workspace_alignment"},
+      std::pair{RecordingRunner::PlanDrift::prepacked_b_bytes,
+                "prepacked_b_bytes"},
+      std::pair{RecordingRunner::PlanDrift::packing_required,
+                "packing_required"},
+      std::pair{RecordingRunner::PlanDrift::supports_prepacked_b,
+                "supports_prepacked_b"},
+      std::pair{RecordingRunner::PlanDrift::persistent_context,
+                "persistent_execution_context"},
+      std::pair{RecordingRunner::PlanDrift::smt_policy, "smt_policy"},
+      std::pair{RecordingRunner::PlanDrift::affinity_policy,
+                "affinity_policy"},
+      std::pair{RecordingRunner::PlanDrift::worker_affinity_applied,
+                "worker_affinity_applied"},
+      std::pair{RecordingRunner::PlanDrift::worker_affinity_user_requested,
+                "worker_affinity_user_requested"},
+      std::pair{RecordingRunner::PlanDrift::worker_affinity_policy_induced,
+                "worker_affinity_policy_induced"},
+      std::pair{RecordingRunner::PlanDrift::affinity_diagnostic,
+                "affinity_diagnostic"},
+  };
+  for (const auto &[drift, field] : plan_drift_cases) {
+    RecordingRunner drift_runner(/*fail_reverse_selected=*/false, drift);
+    bench::BenchmarkReportV1 drift_report;
+    std::string drift_error;
+    expect(!bench::run_benchmarks_v1(balanced_options, drift_runner,
+                                     drift_report, drift_error) &&
+               drift_error.find("pass plan authentication failed") !=
+                   std::string::npos &&
+               drift_error.find(field) != std::string::npos,
+           std::string("recursive regret measurement rejects preflight drift in ") +
+               field);
+  }
+
+  for (const auto &[drift, expected_error] :
+       std::array{
+           std::pair{RecordingRunner::PlanDrift::legal,
+                     "variant planning failed"},
+           std::pair{RecordingRunner::PlanDrift::selected_variant,
+                     "instead of requested test.selected"},
+       }) {
+    RecordingRunner attribution_runner(/*fail_reverse_selected=*/false, drift);
+    bench::BenchmarkReportV1 attribution_report;
+    std::string attribution_error;
+    expect(!bench::run_benchmarks_v1(balanced_options, attribution_runner,
+                                     attribution_report, attribution_error) &&
+               attribution_error.find(expected_error) != std::string::npos,
+           "recursive regret measurement rejects legal/selection "
+           "misattribution before accepting a timing");
+  }
+
+  auto corruption_options = balanced_options;
+  corruption_options.measured_iterations = 3;
+  RecordingRunner corruption_runner(
+      /*fail_reverse_selected=*/false, RecordingRunner::PlanDrift::none,
+      /*corrupt_forward_validation=*/true);
+  bench::BenchmarkReportV1 corruption_report;
+  std::string corruption_error;
+  expect(!bench::run_benchmarks_v1(corruption_options, corruption_runner,
+                                   corruption_report, corruption_error) &&
+             corruption_error.find(
+                 "untimed correctness validation failed for test.selected at "
+                 "validation execution 1") != std::string::npos,
+         "an intermediate corrupt validation execution is rejected before a "
+         "later execution can overwrite it with a correct final output");
+
+  RecordingRunner reverse_corruption_runner(
+      /*fail_reverse_selected=*/false, RecordingRunner::PlanDrift::none,
+      /*corrupt_forward_validation=*/false,
+      /*corrupt_reverse_validation=*/true);
+  bench::BenchmarkReportV1 reverse_corruption_report;
+  std::string reverse_corruption_error;
+  expect(!bench::run_benchmarks_v1(
+             corruption_options, reverse_corruption_runner,
+             reverse_corruption_report, reverse_corruption_error) &&
+             reverse_corruption_error.find(
+                 "planner-regret reverse pass candidate failed for "
+                 "test.selected") != std::string::npos &&
+             reverse_corruption_error.find(
+                 "validation execution 1 (placement=before-timing)") !=
+                 std::string::npos,
+         "reverse candidate validation executes before timing and rejects an "
+         "intermediate corruption at its mirrored placement");
 
   const auto rejected_reference_compute = runner->plan(
       {16, 16, 16}, 64, 1, "cpu.reference.f32.v1",
@@ -194,16 +746,99 @@ int main() {
            "tail shapes through the independent oracle");
   }
 
+  const auto parallel_plan = runner->plan(
+      {256, 128, 128}, 64, 2,
+      "cpu.native-parallel.avx2-fma.f32.v1",
+      bench::PackingModeV1::include);
+  if (parallel_plan.legal) {
+    expect(parallel_plan.actual_threads == 2 &&
+               parallel_plan.persistent_execution_context &&
+               parallel_plan.shared_workspace_bytes > 0 &&
+               parallel_plan.per_worker_workspace_bytes > 0 &&
+               parallel_plan.workspace_bytes >=
+                   parallel_plan.shared_workspace_bytes +
+                       2 * parallel_plan.per_worker_workspace_bytes,
+           "parallel AVX2 plan exposes persistent-context and split workspace metadata");
+    auto parallel_options = run_options;
+    parallel_options.shapes = {{256, 128, 128}};
+    parallel_options.requested_variant =
+        "cpu.native-parallel.avx2-fma.f32.v1";
+    parallel_options.requested_threads = 2;
+    parallel_options.measured_iterations = 1;
+    parallel_options.compare_one_thread = true;
+    bench::BenchmarkReportV1 parallel_report;
+    expect(bench::run_benchmarks_v1(parallel_options, *runner,
+                                    parallel_report, error) &&
+               parallel_report.results[0].correctness.passed &&
+               parallel_report.results[0].scaling.valid &&
+               parallel_report.results[0].scaling.baseline_variant ==
+                   "cpu.native-packed.avx2-fma.f32.v1" &&
+               parallel_report.environment.runner.worker_affinity_applied &&
+               parallel_report.environment.runner
+                   .worker_affinity_policy_induced &&
+               parallel_report.environment.runner.execution_context_submissions >
+                   0,
+           "persistent parallel AVX2 dispatch is oracle-checked against a same-family one-thread timing");
+  }
+
   std::ostringstream encoded;
   bench::write_json_v1(report, encoded);
   const std::string json = encoded.str();
   expect(json.find("\"schema\": \"matcore.benchmark.cpu.gemm\"") !=
                  std::string::npos &&
-             json.find("\"version\": 1") != std::string::npos &&
+             json.find("\"version\": 4") != std::string::npos &&
+             json.find("\"source_worktree_dirty\"") !=
+                 std::string::npos &&
+             json.find("\"source_provenance_state\"") !=
+                 std::string::npos &&
+             json.find("\"source_provenance_origin\"") !=
+                 std::string::npos &&
              json.find("\"correctness\": true") != std::string::npos &&
+             json.find("\"timed_final_output_authenticated\"") !=
+                 std::string::npos &&
+             json.find("\"untimed_validation_executions_checked\"") !=
+                 std::string::npos &&
+             json.find("\"untimed_validation_scope\"") !=
+                 std::string::npos &&
+             json.find("\"timing_aggregation_boundary\"") !=
+                 std::string::npos &&
+             json.find("\"planner_version\": 3") != std::string::npos &&
+             json.find("\"shared_workspace_bytes\"") != std::string::npos &&
+             json.find("\"worker_affinity_policy_induced\"") !=
+                 std::string::npos &&
+             json.find("\"planner_regret\"") != std::string::npos &&
              json.find("\"timing_scope\"") != std::string::npos &&
              json.find("\"timer_resolution_ns\"") != std::string::npos,
          "JSON output carries schema, correctness, and timer metadata");
+
+  bench::BenchmarkEnvironmentV1 provenance;
+  provenance.source_commit = std::string(40, 'a');
+  provenance.source_provenance_state = "clean";
+  provenance.source_provenance_origin = "git-worktree";
+  std::string provenance_reason;
+  expect(bench::source_provenance_certifiable_v4(provenance,
+                                                 provenance_reason),
+         "guard accepts an exact commit from a clean tracked worktree");
+  provenance.source_worktree_dirty = true;
+  provenance.source_provenance_state = "dirty";
+  expect(!bench::source_provenance_certifiable_v4(provenance,
+                                                  provenance_reason) &&
+             provenance_reason.find("dirty") != std::string::npos,
+         "guard rejects dirty tracked-worktree provenance actionably");
+  provenance.source_worktree_dirty = false;
+  provenance.source_provenance_state = "unknown";
+  provenance.source_commit = "unknown";
+  expect(!bench::source_provenance_certifiable_v4(provenance,
+                                                  provenance_reason) &&
+             provenance_reason.find("unknown") != std::string::npos,
+         "guard rejects unknown source provenance actionably");
+  provenance.source_commit = std::string(40, 'b');
+  provenance.source_provenance_state = "clean";
+  provenance.source_provenance_origin = "unavailable";
+  expect(!bench::source_provenance_certifiable_v4(provenance,
+                                                  provenance_reason) &&
+             provenance_reason.find("origin") != std::string::npos,
+         "guard rejects inconsistent provenance origin actionably");
 
   if (failures != 0) return 1;
   std::cout << "matcore benchmark contract PASS\n";

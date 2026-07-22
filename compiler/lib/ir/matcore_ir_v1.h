@@ -25,6 +25,7 @@ enum class Fallback { Error };
 enum class SemanticRequirement {
   Rank2Gemm,
   F32Arithmetic,
+  I32Arithmetic,
   HostAddressable,
   SynchronousExecution
 };

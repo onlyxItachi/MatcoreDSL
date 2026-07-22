@@ -125,7 +125,7 @@ def main() -> int:
             "--iterations",
             "2",
             "--timer-floor-us",
-            "100",
+            "1",
             "--guard",
         ],
         capture=True,

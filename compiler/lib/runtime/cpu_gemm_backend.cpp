@@ -166,7 +166,7 @@ std::string_view cpu_packed_gemm_status_message_v1(
     case CpuPackedGemmStatusV1::arithmetic_overflow:
       return "packed GEMM size arithmetic overflowed";
     case CpuPackedGemmStatusV1::isa_unavailable:
-      return "AVX2/FMA execution is unavailable";
+      return "requested packed GEMM ISA execution is unavailable";
     case CpuPackedGemmStatusV1::workspace_misaligned:
       return "packed GEMM workspace is not 64-byte aligned";
     case CpuPackedGemmStatusV1::workspace_insufficient:
