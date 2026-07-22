@@ -274,10 +274,10 @@ void inactive_workers_do_not_retain_borrowed_submissions() {
 
 void explicit_worker_affinity_is_strict_and_reported() {
   const auto inventory = platform::discover_current_thread_affinity_v1();
-#if defined(__linux__)
+#if defined(__linux__) || defined(_WIN32)
   expect(inventory.backend_available && inventory.discovery_complete &&
              !inventory.allowed_logical_cpus.empty(),
-         "execution-context affinity test has a complete Linux CPU mask");
+         "execution-context affinity test has a complete host CPU mask");
   if (!inventory.discovery_complete ||
       inventory.allowed_logical_cpus.empty()) {
     return;
@@ -381,7 +381,7 @@ void explicit_worker_affinity_is_strict_and_reported() {
              status == runtime::CpuExecutionStatusV1::affinity_unavailable &&
              report.status == runtime::CpuWorkerAffinityStatusV1::unavailable &&
              !report.complete,
-         "non-Linux explicit affinity fails closed during context creation");
+         "unsupported-platform explicit affinity fails closed during context creation");
 #endif
 }
 
