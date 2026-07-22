@@ -328,7 +328,11 @@ def main() -> int:
     benchmark = prefix / "bin" / f"matcore-bench{executable_suffix}"
     installed_environment = os.environ.copy()
     build_environment = os.environ.copy()
-    test_compiler = Path(args.cxx_compiler).resolve()
+    # Preserve the caller-visible driver basename.  On Unix, clang++ is often
+    # a symlink to the clang binary and Clang selects C++ link semantics from
+    # argv[0]; resolving that final symlink turns a valid C++ driver into the C
+    # driver and drops the C++ standard library from the consumer link.
+    test_compiler = Path(os.path.abspath(args.cxx_compiler))
     windows_import_report: dict[str, object] | None = None
     if is_windows:
         llvm_readobj = test_compiler.parent / "llvm-readobj.exe"
