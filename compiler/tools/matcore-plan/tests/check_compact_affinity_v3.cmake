@@ -21,7 +21,7 @@ foreach(EVIDENCE IN ITEMS
     "affinity-status=worker affinity was applied completely"
     "affinity-applied=true"
     "numa-memory-placement=false"
-    "cpu-planner-v3 request=7"
+    "cpu-planner-v3 request-id=7 request=force-native-parallel-avx2-fma"
     "selected=cpu.native-parallel.avx2-fma.f32.v1")
   string(FIND "${PLAN_OUTPUT}" "${EVIDENCE}" EVIDENCE_OFFSET)
   if(EVIDENCE_OFFSET EQUAL -1)

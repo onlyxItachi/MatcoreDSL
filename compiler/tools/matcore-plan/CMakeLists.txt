@@ -7,6 +7,15 @@ target_link_libraries(matcore-plan PRIVATE
   MatcoreDSL::Runtime
 )
 set_property(TARGET matcore-plan PROPERTY EXPORT_NAME PlanInspector)
+if(APPLE)
+  set_property(TARGET matcore-plan PROPERTY INSTALL_RPATH
+    "@loader_path/../${CMAKE_INSTALL_LIBDIR}")
+elseif(UNIX)
+  # The installed inspector authenticates runtime ISA evidence through the
+  # public C ABI. Keep that dependency prefix-relative after relocation.
+  set_property(TARGET matcore-plan PROPERTY INSTALL_RPATH
+    "\$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+endif()
 
 if(BUILD_TESTING)
   add_test(NAME planner.platform.cli

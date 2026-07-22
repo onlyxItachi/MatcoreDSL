@@ -31,7 +31,7 @@ foreach(VARIANT IN LISTS STABLE_VARIANTS)
       "${PLAN_DIAGNOSTIC}")
   endif()
   if(NOT PLAN_DIAGNOSTIC MATCHES
-       "cpu-planner-v3 request=${EXPECTED_REQUEST} .*candidates=\\[")
+       "cpu-planner-v3 request-id=${EXPECTED_REQUEST} .*candidates=\\[")
     message(FATAL_ERROR
       "registered variant ${VARIANT} mapped to the wrong v3 request or "
       "lacked a complete diagnostic: "

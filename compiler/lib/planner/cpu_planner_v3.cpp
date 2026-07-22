@@ -53,6 +53,46 @@ bool request_matches(CpuGemmRequestV3 request,
          static_cast<unsigned>(variant) + 1U;
 }
 
+std::string_view request_name(CpuGemmRequestV3 request) noexcept {
+  switch (request) {
+    case CpuGemmRequestV3::automatic:
+      return "automatic";
+    case CpuGemmRequestV3::force_reference:
+      return "force-reference";
+    case CpuGemmRequestV3::force_tiled:
+      return "force-tiled";
+    case CpuGemmRequestV3::force_compiler_vectorized:
+      return "force-compiler-vectorized";
+    case CpuGemmRequestV3::force_external_openblas:
+      return "force-external-openblas";
+    case CpuGemmRequestV3::force_native_packed_avx2_fma:
+      return "force-native-packed-avx2-fma";
+    case CpuGemmRequestV3::force_native_packed_avx512_fma:
+      return "force-native-packed-avx512-fma";
+    case CpuGemmRequestV3::force_native_parallel_avx2_fma:
+      return "force-native-parallel-avx2-fma";
+    case CpuGemmRequestV3::force_native_parallel_avx512_fma:
+      return "force-native-parallel-avx512-fma";
+  }
+  return "invalid";
+}
+
+std::string_view status_name(CpuPlanStatusV1 status) noexcept {
+  switch (status) {
+    case CpuPlanStatusV1::selected:
+      return "selected";
+    case CpuPlanStatusV1::no_legal_variant:
+      return "no-legal-variant";
+    case CpuPlanStatusV1::forced_variant_illegal:
+      return "forced-variant-illegal";
+    case CpuPlanStatusV1::invalid_problem:
+      return "invalid-problem";
+    case CpuPlanStatusV1::invalid_capabilities:
+      return "invalid-capabilities";
+  }
+  return "invalid";
+}
+
 CpuGemmRequestV2 v2_request(CpuGemmVariantV3 variant) noexcept {
   switch (variant) {
     case CpuGemmVariantV3::reference:
@@ -845,8 +885,10 @@ std::size_t format_cpu_gemm_plan_v3(const CpuGemmPlanV3 &plan,
                                     std::size_t capacity) noexcept {
   if (output == nullptr) capacity = 0;
   detail::DiagnosticWriter writer{output, capacity};
-  writer.text("cpu-planner-v3 request=");
+  writer.text("cpu-planner-v3 request-id=");
   writer.number(static_cast<std::uint64_t>(plan.request));
+  writer.text(" request=");
+  writer.text(request_name(plan.request));
   writer.text(" requested-threads=");
   writer.number(plan.thread_policy.requested_threads);
   writer.text(" max-threads=");
@@ -893,7 +935,7 @@ std::size_t format_cpu_gemm_plan_v3(const CpuGemmPlanV3 &plan,
   writer.text(" caller-first-touch=");
   writer.text(plan.placement.caller_first_touch_required ? "true" : "false");
   writer.text(" status=");
-  writer.number(static_cast<std::uint64_t>(plan.status));
+  writer.text(status_name(plan.status));
   writer.text(" selected=");
   writer.text(plan.selected_id.empty() ? "none" : plan.selected_id);
   writer.text(" reason=");
