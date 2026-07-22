@@ -68,6 +68,8 @@ if(NOT TARGET matcore_cpu_planner_v1)
   )
 endif()
 
+find_package(Threads REQUIRED)
+
 if(MDSLC_BUILD_RUNTIME_BENCHMARKS)
   add_executable(matcore_cpu_planner_benchmark
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/cpu_planner_benchmark.cpp"
@@ -81,8 +83,11 @@ endif()
 
 add_library(matcore_cpu_backends_v1 STATIC
   cpu_backend_registry.cpp
+  cpu_execution_context.cpp
   cpu_numeric_reference.cpp
   cpu_openblas.cpp
+  cpu_parallel_gemm.cpp
+  cpu_planner_v3_resources.cpp
   cpu_gemm_backend.cpp
   cpu_packed_avx2.cpp
   cpu_packed_avx512.cpp
@@ -93,7 +98,8 @@ target_include_directories(matcore_cpu_backends_v1 PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
 )
 target_link_libraries(matcore_cpu_backends_v1
-  PUBLIC MatcoreDSL::CpuPlannerV1
+  PUBLIC MatcoreDSL::CpuPlannerV1 MatcoreDSL::CpuPlannerV3
+  PRIVATE Threads::Threads
 )
 set_target_properties(matcore_cpu_backends_v1 PROPERTIES
   CXX_VISIBILITY_PRESET hidden
@@ -214,6 +220,57 @@ if(BUILD_TESTING)
   )
   set_tests_properties(runtime.cpu.packed_avx512 PROPERTIES
     SKIP_RETURN_CODE 77
+  )
+
+  add_executable(matcore_execution_context_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/parallel/execution_context_test.cpp"
+  )
+  target_compile_features(matcore_execution_context_test PRIVATE cxx_std_20)
+  target_include_directories(matcore_execution_context_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+  target_compile_options(matcore_execution_context_test PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+  )
+  target_link_libraries(matcore_execution_context_test
+    PRIVATE MatcoreDSL::CpuBackendsV1
+  )
+  add_test(NAME runtime.cpu.execution_context.v1
+    COMMAND matcore_execution_context_test
+  )
+
+  add_executable(matcore_parallel_packed_gemm_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/parallel/parallel_packed_gemm_test.cpp"
+  )
+  target_compile_features(matcore_parallel_packed_gemm_test PRIVATE cxx_std_20)
+  target_include_directories(matcore_parallel_packed_gemm_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+  target_compile_options(matcore_parallel_packed_gemm_test PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+  )
+  target_link_libraries(matcore_parallel_packed_gemm_test
+    PRIVATE MatcoreDSL::CpuBackendsV1
+  )
+  add_test(NAME runtime.cpu.parallel_packed.v1
+    COMMAND matcore_parallel_packed_gemm_test
+  )
+
+  add_executable(matcore_planner_v3_resources_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/parallel/planner_v3_resources_test.cpp"
+  )
+  target_compile_features(matcore_planner_v3_resources_test PRIVATE cxx_std_20)
+  target_include_directories(matcore_planner_v3_resources_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+  target_compile_options(matcore_planner_v3_resources_test PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+  )
+  target_link_libraries(matcore_planner_v3_resources_test
+    PRIVATE MatcoreDSL::CpuBackendsV1
+  )
+  add_test(NAME runtime.cpu.planner_v3_resources
+    COMMAND matcore_planner_v3_resources_test
   )
 
   add_executable(matcore_workspace_runtime_test
