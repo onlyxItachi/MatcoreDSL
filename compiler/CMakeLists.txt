@@ -347,5 +347,18 @@ if(BUILD_TESTING)
           --cxx-compiler "${CMAKE_CXX_COMPILER}"
       )
     endif()
+
+    find_program(MDSLC_PACKAGE_NM_EXECUTABLE NAMES nm llvm-nm-21 REQUIRED)
+    add_test(
+      NAME package.installed_c17_abi
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/package/run_installed_c17_abi_probe.py"
+        --cmake "${CMAKE_COMMAND}"
+        --producer-build-dir "${CMAKE_BINARY_DIR}"
+        --test-root "${CMAKE_BINARY_DIR}/tests/installed-c17-abi"
+        --c-compiler "${CMAKE_C_COMPILER}"
+        --nm "${MDSLC_PACKAGE_NM_EXECUTABLE}"
+    )
   endif()
 endif()
