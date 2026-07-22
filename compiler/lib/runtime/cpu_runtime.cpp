@@ -630,6 +630,16 @@ matcore_status_v0 unavailable_plan_status(
     return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
                   "CPU GEMM planner rejected the problem or capability record");
   }
+  if (plan.request !=
+      matcore::mdslc::planner::CpuGemmRequestV2::automatic) {
+    const std::size_t candidate_index =
+        static_cast<std::size_t>(plan.request) - 1U;
+    if (candidate_index < plan.candidates.size() &&
+        !plan.candidates[candidate_index].reason.empty()) {
+      return status(MATCORE_STATUS_UNAVAILABLE_VARIANT_V0,
+                    plan.candidates[candidate_index].reason.data());
+    }
+  }
   return status(MATCORE_STATUS_UNAVAILABLE_VARIANT_V0,
                 "CPU GEMM planner found no legal requested implementation");
 }

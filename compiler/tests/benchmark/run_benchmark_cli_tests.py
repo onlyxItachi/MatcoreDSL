@@ -222,7 +222,35 @@ def main() -> int:
         ],
         expected=1,
     )
-    assert "requested CPU GEMM variant is illegal" in bad_threads.stderr
+    assert "native packed v1 is single-threaded" in bad_threads.stderr
+
+    optional_openblas = subprocess.run(
+        [
+            str(executable),
+            "--m",
+            "2",
+            "--n",
+            "2",
+            "--k",
+            "2",
+            "--variant",
+            "cpu.external.openblas.f32.v1",
+            "--warmup",
+            "0",
+            "--iterations",
+            "1",
+            "--timer-floor-us",
+            "1",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if optional_openblas.returncode == 0:
+        assert "variant=cpu.external.openblas.f32.v1" in optional_openblas.stdout
+        assert "correctness=pass" in optional_openblas.stdout
+    else:
+        assert "OpenBLAS CBLAS adapter is not linked" in optional_openblas.stderr
 
     print("matcore-bench CLI/JSON contract PASS")
     return 0

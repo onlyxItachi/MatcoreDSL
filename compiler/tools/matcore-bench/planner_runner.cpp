@@ -119,6 +119,13 @@ class PlannerRunner final : public GemmRunnerV1 {
     result.legal = selected.status == planner::CpuPlanStatusV1::selected;
     result.selected_variant = std::string(selected.selected_id);
     result.reason = std::string(selected.selection_reason);
+    if (!result.legal && request != planner::CpuGemmRequestV2::automatic) {
+      const std::size_t candidate_index =
+          static_cast<std::size_t>(request) - 1U;
+      if (candidate_index < selected.candidates.size() &&
+          !selected.candidates[candidate_index].reason.empty())
+        result.reason = std::string(selected.candidates[candidate_index].reason);
+    }
     if (result.legal &&
         selected.selected_variant ==
             planner::CpuGemmVariantV2::native_packed_avx2_fma &&
