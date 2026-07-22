@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -152,6 +153,26 @@ int main() {
     }
   } else if (result.code != MATCORE_STATUS_UNAVAILABLE_VARIANT_V0) {
     std::cerr << "unlinked OpenBLAS failed with the wrong status\n";
+    return 1;
+  }
+
+  out.fill(-4.0F);
+  auto excessive_openblas_options = options(
+      MATCORE_CPU_GEMM_REQUEST_FORCE_EXTERNAL_OPENBLAS_V2,
+      std::numeric_limits<std::uint32_t>::max());
+  requirements = empty_requirements();
+  report = empty_report();
+  const auto requirements_before = requirements;
+  const auto report_before = report;
+  result = matcore_runtime_gemm_f32_workspace_size_v1(
+      &out_desc, &lhs_desc, &rhs_desc, &cpu_policy,
+      &excessive_openblas_options, &requirements, &report);
+  if (result.code != MATCORE_STATUS_UNAVAILABLE_VARIANT_V0 ||
+      std::memcmp(&requirements, &requirements_before,
+                  sizeof(requirements)) != 0 ||
+      std::memcmp(&report, &report_before, sizeof(report)) != 0 ||
+      out != std::array<float, 4>{-4.0F, -4.0F, -4.0F, -4.0F}) {
+    std::cerr << "excessive OpenBLAS thread plan mutated output reports or data\n";
     return 1;
   }
 

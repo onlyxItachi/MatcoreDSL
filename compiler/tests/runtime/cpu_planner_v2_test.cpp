@@ -18,7 +18,7 @@ int main() {
           planner::feature_bit(planner::CpuFeatureV1::fma),
       256};
   const planner::CpuGemmImplementationResourcesV1 resources{
-      true, true, true, true, 131072, 64, 1};
+      true, true, true, true, 131072, 64, 24, 1};
 
   const planner::CpuGemmPlanV2 plan = planner::plan_cpu_gemm_v2(
       problem, capabilities, resources,
@@ -55,6 +55,23 @@ int main() {
       single_thread_rejected.candidates[4].reason !=
           "native packed v1 is single-threaded") {
     std::cerr << "packed v1 accepted a multi-thread request\n";
+    return 1;
+  }
+
+  auto excessive_openblas_threads = resources;
+  excessive_openblas_threads.requested_threads =
+      excessive_openblas_threads.openblas_maximum_threads + 1;
+  const planner::CpuGemmPlanV2 excessive_openblas_rejected =
+      planner::plan_cpu_gemm_v2(
+          problem, capabilities, excessive_openblas_threads,
+          planner::CpuGemmRequestV2::force_external_openblas);
+  if (excessive_openblas_rejected.status !=
+          planner::CpuPlanStatusV1::forced_variant_illegal ||
+      excessive_openblas_rejected.candidates[3].legal ||
+      excessive_openblas_rejected.candidates[3].actual_threads != 0 ||
+      excessive_openblas_rejected.candidates[3].reason !=
+          "OpenBLAS requested thread count exceeds provider maximum") {
+    std::cerr << "OpenBLAS provider thread ceiling was not enforced\n";
     return 1;
   }
 

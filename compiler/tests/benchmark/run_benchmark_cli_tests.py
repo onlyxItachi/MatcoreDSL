@@ -249,6 +249,26 @@ def main() -> int:
     if optional_openblas.returncode == 0:
         assert "variant=cpu.external.openblas.f32.v1" in optional_openblas.stdout
         assert "correctness=pass" in optional_openblas.stdout
+        excessive_openblas_threads = run(
+            [
+                str(executable),
+                "--m",
+                "2",
+                "--n",
+                "2",
+                "--k",
+                "2",
+                "--threads",
+                "2147483647",
+                "--variant",
+                "cpu.external.openblas.f32.v1",
+            ],
+            expected=1,
+        )
+        assert (
+            "OpenBLAS requested thread count exceeds provider maximum"
+            in excessive_openblas_threads.stderr
+        )
     else:
         assert "OpenBLAS CBLAS adapter is not linked" in optional_openblas.stderr
 

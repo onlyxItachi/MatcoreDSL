@@ -75,6 +75,20 @@ int main() {
     std::cerr << "invalid thread request mutated output or was accepted\n";
     return 1;
   }
+
+  out.fill(-5.0F);
+  actual_threads = 99;
+  const auto excessive_threads =
+      static_cast<std::uint32_t>(provider.maximum_reported_threads) + 1U;
+  if (runtime::execute_openblas_gemm_f32_v1(
+          problem, lhs.data(), rhs.data(), out.data(), excessive_threads,
+          &actual_threads) !=
+          runtime::OpenBlasExecutionStatusV1::invalid_thread_count ||
+      actual_threads != 0 ||
+      out != std::array<float, 4>{-5.0F, -5.0F, -5.0F, -5.0F}) {
+    std::cerr << "provider-excessive thread request mutated output or executed\n";
+    return 1;
+  }
 #else
   if (provider.linked) {
     std::cerr << "unlinked build advertised OpenBLAS\n";

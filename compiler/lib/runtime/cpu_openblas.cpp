@@ -42,6 +42,10 @@ OpenBlasExecutionStatusV1 execute_openblas_gemm_f32_v1(
     return OpenBlasExecutionStatusV1::invalid_problem;
   if (requested_threads == 0 || requested_threads > INT_MAX)
     return OpenBlasExecutionStatusV1::invalid_thread_count;
+  const int maximum_threads = openblas_get_num_procs();
+  if (maximum_threads <= 0 ||
+      requested_threads > static_cast<std::uint32_t>(maximum_threads))
+    return OpenBlasExecutionStatusV1::invalid_thread_count;
 
   const int previous_threads =
       openblas_set_num_threads_local(static_cast<int>(requested_threads));

@@ -124,6 +124,8 @@ void printImplementationResources(
             << " openblas-package=" << provider.package_version
             << " openblas-parallel-model=" << provider.parallel_model
             << " openblas-max-threads=" << provider.maximum_reported_threads
+            << " planned-openblas-thread-limit="
+            << resources.openblas_maximum_threads
             << " openblas-core=" << provider.runtime_core
             << " openblas-config=[" << provider.runtime_config << ']'
             << " native-packed-compiled="

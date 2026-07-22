@@ -39,6 +39,7 @@ struct CpuGemmImplementationResourcesV1 {
   bool native_packed_workspace_size_valid = false;
   std::uint64_t native_packed_workspace_bytes = 0;
   std::uint32_t native_packed_workspace_alignment = 0;
+  std::uint32_t openblas_maximum_threads = 0;
   std::uint32_t requested_threads = 1;
 };
 
@@ -81,7 +82,7 @@ struct CpuCandidateDecisionV2 {
   std::uint64_t estimated_cost = std::numeric_limits<std::uint64_t>::max();
   std::uint64_t required_workspace_bytes = 0;
   std::uint32_t required_workspace_alignment = 1;
-  std::uint32_t actual_threads = 1;
+  std::uint32_t actual_threads = 0;
   std::uint16_t deterministic_priority = 0;
 };
 
@@ -152,6 +153,10 @@ constexpr std::string_view extra_legality_reason(
         return "OpenBLAS local thread control is unavailable";
       if (resources.requested_threads > INT_MAX)
         return "OpenBLAS thread count exceeds INT_MAX";
+      if (resources.openblas_maximum_threads == 0)
+        return "OpenBLAS provider thread ceiling is unavailable";
+      if (resources.requested_threads > resources.openblas_maximum_threads)
+        return "OpenBLAS requested thread count exceeds provider maximum";
       if (problem.m > INT_MAX || problem.n > INT_MAX || problem.k > INT_MAX)
         return "OpenBLAS LP64 dimensions exceed INT_MAX";
       return {};
@@ -245,10 +250,6 @@ inline CpuGemmPlanV2 plan_cpu_gemm_v2(
     decision.variant = record.variant;
     decision.stable_id = record.stable_id;
     decision.deterministic_priority = record.deterministic_priority;
-    decision.actual_threads =
-        record.variant == CpuGemmVariantV2::external_openblas
-            ? resources.requested_threads
-            : 1;
     if (record.variant == CpuGemmVariantV2::native_packed_avx2_fma) {
       decision.required_workspace_bytes =
           resources.native_packed_workspace_bytes;
@@ -293,6 +294,10 @@ inline CpuGemmPlanV2 plan_cpu_gemm_v2(
     }
     decision.legal = true;
     decision.reason = "legal";
+    decision.actual_threads =
+        record.variant == CpuGemmVariantV2::external_openblas
+            ? resources.requested_threads
+            : 1;
     decision.estimated_cost = detail_v2::estimated_cost(record.variant, problem);
     if (!detail_v2::request_matches(request, record.variant)) continue;
     if (!found || decision.estimated_cost < best_cost ||
@@ -360,6 +365,8 @@ inline std::size_t format_cpu_gemm_plan_v2(const CpuGemmPlanV2 &plan,
   }
   writer.text(" threads=");
   writer.number(plan.resources.requested_threads);
+  writer.text(" openblas-max-threads=");
+  writer.number(plan.resources.openblas_maximum_threads);
   writer.text(" status=");
   switch (plan.status) {
     case CpuPlanStatusV1::selected:

@@ -13,6 +13,10 @@ discover_cpu_gemm_implementation_resources_v1(
   planner::CpuGemmImplementationResourcesV1 resources;
   resources.openblas_linked = provider.linked;
   resources.openblas_local_thread_control = provider.linked;
+  if (provider.maximum_reported_threads > 0) {
+    resources.openblas_maximum_threads =
+        static_cast<std::uint32_t>(provider.maximum_reported_threads);
+  }
   resources.native_packed_avx2_fma_compiled =
       cpu_packed_avx2_build_available_v1();
   CpuPackedGemmWorkspaceRequirementsV1 requirements;
