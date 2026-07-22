@@ -15,6 +15,7 @@ namespace matcore::mdslc::runtime {
 namespace {
 
 inline constexpr std::size_t kWorkerCacheLineBytes = 64;
+thread_local const void *active_execution_context = nullptr;
 
 struct alignas(kWorkerCacheLineBytes) WorkerResultV1 {
   CpuExecutionStatusV1 status = CpuExecutionStatusV1::success;
@@ -57,6 +58,7 @@ struct CpuExecutionContextV1::Impl {
   std::atomic<std::uint64_t> workers_started{0};
 
   void worker_loop(std::size_t worker_index) noexcept {
+    active_execution_context = this;
     workers_started.fetch_add(1, std::memory_order_relaxed);
     std::uint64_t observed_epoch = 0;
     for (;;) {
@@ -66,7 +68,10 @@ struct CpuExecutionContextV1::Impl {
         work_available.wait(lock, [&] {
           return stopping || epoch != observed_epoch;
         });
-        if (stopping) return;
+        if (stopping) {
+          active_execution_context = nullptr;
+          return;
+        }
         observed_epoch = epoch;
         current = submission;
       }
@@ -174,6 +179,8 @@ CpuExecutionStatusV1 CpuExecutionContextV1::run_tasks(
       task == nullptr) {
     return CpuExecutionStatusV1::invalid_configuration;
   }
+  if (active_execution_context == impl_.get())
+    return CpuExecutionStatusV1::invalid_configuration;
   if (nesting_policy == CpuProviderNestingPolicyV1::external_provider_active &&
       active_threads > 1) {
     return CpuExecutionStatusV1::nested_parallelism_rejected;
@@ -229,6 +236,17 @@ CpuExecutionStatusV1 CpuExecutionContextV1::run_tasks(
 
 void CpuExecutionContextV1::shutdown() noexcept {
   if (impl_ == nullptr) return;
+  if (active_execution_context == impl_.get()) {
+    // A task may request stop, but a worker must never join itself or wait on
+    // the submission mutex held by its submitter. The owning caller can later
+    // call shutdown again to join the now-stopped workers.
+    {
+      std::lock_guard state_lock(impl_->state_mutex);
+      impl_->stopping = true;
+    }
+    impl_->work_available.notify_all();
+    return;
+  }
   try {
     std::unique_lock submission_lock(impl_->submission_mutex);
     {

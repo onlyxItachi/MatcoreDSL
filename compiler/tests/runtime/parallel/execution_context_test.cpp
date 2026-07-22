@@ -39,6 +39,27 @@ runtime::CpuExecutionStatusV1 record_assignment(
              : runtime::CpuExecutionStatusV1::success;
 }
 
+struct ReentrantState {
+  runtime::CpuExecutionContextV1 *context = nullptr;
+  runtime::CpuExecutionStatusV1 nested =
+      runtime::CpuExecutionStatusV1::success;
+  bool request_shutdown = false;
+};
+
+runtime::CpuExecutionStatusV1 reentrant_callback(
+    std::size_t, std::size_t, void *user_data) noexcept {
+  auto &state = *static_cast<ReentrantState *>(user_data);
+  if (state.request_shutdown) {
+    state.context->shutdown();
+  } else {
+    AssignmentState nested_state{std::vector<std::size_t>(1)};
+    state.nested = state.context->run_tasks(
+        1, 1, runtime::CpuProviderNestingPolicyV1::native_only,
+        record_assignment, &nested_state);
+  }
+  return runtime::CpuExecutionStatusV1::success;
+}
+
 bool wait_for_workers(runtime::CpuExecutionContextV1 &context,
                       std::uint32_t count) {
   for (int attempt = 0; attempt < 200; ++attempt) {
@@ -174,11 +195,35 @@ void independent_contexts_execute_concurrently() {
          "independent execution contexts complete concurrently");
 }
 
+void reentrant_operations_fail_or_stop_without_deadlock() {
+  auto context = make_context(2, 2);
+  ReentrantState nested{context.get()};
+  expect(context->run_tasks(
+             1, 1, runtime::CpuProviderNestingPolicyV1::native_only,
+             reentrant_callback, &nested) ==
+             runtime::CpuExecutionStatusV1::success &&
+             nested.nested ==
+                 runtime::CpuExecutionStatusV1::invalid_configuration,
+         "worker reentrant submission fails fast without deadlock");
+
+  ReentrantState stop{context.get(), runtime::CpuExecutionStatusV1::success,
+                      true};
+  expect(context->run_tasks(
+             1, 1, runtime::CpuProviderNestingPolicyV1::native_only,
+             reentrant_callback, &stop) ==
+             runtime::CpuExecutionStatusV1::success,
+         "worker stop request lets active submission complete");
+  expect(!context->info().accepting_work,
+         "worker stop request is observable by the owner");
+  context->shutdown();
+}
+
 }  // namespace
 
 int main() {
   configuration_and_static_distribution();
   independent_contexts_execute_concurrently();
+  reentrant_operations_fail_or_stop_without_deadlock();
   if (failures != 0) {
     std::cerr << failures << " execution-context checks failed\n";
     return 1;
