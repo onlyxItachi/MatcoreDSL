@@ -25,6 +25,9 @@ extern "C" {
 #define MATCORE_RUNTIME_MAX_RANK_V0 UINT32_C(8)
 #define MATCORE_RUNTIME_PLAN_ABI_VERSION_V1 UINT32_C(1)
 #define MATCORE_RUNTIME_CPU_GEMM_CANDIDATE_COUNT_V1 UINT32_C(3)
+#define MATCORE_RUNTIME_EXECUTION_ABI_VERSION_V1 UINT32_C(1)
+#define MATCORE_RUNTIME_PLAN_ABI_VERSION_V2 UINT32_C(2)
+#define MATCORE_RUNTIME_CPU_GEMM_CANDIDATE_COUNT_V2 UINT32_C(5)
 
 typedef uint32_t matcore_dtype_v0;
 enum {
@@ -81,7 +84,12 @@ enum {
   MATCORE_STATUS_UNSUPPORTED_TARGET_V0 = 13,
   MATCORE_STATUS_UNSUPPORTED_FALLBACK_V0 = 14,
   MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0 = 15,
-  MATCORE_STATUS_INVALID_ALIGNMENT_V0 = 16
+  MATCORE_STATUS_INVALID_ALIGNMENT_V0 = 16,
+  MATCORE_STATUS_INSUFFICIENT_WORKSPACE_V0 = 17,
+  MATCORE_STATUS_UNAVAILABLE_VARIANT_V0 = 18,
+  MATCORE_STATUS_EXTERNAL_PROVIDER_FAILURE_V0 = 19,
+  MATCORE_STATUS_INVALID_THREAD_COUNT_V0 = 20,
+  MATCORE_STATUS_PREPACK_MISMATCH_V0 = 21
 };
 
 /* Dimensions and strides are in elements. Reserved fields must be zeroed. */
@@ -181,6 +189,88 @@ typedef struct matcore_cpu_gemm_plan_report_v1 {
   uint64_t reserved[4];
 } matcore_cpu_gemm_plan_report_v1;
 
+typedef uint32_t matcore_cpu_gemm_request_v2;
+enum {
+  MATCORE_CPU_GEMM_REQUEST_AUTOMATIC_V2 = 0,
+  MATCORE_CPU_GEMM_REQUEST_FORCE_REFERENCE_V2 = 1,
+  MATCORE_CPU_GEMM_REQUEST_FORCE_TILED_V2 = 2,
+  MATCORE_CPU_GEMM_REQUEST_FORCE_COMPILER_VECTORIZED_V2 = 3,
+  MATCORE_CPU_GEMM_REQUEST_FORCE_EXTERNAL_OPENBLAS_V2 = 4,
+  MATCORE_CPU_GEMM_REQUEST_FORCE_NATIVE_PACKED_AVX2_FMA_V2 = 5
+};
+
+/*
+ * Versioned execution controls for the additive workspace-aware path.
+ * flags and reserved fields must be zero in v1. requested_threads is explicit;
+ * candidates which are single-threaded report actual_threads=1.
+ */
+typedef struct matcore_cpu_gemm_execution_options_v1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  matcore_cpu_gemm_request_v2 request;
+  uint32_t requested_threads;
+  uint64_t flags;
+  uint64_t reserved[4];
+} matcore_cpu_gemm_execution_options_v1;
+
+/* stable_id and reason point to process-lifetime, read-only strings. */
+typedef struct matcore_cpu_gemm_candidate_v2 {
+  const char *stable_id;
+  uint32_t legal;
+  uint32_t deterministic_priority;
+  uint32_t actual_threads;
+  uint32_t required_workspace_alignment;
+  uint64_t estimated_cost;
+  uint64_t required_workspace_bytes;
+  const char *reason;
+  uint64_t reserved[2];
+} matcore_cpu_gemm_candidate_v2;
+
+/*
+ * Additive resource-aware plan report. Provider strings are borrowed,
+ * process-lifetime strings. The five candidates use fixed registry order:
+ * reference, tiled, compiler-vectorized, OpenBLAS, native-packed AVX2/FMA.
+ */
+typedef struct matcore_cpu_gemm_plan_report_v2 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t planner_version;
+  matcore_cpu_gemm_request_v2 request;
+  matcore_cpu_plan_status_v1 plan_status;
+  matcore_cpu_architecture_v1 architecture;
+  uint32_t capability_detection_complete;
+  uint32_t usable_vector_bits;
+  matcore_cpu_feature_bits_v1 feature_bits;
+  int64_t m;
+  int64_t n;
+  int64_t k;
+  uint32_t minimum_alignment_bytes;
+  uint32_t requested_threads;
+  uint32_t candidate_count;
+  uint32_t selected_actual_threads;
+  uint64_t selected_workspace_bytes;
+  uint32_t selected_workspace_alignment;
+  uint32_t reserved0;
+  matcore_cpu_gemm_candidate_v2
+      candidates[MATCORE_RUNTIME_CPU_GEMM_CANDIDATE_COUNT_V2];
+  const char *selected_stable_id;
+  const char *selection_reason;
+  const char *external_provider;
+  const char *external_provider_version;
+  const char *external_provider_config;
+  uint64_t reserved[4];
+} matcore_cpu_gemm_plan_report_v2;
+
+typedef struct matcore_gemm_workspace_requirements_v1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint64_t workspace_bytes;
+  uint32_t workspace_alignment;
+  uint32_t actual_threads;
+  const char *selected_stable_id;
+  uint64_t reserved[4];
+} matcore_gemm_workspace_requirements_v1;
+
 /*
  * Validates the same descriptors and policy as matcore_runtime_gemm_f32_v0,
  * then returns the deterministic plan without executing or modifying output.
@@ -194,6 +284,37 @@ MATCORE_RUNTIME_API matcore_status_v0 matcore_runtime_plan_gemm_f32_v1(
     const matcore_tensor_desc_v0 *rhs,
     const matcore_policy_v0 *policy,
     matcore_cpu_gemm_plan_report_v1 *report) MATCORE_RUNTIME_NOEXCEPT;
+
+/*
+ * Returns the deterministic resource-aware plan and exact caller-owned
+ * workspace requirement without executing or modifying output data. options,
+ * requirements, and report use strict version/size checks. Output fields in
+ * requirements and report must be zero before the call.
+ */
+MATCORE_RUNTIME_API matcore_status_v0
+matcore_runtime_gemm_f32_workspace_size_v1(
+    const matcore_tensor_desc_v0 *out,
+    const matcore_tensor_desc_v0 *lhs,
+    const matcore_tensor_desc_v0 *rhs,
+    const matcore_policy_v0 *policy,
+    const matcore_cpu_gemm_execution_options_v1 *options,
+    matcore_gemm_workspace_requirements_v1 *requirements,
+    matcore_cpu_gemm_plan_report_v2 *report) MATCORE_RUNTIME_NOEXCEPT;
+
+/*
+ * Executes exactly the selected resource-aware plan. The runtime allocates
+ * nothing. Nonzero workspace must satisfy the queried size and alignment.
+ * Every pre-execution validation failure leaves output data unchanged.
+ */
+MATCORE_RUNTIME_API matcore_status_v0 matcore_runtime_gemm_f32_execute_v1(
+    const matcore_tensor_desc_v0 *out,
+    const matcore_tensor_desc_v0 *lhs,
+    const matcore_tensor_desc_v0 *rhs,
+    const matcore_policy_v0 *policy,
+    const matcore_cpu_gemm_execution_options_v1 *options,
+    void *workspace,
+    size_t workspace_bytes,
+    matcore_cpu_gemm_plan_report_v2 *report) MATCORE_RUNTIME_NOEXCEPT;
 
 /*
  * Synchronously computes out = lhs * rhs. Bootstrap v0 accepts only positive

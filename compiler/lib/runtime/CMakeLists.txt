@@ -116,6 +116,17 @@ set_target_properties(matcore_runtime PROPERTIES
 )
 
 if(BUILD_TESTING)
+  add_executable(matcore_workspace_runtime_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/workspace_runtime_test.cpp"
+  )
+  target_compile_features(matcore_workspace_runtime_test PRIVATE cxx_std_20)
+  target_link_libraries(matcore_workspace_runtime_test
+    PRIVATE MatcoreDSL::Runtime
+  )
+  add_test(NAME runtime.cpu.workspace_v1
+    COMMAND matcore_workspace_runtime_test
+  )
+
   add_executable(matcore_openblas_adapter_test
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/openblas_adapter_test.cpp"
     cpu_openblas.cpp

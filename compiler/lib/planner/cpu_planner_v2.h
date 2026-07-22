@@ -150,6 +150,8 @@ constexpr std::string_view extra_legality_reason(
         return "OpenBLAS CBLAS adapter is not linked";
       if (!resources.openblas_local_thread_control)
         return "OpenBLAS local thread control is unavailable";
+      if (resources.requested_threads > INT_MAX)
+        return "OpenBLAS thread count exceeds INT_MAX";
       if (problem.m > INT_MAX || problem.n > INT_MAX || problem.k > INT_MAX)
         return "OpenBLAS LP64 dimensions exceed INT_MAX";
       return {};

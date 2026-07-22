@@ -46,7 +46,8 @@ OpenBlasExecutionStatusV1 execute_openblas_gemm_f32_v1(
   const int previous_threads =
       openblas_set_num_threads_local(static_cast<int>(requested_threads));
   const int provider_threads = openblas_get_num_threads();
-  if (provider_threads <= 0) {
+  if (provider_threads <= 0 ||
+      provider_threads != static_cast<int>(requested_threads)) {
     openblas_set_num_threads_local(previous_threads);
     return OpenBlasExecutionStatusV1::invalid_thread_count;
   }
