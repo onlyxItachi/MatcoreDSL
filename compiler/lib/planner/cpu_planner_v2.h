@@ -325,11 +325,52 @@ inline std::size_t format_cpu_gemm_plan_v2(const CpuGemmPlanV2 &plan,
   if (output == nullptr) capacity = 0;
   detail::DiagnosticWriter writer{output, capacity};
   writer.text("cpu-planner-v2 request=");
-  writer.number(static_cast<std::uint8_t>(plan.request));
+  switch (plan.request) {
+    case CpuGemmRequestV2::automatic:
+      writer.text("automatic");
+      break;
+    case CpuGemmRequestV2::force_reference:
+      writer.text("force-reference");
+      break;
+    case CpuGemmRequestV2::force_tiled:
+      writer.text("force-tiled");
+      break;
+    case CpuGemmRequestV2::force_compiler_vectorized:
+      writer.text("force-compiler-vectorized");
+      break;
+    case CpuGemmRequestV2::force_external_openblas:
+      writer.text("force-external-openblas");
+      break;
+    case CpuGemmRequestV2::force_native_packed_avx2_fma:
+      writer.text("force-native-packed-avx2-fma");
+      break;
+    default:
+      writer.text("invalid");
+      break;
+  }
   writer.text(" threads=");
   writer.number(plan.resources.requested_threads);
   writer.text(" status=");
-  writer.number(static_cast<std::uint8_t>(plan.status));
+  switch (plan.status) {
+    case CpuPlanStatusV1::selected:
+      writer.text("selected");
+      break;
+    case CpuPlanStatusV1::no_legal_variant:
+      writer.text("no-legal-variant");
+      break;
+    case CpuPlanStatusV1::forced_variant_illegal:
+      writer.text("forced-variant-illegal");
+      break;
+    case CpuPlanStatusV1::invalid_problem:
+      writer.text("invalid-problem");
+      break;
+    case CpuPlanStatusV1::invalid_capabilities:
+      writer.text("invalid-capabilities");
+      break;
+    default:
+      writer.text("invalid");
+      break;
+  }
   writer.text(" m=");
   writer.number(plan.problem.m > 0 ? static_cast<std::uint64_t>(plan.problem.m)
                                    : 0);

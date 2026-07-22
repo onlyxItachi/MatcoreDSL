@@ -120,6 +120,13 @@ else()
   )
 endif()
 target_link_libraries(matcore_runtime PRIVATE MatcoreDSL::CpuBackendsV1)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Backend implementations live in a private static archive. libstdc++ marks
+  # some inline templates with default visibility even under
+  # -fvisibility=hidden, so Debug links can otherwise leak weak C++ symbols.
+  # Keep the shared runtime boundary limited to MATCORE_RUNTIME_API C symbols.
+  target_link_options(matcore_runtime PRIVATE "LINKER:--exclude-libs,ALL")
+endif()
 # The planner may select the AVX2/FMA implementation at runtime. Debug and an
 # unset single-config build type otherwise supply no optimization flag, which
 # would leave this candidate as a scalar loop. Preserve the configured level
