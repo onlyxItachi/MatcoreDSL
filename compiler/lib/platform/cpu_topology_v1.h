@@ -82,6 +82,15 @@ enum class CpuPlacementStatusV1 : std::uint8_t {
   cross_numa_disallowed = 4,
 };
 
+enum class CpuTopologyRestrictionStatusV1 : std::uint8_t {
+  selected = 0,
+  invalid_topology = 1,
+  empty_cpu_set = 2,
+  duplicate_cpu_id = 3,
+  unavailable_cpu_id = 4,
+  resource_exhausted = 5,
+};
+
 struct CpuPlacementRequestV1 {
   std::uint32_t version = kCpuPlacementVersionV1;
   std::uint32_t requested_workers = 1;
@@ -106,12 +115,35 @@ struct CpuPlacementPlanV1 {
   std::string reason;
 };
 
+/*
+ * A deterministic, caller-owned projection of a discovered topology onto an
+ * externally imposed logical-CPU set (for example sched_getaffinity).  The
+ * source topology is never modified.  NUMA and cache groups are intersected
+ * with the allowed set and empty groups are removed.  SMT thread indices are
+ * recomputed so a permitted sibling remains usable when its lower-numbered
+ * sibling is outside the allowed set.
+ */
+struct CpuTopologyRestrictionV1 {
+  CpuTopologyRestrictionStatusV1 status =
+      CpuTopologyRestrictionStatusV1::invalid_topology;
+  CpuTopologyV1 topology;
+  std::string reason;
+
+  explicit operator bool() const noexcept {
+    return status == CpuTopologyRestrictionStatusV1::selected;
+  }
+};
+
 CpuTopologyValidationV1 validate_cpu_topology_v1(
     const CpuTopologyV1 &record) noexcept;
 
 CpuTopologyV1 discover_linux_cpu_topology_v1(
     const std::filesystem::path &sys_devices_root =
         "/sys/devices/system");
+
+CpuTopologyRestrictionV1 restrict_cpu_topology_v1(
+    const CpuTopologyV1 &topology,
+    const std::vector<std::uint32_t> &allowed_logical_cpus);
 
 std::uint32_t logical_cpu_count_v1(const CpuTopologyV1 &record) noexcept;
 std::uint32_t physical_core_count_v1(const CpuTopologyV1 &record) noexcept;
@@ -126,6 +158,7 @@ std::string_view to_string(CpuCacheTypeV1 value) noexcept;
 std::string_view to_string(CpuAffinityPolicyV1 value) noexcept;
 std::string_view to_string(CpuSmtPolicyV1 value) noexcept;
 std::string_view to_string(CpuPlacementStatusV1 value) noexcept;
+std::string_view to_string(CpuTopologyRestrictionStatusV1 value) noexcept;
 std::string format_cpu_topology_v1(const CpuTopologyV1 &record);
 std::string format_cpu_placement_v1(const CpuPlacementPlanV1 &plan);
 

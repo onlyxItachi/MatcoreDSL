@@ -91,6 +91,66 @@ int main() {
   expect(platform::numa_node_count_v1(synthetic) == 2,
          "synthetic topology reports two NUMA nodes");
 
+  const auto sibling_restriction =
+      platform::restrict_cpu_topology_v1(synthetic, {0, 4});
+  expect(sibling_restriction &&
+             platform::logical_cpu_count_v1(sibling_restriction.topology) == 2 &&
+             platform::physical_core_count_v1(sibling_restriction.topology) == 1 &&
+             platform::numa_node_count_v1(sibling_restriction.topology) == 1 &&
+             sibling_restriction.topology.logical_processors[0].thread_index == 0 &&
+             sibling_restriction.topology.logical_processors[1].thread_index == 1,
+         "topology restriction preserves one allowed SMT sibling pair");
+  expect(sibling_restriction.topology.numa_nodes[0].logical_cpus ==
+             std::vector<std::uint32_t>({0, 4}) &&
+             std::all_of(
+                 sibling_restriction.topology.cache_groups.begin(),
+                 sibling_restriction.topology.cache_groups.end(),
+                 [](const platform::CpuCacheGroupV1 &cache) {
+                   return std::all_of(
+                       cache.shared_logical_cpus.begin(),
+                       cache.shared_logical_cpus.end(),
+                       [](std::uint32_t cpu) { return cpu == 0 || cpu == 4; });
+                 }),
+         "topology restriction recomputes NUMA and cache memberships");
+
+  const auto secondary_only =
+      platform::restrict_cpu_topology_v1(synthetic, {5, 4});
+  expect(secondary_only &&
+             platform::physical_core_count_v1(secondary_only.topology) == 2 &&
+             secondary_only.topology.logical_processors[0].logical_cpu == 4 &&
+             secondary_only.topology.logical_processors[0].thread_index == 0 &&
+             secondary_only.topology.logical_processors[1].logical_cpu == 5 &&
+             secondary_only.topology.logical_processors[1].thread_index == 0,
+         "remaining SMT siblings become deterministic primary threads");
+  platform::CpuPlacementRequestV1 restricted_physical_request;
+  restricted_physical_request.requested_workers = 2;
+  restricted_physical_request.smt =
+      platform::CpuSmtPolicyV1::physical_cores_only;
+  const auto restricted_physical = platform::plan_cpu_placement_v1(
+      secondary_only.topology, restricted_physical_request);
+  expect(restricted_physical.status ==
+                 platform::CpuPlacementStatusV1::selected &&
+             restricted_physical.logical_cpus ==
+                 std::vector<std::uint32_t>({4, 5}),
+         "physical-only placement uses permitted secondary siblings safely");
+
+  const auto invalid_restriction =
+      platform::restrict_cpu_topology_v1(synthetic, {0, 99});
+  expect(invalid_restriction.status ==
+                 platform::CpuTopologyRestrictionStatusV1::unavailable_cpu_id &&
+             invalid_restriction.topology.logical_processors.empty(),
+         "topology restriction rejects unavailable CPU IDs without partial output");
+  const auto duplicate_restriction =
+      platform::restrict_cpu_topology_v1(synthetic, {0, 0});
+  expect(duplicate_restriction.status ==
+             platform::CpuTopologyRestrictionStatusV1::duplicate_cpu_id,
+         "topology restriction rejects duplicate CPU IDs");
+  const auto empty_restriction =
+      platform::restrict_cpu_topology_v1(synthetic, {});
+  expect(empty_restriction.status ==
+             platform::CpuTopologyRestrictionStatusV1::empty_cpu_set,
+         "topology restriction rejects an empty CPU set");
+
   platform::CpuPlacementRequestV1 compact_request;
   compact_request.requested_workers = 2;
   const platform::CpuPlacementPlanV1 compact =

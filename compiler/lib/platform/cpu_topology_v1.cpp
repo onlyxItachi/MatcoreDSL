@@ -506,6 +506,130 @@ CpuTopologyV1 discover_linux_cpu_topology_v1(
   return record;
 }
 
+CpuTopologyRestrictionV1 restrict_cpu_topology_v1(
+    const CpuTopologyV1 &topology,
+    const std::vector<std::uint32_t> &allowed_logical_cpus) {
+  CpuTopologyRestrictionV1 result;
+  const CpuTopologyValidationV1 source_validation =
+      validate_cpu_topology_v1(topology);
+  if (!source_validation || !topology.discovery_complete) {
+    result.status = CpuTopologyRestrictionStatusV1::invalid_topology;
+    result.reason = source_validation
+                        ? "CPU topology discovery is incomplete"
+                        : std::string(source_validation.reason);
+    return result;
+  }
+  if (allowed_logical_cpus.empty()) {
+    result.status = CpuTopologyRestrictionStatusV1::empty_cpu_set;
+    result.reason = "allowed logical CPU set is empty";
+    return result;
+  }
+
+  try {
+    std::vector<std::uint32_t> allowed = allowed_logical_cpus;
+    std::sort(allowed.begin(), allowed.end());
+    if (std::adjacent_find(allowed.begin(), allowed.end()) != allowed.end()) {
+      result.status = CpuTopologyRestrictionStatusV1::duplicate_cpu_id;
+      result.reason = "allowed logical CPU set contains duplicate IDs";
+      return result;
+    }
+    for (const std::uint32_t cpu : allowed) {
+      const auto processor = std::lower_bound(
+          topology.logical_processors.begin(), topology.logical_processors.end(),
+          cpu, [](const CpuLogicalProcessorV1 &candidate, std::uint32_t id) {
+            return candidate.logical_cpu < id;
+          });
+      if (processor == topology.logical_processors.end() ||
+          processor->logical_cpu != cpu || !processor->online) {
+        result.status = CpuTopologyRestrictionStatusV1::unavailable_cpu_id;
+        result.reason = "allowed logical CPU set references an unavailable ID";
+        return result;
+      }
+    }
+
+    CpuTopologyV1 restricted;
+    restricted.architecture = topology.architecture;
+    restricted.discovery_complete = true;
+    for (const CpuLogicalProcessorV1 &processor : topology.logical_processors) {
+      if (contains_cpu(allowed, processor.logical_cpu)) {
+        restricted.logical_processors.push_back(processor);
+      }
+    }
+    for (CpuLogicalProcessorV1 &processor : restricted.logical_processors) {
+      processor.thread_index = 0;
+      for (const CpuLogicalProcessorV1 &candidate :
+           restricted.logical_processors) {
+        if (candidate.package_id == processor.package_id &&
+            candidate.core_id == processor.core_id &&
+            candidate.logical_cpu < processor.logical_cpu) {
+          ++processor.thread_index;
+        }
+      }
+    }
+
+    for (const CpuNumaNodeV1 &node : topology.numa_nodes) {
+      CpuNumaNodeV1 projected;
+      projected.node_id = node.node_id;
+      std::set_intersection(node.logical_cpus.begin(), node.logical_cpus.end(),
+                            allowed.begin(), allowed.end(),
+                            std::back_inserter(projected.logical_cpus));
+      if (!projected.logical_cpus.empty()) {
+        restricted.numa_nodes.push_back(std::move(projected));
+      }
+    }
+    for (const CpuCacheGroupV1 &cache : topology.cache_groups) {
+      CpuCacheGroupV1 projected = cache;
+      projected.shared_logical_cpus.clear();
+      std::set_intersection(cache.shared_logical_cpus.begin(),
+                            cache.shared_logical_cpus.end(), allowed.begin(),
+                            allowed.end(),
+                            std::back_inserter(projected.shared_logical_cpus));
+      if (!projected.shared_logical_cpus.empty()) {
+        restricted.cache_groups.push_back(std::move(projected));
+      }
+    }
+    std::sort(restricted.cache_groups.begin(), restricted.cache_groups.end(),
+              [](const CpuCacheGroupV1 &left,
+                 const CpuCacheGroupV1 &right) {
+                return std::tie(left.level, left.type,
+                                left.shared_logical_cpus, left.size_bytes,
+                                left.line_size_bytes) <
+                       std::tie(right.level, right.type,
+                                right.shared_logical_cpus, right.size_bytes,
+                                right.line_size_bytes);
+              });
+    restricted.cache_groups.erase(
+        std::unique(restricted.cache_groups.begin(),
+                    restricted.cache_groups.end(),
+                    [](const CpuCacheGroupV1 &left,
+                       const CpuCacheGroupV1 &right) {
+                      return left.level == right.level &&
+                             left.type == right.type &&
+                             left.size_bytes == right.size_bytes &&
+                             left.line_size_bytes == right.line_size_bytes &&
+                             left.shared_logical_cpus ==
+                                 right.shared_logical_cpus;
+                    }),
+        restricted.cache_groups.end());
+
+    const CpuTopologyValidationV1 restricted_validation =
+        validate_cpu_topology_v1(restricted);
+    if (!restricted_validation) {
+      result.status = CpuTopologyRestrictionStatusV1::invalid_topology;
+      result.reason = std::string(restricted_validation.reason);
+      return result;
+    }
+    result.status = CpuTopologyRestrictionStatusV1::selected;
+    result.topology = std::move(restricted);
+    result.reason = "topology restricted to the allowed logical CPU set";
+    return result;
+  } catch (...) {
+    result.status = CpuTopologyRestrictionStatusV1::resource_exhausted;
+    result.reason = "topology restriction exhausted process resources";
+    return result;
+  }
+}
+
 std::uint32_t logical_cpu_count_v1(const CpuTopologyV1 &record) noexcept {
   std::uint32_t count = 0;
   for (const CpuLogicalProcessorV1 &processor : record.logical_processors) {
@@ -714,6 +838,24 @@ std::string_view to_string(CpuPlacementStatusV1 value) noexcept {
       return "insufficient-cpus";
     case CpuPlacementStatusV1::cross_numa_disallowed:
       return "cross-numa-disallowed";
+  }
+  return "invalid";
+}
+
+std::string_view to_string(CpuTopologyRestrictionStatusV1 value) noexcept {
+  switch (value) {
+    case CpuTopologyRestrictionStatusV1::selected:
+      return "selected";
+    case CpuTopologyRestrictionStatusV1::invalid_topology:
+      return "invalid-topology";
+    case CpuTopologyRestrictionStatusV1::empty_cpu_set:
+      return "empty-cpu-set";
+    case CpuTopologyRestrictionStatusV1::duplicate_cpu_id:
+      return "duplicate-cpu-id";
+    case CpuTopologyRestrictionStatusV1::unavailable_cpu_id:
+      return "unavailable-cpu-id";
+    case CpuTopologyRestrictionStatusV1::resource_exhausted:
+      return "resource-exhausted";
   }
   return "invalid";
 }
