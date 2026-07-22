@@ -99,7 +99,7 @@ target_include_directories(matcore_cpu_backends_v1 PUBLIC
 )
 target_link_libraries(matcore_cpu_backends_v1
   PUBLIC MatcoreDSL::CpuPlannerV1 MatcoreDSL::CpuPlannerV3
-  PRIVATE Threads::Threads
+  PRIVATE Threads::Threads MatcoreDSL::PlatformV1
 )
 set_target_properties(matcore_cpu_backends_v1 PROPERTIES
   CXX_VISIBILITY_PRESET hidden
@@ -233,7 +233,7 @@ if(BUILD_TESTING)
     -Wall -Wextra -Wpedantic -Werror
   )
   target_link_libraries(matcore_execution_context_test
-    PRIVATE MatcoreDSL::CpuBackendsV1
+    PRIVATE MatcoreDSL::CpuBackendsV1 MatcoreDSL::PlatformV1
   )
   add_test(NAME runtime.cpu.execution_context.v1
     COMMAND matcore_execution_context_test
