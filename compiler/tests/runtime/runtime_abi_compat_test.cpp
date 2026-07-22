@@ -49,10 +49,10 @@ static_assert(sizeof(matcore_cpu_gemm_plan_report_v2) == 488);
 static_assert(sizeof(matcore_gemm_workspace_requirements_v1) == 64);
 static_assert(sizeof(matcore_gemm_prepacked_b_requirements_v1) == 72);
 static_assert(sizeof(matcore_packed_b_desc_v1) == 112);
-static_assert(sizeof(matcore_cpu_capabilities_v2) == 96);
+static_assert(sizeof(matcore_cpu_capabilities_v2) == 160);
 static_assert(sizeof(matcore_cpu_gemm_execution_options_v2) == 64);
 static_assert(sizeof(matcore_cpu_gemm_candidate_v3) == 104);
-static_assert(sizeof(matcore_cpu_gemm_plan_report_v3) == 1112);
+static_assert(sizeof(matcore_cpu_gemm_plan_report_v3) == 1176);
 static_assert(sizeof(matcore_gemm_workspace_requirements_v2) == 88);
 static_assert(sizeof(matcore_cpu_execution_context_options_v1) == 64);
 static_assert(sizeof(matcore_cpu_execution_context_report_v1) == 88);
@@ -83,9 +83,9 @@ static_assert(
              execution_workspace_bytes) == 24);
 static_assert(offsetof(matcore_packed_b_desc_v1, provenance) == 72);
 static_assert(offsetof(matcore_cpu_gemm_candidate_v3, reason) == 80);
-static_assert(offsetof(matcore_cpu_gemm_plan_report_v3, candidates) == 208);
+static_assert(offsetof(matcore_cpu_gemm_plan_report_v3, candidates) == 272);
 static_assert(offsetof(matcore_cpu_gemm_plan_report_v3, selected_stable_id) ==
-              1040);
+              1104);
 #endif
 
 static_assert(MATCORE_STATUS_INVALID_ALIGNMENT_V0 == 16);
@@ -94,8 +94,8 @@ static_assert(MATCORE_STATUS_ACCUMULATOR_OVERFLOW_V0 == 25);
 static_assert(MATCORE_CPU_FEATURE_PORTABLE_SCALAR_F32_V1 == UINT64_C(1));
 static_assert(MATCORE_CPU_FEATURE_AVX2_V1 == (UINT64_C(1) << 1));
 static_assert(MATCORE_CPU_FEATURE_FMA_V1 == (UINT64_C(1) << 2));
-static_assert(MATCORE_CPU_FEATURE_AVX512F_V2 == (UINT64_C(1) << 4));
-static_assert(MATCORE_CPU_FEATURE_AMX_INT8_V2 == (UINT64_C(1) << 12));
+static_assert(MATCORE_CPU_FEATURE_AVX512F_V2 == (UINT64_C(1) << 3));
+static_assert(MATCORE_CPU_FEATURE_AMX_INT8_V2 == (UINT64_C(1) << 11));
 static_assert(MATCORE_CPU_GEMM_REQUEST_FORCE_NATIVE_PARALLEL_AVX512_FMA_V3 ==
               8);
 

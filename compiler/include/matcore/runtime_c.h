@@ -158,19 +158,18 @@ enum {
  */
 typedef uint64_t matcore_cpu_feature_bits_v2;
 enum {
-  MATCORE_CPU_FEATURE_SSE4_2_V2 = UINT64_C(1) << 0,
-  MATCORE_CPU_FEATURE_AVX_V2 = UINT64_C(1) << 1,
-  MATCORE_CPU_FEATURE_AVX2_V2 = UINT64_C(1) << 2,
-  MATCORE_CPU_FEATURE_FMA_V2 = UINT64_C(1) << 3,
-  MATCORE_CPU_FEATURE_AVX512F_V2 = UINT64_C(1) << 4,
-  MATCORE_CPU_FEATURE_AVX512DQ_V2 = UINT64_C(1) << 5,
-  MATCORE_CPU_FEATURE_AVX512BW_V2 = UINT64_C(1) << 6,
-  MATCORE_CPU_FEATURE_AVX512VL_V2 = UINT64_C(1) << 7,
-  MATCORE_CPU_FEATURE_AVX512VNNI_V2 = UINT64_C(1) << 8,
-  MATCORE_CPU_FEATURE_AVX512BF16_V2 = UINT64_C(1) << 9,
-  MATCORE_CPU_FEATURE_AMX_TILE_V2 = UINT64_C(1) << 10,
-  MATCORE_CPU_FEATURE_AMX_BF16_V2 = UINT64_C(1) << 11,
-  MATCORE_CPU_FEATURE_AMX_INT8_V2 = UINT64_C(1) << 12
+  MATCORE_CPU_FEATURE_PORTABLE_SCALAR_F32_V2 = UINT64_C(1) << 0,
+  MATCORE_CPU_FEATURE_AVX2_V2 = UINT64_C(1) << 1,
+  MATCORE_CPU_FEATURE_FMA_V2 = UINT64_C(1) << 2,
+  MATCORE_CPU_FEATURE_AVX512F_V2 = UINT64_C(1) << 3,
+  MATCORE_CPU_FEATURE_AVX512DQ_V2 = UINT64_C(1) << 4,
+  MATCORE_CPU_FEATURE_AVX512BW_V2 = UINT64_C(1) << 5,
+  MATCORE_CPU_FEATURE_AVX512VL_V2 = UINT64_C(1) << 6,
+  MATCORE_CPU_FEATURE_AVX512VNNI_V2 = UINT64_C(1) << 7,
+  MATCORE_CPU_FEATURE_AVX512BF16_V2 = UINT64_C(1) << 8,
+  MATCORE_CPU_FEATURE_AMX_TILE_V2 = UINT64_C(1) << 9,
+  MATCORE_CPU_FEATURE_AMX_BF16_V2 = UINT64_C(1) << 10,
+  MATCORE_CPU_FEATURE_AMX_INT8_V2 = UINT64_C(1) << 11
 };
 
 typedef struct matcore_cpu_capabilities_v2 {
@@ -178,12 +177,21 @@ typedef struct matcore_cpu_capabilities_v2 {
   uint32_t struct_size;
   matcore_cpu_architecture_v1 architecture;
   uint32_t detection_complete;
-  matcore_cpu_feature_bits_v2 hardware_features;
-  matcore_cpu_feature_bits_v2 os_enabled_features;
-  matcore_cpu_feature_bits_v2 compiler_features;
-  matcore_cpu_feature_bits_v2 implementation_features;
+  matcore_cpu_feature_bits_v2 hardware_known_features;
+  matcore_cpu_feature_bits_v2 hardware_available_features;
+  matcore_cpu_feature_bits_v2 os_known_features;
+  matcore_cpu_feature_bits_v2 os_available_features;
+  matcore_cpu_feature_bits_v2 compiler_known_features;
+  matcore_cpu_feature_bits_v2 compiler_available_features;
+  matcore_cpu_feature_bits_v2 implementation_known_features;
+  matcore_cpu_feature_bits_v2 implementation_available_features;
+  matcore_cpu_feature_bits_v2 runtime_validation_known_features;
   matcore_cpu_feature_bits_v2 runtime_validated_features;
+  uint64_t os_xstate_mask;
   uint32_t usable_vector_bits;
+  uint32_t os_xstate_mask_known;
+  uint32_t amx_permission_known;
+  uint32_t amx_permission_granted;
   uint32_t reserved0;
   uint64_t reserved[4];
 } matcore_cpu_capabilities_v2;
@@ -467,6 +475,11 @@ typedef struct matcore_cpu_execution_context_v1
 
 /* Canonical storage representation for one bfloat16 value. */
 typedef uint16_t matcore_bf16_v1;
+
+/* Populates a zero-initialized, versioned fail-closed capability record. */
+MATCORE_RUNTIME_API matcore_status_v0
+matcore_runtime_query_cpu_capabilities_v2(
+    matcore_cpu_capabilities_v2 *capabilities) MATCORE_RUNTIME_NOEXCEPT;
 
 typedef struct matcore_gemm_prepacked_b_requirements_v1 {
   uint32_t abi_version;
