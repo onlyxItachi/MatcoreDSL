@@ -81,9 +81,11 @@ endif()
 
 add_library(matcore_cpu_backends_v1 STATIC
   cpu_backend_registry.cpp
+  cpu_numeric_reference.cpp
   cpu_openblas.cpp
   cpu_gemm_backend.cpp
   cpu_packed_avx2.cpp
+  cpu_packed_avx512.cpp
 )
 add_library(MatcoreDSL::CpuBackendsV1 ALIAS matcore_cpu_backends_v1)
 target_compile_features(matcore_cpu_backends_v1 PUBLIC cxx_std_20)
@@ -146,6 +148,23 @@ set_target_properties(matcore_runtime PROPERTIES
 )
 
 if(BUILD_TESTING)
+  add_executable(matcore_numeric_reference_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/types/reference_types_test.cpp"
+  )
+  target_compile_features(matcore_numeric_reference_test PRIVATE cxx_std_20)
+  target_include_directories(matcore_numeric_reference_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+  target_link_libraries(matcore_numeric_reference_test
+    PRIVATE MatcoreDSL::CpuBackendsV1
+  )
+  target_compile_options(matcore_numeric_reference_test PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+  )
+  add_test(NAME runtime.cpu.reference_types
+    COMMAND matcore_numeric_reference_test
+  )
+
   add_executable(matcore_packed_avx2_test
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/packed/packed_gemm_test.cpp"
   )
@@ -161,6 +180,26 @@ if(BUILD_TESTING)
   )
   add_test(NAME runtime.cpu.packed_avx2
     COMMAND matcore_packed_avx2_test
+  )
+
+  add_executable(matcore_packed_avx512_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/packed/packed_avx512_gemm_test.cpp"
+  )
+  target_compile_features(matcore_packed_avx512_test PRIVATE cxx_std_20)
+  target_include_directories(matcore_packed_avx512_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+  target_link_libraries(matcore_packed_avx512_test
+    PRIVATE MatcoreDSL::CpuBackendsV1
+  )
+  target_compile_options(matcore_packed_avx512_test PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+  )
+  add_test(NAME runtime.cpu.packed_avx512
+    COMMAND matcore_packed_avx512_test
+  )
+  set_tests_properties(runtime.cpu.packed_avx512 PROPERTIES
+    SKIP_RETURN_CODE 77
   )
 
   add_executable(matcore_workspace_runtime_test
@@ -224,6 +263,7 @@ if(BUILD_TESTING)
     find_program(MDSLC_OBJDUMP_EXECUTABLE NAMES objdump)
     find_program(MDSLC_NM_EXECUTABLE NAMES nm llvm-nm-21)
     if(MDSLC_OBJDUMP_EXECUTABLE AND MDSLC_NM_EXECUTABLE)
+      find_package(Python3 COMPONENTS Interpreter QUIET)
       add_test(
         NAME runtime.cpu.packed_avx2_object
         COMMAND
@@ -244,6 +284,17 @@ if(BUILD_TESTING)
           -P
           "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/cmake/expect_cpu_vectorized_runtime.cmake"
       )
+      if(Python3_Interpreter_FOUND)
+        add_test(
+          NAME runtime.cpu.packed_avx512_object
+          COMMAND
+            "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/packed/check_avx512_microkernel.py"
+            --artifact "$<TARGET_FILE:matcore_cpu_backends_v1>"
+            --objdump "${MDSLC_OBJDUMP_EXECUTABLE}"
+            --nm "${MDSLC_NM_EXECUTABLE}"
+        )
+      endif()
     endif()
   endif()
 endif()

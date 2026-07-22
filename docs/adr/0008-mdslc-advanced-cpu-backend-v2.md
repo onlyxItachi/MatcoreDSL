@@ -89,9 +89,9 @@ Typed reference paths precede accelerated variants:
 
 - BF16 inputs convert exactly to F32, multiply and accumulate in F32, and
   produce F32 output.
-- I8 inputs multiply into I32 and accumulate with explicitly checked I32 range;
-  requests whose mathematical accumulator can exceed the representable range
-  are rejected before output mutation.
+- I8 inputs multiply exactly and accumulate modulo 2^32 into I32 output. The
+  explicit two's-complement bit result avoids signed-overflow undefined
+  behavior and matches non-saturating integer dot-product semantics.
 
 Public descriptors use fixed-width C representations. C++ templates,
 containers, exceptions, and implementation-specific ABI objects never cross
