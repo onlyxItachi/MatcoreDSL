@@ -3,8 +3,12 @@
 import argparse
 import json
 import math
+import os
 import pathlib
+import re
+import shutil
 import subprocess
+import sys
 import tempfile
 
 
@@ -109,7 +113,10 @@ def main() -> int:
         assert report["environment"]["execution_context_workers_started"] >= 1
         assert report["environment"]["available_processors"] >= 1
         assert report["environment"]["worker_affinity_applied"] is False
-        assert "not pinned" in report["environment"]["worker_affinity_source"]
+        assert "0 context(s)" in report["environment"]["worker_affinity_source"]
+        assert "restricted to inherited process" in report["environment"][
+            "worker_affinity_source"
+        ]
         assert "benchmark-process numerical self-test" in report["environment"][
             "capability_runtime_validation_source"
         ]
@@ -120,11 +127,59 @@ def main() -> int:
         assert result["smt_policy"] == "physical-cores-only"
         assert result["affinity_policy"] == "none"
         assert result["worker_affinity_applied"] is False
-        assert "inherited process mask" in result["affinity_diagnostic"]
+        assert "inherit the process mask" in result["affinity_diagnostic"]
         assert result["scaling"]["requested"] is False
         assert result["planner_regret"]["requested"] is False
         assert result["complete_implementation_comparison"] is True
         assert "complete implementation call" in result["timing_scope"]
+
+        if report["environment"]["physical_cores"] >= 2:
+            for policy in ("compact", "scatter", "local-first"):
+                affinity_output = pathlib.Path(temporary) / f"affinity-{policy}.json"
+                run(
+                    [
+                        str(executable), "--m", "256", "--n", "128", "--k", "128",
+                        "--variant", "cpu.native-parallel.avx2-fma.f32.v1",
+                        "--threads", "2",
+                        "--affinity", policy, "--warmup", "0", "--iterations", "1",
+                        "--timer-floor-us", "1", "--json-out", str(affinity_output),
+                    ]
+                )
+                affinity_report = json.loads(
+                    affinity_output.read_text(encoding="utf-8")
+                )
+                affinity_result = affinity_report["results"][0]
+                assert affinity_result["worker_affinity_applied"] is True
+                assert affinity_result["affinity_policy"] == policy
+                assert "strict per-worker scheduler affinity complete" in affinity_result[
+                    "affinity_diagnostic"
+                ]
+                assert "cpu_ids=[" in affinity_result["affinity_diagnostic"]
+                encoded_ids = re.search(
+                    r"cpu_ids=\[([0-9,]+)\]", affinity_result["affinity_diagnostic"]
+                )
+                assert encoded_ids is not None
+                worker_ids = {int(value) for value in encoded_ids.group(1).split(",")}
+                if sys.platform.startswith("linux"):
+                    assert len(worker_ids) == 2
+                    assert worker_ids <= set(os.sched_getaffinity(0))
+                assert "numa_memory_placement=false" in affinity_result[
+                    "affinity_diagnostic"
+                ]
+                assert affinity_report["environment"]["worker_affinity_applied"] is True
+                assert affinity_report["environment"][
+                    "execution_context_workers_started"
+                ] >= 2
+
+            incompatible_affinity = run(
+                [
+                    str(executable), "--m", "64", "--n", "64", "--k", "64",
+                    "--variant", "cpu.reference.f32.v1", "--threads", "2",
+                    "--affinity", "compact",
+                ],
+                expected=1,
+            )
+            assert "only by native parallel variants" in incompatible_affinity.stderr
 
         allocation_output = pathlib.Path(temporary) / "allocation.json"
         run(
@@ -352,6 +407,47 @@ def main() -> int:
                     or "topology" in forced.stderr
                     or "not linked" in forced.stderr
                 ), (variant, forced.stderr)
+
+        if sys.platform.startswith("linux") and shutil.which("taskset"):
+            allowed = sorted(os.sched_getaffinity(0))
+            assert allowed
+            cpu = str(allowed[0])
+            constrained_output = pathlib.Path(temporary) / "taskset-one-cpu.json"
+            run(
+                [
+                    "taskset", "-c", cpu, str(executable), "--m", "64", "--n", "64",
+                    "--k", "64", "--variant", "cpu.reference.f32.v1", "--threads", "1",
+                    "--warmup", "0", "--iterations", "1", "--timer-floor-us", "1",
+                    "--json-out", str(constrained_output),
+                ]
+            )
+            constrained_report = json.loads(
+                constrained_output.read_text(encoding="utf-8")
+            )
+            assert constrained_report["environment"]["available_processors"] == 1
+            assert constrained_report["environment"]["logical_processors"] == 1
+            assert constrained_report["environment"]["physical_cores"] == 1
+            assert f"scheduler mask [{cpu}]" in constrained_report["environment"][
+                "topology_record"
+            ]
+
+            constrained_parallel = subprocess.run(
+                [
+                    "taskset", "-c", cpu, str(executable), "--m", "256", "--n", "128",
+                    "--k", "128", "--variant",
+                    "cpu.native-parallel.avx2-fma.f32.v1", "--threads", "2",
+                    "--warmup", "0", "--iterations", "1", "--timer-floor-us", "1",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            assert constrained_parallel.returncode != 0
+            assert (
+                "at least two" in constrained_parallel.stderr
+                or "worker" in constrained_parallel.stderr
+                or "topology" in constrained_parallel.stderr
+            )
     invalid_modes = run(
         [
             str(executable),
@@ -476,15 +572,6 @@ def main() -> int:
         expected=1,
     )
     assert "requires --variant auto" in invalid_regret_variant.stderr
-
-    unsupported_affinity = run(
-        [
-            str(executable), "--m", "64", "--n", "64", "--k", "64",
-            "--threads", "2", "--affinity", "compact",
-        ],
-        expected=1,
-    )
-    assert "worker-affinity policy is not implemented" in unsupported_affinity.stderr
 
     with tempfile.TemporaryDirectory(prefix="matcore smt metadata ") as temporary:
         smt_output = pathlib.Path(temporary) / "smt.json"

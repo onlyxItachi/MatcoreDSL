@@ -10,6 +10,7 @@
 #include "cpu_planner_v3.h"
 #include "cpu_planner_v3_resources.h"
 #include "cpu_topology_v1.h"
+#include "thread_affinity_v1.h"
 
 #include <algorithm>
 #include <array>
@@ -18,13 +19,11 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <sstream>
 #include <string>
-#include <thread>
 #include <utility>
-
-#if defined(__linux__)
-#include <sched.h>
-#endif
+#include <vector>
 
 namespace matcore::mdslc::bench {
 namespace {
@@ -272,16 +271,98 @@ platform::CpuTopologyV1 discover_benchmark_topology(
 #endif
 }
 
-std::uint32_t inherited_available_processor_count() noexcept {
-#if defined(__linux__)
-  cpu_set_t allowed;
-  CPU_ZERO(&allowed);
-  if (::sched_getaffinity(0, sizeof(allowed), &allowed) == 0) {
-    const int count = CPU_COUNT(&allowed);
-    if (count > 0) return static_cast<std::uint32_t>(count);
+std::string format_cpu_ids(const std::vector<std::uint32_t> &cpu_ids) {
+  std::ostringstream output;
+  output << '[';
+  for (std::size_t index = 0; index < cpu_ids.size(); ++index) {
+    if (index != 0) output << ',';
+    output << cpu_ids[index];
   }
-#endif
-  return std::max<std::uint32_t>(std::thread::hardware_concurrency(), 1);
+  output << ']';
+  return output.str();
+}
+
+platform::CpuAffinityPolicyV1 platform_affinity_policy(
+    AffinityPolicyV2 policy) noexcept {
+  switch (policy) {
+    case AffinityPolicyV2::none:
+    case AffinityPolicyV2::compact:
+      return platform::CpuAffinityPolicyV1::compact;
+    case AffinityPolicyV2::scatter:
+      return platform::CpuAffinityPolicyV1::scatter;
+    case AffinityPolicyV2::local_first:
+      return platform::CpuAffinityPolicyV1::local_first;
+  }
+  return platform::CpuAffinityPolicyV1::compact;
+}
+
+platform::CpuSmtPolicyV1 platform_smt_policy(SmtPolicyV2 policy) noexcept {
+  return policy == SmtPolicyV2::allow_smt
+             ? platform::CpuSmtPolicyV1::allow_smt
+             : platform::CpuSmtPolicyV1::physical_cores_only;
+}
+
+planner::CpuPlannerPlacementEvidenceV1 unbound_placement_evidence(
+    const platform::CpuTopologyV1 &topology) noexcept {
+  planner::CpuPlannerPlacementEvidenceV1 evidence;
+  const auto validation = platform::validate_cpu_topology_v1(topology);
+  if (!validation || !topology.discovery_complete ||
+      topology.numa_nodes.size() != 1 || topology.numa_nodes.front().node_id ==
+                                               platform::kUnknownTopologyIdV1)
+    return evidence;
+
+  evidence.evidence_complete = true;
+  evidence.affinity_requested = false;
+  evidence.affinity_applied = false;
+  evidence.affinity = platform::CpuAffinityPolicyV1::compact;
+  evidence.numa = planner::CpuPlannerNumaPolicyV1::single_node;
+  evidence.local_logical_processor_capacity =
+      platform::logical_cpu_count_v1(topology);
+  evidence.local_physical_core_capacity =
+      platform::physical_core_count_v1(topology);
+  evidence.selected_numa_node_count = 1;
+  evidence.selected_numa_nodes[0] = topology.numa_nodes.front().node_id;
+  evidence.crosses_numa_nodes = false;
+  evidence.caller_first_touch_required = false;
+  if (evidence.local_logical_processor_capacity == 0 ||
+      evidence.local_physical_core_capacity == 0)
+    evidence.evidence_complete = false;
+  return evidence;
+}
+
+planner::CpuPlannerPlacementEvidenceV1 bound_placement_evidence(
+    const platform::CpuTopologyV1 &topology,
+    const platform::CpuPlacementPlanV1 &placement) noexcept {
+  planner::CpuPlannerPlacementEvidenceV1 evidence;
+  if (placement.status != platform::CpuPlacementStatusV1::selected ||
+      placement.logical_cpus.empty() || placement.numa_nodes.empty() ||
+      placement.crosses_numa_nodes || placement.numa_nodes.size() != 1)
+    return evidence;
+
+  const auto selected =
+      platform::restrict_cpu_topology_v1(topology, placement.logical_cpus);
+  if (!selected) return evidence;
+  evidence.evidence_complete = true;
+  evidence.affinity_requested = true;
+  evidence.affinity_applied = true;
+  evidence.affinity = placement.affinity;
+  evidence.numa = placement.affinity == platform::CpuAffinityPolicyV1::local_first
+                      ? planner::CpuPlannerNumaPolicyV1::local_first
+                      : planner::CpuPlannerNumaPolicyV1::single_node;
+  evidence.local_logical_processor_capacity =
+      platform::logical_cpu_count_v1(selected.topology);
+  evidence.local_physical_core_capacity =
+      platform::physical_core_count_v1(selected.topology);
+  evidence.selected_numa_node_count = 1;
+  evidence.selected_numa_nodes[0] = placement.numa_nodes.front();
+  evidence.crosses_numa_nodes = false;
+  // Worker CPU affinity does not establish any NUMA page policy. The
+  // benchmark deliberately makes no first-touch or memory-binding claim.
+  evidence.caller_first_touch_required = false;
+  if (evidence.local_logical_processor_capacity == 0 ||
+      evidence.local_physical_core_capacity == 0)
+    evidence.evidence_complete = false;
+  return evidence;
 }
 
 bool is_single_packed(planner::CpuGemmVariantV3 variant) noexcept {
@@ -301,13 +382,16 @@ bool is_avx512_packed(planner::CpuGemmVariantV3 variant) noexcept {
 
 struct BackendPlanState final : RunnerPlanStateV1 {
   BackendPlanState(planner::CpuGemmPlanV3 value, PackingModeV1 packing,
-                   ComputeOnlyPackedLayout compute_layout)
+                   ComputeOnlyPackedLayout compute_layout,
+                   std::shared_ptr<runtime::CpuExecutionContextV1> context)
       : plan(std::move(value)),
         packing_mode(packing),
-        compute_only_layout(compute_layout) {}
+        compute_only_layout(compute_layout),
+        execution_context(std::move(context)) {}
   planner::CpuGemmPlanV3 plan;
   PackingModeV1 packing_mode = PackingModeV1::include;
   ComputeOnlyPackedLayout compute_only_layout;
+  std::shared_ptr<runtime::CpuExecutionContextV1> execution_context;
   mutable runtime::CpuPackedBViewV1 packed_b;
   mutable bool packed_b_ready = false;
   mutable const float *compute_only_lhs = nullptr;
@@ -316,25 +400,63 @@ struct BackendPlanState final : RunnerPlanStateV1 {
   mutable bool compute_only_ready = false;
 };
 
+struct ExecutionContextRecord {
+  AffinityPolicyV2 affinity_policy = AffinityPolicyV2::none;
+  SmtPolicyV2 smt_policy = SmtPolicyV2::physical_cores_only;
+  std::vector<std::uint32_t> worker_cpu_ids;
+  std::shared_ptr<runtime::CpuExecutionContextV1> context;
+  runtime::CpuExecutionStatusV1 creation_status =
+      runtime::CpuExecutionStatusV1::invalid_configuration;
+  runtime::CpuWorkerAffinityReportV1 affinity_report;
+  planner::CpuPlannerPlacementEvidenceV1 placement;
+  std::string diagnostic;
+};
+
 class PlannerRunner final : public GemmRunnerV1 {
  public:
   PlannerRunner()
       : capabilities_(platform::discover_cpu_capabilities_v2(
             benchmark_implementation_evidence())),
         topology_(discover_benchmark_topology(capabilities_.architecture)) {
-    available_processors_ = inherited_available_processor_count();
-    std::uint32_t capacity = platform::logical_cpu_count_v1(topology_);
-    if (capacity != 0)
-      available_processors_ = std::min(available_processors_, capacity);
-    if (capacity == 0) capacity = available_processors_;
-    capacity = std::min(capacity, available_processors_);
-    capacity = std::max<std::uint32_t>(capacity, 1);
+    process_affinity_ = platform::discover_current_thread_affinity_v1();
+    if (process_affinity_.discovery_complete) {
+      auto restricted = platform::restrict_cpu_topology_v1(
+          topology_, process_affinity_.allowed_logical_cpus);
+      if (restricted) {
+        topology_ = std::move(restricted.topology);
+        topology_restriction_diagnostic_ =
+            "topology restricted to inherited process scheduler mask " +
+            format_cpu_ids(process_affinity_.allowed_logical_cpus);
+      } else {
+        topology_.discovery_complete = false;
+        topology_restriction_diagnostic_ =
+            "process scheduler mask could not be projected onto topology: " +
+            restricted.reason;
+      }
+    } else {
+      topology_.discovery_complete = false;
+      topology_restriction_diagnostic_ =
+          "process scheduler-affinity discovery is incomplete; parallel "
+          "planning fails closed";
+    }
+
+    available_processors_ = platform::logical_cpu_count_v1(topology_);
+    const std::uint32_t capacity = available_processors_;
+    auto record = std::make_shared<ExecutionContextRecord>();
+    record->placement = unbound_placement_evidence(topology_);
+    record->diagnostic =
+        "workers inherit the process mask and are not individually pinned; "
+        "NUMA page placement is not requested or claimed";
     runtime::CpuExecutionContextConfigV1 config;
     config.requested_threads = capacity;
     config.maximum_threads = capacity;
-    runtime::CpuExecutionStatusV1 status{};
-    execution_context_ = runtime::CpuExecutionContextV1::create(config, &status);
-    execution_context_status_ = status;
+    auto context = runtime::CpuExecutionContextV1::create(
+        config, &record->creation_status, &record->affinity_report);
+    if (context != nullptr)
+      record->context =
+          std::shared_ptr<runtime::CpuExecutionContextV1>(std::move(context));
+    default_context_ = record;
+    context_records_.push_back(record);
   }
 
   RunnerEnvironmentV1 environment() const override {
@@ -354,11 +476,15 @@ class PlannerRunner final : public GemmRunnerV1 {
         platform::has_runtime_validated_feature_v2(
             capabilities_, platform::CpuFeatureV2::fma);
     const auto resources = runtime::augment_cpu_gemm_implementation_resources_v2(
-        probe_problem, baseline, execution_context_.get(), evidence);
+        probe_problem, baseline,
+        default_context_ != nullptr ? default_context_->context.get() : nullptr,
+        evidence);
     planner::CpuThreadPolicyV1 thread_policy;
     const auto probe = planner::plan_cpu_gemm_v3(
         probe_problem, capabilities_, topology_, thread_policy, resources,
-        planner::CpuGemmRequestV3::automatic, available_processors_);
+        planner::CpuGemmRequestV3::automatic, 0,
+        default_context_ != nullptr ? default_context_->placement
+                                    : planner::CpuPlannerPlacementEvidenceV1{});
     std::array<char, 8192> diagnostic{};
     planner::format_cpu_gemm_plan_v3(probe, diagnostic.data(),
                                      diagnostic.size());
@@ -373,6 +499,8 @@ class PlannerRunner final : public GemmRunnerV1 {
         "checked by a double-precision oracle; evidence is local to this "
         "benchmark run";
     result.topology_record = platform::format_cpu_topology_v1(topology_);
+    result.topology_record += "\nprocess_affinity=";
+    result.topology_record += topology_restriction_diagnostic_;
     result.capability_record_version = capabilities_.version;
     result.topology_record_version = topology_.version;
     const auto topology_validation = platform::validate_cpu_topology_v1(topology_);
@@ -381,22 +509,40 @@ class PlannerRunner final : public GemmRunnerV1 {
     result.logical_processors = platform::logical_cpu_count_v1(topology_);
     result.physical_cores = platform::physical_core_count_v1(topology_);
     result.numa_nodes = platform::numa_node_count_v1(topology_);
-    if (execution_context_) {
-      const auto info = execution_context_->info();
-      result.persistent_execution_context = info.accepting_work;
-      result.execution_context_workers = info.actual_worker_count;
-      result.execution_context_workers_started = info.workers_started;
-      result.execution_context_submissions = info.completed_submissions;
+    {
+      std::lock_guard lock(context_mutex_);
+      std::uint32_t pinned_contexts = 0;
+      for (const auto &record : context_records_) {
+        if (record == nullptr || record->context == nullptr) continue;
+        const auto info = record->context->info();
+        result.persistent_execution_context =
+            result.persistent_execution_context || info.accepting_work;
+        result.execution_context_workers = std::max(
+            result.execution_context_workers, info.actual_worker_count);
+        result.execution_context_workers_started += info.workers_started;
+        result.execution_context_submissions += info.completed_submissions;
+        if (record->affinity_policy != AffinityPolicyV2::none &&
+            info.completed_submissions != 0 &&
+            info.affinity.complete &&
+            info.affinity.status == runtime::CpuWorkerAffinityStatusV1::complete)
+          ++pinned_contexts;
+      }
+      result.worker_affinity_applied = pinned_contexts != 0;
+      result.worker_affinity_source =
+          "aggregate over persistent benchmark contexts: " +
+          std::to_string(pinned_contexts) +
+          " context(s) have complete per-worker scheduler affinity; " +
+          "NUMA page placement is never claimed; " +
+          topology_restriction_diagnostic_;
     }
     result.available_processors = available_processors_;
-    result.worker_affinity_applied = false;
-    result.worker_affinity_source =
-        "inherited process affinity/cpuset constrains worker capacity; "
-        "individual workers are not pinned by this benchmark backend";
-    if (!execution_context_) {
+    if (default_context_ == nullptr || default_context_->context == nullptr) {
       result.capability_record += "\nexecution_context_status=";
       result.capability_record +=
-          runtime::cpu_execution_status_message_v1(execution_context_status_);
+          runtime::cpu_execution_status_message_v1(
+              default_context_ != nullptr
+                  ? default_context_->creation_status
+                  : runtime::CpuExecutionStatusV1::invalid_configuration);
     }
     result.provider_name = provider.linked ? "OpenBLAS" : "unavailable";
     result.provider_version = provider.package_version;
@@ -429,6 +575,26 @@ class PlannerRunner final : public GemmRunnerV1 {
       result.reason = "requested stable variant ID is not registered";
       return result;
     }
+    std::string context_error;
+    const auto context_record = context_for(
+        affinity_policy, smt_policy, requested_threads, context_error);
+    if (affinity_policy != AffinityPolicyV2::none &&
+        (context_record == nullptr || context_record->context == nullptr ||
+         !context_record->placement.evidence_complete)) {
+      result.reason = context_error.empty()
+                          ? "explicit worker-affinity context is unavailable"
+                          : context_error;
+      result.affinity_diagnostic = result.reason;
+      return result;
+    }
+    if (context_record != nullptr) {
+      result.worker_affinity_applied =
+          affinity_policy != AffinityPolicyV2::none &&
+          context_record->affinity_report.complete &&
+          context_record->affinity_report.status ==
+              runtime::CpuWorkerAffinityStatusV1::complete;
+      result.affinity_diagnostic = context_record->diagnostic;
+    }
     const auto gemm_problem = problem(shape, minimum_alignment);
     const auto baseline =
         runtime::discover_cpu_gemm_implementation_resources_v1(
@@ -445,16 +611,21 @@ class PlannerRunner final : public GemmRunnerV1 {
         platform::has_runtime_validated_feature_v2(
             capabilities_, platform::CpuFeatureV2::fma);
     const auto resources = runtime::augment_cpu_gemm_implementation_resources_v2(
-        gemm_problem, baseline, execution_context_.get(), evidence);
+        gemm_problem, baseline,
+        context_record != nullptr ? context_record->context.get() : nullptr,
+        evidence);
     planner::CpuThreadPolicyV1 thread_policy;
     thread_policy.requested_threads = requested_threads;
     thread_policy.allow_smt = smt_policy == SmtPolicyV2::allow_smt;
-    if (execution_context_)
+    if (context_record != nullptr && context_record->context != nullptr)
       thread_policy.maximum_threads =
-          execution_context_->info().actual_worker_count;
+          context_record->context->info().actual_worker_count;
     auto selected = planner::plan_cpu_gemm_v3(
         gemm_problem, capabilities_, topology_, thread_policy, resources,
-        request, available_processors_);
+        request, 0,
+        context_record != nullptr
+            ? context_record->placement
+            : planner::CpuPlannerPlacementEvidenceV1{});
     result.legal = selected.status == planner::CpuPlanStatusV1::selected;
     result.planner_version = selected.planner_version;
     result.selected_variant = std::string(selected.selected_id);
@@ -466,6 +637,15 @@ class PlannerRunner final : public GemmRunnerV1 {
           !selected.candidates[candidate_index].reason.empty())
         result.reason = std::string(selected.candidates[candidate_index].reason);
     }
+    if (result.legal && affinity_policy != AffinityPolicyV2::none &&
+        !is_parallel_packed(selected.selected_variant)) {
+      result.legal = false;
+      result.worker_affinity_applied = false;
+      result.reason =
+          "explicit benchmark worker affinity is supported only by native "
+          "parallel variants; the selected scalar or external-provider path "
+          "does not execute on the persistent native worker context";
+    }
     if (result.legal && packing_mode == PackingModeV1::exclude &&
         selected.selected_variant !=
             planner::CpuGemmVariantV3::native_packed_avx2_fma) {
@@ -474,13 +654,6 @@ class PlannerRunner final : public GemmRunnerV1 {
           "--exclude-packing is a diagnostic implemented only for "
           "cpu.native-packed.avx2-fma.f32.v1; other implementations expose "
           "only complete calls with no separable benchmark-managed packing";
-    }
-    if (result.legal && affinity_policy != AffinityPolicyV2::none) {
-      result.legal = false;
-      result.reason =
-          "requested benchmark worker-affinity policy is not implemented by "
-          "the current execution-context backend; inherited process affinity "
-          "is reported separately and is not worker binding";
     }
     ComputeOnlyPackedLayout compute_layout;
     if (result.legal) {
@@ -582,7 +755,8 @@ class PlannerRunner final : public GemmRunnerV1 {
       }
       if (result.legal)
         result.state = std::make_shared<BackendPlanState>(
-            selected, packing_mode, compute_layout);
+            selected, packing_mode, compute_layout,
+            context_record != nullptr ? context_record->context : nullptr);
     }
     std::array<char, 8192> diagnostic{};
     planner::format_cpu_gemm_plan_v3(selected, diagnostic.data(),
@@ -596,8 +770,12 @@ class PlannerRunner final : public GemmRunnerV1 {
     result.diagnostic += result.smt_policy;
     result.diagnostic += " benchmark_affinity_policy=";
     result.diagnostic += result.affinity_policy;
-    result.diagnostic += " worker_affinity_applied=false available_processors=";
+    result.diagnostic += " worker_affinity_applied=";
+    result.diagnostic += result.worker_affinity_applied ? "true" : "false";
+    result.diagnostic += " available_processors=";
     result.diagnostic += std::to_string(available_processors_);
+    result.diagnostic += " affinity_detail=";
+    result.diagnostic += result.affinity_diagnostic;
     if (!result.legal && result.reason.empty())
       result.reason = "planner found no legal variant";
     return result;
@@ -808,7 +986,7 @@ class PlannerRunner final : public GemmRunnerV1 {
       }
       case planner::CpuGemmVariantV3::native_parallel_avx2_fma:
       case planner::CpuGemmVariantV3::native_parallel_avx512_fma: {
-        if (!execution_context_) {
+        if (!state->execution_context) {
           error = "persistent CPU execution context is unavailable";
           return false;
         }
@@ -817,13 +995,13 @@ class PlannerRunner final : public GemmRunnerV1 {
             state->plan.selected_variant ==
                     planner::CpuGemmVariantV3::native_parallel_avx512_fma
                 ? runtime::cpu_execute_parallel_packed_avx512_v1(
-                      *execution_context_, state->plan.problem, lhs, rhs,
+                      *state->execution_context, state->plan.problem, lhs, rhs,
                       output, workspace.data(), workspace.size(),
                       plan.actual_threads,
                       runtime::CpuProviderNestingPolicyV1::native_only,
                       &execution_report)
                 : runtime::cpu_execute_parallel_packed_avx2_v1(
-                      *execution_context_, state->plan.problem, lhs, rhs,
+                      *state->execution_context, state->plan.problem, lhs, rhs,
                       output, workspace.data(), workspace.size(),
                       plan.actual_threads,
                       runtime::CpuProviderNestingPolicyV1::native_only,
@@ -852,6 +1030,97 @@ class PlannerRunner final : public GemmRunnerV1 {
   bool synchronize(std::string &) const override { return true; }
 
  private:
+  std::shared_ptr<ExecutionContextRecord> context_for(
+      AffinityPolicyV2 affinity_policy, SmtPolicyV2 smt_policy,
+      std::uint32_t requested_threads, std::string &error) const {
+    if (affinity_policy == AffinityPolicyV2::none) {
+      if (default_context_ == nullptr || default_context_->context == nullptr) {
+        error = "persistent unbound execution context is unavailable: ";
+        error += runtime::cpu_execution_status_message_v1(
+            default_context_ != nullptr
+                ? default_context_->creation_status
+                : runtime::CpuExecutionStatusV1::invalid_configuration);
+      }
+      return default_context_;
+    }
+
+    const auto validation = platform::validate_cpu_topology_v1(topology_);
+    if (!validation || !topology_.discovery_complete ||
+        topology_.numa_nodes.empty()) {
+      error = "explicit worker affinity requires a complete process-restricted "
+              "CPU topology";
+      return nullptr;
+    }
+
+    platform::CpuPlacementRequestV1 request;
+    request.requested_workers = requested_threads;
+    request.affinity = platform_affinity_policy(affinity_policy);
+    request.smt = platform_smt_policy(smt_policy);
+    request.allow_cross_numa = false;
+    if (affinity_policy == AffinityPolicyV2::local_first)
+      request.preferred_numa_node = topology_.numa_nodes.front().node_id;
+    const auto placement = platform::plan_cpu_placement_v1(topology_, request);
+    if (placement.status != platform::CpuPlacementStatusV1::selected) {
+      error = "worker CPU placement rejected: ";
+      error += placement.reason;
+      return nullptr;
+    }
+    if (placement.crosses_numa_nodes || placement.numa_nodes.size() != 1) {
+      error =
+          "benchmark worker placement refuses cross-NUMA execution because "
+          "no NUMA page-placement backend is active";
+      return nullptr;
+    }
+
+    std::lock_guard lock(context_mutex_);
+    for (const auto &record : context_records_) {
+      if (record != nullptr && record->affinity_policy == affinity_policy &&
+          record->smt_policy == smt_policy &&
+          record->worker_cpu_ids == placement.logical_cpus)
+        return record;
+    }
+
+    auto record = std::make_shared<ExecutionContextRecord>();
+    record->affinity_policy = affinity_policy;
+    record->smt_policy = smt_policy;
+    record->worker_cpu_ids = placement.logical_cpus;
+    runtime::CpuExecutionContextConfigV1 config;
+    config.requested_threads = placement.actual_workers;
+    config.maximum_threads = placement.actual_workers;
+    config.worker_cpu_ids = placement.logical_cpus;
+    auto context = runtime::CpuExecutionContextV1::create(
+        config, &record->creation_status, &record->affinity_report);
+    if (context == nullptr || !record->affinity_report.complete ||
+        record->affinity_report.status !=
+            runtime::CpuWorkerAffinityStatusV1::complete ||
+        record->affinity_report.applied_workers != placement.actual_workers ||
+        record->affinity_report.numa_memory_placement_applied) {
+      error = "strict worker-affinity context creation failed: status=";
+      error += runtime::cpu_execution_status_message_v1(record->creation_status);
+      error += " affinity=";
+      error += runtime::cpu_worker_affinity_status_message_v1(
+          record->affinity_report.status);
+      return nullptr;
+    }
+    record->context =
+        std::shared_ptr<runtime::CpuExecutionContextV1>(std::move(context));
+    record->placement = bound_placement_evidence(topology_, placement);
+    if (!record->placement.evidence_complete) {
+      error = "strict worker affinity applied, but complete single-node "
+              "placement evidence could not be constructed";
+      return nullptr;
+    }
+    record->diagnostic =
+        "strict per-worker scheduler affinity complete: policy=" +
+        std::string(affinity_policy_name_v2(affinity_policy)) +
+        " cpu_ids=" + format_cpu_ids(record->worker_cpu_ids) +
+        " selected_numa_node=" +
+        std::to_string(record->placement.selected_numa_nodes[0]) +
+        " numa_memory_placement=false";
+    context_records_.push_back(record);
+    return record;
+  }
+
   static std::uint32_t pointer_alignment(const float *lhs, const float *rhs,
                                          const float *output) noexcept {
     std::uint32_t alignment = planner::pointer_alignment_bytes(lhs);
@@ -862,10 +1131,12 @@ class PlannerRunner final : public GemmRunnerV1 {
 
   platform::CpuCapabilitiesV2 capabilities_;
   platform::CpuTopologyV1 topology_;
-  mutable std::unique_ptr<runtime::CpuExecutionContextV1> execution_context_;
-  runtime::CpuExecutionStatusV1 execution_context_status_ =
-      runtime::CpuExecutionStatusV1::invalid_configuration;
-  std::uint32_t available_processors_ = 1;
+  platform::ThreadAffinityInventoryV1 process_affinity_;
+  std::string topology_restriction_diagnostic_;
+  std::shared_ptr<ExecutionContextRecord> default_context_;
+  mutable std::mutex context_mutex_;
+  mutable std::vector<std::shared_ptr<ExecutionContextRecord>> context_records_;
+  std::uint32_t available_processors_ = 0;
 };
 
 }  // namespace

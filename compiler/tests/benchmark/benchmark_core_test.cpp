@@ -146,14 +146,34 @@ int main() {
              !runner_environment.topology_record.empty() &&
              !runner_environment.capability_runtime_validation_source.empty(),
          "runner exposes versioned capability, topology, and validation-source metadata");
-  const auto unsupported_affinity = runner->plan(
-      {256, 128, 128}, 64, 2, "auto", bench::PackingModeV1::include,
-      bench::SmtPolicyV2::physical_cores_only,
-      bench::AffinityPolicyV2::compact);
-  expect(!unsupported_affinity.legal &&
-             unsupported_affinity.reason.find("worker-affinity policy") !=
-                 std::string::npos,
-         "unimplemented worker binding is rejected instead of conflating it with inherited affinity");
+  if (runner_environment.physical_cores >= 2) {
+    for (const auto policy : {bench::AffinityPolicyV2::compact,
+                              bench::AffinityPolicyV2::scatter,
+                              bench::AffinityPolicyV2::local_first}) {
+      const auto affinity_plan = runner->plan(
+          {256, 128, 128}, 64, 2,
+          "cpu.native-parallel.avx2-fma.f32.v1",
+          bench::PackingModeV1::include,
+          bench::SmtPolicyV2::physical_cores_only, policy);
+      expect(affinity_plan.legal && affinity_plan.worker_affinity_applied &&
+                 affinity_plan.affinity_diagnostic.find("cpu_ids=[") !=
+                     std::string::npos &&
+                 affinity_plan.affinity_diagnostic.find(
+                     "numa_memory_placement=false") != std::string::npos,
+             "explicit affinity uses a strict persistent worker context and "
+             "does not claim NUMA memory placement");
+    }
+    const auto external_context_mismatch = runner->plan(
+        {64, 64, 64}, 64, 2, "cpu.reference.f32.v1",
+        bench::PackingModeV1::include,
+        bench::SmtPolicyV2::physical_cores_only,
+        bench::AffinityPolicyV2::compact);
+    expect(!external_context_mismatch.legal &&
+               external_context_mismatch.reason.find(
+                   "only by native parallel variants") != std::string::npos,
+           "worker-affinity success is not attributed to a scalar caller that "
+           "does not execute on the native worker context");
+  }
   bench::BenchmarkOptionsV1 run_options;
   run_options.profile = bench::ProfileV1::custom;
   run_options.shapes = {{2, 3, 2}};
