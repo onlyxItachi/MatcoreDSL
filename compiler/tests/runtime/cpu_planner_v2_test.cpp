@@ -113,8 +113,11 @@ int main() {
   if (tiny_auto.selected_id != "cpu.reference.f32.v1" ||
       crossover_auto.selected_id != "cpu.external.openblas.f32.v1" ||
       skinny_auto.selected_id != "cpu.external.openblas.f32.v1" ||
-      row_vector_auto.selected_id !=
-          "cpu.compiler-vectorized.avx2-fma.f32.v1") {
+      row_vector_auto.status != planner::CpuPlanStatusV1::selected ||
+      row_vector_auto.selected_id == "cpu.external.openblas.f32.v1" ||
+      (planner::cpu_compiler_vectorization_build_available_v1() &&
+       row_vector_auto.selected_id !=
+           "cpu.compiler-vectorized.avx2-fma.f32.v1")) {
     std::cerr << "calibrated OpenBLAS crossover rule regressed\n";
     return 1;
   }

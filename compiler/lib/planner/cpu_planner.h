@@ -269,8 +269,6 @@ constexpr std::string_view capability_legality_reason(
   if (!has_feature(capabilities, CpuFeatureV1::portable_scalar_f32))
     return "portable scalar f32 capability is required";
   if (record.variant == CpuGemmVariantV1::compiler_vectorized) {
-    if (!cpu_compiler_vectorization_build_available_v1())
-      return "compiler-vectorized implementation is unavailable in instrumented builds";
     if (!capabilities.detection_complete)
       return "AVX2/FMA discovery is incomplete";
     if ((capabilities.features & record.required_features) !=
@@ -280,6 +278,8 @@ constexpr std::string_view capability_legality_reason(
       return "compiler-vectorized candidate requires x86_64";
     if (capabilities.usable_vector_bits < 256)
       return "compiler-vectorized candidate requires 256-bit vectors";
+    if (!cpu_compiler_vectorization_build_available_v1())
+      return "compiler-vectorized implementation is unavailable in instrumented builds";
   }
   return {};
 }
