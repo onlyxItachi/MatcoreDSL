@@ -87,28 +87,6 @@ std::optional<std::string> readFile(const std::string &path) {
                      std::istreambuf_iterator<char>());
 }
 
-bool forbiddenCompilerArgument(const std::string &argument) {
-  return argument == "-c" || argument == "-S" ||
-         argument == "-emit-llvm" || argument == "-save-temps" ||
-         argument == "--save-temps" || argument == "-E" ||
-         argument == "-M" || argument == "-MM" || argument == "-MD" ||
-         argument == "-MMD" || argument == "-MJ" || argument == "-MF" ||
-         argument == "-MT" || argument == "-MQ" || argument == "-Xclang" ||
-         argument == "-load" || argument == "-###" ||
-         argument == "-fplugin" || argument == "--config" ||
-         argument.starts_with("--config=") || argument.starts_with('@') ||
-         argument == "-ivfsoverlay" || argument.starts_with("-ivfsoverlay") ||
-         argument == "-vfsoverlay" || argument.starts_with("-vfsoverlay") ||
-         argument.starts_with("-include-pch") ||
-         argument.starts_with("-include-pth") ||
-         argument.starts_with("-fmodule-file") ||
-         argument.starts_with("-fprebuilt-module-path") ||
-         argument.starts_with("-fplugin=") ||
-         (argument.starts_with("-o") && argument.size() > 2) ||
-         (argument.starts_with("-MF") && argument.size() > 3) ||
-         (argument.starts_with("-MJ") && argument.size() > 3);
-}
-
 class CountingDiagnosticConsumer final : public clang::DiagnosticConsumer {
 public:
   CountingDiagnosticConsumer()
@@ -162,46 +140,40 @@ bool makeToolArguments(const Options &options,
       }
       continue;
     }
-    if (clang_cl &&
-        (argument == "/TP" || argument == "/Zs" ||
-         argument == "-fno-color-diagnostics")) {
+    if (clang_cl && argument == "--no-default-config") {
       continue;
     }
     if (clang_cl &&
-        (argument == "/I" || argument == "/D" || argument == "/U")) {
+        (support::windows_option_body_v1(argument) == "TP" ||
+         argument == "-fno-color-diagnostics")) {
+      continue;
+    }
+    if (argument == "-fsyntax-only" || argument == "-fno-color-diagnostics") {
+      continue;
+    }
+    const auto risk =
+        support::classify_untrusted_compiler_argument_v1(argument, clang_cl);
+    if (risk != support::CompilerArgumentRiskV1::none) {
+      error = std::string(support::compiler_argument_risk_message_v1(risk)) +
+              " is not valid for extraction: " + argument;
+      return false;
+    }
+    const bool clang_cl_value_option =
+        clang_cl && support::clang_cl_option_consumes_next_v1(argument);
+    if (clang_cl_value_option) {
       if (++index == options.compiler_arguments.size()) {
         error = argument + " requires a value";
         return false;
       }
-      arguments.push_back(argument);
-      arguments.push_back(options.compiler_arguments[index]);
-      continue;
-    }
-    if (clang_cl &&
-        (argument == "/c" || argument == "/E" || argument == "/P" ||
-         argument == "/EP" || argument == "/link" ||
-         argument == "/TC" || argument.starts_with("/Tc") ||
-         argument == "/sourceDependencies" || argument.starts_with('@') ||
-         argument.starts_with("/Fo") || argument.starts_with("/Fe") ||
-         argument.starts_with("/Fd") || argument.starts_with("/Fp") ||
-         argument.starts_with("/Fi") || argument.starts_with("/Fa") ||
-         argument.starts_with("/clang:-ivfsoverlay") ||
-         argument.starts_with("/clang:-include-pch") ||
-         argument.starts_with("/clang:-fplugin"))) {
-      error = "unsafe or output-producing clang-cl argument for extraction: " +
-              argument;
-      return false;
-    }
-    if (clang_cl && argument.starts_with("/clang:")) {
-      const std::string forwarded = argument.substr(7);
-      if (forbiddenCompilerArgument(forwarded) || forwarded == "-c" ||
-          forwarded == "-resource-dir" ||
-          forwarded.starts_with("-resource-dir=")) {
-        error = "unsafe /clang: forwarding for extraction: " + argument;
+      if (!support::compiler_consumed_value_is_safe_v1(
+              options.compiler_arguments[index])) {
+        error = "nested response-file expansion is forbidden in the value "
+                "for " +
+                argument;
         return false;
       }
-    }
-    if (argument == "-fsyntax-only" || argument == "-fno-color-diagnostics") {
+      arguments.push_back(argument);
+      arguments.push_back(options.compiler_arguments[index]);
       continue;
     }
     if (argument == "-x") {
@@ -211,17 +183,6 @@ bool makeToolArguments(const Options &options,
       }
       continue;
     }
-    if (argument == "-o" || argument == "-MF" || argument == "-MT" ||
-        argument == "-MQ" || argument == "-MJ") {
-      error = "output-producing compiler argument is not valid for extraction: " +
-              argument;
-      return false;
-    }
-    if (forbiddenCompilerArgument(argument)) {
-      error = "unsafe or conflicting compiler argument for extraction: " +
-              argument;
-      return false;
-    }
     arguments.push_back(argument);
   }
   if (clang_cl) {
@@ -229,6 +190,7 @@ bool makeToolArguments(const Options &options,
         arguments.end()) {
       arguments.insert(arguments.begin(), "--driver-mode=cl");
     }
+    arguments.insert(arguments.begin(), "--no-default-config");
     arguments.insert(arguments.end(),
                      {"/TP", "/Zs", "-fno-color-diagnostics"});
   } else {

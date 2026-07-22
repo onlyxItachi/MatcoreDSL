@@ -1160,6 +1160,38 @@ def driver_suite(checks: Checks, extractor: Path, driver: Path, clang: Path) -> 
             "driver emitted object after semantic flag failure",
         )
 
+        dedicated_depfile = temporary / "dedicated-public.d"
+        overridden_depfile = temporary / "legacy-override.d"
+        dependency_output = temporary / "dependency-conflict.o"
+        dependency_conflict = run(
+            [
+                str(driver),
+                "--frontend=native",
+                "--matcore-target=cpu",
+                f"--matcore-depfile={dedicated_depfile}",
+                "-MD",
+                "-MF",
+                str(overridden_depfile),
+                "-std=c++20",
+                "-DMDSLC_NATIVE_VALIDATION_FLAG=17",
+                "-c",
+                source_argument(source),
+                "-o",
+                str(dependency_output),
+            ]
+        )
+        checks.require(
+            dependency_conflict.returncode != 0
+            and "cannot be combined" in dependency_conflict.stderr,
+            "dedicated MDSLC depfile was silently overridden by legacy flags",
+        )
+        checks.require(
+            not dedicated_depfile.exists()
+            and not overridden_depfile.exists()
+            and not dependency_output.exists(),
+            "rejected dependency-output conflict left a published artifact",
+        )
+
         driver_overlay = temporary / "driver-header-replacement.yaml"
         driver_overlay.write_text(
             json.dumps(

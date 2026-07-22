@@ -547,6 +547,139 @@ std::optional<std::string> environment_utf8_native_v1(std::string_view name,
   return wide_to_utf8(std::wstring_view(value.data(), count), error);
 }
 
+bool path_names_equal_native_v1(const std::filesystem::path &left,
+                                const std::filesystem::path &right,
+                                std::string &error) {
+  error.clear();
+  struct ProspectivePath {
+    std::filesystem::path existing_prefix;
+    std::vector<std::wstring> missing_components;
+  };
+  const auto split_at_existing_prefix = [&](std::filesystem::path path) {
+    ProspectivePath split;
+    std::error_code status_error;
+    while (!path.empty() && !std::filesystem::exists(path, status_error)) {
+      if (status_error) {
+        error = "cannot inspect prospective path prefix: " +
+                status_error.message();
+        return split;
+      }
+      std::wstring component = path.filename().native();
+      // Win32 normalizes trailing spaces and periods in ordinary path
+      // components.  Model that before comparing not-yet-created outputs so
+      // `result.lib`, `result.lib.`, and `result.lib ` cannot bypass alias
+      // guards.
+      while (!component.empty() &&
+             (component.back() == L'.' || component.back() == L' ')) {
+        component.pop_back();
+      }
+      split.missing_components.push_back(std::move(component));
+      const std::filesystem::path parent = path.parent_path();
+      if (parent == path) break;
+      path = parent;
+      status_error.clear();
+    }
+    split.existing_prefix = path;
+    std::reverse(split.missing_components.begin(),
+                 split.missing_components.end());
+    return split;
+  };
+
+  const ProspectivePath left_split = split_at_existing_prefix(left);
+  if (!error.empty()) return false;
+  const ProspectivePath right_split = split_at_existing_prefix(right);
+  if (!error.empty()) return false;
+  if (left_split.missing_components.size() !=
+      right_split.missing_components.size()) {
+    return false;
+  }
+
+  std::error_code equivalent_error;
+  const bool same_prefix = std::filesystem::equivalent(
+      left_split.existing_prefix, right_split.existing_prefix,
+      equivalent_error);
+  if (equivalent_error) {
+    error = "cannot authenticate prospective path parent identity: " +
+            equivalent_error.message();
+    return false;
+  }
+  if (!same_prefix) return false;
+
+  for (std::size_t index = 0;
+       index < left_split.missing_components.size(); ++index) {
+    const std::wstring &left_component = left_split.missing_components[index];
+    const std::wstring &right_component = right_split.missing_components[index];
+    if (left_component.size() >
+            static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        right_component.size() >
+            static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+      error = "normalized path component is too long for ordinal comparison";
+      return false;
+    }
+    const int comparison = ::CompareStringOrdinal(
+        left_component.data(), static_cast<int>(left_component.size()),
+        right_component.data(), static_cast<int>(right_component.size()),
+        TRUE);
+    if (comparison == 0) {
+      error = "CompareStringOrdinal failed: " +
+              windows_error(::GetLastError());
+      return false;
+    }
+    if (comparison != CSTR_EQUAL) return false;
+  }
+  return true;
+}
+
+bool prospective_output_path_supported_native_v1(
+    const std::filesystem::path &path, std::string &error) {
+  error.clear();
+  const std::wstring name = path.filename().native();
+  if (name.empty()) {
+    error = "output path must name a file";
+    return false;
+  }
+  if (name.back() == L'.' || name.back() == L' ') {
+    error = "Windows output names cannot end in a period or space";
+    return false;
+  }
+  if (name.find_first_of(L"<>:\"|?*") != std::wstring::npos ||
+      std::any_of(name.begin(), name.end(),
+                  [](wchar_t value) { return value >= 0 && value < 32; })) {
+    error = "Windows output name contains a reserved character";
+    return false;
+  }
+  const std::size_t extension = name.find(L'.');
+  const std::wstring_view stem(name.data(), extension == std::wstring::npos
+                                                ? name.size()
+                                                : extension);
+  const auto reserved = [&](std::wstring_view candidate) {
+    if (stem.size() != candidate.size()) return false;
+    const int result = ::CompareStringOrdinal(
+        stem.data(), static_cast<int>(stem.size()), candidate.data(),
+        static_cast<int>(candidate.size()), TRUE);
+    return result == CSTR_EQUAL;
+  };
+  if (reserved(L"CON") || reserved(L"PRN") || reserved(L"AUX") ||
+      reserved(L"NUL") || reserved(L"CLOCK$") || reserved(L"CONIN$") ||
+      reserved(L"CONOUT$")) {
+    error = "Windows output name uses a reserved DOS device basename";
+    return false;
+  }
+  const bool com_device =
+      stem.size() == 4 && (stem[0] == L'C' || stem[0] == L'c') &&
+      (stem[1] == L'O' || stem[1] == L'o') &&
+      (stem[2] == L'M' || stem[2] == L'm');
+  const bool lpt_device =
+      stem.size() == 4 && (stem[0] == L'L' || stem[0] == L'l') &&
+      (stem[1] == L'P' || stem[1] == L'p') &&
+      (stem[2] == L'T' || stem[2] == L't');
+  if ((com_device || lpt_device) && stem[3] >= L'1' && stem[3] <= L'9') {
+    error = "Windows output name uses a reserved DOS device basename";
+    return false;
+  }
+  return true;
+}
+
 std::optional<std::filesystem::path> find_executable_native_v1(
     std::string_view name, std::string &error) {
   const std::optional<std::wstring> wide_name = utf8_to_wide(name, error);

@@ -94,7 +94,7 @@ function(matcoredsl_add_executable target_name)
   # driver scans the original and generated translation units, authenticates
   # that their dependency closures agree, and atomically publishes this one
   # CMake/Ninja DEPFILE without temporary generated paths.
-  set(mdsl_dependency_options -MD -MF "${mdsl_depfile}")
+  set(mdsl_dependency_options "--matcore-depfile=${mdsl_depfile}")
 
   add_custom_command(
     OUTPUT "${mdsl_object}"

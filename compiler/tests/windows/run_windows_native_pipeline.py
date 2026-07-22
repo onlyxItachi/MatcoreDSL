@@ -457,6 +457,26 @@ def pipeline_suite(
     for label, arguments, output, expected_words in guard_cases:
         reject_driver(label, arguments, output, expected_words)
 
+    reserved_device = run(
+        [
+            str(driver),
+            *common,
+            "/c",
+            str(source),
+            "-o",
+            str(temporary / "NUL.lib"),
+        ],
+        cwd=temporary,
+    )
+    if reserved_device.returncode == 0 or not any(
+        word in (reserved_device.stdout + reserved_device.stderr).lower()
+        for word in ("reserved", "device", "output path")
+    ):
+        raise RuntimeError(
+            "Windows reserved device output was not rejected actionably:\n"
+            f"{reserved_device.stderr}"
+        )
+
     overwrite_bytes = source.read_bytes()
     reject_driver(
         "input-output-overwrite",
@@ -467,6 +487,100 @@ def pipeline_suite(
     )
     if source.read_bytes() != overwrite_bytes:
         raise RuntimeError("input/output overwrite guard modified its .mdsl source")
+
+    # LINK-compatible option names are case-insensitive and accept both '/'
+    # and '-' prefixes. Prove that mixed-case output and artifact-mode options
+    # cannot bypass the driver's validated output path or mutate a sentinel.
+    link_guard_sentinel = temporary / "link option sentinel.bin"
+    sentinel_bytes = b"mdslc-link-option-sentinel\n"
+    link_guard_sentinel.write_bytes(sentinel_bytes)
+    link_guard_cases = [
+        ("lowercase-link-out-source", f"/out:{source}"),
+        ("dash-mixed-case-link-out", f"-OuT:{link_guard_sentinel}"),
+        ("mixed-case-link-dll", "/dLl"),
+        ("mixed-case-link-ltcg", "/LtCg"),
+    ]
+    for label, linker_argument in link_guard_cases:
+        link_guard_output = temporary / f"{label}.exe"
+        reject_driver(
+            label,
+            [
+                *common,
+                str(source),
+                f"/Fe:{link_guard_output}",
+                "/link",
+                linker_argument,
+            ],
+            link_guard_output,
+            ("output-changing", "unsupported", "link argument"),
+        )
+        if source.read_bytes() != overwrite_bytes:
+            raise RuntimeError(f"Windows driver guard {label} modified its source")
+        if link_guard_sentinel.read_bytes() != sentinel_bytes:
+            raise RuntimeError(f"Windows driver guard {label} modified its sentinel")
+
+    compiler_control_cases: list[tuple[str, list[str]]] = [
+        (
+            "opaque-clang-forwarding",
+            [
+                "/ClAnG:-serialize-diagnostics",
+                f"/ClAnG:{link_guard_sentinel}",
+            ],
+        ),
+        ("joined-xclang", ["-Xclang=-load"]),
+        ("driver-mode-override", ["--driver-mode=g++"]),
+        ("time-trace-output", [f"-ftime-trace={link_guard_sentinel}"]),
+        ("split-dwarf-output", ["-gsplit-dwarf"]),
+        ("joined-header-language", ["-xc++-header"]),
+        ("unsupported-openmp-runtime", ["-openmp:experimental"]),
+        ("pass-plugin", ["-fpass-plugin=untrusted-plugin.dll"]),
+        ("module-map", ["-fmodule-map-file=untrusted.modulemap"]),
+        ("config-directory", ["--config-user-dir=untrusted-config"]),
+        ("precompiled-header", ["/Yuattacker.pch"]),
+    ]
+    for label, controls in compiler_control_cases:
+        control_output = temporary / f"{label}.lib"
+        reject_driver(
+            label,
+            [*common, "/c", str(source), "-o", str(control_output), *controls],
+            control_output,
+            ("output-producing", "unsafe", "opaque", "forbidden"),
+        )
+        if source.read_bytes() != overwrite_bytes:
+            raise RuntimeError(f"Windows driver guard {label} modified its source")
+        if link_guard_sentinel.read_bytes() != sentinel_bytes:
+            raise RuntimeError(f"Windows driver guard {label} modified its sentinel")
+        if list(temporary.glob("*.dwo")) or list(temporary.glob("*.pch")):
+            raise RuntimeError(f"Windows driver guard {label} emitted a sidecar")
+
+    # Prospective Windows destinations are case-insensitive even before an
+    # output exists. A differently cased depfile must not alias the archive.
+    dep_output = temporary / "Prospective-Dep.lib"
+    for label, alias in (
+        ("case-insensitive", temporary / "prospective-dep.LIB"),
+        ("trailing-dot", temporary / "Prospective-Dep.lib."),
+        ("trailing-space", temporary / "Prospective-Dep.lib "),
+    ):
+        rejected_dep_alias = run(
+            [
+                str(driver),
+                *common,
+                "/c",
+                f"--matcore-depfile={alias}",
+                str(source),
+                "-o",
+                str(dep_output),
+            ],
+            cwd=temporary,
+        )
+        if rejected_dep_alias.returncode == 0 or not any(
+            word in (rejected_dep_alias.stdout + rejected_dep_alias.stderr).lower()
+            for word in ("dependency", "alias", "distinct")
+        ):
+            raise RuntimeError(
+                f"{label} prospective depfile/output alias was accepted:\n"
+                f"{rejected_dep_alias.stderr}"
+            )
 
     # Exercise the driver's authenticated snapshot checks using an observable
     # phase boundary, not a private test hook. A large comment makes the
@@ -544,6 +658,45 @@ def pipeline_suite(
     require_success(executed, "generated PE GEMM execution")
     if "MDSLC CPU GEMM PASS" not in executed.stdout:
         raise RuntimeError(f"generated GEMM reported no success:\n{executed.stdout}")
+
+    if asan:
+        driver_linked = temporary / "MDSLC driver linked ASan.exe"
+        linked_by_driver = run(
+            [
+                str(driver),
+                "--verbose",
+                "--matcore-target=cpu",
+                "/std:c++20",
+                "/EHsc",
+                "/MD",
+                "/fsanitize=address",
+                "/Oy-",
+                str(source),
+                "-o",
+                str(driver_linked),
+            ],
+            cwd=temporary,
+        )
+        require_success(linked_by_driver, "driver-owned ASan PE final link")
+        final_link_lines = [
+            line
+            for line in linked_by_driver.stderr.splitlines()
+            if str(driver_linked) in line
+        ]
+        if not final_link_lines:
+            raise RuntimeError("verbose driver output omitted the ASan final link")
+        final_link = final_link_lines[-1]
+        if "/fsanitize=address" not in final_link or " /link " in final_link:
+            raise RuntimeError(
+                "ASan was not kept in clang-cl driver scope during final link:\n"
+                + final_link
+            )
+        driver_executed = run(
+            [str(driver_linked)], cwd=temporary, environment=environment
+        )
+        require_success(driver_executed, "driver-owned ASan GEMM execution")
+        if "MDSLC CPU GEMM PASS" not in driver_executed.stdout:
+            raise RuntimeError("driver-owned ASan GEMM reported no success")
 
 
 def main() -> int:

@@ -12,6 +12,12 @@ std::optional<std::filesystem::path> create_temp_directory_native_v1(
     std::string_view prefix, std::string &error);
 std::optional<std::string> environment_utf8_native_v1(std::string_view name,
                                                       std::string &error);
+
+bool path_names_equal_native_v1(const std::filesystem::path &left,
+                                const std::filesystem::path &right,
+                                std::string &error);
+bool prospective_output_path_supported_native_v1(
+    const std::filesystem::path &path, std::string &error);
 std::optional<std::filesystem::path> find_executable_native_v1(
     std::string_view name, std::string &error);
 FileIdentityV1 file_identity_native_v1(const std::filesystem::path &path,

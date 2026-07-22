@@ -83,11 +83,16 @@ std::filesystem::path normalizedPath(const std::filesystem::path &path) {
 
 bool pathsReferToSameLocation(const std::filesystem::path &left,
                               const std::filesystem::path &right) {
-  std::error_code error;
-  if (std::filesystem::equivalent(left, right, error) && !error) {
+  std::string error;
+  const bool same =
+      support::paths_refer_to_same_location_v1(left, right, error);
+  if (!error.empty()) {
+    std::cerr << "matcore-extract: cannot authenticate prospective path "
+                 "identity: "
+              << error << '\n';
     return true;
   }
-  return normalizedPath(left) == normalizedPath(right);
+  return same;
 }
 
 std::optional<std::filesystem::path>
@@ -150,6 +155,13 @@ bool validateOutputPaths(const CommandLine &command) {
     const std::optional<std::filesystem::path> input =
         pathFromUtf8(command.frontend.input_path, "input");
     if (!path || !input) return false;
+    std::string output_error;
+    if (!support::prospective_output_path_supported_v1(*path, output_error)) {
+      std::cerr << "matcore-extract: " << option
+                << " is not a supported output path: " << output_error
+                << '\n';
+      return false;
+    }
     if (pathsReferToSameLocation(*input, *path)) {
       std::cerr << "matcore-extract: " << option
                 << " must not overwrite or alias the input .mdsl file\n";
@@ -249,7 +261,10 @@ std::optional<ConfiguredCompiler> discoverConfiguredCompiler() {
       pathToUtf8(compiler, "compiler");
   if (!compiler_utf8) return std::nullopt;
   support::ProcessRequestV1 request;
-  request.argv = {*compiler_utf8, "--version"};
+  request.argv = {*compiler_utf8};
+  if (isWindowsHost()) request.argv.emplace_back("--no-default-config");
+  request.argv.emplace_back("--version");
+  request.environment = support::compiler_environment_sanitization_v1();
   const support::ProcessResultV1 result = support::run_process_v1(request);
   if (!result.launched || !result.error.empty() || result.exit_code != 0 ||
       (result.stdout_text + result.stderr_text)
@@ -260,7 +275,13 @@ std::optional<ConfiguredCompiler> discoverConfiguredCompiler() {
     return std::nullopt;
   }
   support::ProcessRequestV1 resource_request;
-  resource_request.argv = {*compiler_utf8, "-print-resource-dir"};
+  resource_request.argv = {*compiler_utf8};
+  if (isWindowsHost()) {
+    resource_request.argv.emplace_back("--no-default-config");
+  }
+  resource_request.argv.emplace_back("-print-resource-dir");
+  resource_request.environment =
+      support::compiler_environment_sanitization_v1();
   const support::ProcessResultV1 resource_result =
       support::run_process_v1(resource_request);
   if (!resource_result.launched || !resource_result.error.empty() ||
@@ -655,6 +676,20 @@ std::optional<std::string> readFile(const std::string &path) {
 }
 
 int ExtractorMain(int argc, char **argv) {
+  std::string environment_error;
+  const std::optional<std::string> poisoned_environment =
+      support::poisoned_compiler_environment_v1(environment_error);
+  if (!environment_error.empty()) {
+    std::cerr << "matcore-extract: " << environment_error << '\n';
+    return 2;
+  }
+  if (poisoned_environment) {
+    std::cerr << "matcore-extract: inherited compiler control variable "
+              << *poisoned_environment
+              << " is set; unset it before invoking the in-process frontend"
+              << '\n';
+    return 2;
+  }
   const std::optional<CommandLine> command = parseCommandLine(argc, argv);
   if (!command) {
     usage(std::cerr);

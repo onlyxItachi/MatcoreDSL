@@ -318,6 +318,20 @@ std::optional<std::string> environment_utf8_native_v1(std::string_view name,
   return std::string(value);
 }
 
+bool path_names_equal_native_v1(const std::filesystem::path &left,
+                                const std::filesystem::path &right,
+                                std::string &error) {
+  error.clear();
+  return left == right;
+}
+
+bool prospective_output_path_supported_native_v1(
+    const std::filesystem::path &path, std::string &error) {
+  (void)path;
+  error.clear();
+  return true;
+}
+
 std::optional<std::filesystem::path> find_executable_native_v1(
     std::string_view name, std::string &error) {
   const std::filesystem::path requested{std::string(name)};

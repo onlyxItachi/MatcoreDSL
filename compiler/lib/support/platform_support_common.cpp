@@ -17,6 +17,61 @@ bool contains_nul(std::string_view text) {
   return text.find('\0') != std::string_view::npos;
 }
 
+constexpr char ascii_lower(char value) noexcept {
+  return value >= 'A' && value <= 'Z'
+             ? static_cast<char>(value + ('a' - 'A'))
+             : value;
+}
+
+bool exact_or_equals_value(std::string_view argument,
+                           std::string_view option) noexcept {
+  return argument == option ||
+         (argument.size() > option.size() &&
+          argument.starts_with(option) && argument[option.size()] == '=');
+}
+
+constexpr auto kCompilerEnvironmentInputs =
+    std::to_array<std::string_view>({
+    "CL",
+    "_CL_",
+    "LINK",
+    "_LINK_",
+    "CCC_OVERRIDE_OPTIONS",
+    "CCC_ADD_ARGS",
+    "CCC_PRINT_OPTIONS",
+    "CCC_PRINT_OPTIONS_FILE",
+    "CCC_PRINT_PHASES",
+    "CCC_PRINT_BINDINGS",
+    "CLANG_CONFIG_PATH",
+    "CLANG_NO_DEFAULT_CONFIG",
+    "LINK_REPRO",
+    "LINK_REPRO_TARGET",
+    "LINK_REPRO_FULLPATHRSP",
+    "LLD_REPRODUCE",
+    "CC_LOG_DIAGNOSTICS",
+    "CC_LOG_DIAGNOSTICS_FILE",
+    "CC_PRINT_HEADERS",
+    "CC_PRINT_HEADERS_FILE",
+    "CC_PRINT_HEADERS_FORMAT",
+    "CC_PRINT_HEADERS_FILTERING",
+    "CC_PRINT_INTERNAL_STAT",
+    "CC_PRINT_INTERNAL_STAT_FILE",
+    "CC_PRINT_OPTIONS",
+    "CC_PRINT_OPTIONS_FILE",
+    "CC_PRINT_PROC_STAT",
+    "CC_PRINT_PROC_STAT_FILE",
+    "CLANG_CRASH_DIAGNOSTICS_DIR",
+    "CLANG_MODULE_CACHE_PATH",
+    "FORCE_CLANG_DIAGNOSTICS_CRASH",
+    "CLANG_TOOLCHAIN_PROGRAM_TIMEOUT",
+});
+
+bool joined_short_output(std::string_view argument,
+                         std::string_view option) noexcept {
+  return argument == option ||
+         (argument.size() > option.size() && argument.starts_with(option));
+}
+
 bool decode_utf8_code_point(std::string_view value, std::size_t &offset,
                             std::uint32_t &code_point) {
   const auto byte = [&](std::size_t index) {
@@ -95,6 +150,11 @@ bool response_argument_valid(std::string_view argument, std::string &error) {
     error = "response-file arguments cannot contain NUL bytes";
     return false;
   }
+  if (argument.find('\r') != std::string_view::npos ||
+      argument.find('\n') != std::string_view::npos) {
+    error = "response-file arguments cannot contain line breaks";
+    return false;
+  }
   return true;
 }
 
@@ -141,6 +201,274 @@ std::string quote_gnu_response_argument(std::string_view argument) {
 }
 
 }  // namespace
+
+bool ascii_case_equal_v1(std::string_view left,
+                         std::string_view right) noexcept {
+  if (left.size() != right.size()) return false;
+  for (std::size_t index = 0; index < left.size(); ++index) {
+    if (ascii_lower(left[index]) != ascii_lower(right[index])) return false;
+  }
+  return true;
+}
+
+std::string_view windows_option_body_v1(
+    std::string_view argument) noexcept {
+  if (argument.size() < 2 ||
+      (argument.front() != '/' && argument.front() != '-')) {
+    return {};
+  }
+  return argument.substr(1);
+}
+
+bool windows_option_equals_v1(std::string_view argument,
+                              std::string_view name) noexcept {
+  return ascii_case_equal_v1(windows_option_body_v1(argument), name);
+}
+
+bool windows_option_starts_with_v1(std::string_view argument,
+                                   std::string_view prefix) noexcept {
+  const std::string_view body = windows_option_body_v1(argument);
+  return body.size() >= prefix.size() &&
+         ascii_case_equal_v1(body.substr(0, prefix.size()), prefix);
+}
+
+bool clang_cl_option_consumes_next_v1(std::string_view argument) noexcept {
+  const std::string_view body = windows_option_body_v1(argument);
+  return argument == "-o" || body == "Fo" || body == "Fe" ||
+         body == "I" || body == "D" || body == "U" || body == "FI" ||
+         body == "imsvc" || body == "external:I" ||
+         body == "diasdkdir" || body == "vctoolsdir" ||
+         body == "vctoolsversion" || body == "winsdkdir" ||
+         body == "winsdkversion" || body == "winsysroot" ||
+         argument == "-isystem" || argument == "-iquote" ||
+         argument == "-include" || argument == "--sysroot" ||
+         argument == "-isysroot" || argument == "--target" ||
+         argument == "-target";
+}
+
+bool clang_cl_option_is_link_context_v1(std::string_view argument) noexcept {
+  const std::string_view body = windows_option_body_v1(argument);
+  return body.starts_with("diasdkdir") ||
+         body.starts_with("vctoolsdir") ||
+         body.starts_with("vctoolsversion") ||
+         body.starts_with("winsdkdir") ||
+         body.starts_with("winsdkversion") ||
+         body.starts_with("winsysroot") ||
+         argument == "--sysroot" || argument == "-isysroot" ||
+         argument.starts_with("--sysroot=") ||
+         (argument.starts_with("-isysroot") && argument.size() > 9) ||
+         argument == "--target" || argument == "-target" ||
+         argument.starts_with("--target=") ||
+         argument.starts_with("-target=");
+}
+
+bool compiler_consumed_value_is_safe_v1(std::string_view value) noexcept {
+  return !value.starts_with('@') && !contains_nul(value);
+}
+
+CompilerArgumentRiskV1 classify_untrusted_compiler_argument_v1(
+    std::string_view argument, bool clang_cl) noexcept {
+  if (argument.starts_with('@')) {
+    return CompilerArgumentRiskV1::opaque_forwarding;
+  }
+  if (argument.starts_with("-Xclang=") || argument == "-mllvm" ||
+      argument.starts_with("-mllvm=") || argument == "-Xassembler" ||
+      argument.starts_with("-Xassembler=") ||
+      argument == "-Xpreprocessor" ||
+      argument.starts_with("-Xpreprocessor=") ||
+      argument.starts_with("-Wa,") || argument.starts_with("-Wp,") ||
+      argument == "--driver-mode" ||
+      argument.starts_with("--driver-mode=")) {
+    return CompilerArgumentRiskV1::opaque_forwarding;
+  }
+  if (clang_cl && windows_option_starts_with_v1(argument, "clang:")) {
+    return CompilerArgumentRiskV1::opaque_forwarding;
+  }
+
+  const std::string_view windows_body = windows_option_body_v1(argument);
+  if (clang_cl && !windows_body.empty()) {
+    const auto windows_exact_starts = [&](std::string_view prefix) {
+      return windows_body.starts_with(prefix);
+    };
+    // clang-cl compiler option case is significant. In particular /FI is a
+    // forced-include input while /Fi names preprocessor output, and /fp:fast
+    // is unrelated to /Fp. Match only documented output-producing spellings.
+    if (windows_exact_starts("Fa") || windows_exact_starts("FA") ||
+        windows_exact_starts("Fd") || windows_exact_starts("Fe") ||
+        windows_exact_starts("Fi") || windows_exact_starts("Fm") ||
+        windows_exact_starts("Fo") || windows_exact_starts("Fp") ||
+        windows_exact_starts("Fr") || windows_exact_starts("FR") ||
+        windows_exact_starts("ifcOutput") ||
+        windows_exact_starts("sourceDependencies") ||
+        windows_exact_starts("doc") ||
+        windows_exact_starts("analyze:log")) {
+      return CompilerArgumentRiskV1::output_producing;
+    }
+    // clang-cl compiler options are case-sensitive. Preserve that grammar:
+    // /C is a preprocessing modifier (not /c), /P is preprocessing (not /p),
+    // and /Tp<file> is not the global /TP mode. Linker options are handled
+    // only after the exact /link marker by the driver.
+    if (windows_body == "c" || windows_body == "C" ||
+        windows_body == "E" || windows_body == "P" ||
+        windows_body == "EP" || windows_body == "LD" ||
+        windows_body == "LDd" || windows_body == "link" ||
+        windows_body == "TC" || windows_body.starts_with("Tc") ||
+        windows_body.starts_with("Tp") || windows_body == "Zs" ||
+        windows_body == "analyze" || windows_body.starts_with("analyze:")) {
+      return CompilerArgumentRiskV1::unsafe_control;
+    }
+    if (windows_body == "interface" ||
+        windows_body == "internalPartition" ||
+        windows_body == "exportHeader" || windows_body == "ifcOnly") {
+      return CompilerArgumentRiskV1::unsafe_control;
+    }
+    if (windows_body == "openmp" || windows_body == "openmp-" ||
+        windows_body.starts_with("openmp:")) {
+      return CompilerArgumentRiskV1::unsafe_control;
+    }
+    if (windows_body == "Zi" || windows_body == "ZI") {
+      return CompilerArgumentRiskV1::output_producing;
+    }
+    if (windows_body == "GL" || windows_body == "GL-") {
+      return CompilerArgumentRiskV1::unsafe_control;
+    }
+    if (windows_body.starts_with("Yc") || windows_body.starts_with("Yu") ||
+        windows_body == "Y-") {
+      return CompilerArgumentRiskV1::unsafe_control;
+    }
+    const bool clang_cl_openmp_option =
+        argument == "-openmp" || argument == "-openmp-" ||
+        argument.starts_with("-openmp:");
+    if ((argument.front() == '-' && argument.starts_with("-o") &&
+         !clang_cl_openmp_option) ||
+        argument == "--analyze" || windows_body == "o" ||
+        windows_body.starts_with("o:")) {
+      return CompilerArgumentRiskV1::output_producing;
+    }
+    if (argument == "-MMD" || argument == "-MF" ||
+        argument.starts_with("-MF") || argument == "-MJ" ||
+        argument.starts_with("-MJ") || argument == "-MQ" ||
+        argument.starts_with("-MQ") ||
+        (argument.starts_with("-MT") && argument != "-MT" &&
+         argument != "-MTd")) {
+      return CompilerArgumentRiskV1::output_producing;
+    }
+  }
+
+  for (const std::string_view option :
+       {"-ftime-trace", "-serialize-diagnostics", "-dependency-file",
+        "-fmodule-output", "-fdiagnostics-serialization-file",
+        "-foptimization-record-file", "-fsave-optimization-record",
+        "-fprofile-instr-generate", "-fprofile-generate",
+        "-fcs-profile-generate", "-fcrash-diagnostics-dir",
+        "-fmodules-cache-path", "-index-store-path", "-save-stats",
+        "-gen-reproducer", "-gsplit-dwarf"}) {
+    if (exact_or_equals_value(argument, option)) {
+      return CompilerArgumentRiskV1::output_producing;
+    }
+  }
+  if (exact_or_equals_value(argument, "-save-temps") ||
+      exact_or_equals_value(argument, "--save-temps") ||
+      argument.starts_with("-gsplit-dwarf") ||
+      argument == "-fprofile-arcs" || argument == "-ftest-coverage" ||
+      argument == "--coverage") {
+    return CompilerArgumentRiskV1::output_producing;
+  }
+  for (const std::string_view option :
+       {"-dumpdir", "-dumpbase", "-auxbase", "-auxbase-strip"}) {
+    if (joined_short_output(argument, option)) {
+      return CompilerArgumentRiskV1::output_producing;
+    }
+  }
+  if (!clang_cl) {
+    for (const std::string_view option : {"-o", "-MF", "-MJ", "-MT", "-MQ"}) {
+      if (joined_short_output(argument, option)) {
+        return CompilerArgumentRiskV1::output_producing;
+      }
+    }
+  }
+
+  if (argument == "-c" || argument == "-S" || argument == "-emit-llvm" ||
+      argument == "-emit-ast" ||
+      argument == "-E" || argument == "-M" || argument == "-MM" ||
+      (!clang_cl && (argument == "-MD" || argument == "-MMD")) ||
+      argument == "-Xclang" ||
+      argument == "-load" || argument == "-###" ||
+      argument == "-x" ||
+      (argument.starts_with("-x") && argument.size() > 2) ||
+      argument == "--precompile" || argument == "-emit-pch" ||
+      argument == "-emit-interface-stubs" ||
+      argument == "-rewrite-objc" || argument == "-rewrite-legacy-objc" ||
+      argument == "-module-file-info" || argument == "-verify-pch" ||
+      argument == "-fsyntax-only" || argument == "-resource-dir" ||
+      argument.starts_with("-resource-dir=") || argument == "-fplugin" ||
+      argument.starts_with("-fplugin=") || argument == "--config" ||
+      argument.starts_with("--config=") || argument == "-ivfsoverlay" ||
+      argument.starts_with("-ivfsoverlay") || argument == "-vfsoverlay" ||
+      argument.starts_with("-vfsoverlay") ||
+      argument.starts_with("-include-pch") ||
+      argument.starts_with("-include-pth") ||
+      argument.starts_with("-fmodule-file") ||
+      argument.starts_with("-fprebuilt-module-path") ||
+      argument == "-fmodules" || argument == "-fcxx-modules" ||
+      argument == "-fmodules-ts" || argument == "-fimplicit-modules" ||
+      argument == "-fimplicit-module-maps" || argument == "-flto" ||
+      argument.starts_with("-flto=") ||
+      argument == "-fopenmp" || argument.starts_with("-fopenmp=") ||
+      argument == "-fpass-plugin" ||
+      argument.starts_with("-fpass-plugin=") ||
+      argument == "-fmodule-map-file" ||
+      argument.starts_with("-fmodule-map-file=") ||
+      argument == "--config-user-dir" ||
+      argument.starts_with("--config-user-dir=") ||
+      argument == "--config-system-dir" ||
+      argument.starts_with("--config-system-dir=")) {
+    return CompilerArgumentRiskV1::unsafe_control;
+  }
+  return CompilerArgumentRiskV1::none;
+}
+
+std::vector<EnvironmentOverrideV1> compiler_environment_sanitization_v1() {
+  std::vector<EnvironmentOverrideV1> result;
+  result.reserve(kCompilerEnvironmentInputs.size());
+  for (const std::string_view name : kCompilerEnvironmentInputs) {
+    result.push_back(EnvironmentOverrideV1{.name = std::string(name),
+                                           .value = std::nullopt});
+  }
+  return result;
+}
+
+std::optional<std::string> poisoned_compiler_environment_v1(
+    std::string &error) {
+  error.clear();
+  for (const std::string_view name : kCompilerEnvironmentInputs) {
+    std::string lookup_error;
+    const std::optional<std::string> value =
+        environment_utf8_v1(name, lookup_error);
+    if (!lookup_error.empty()) {
+      error = "cannot inspect compiler environment variable " +
+              std::string(name) + ": " + lookup_error;
+      return std::nullopt;
+    }
+    if (value) return std::string(name);
+  }
+  return std::nullopt;
+}
+
+std::string_view compiler_argument_risk_message_v1(
+    CompilerArgumentRiskV1 risk) noexcept {
+  switch (risk) {
+    case CompilerArgumentRiskV1::none:
+      return "safe compiler argument";
+    case CompilerArgumentRiskV1::output_producing:
+      return "undeclared output-producing compiler argument";
+    case CompilerArgumentRiskV1::unsafe_control:
+      return "unsafe compiler mode or configuration argument";
+    case CompilerArgumentRiskV1::opaque_forwarding:
+      return "opaque compiler argument forwarding";
+  }
+  return "unknown compiler argument risk";
+}
 
 TempDirectoryV1::TempDirectoryV1(TempDirectoryV1 &&other) noexcept
     : path_(std::move(other.path_)) {
@@ -422,6 +750,47 @@ bool same_file_identity_v1(const FileIdentityV1 &left,
   return left && right && left.kind == right.kind && left.words == right.words;
 }
 
+bool paths_refer_to_same_location_v1(const std::filesystem::path &left,
+                                     const std::filesystem::path &right,
+                                     std::string &error) {
+  error.clear();
+  if (left.empty() || right.empty()) {
+    error = "cannot compare an empty path";
+    return false;
+  }
+  std::error_code equivalent_error;
+  if (std::filesystem::equivalent(left, right, equivalent_error) &&
+      !equivalent_error) {
+    return true;
+  }
+  std::string left_error;
+  const std::filesystem::path normalized_left =
+      normalize_path_v1(left, true, left_error);
+  if (!left_error.empty()) {
+    error = "cannot normalize first path: " + left_error;
+    return false;
+  }
+  std::string right_error;
+  const std::filesystem::path normalized_right =
+      normalize_path_v1(right, true, right_error);
+  if (!right_error.empty()) {
+    error = "cannot normalize second path: " + right_error;
+    return false;
+  }
+  return detail::path_names_equal_native_v1(normalized_left,
+                                             normalized_right, error);
+}
+
+bool prospective_output_path_supported_v1(
+    const std::filesystem::path &path, std::string &error) {
+  error.clear();
+  if (path.empty() || path.filename().empty()) {
+    error = "output path must name a file";
+    return false;
+  }
+  return detail::prospective_output_path_supported_native_v1(path, error);
+}
+
 bool replace_file_atomically_v1(const std::filesystem::path &temporary,
                                 const std::filesystem::path &destination,
                                 std::string &error) {
@@ -486,15 +855,21 @@ std::string encode_response_file_utf8_v1(
   }
 
   std::string output;
-  for (const std::string &argument : arguments) {
+  for (std::size_t index = 0; index < arguments.size(); ++index) {
+    const std::string &argument = arguments[index];
     if (!response_argument_valid(argument, error)) return {};
     if (syntax == ResponseFileSyntaxV1::windows) {
+      // clang-cl uses line boundaries while parsing response files.  Keep the
+      // original argv on one logical command line so separated options such
+      // as `/I path` and `/D value` retain their operands.
+      if (index != 0) output.push_back(' ');
       output += quote_windows_command_line_argument_v1(argument);
     } else {
       output += quote_gnu_response_argument(argument);
+      output.push_back('\n');
     }
-    output.push_back('\n');
   }
+  if (syntax == ResponseFileSyntaxV1::windows) output.push_back('\n');
   return output;
 }
 

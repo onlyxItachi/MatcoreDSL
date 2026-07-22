@@ -1,5 +1,6 @@
 #include "platform_support.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -143,6 +144,192 @@ void test_windows_quoting() {
          "Windows command-line construction preserves UTF-8 and boundaries");
 }
 
+void test_compiler_argument_policy() {
+  using Risk = support::CompilerArgumentRiskV1;
+  expect(support::ascii_case_equal_v1("OuT", "out"),
+         "ASCII option comparison is case-insensitive");
+  expect(support::windows_option_equals_v1("-LiNk", "link"),
+         "Windows option comparison accepts dash and mixed case");
+  expect(support::windows_option_starts_with_v1("/Tcfixture.c", "tc"),
+         "Windows joined option comparison is case-insensitive");
+  expect(support::clang_cl_option_consumes_next_v1("/FI") &&
+             support::clang_cl_option_consumes_next_v1("/imsvc") &&
+             support::clang_cl_option_consumes_next_v1("/external:I") &&
+             support::clang_cl_option_consumes_next_v1("/winsysroot") &&
+             !support::clang_cl_option_consumes_next_v1("/fi") &&
+             support::clang_cl_option_is_link_context_v1("/winsysroot") &&
+             support::clang_cl_option_is_link_context_v1(
+                 "/winsysrootC:\\Windows SDK") &&
+             support::clang_cl_option_is_link_context_v1(
+                 "--sysroot=C:/Windows SDK") &&
+             !support::clang_cl_option_is_link_context_v1("/FI"),
+         "audited clang-cl separated-value arity and propagation are exact");
+  expect(support::compiler_consumed_value_is_safe_v1("ordinary value") &&
+             !support::compiler_consumed_value_is_safe_v1("@nested.rsp"),
+         "nested response expansion is forbidden in consumed values");
+
+  expect(support::classify_untrusted_compiler_argument_v1(
+             "/ClAnG:-serialize-diagnostics", true) ==
+             Risk::opaque_forwarding,
+         "opaque clang-cl forwarding is rejected as one policy class");
+  expect(support::classify_untrusted_compiler_argument_v1(
+             "-Xclang=-load", true) == Risk::opaque_forwarding &&
+             support::classify_untrusted_compiler_argument_v1(
+                 "--driver-mode=g++", true) == Risk::opaque_forwarding &&
+             support::classify_untrusted_compiler_argument_v1(
+                 "-mllvm=untrusted", true) == Risk::opaque_forwarding,
+         "joined cc1 forwarding and driver-mode overrides are rejected");
+  expect(support::classify_untrusted_compiler_argument_v1(
+             "/Fd:sentinel.mdsl", true) == Risk::output_producing,
+         "clang-cl auxiliary output is rejected");
+  expect(support::classify_untrusted_compiler_argument_v1(
+             "-Fo:sentinel.obj", true) == Risk::output_producing &&
+             support::classify_untrusted_compiler_argument_v1(
+                 "-Fd:sentinel.pdb", true) == Risk::output_producing,
+         "dash-prefixed clang-cl auxiliary outputs are rejected");
+  expect(support::classify_untrusted_compiler_argument_v1(
+             "/favor:AMD64", true) == Risk::none,
+         "clang-cl CPU tuning is not confused with /Fa output");
+  expect(support::classify_untrusted_compiler_argument_v1(
+             "/FItrusted-header.h", true) == Risk::none &&
+             support::classify_untrusted_compiler_argument_v1(
+                 "/fp:fast", true) == Risk::none &&
+             support::classify_untrusted_compiler_argument_v1(
+                 "/Fiuntrusted.i", true) == Risk::output_producing,
+         "case-sensitive clang-cl /FI input and /Fi output remain distinct");
+  expect(support::classify_untrusted_compiler_argument_v1(
+             "/C", true) == Risk::unsafe_control &&
+             support::classify_untrusted_compiler_argument_v1(
+                 "/c", true) == Risk::unsafe_control &&
+             support::classify_untrusted_compiler_argument_v1(
+                 "/Tpfixture.cpp", true) == Risk::unsafe_control,
+         "clang-cl compiler-mode policy rejects non-object actions and "
+         "preserves exact option case");
+  expect(support::classify_untrusted_compiler_argument_v1(
+             "-MD", true) == Risk::none &&
+             support::classify_untrusted_compiler_argument_v1(
+                 "-MT", true) == Risk::none &&
+             support::classify_untrusted_compiler_argument_v1(
+                 "-MTd", true) == Risk::none &&
+             support::classify_untrusted_compiler_argument_v1(
+                 "-openmp", true) == Risk::unsafe_control &&
+             support::classify_untrusted_compiler_argument_v1(
+                 "-openmp:experimental", true) == Risk::unsafe_control &&
+             support::classify_untrusted_compiler_argument_v1(
+                 "-openmp-", true) == Risk::unsafe_control &&
+             support::classify_untrusted_compiler_argument_v1(
+                 "-MMD", true) != Risk::none,
+         "clang-cl CRT flags remain legal while unpackageable OpenMP modes "
+         "and GNU dependency outputs fail closed");
+  expect(support::classify_untrusted_compiler_argument_v1(
+             "-TC", true) == Risk::unsafe_control,
+         "dash-prefixed clang-cl language override is rejected");
+  expect(support::classify_untrusted_compiler_argument_v1(
+             "-ftime-trace=sentinel.mdsl", true) ==
+             Risk::output_producing,
+         "Clang time-trace output is rejected");
+  expect(support::classify_untrusted_compiler_argument_v1(
+             "-serialize-diagnostics", false) == Risk::output_producing,
+         "serialized diagnostic output is rejected in GNU mode");
+  expect(support::classify_untrusted_compiler_argument_v1(
+             "-fmodule-output=sentinel.mdsl", false) ==
+             Risk::output_producing,
+         "module output is rejected");
+  expect(support::classify_untrusted_compiler_argument_v1(
+             "-fsanitize=address", true) == Risk::none,
+         "ordinary audited sanitizer selection remains allowed");
+  expect(support::classify_untrusted_compiler_argument_v1(
+                 "-fPIC", true) == Risk::none &&
+             support::classify_untrusted_compiler_argument_v1(
+                 "-fomit-frame-pointer", true) == Risk::none,
+         "ordinary lowercase Clang -f options are not parsed as /F outputs");
+  expect(support::classify_untrusted_compiler_argument_v1(
+             "-fmodules", true) == Risk::unsafe_control &&
+             support::classify_untrusted_compiler_argument_v1(
+                 "/Zi", true) == Risk::output_producing &&
+             support::classify_untrusted_compiler_argument_v1(
+                 "/Z7", true) == Risk::none &&
+             support::classify_untrusted_compiler_argument_v1(
+                 "/GL", true) == Risk::unsafe_control,
+         "implicit module caches, external PDBs, and LTO modes fail closed");
+  expect(support::classify_untrusted_compiler_argument_v1(
+             "-gsplit-dwarf", true) == Risk::output_producing,
+         "split DWARF sidecar output fails closed");
+  expect(support::classify_untrusted_compiler_argument_v1(
+             "-xc++-header", true) == Risk::unsafe_control &&
+             support::classify_untrusted_compiler_argument_v1(
+                 "--precompile", true) == Risk::unsafe_control,
+         "joined language and precompile actions fail closed");
+  expect(support::classify_untrusted_compiler_argument_v1(
+             "/fd/absolute/include", false) == Risk::none,
+         "GNU-mode absolute paths are not parsed as clang-cl options");
+  expect(support::classify_untrusted_compiler_argument_v1(
+             "-fpass-plugin=untrusted.dll", true) != Risk::none,
+         "compiler pass plugins are rejected");
+  expect(support::classify_untrusted_compiler_argument_v1(
+             "--config-user-dir=untrusted", true) == Risk::unsafe_control,
+         "compiler configuration directories are rejected");
+  expect(support::classify_untrusted_compiler_argument_v1(
+             "/Yuattacker.pch", true) == Risk::unsafe_control,
+         "clang-cl precompiled-header controls are rejected");
+
+  const std::vector<support::EnvironmentOverrideV1> sanitization =
+      support::compiler_environment_sanitization_v1();
+  const auto removes = [&](std::string_view name) {
+    return std::any_of(sanitization.begin(), sanitization.end(),
+                       [&](const auto &entry) {
+                         return entry.name == name && !entry.value;
+                       });
+  };
+  expect(removes("CL") && removes("_CL_") && removes("LINK") &&
+             removes("_LINK_") && removes("CCC_OVERRIDE_OPTIONS") &&
+             removes("CLANG_CONFIG_PATH") && removes("CC_PRINT_OPTIONS") &&
+             removes("CC_PRINT_OPTIONS_FILE") && removes("LINK_REPRO") &&
+             removes("LLD_REPRODUCE"),
+         "compiler child environment removes hidden driver/linker inputs");
+}
+
+void test_prospective_path_identity(const std::filesystem::path &directory) {
+  std::string error;
+  const auto first = directory / "Prospective-Output.lib";
+  const auto second = directory / "prospective-output.LIB";
+  const bool same =
+      support::paths_refer_to_same_location_v1(first, second, error);
+  expect(error.empty(), "prospective output path comparison succeeds");
+#if defined(_WIN32)
+  expect(same, "Windows prospective output comparison is case-insensitive");
+  error.clear();
+  expect(support::paths_refer_to_same_location_v1(
+             directory / "prospective-trailing.lib",
+             directory / "prospective-trailing.lib.", error) &&
+             error.empty(),
+         "Windows prospective output comparison normalizes trailing dots");
+  error.clear();
+  expect(support::paths_refer_to_same_location_v1(
+             directory / "prospective-space.lib",
+             directory / "prospective-space.lib ", error) &&
+             error.empty(),
+         "Windows prospective output comparison normalizes trailing spaces");
+  error.clear();
+  expect(!support::prospective_output_path_supported_v1(
+             directory / "NUL.lib", error) &&
+             !error.empty(),
+         "Windows reserved device output is rejected");
+  error.clear();
+  expect(!support::prospective_output_path_supported_v1(
+             directory / "result.lib.", error) &&
+             !error.empty(),
+         "Windows trailing-dot output is rejected");
+#else
+  expect(!same, "case-sensitive hosts preserve distinct prospective paths");
+#endif
+  error.clear();
+  expect(support::prospective_output_path_supported_v1(
+             directory / "ordinary-output.bin", error) &&
+             error.empty(),
+         "ordinary prospective output is supported");
+}
+
 void test_response_files(const std::filesystem::path &directory) {
   const std::vector<std::string> arguments = {
       "-c", "source file.cpp", "quote\"value", "utf8-çığ", ""};
@@ -151,9 +338,9 @@ void test_response_files(const std::filesystem::path &directory) {
       arguments, support::ResponseFileSyntaxV1::windows, error);
   expect(error.empty(), "Windows response-file encoding succeeds");
   expect(windows ==
-             "-c\n\"source file.cpp\"\n\"quote\\\"value\"\n"
-             "utf8-çığ\n\"\"\n",
-         "Windows response-file encoding is deterministic");
+             "-c \"source file.cpp\" \"quote\\\"value\" "
+             "utf8-çığ \"\"\n",
+         "Windows response-file encoding preserves one logical argv line");
 
   const std::string gnu = support::encode_response_file_utf8_v1(
       arguments, support::ResponseFileSyntaxV1::gnu, error);
@@ -178,6 +365,9 @@ void test_response_files(const std::filesystem::path &directory) {
   (void)support::encode_response_file_utf8_v1(
       invalid, support::ResponseFileSyntaxV1::windows, error);
   expect(!error.empty(), "response-file NUL injection is rejected");
+  (void)support::encode_response_file_utf8_v1(
+      {"line\nbreak"}, support::ResponseFileSyntaxV1::windows, error);
+  expect(!error.empty(), "response-file line-boundary injection is rejected");
 }
 
 void test_argument_files(const std::filesystem::path &directory) {
@@ -450,6 +640,8 @@ int support_test_main(int argc, char **argv) {
            "temporary directory exists while owned");
     test_unicode_boundaries();
     test_windows_quoting();
+    test_compiler_argument_policy();
+    test_prospective_path_identity(removed_path);
     test_response_files(removed_path);
     test_argument_files(removed_path);
     test_file_snapshot(removed_path);
