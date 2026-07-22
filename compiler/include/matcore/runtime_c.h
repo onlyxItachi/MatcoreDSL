@@ -648,7 +648,7 @@ matcore_runtime_gemm_f32_execute_context_v2(
 /*
  * Typed reference semantics used before any accelerated BF16 or INT8 variant:
  * BF16 inputs accumulate and output F32. I8 inputs accumulate and output I32;
- * mathematical accumulator overflow is rejected before output mutation.
+ * signed products are exact and accumulation/output are defined modulo 2^32.
  */
 MATCORE_RUNTIME_API matcore_status_v0
 matcore_runtime_gemm_bf16_f32_reference_v1(
