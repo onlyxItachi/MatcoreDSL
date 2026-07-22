@@ -141,12 +141,13 @@ int main() {
   expect(runner_environment.capability_record_version == 2 &&
              runner_environment.topology_record_version == 1 &&
              runner_environment.available_processors > 0 &&
-             !runner_environment.worker_affinity_applied &&
+             runner_environment.worker_affinity_applied &&
              !runner_environment.worker_affinity_user_requested &&
-             !runner_environment.worker_affinity_policy_induced &&
+             runner_environment.worker_affinity_policy_induced &&
              !runner_environment.capability_record.empty() &&
              !runner_environment.topology_record.empty() &&
-             !runner_environment.capability_runtime_validation_source.empty(),
+             runner_environment.capability_runtime_validation_source.find(
+                 "authenticated independently") != std::string::npos,
          "runner exposes versioned capability, topology, and validation-source metadata");
   if (runner_environment.physical_cores >= 2) {
     for (const auto policy : {bench::AffinityPolicyV2::compact,
@@ -178,6 +179,16 @@ int main() {
                    "pinned persistent worker 0") != std::string::npos,
            "serial variants dispatch through pinned worker zero when affinity "
            "is explicitly requested");
+    const auto bound_auto_plan = runner->plan(
+        {64, 64, 64}, 64, 2, "auto", bench::PackingModeV1::include,
+        bench::SmtPolicyV2::physical_cores_only,
+        bench::AffinityPolicyV2::compact);
+    expect(bound_auto_plan.legal &&
+               (bound_auto_plan.selected_variant !=
+                    "cpu.external.openblas.f32.v1" ||
+                bound_auto_plan.actual_threads == 1),
+           "automatic planning permits only single-thread OpenBLAS when "
+           "exact bound-worker placement is active");
   }
   bench::BenchmarkOptionsV1 run_options;
   run_options.profile = bench::ProfileV1::custom;
@@ -300,8 +311,6 @@ int main() {
                parallel_report.results[0].scaling.baseline_variant ==
                    "cpu.native-packed.avx2-fma.f32.v1" &&
                parallel_report.environment.runner.worker_affinity_applied &&
-               !parallel_report.environment.runner
-                    .worker_affinity_user_requested &&
                parallel_report.environment.runner
                    .worker_affinity_policy_induced &&
                parallel_report.environment.runner.execution_context_submissions >

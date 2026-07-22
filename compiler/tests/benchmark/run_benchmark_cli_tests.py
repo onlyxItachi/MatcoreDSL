@@ -523,6 +523,7 @@ def main() -> int:
                 "at least two" in constrained_parallel.stderr
                 or "worker" in constrained_parallel.stderr
                 or "topology" in constrained_parallel.stderr
+                or "not runtime-validated" in constrained_parallel.stderr
             )
     invalid_modes = run(
         [
@@ -719,20 +720,29 @@ def main() -> int:
     else:
         assert "OpenBLAS CBLAS adapter is not linked" in optional_openblas.stderr
 
-    unauthenticated_provider_affinity = run(
+    provider_affinity = subprocess.run(
         [
             str(executable), "--m", "64", "--n", "64", "--k", "64",
             "--variant", "cpu.external.openblas.f32.v1", "--threads", "2",
             "--affinity", "compact",
         ],
-        expected=1,
+        text=True,
+        capture_output=True,
+        check=False,
     )
-    assert (
-        "provider-thread affinity is not authenticated"
-        in unauthenticated_provider_affinity.stderr
-        or "OpenBLAS CBLAS adapter is not linked"
-        in unauthenticated_provider_affinity.stderr
-    )
+    if provider_affinity.returncode == 0:
+        assert "variant=cpu.external.openblas.f32.v1" in provider_affinity.stdout
+        assert "threads=1" in provider_affinity.stdout
+        assert "worker_affinity_applied=true" in provider_affinity.stdout
+    else:
+        assert (
+            "provider-thread affinity is not authenticated"
+            in provider_affinity.stderr
+            or "multi-thread OpenBLAS is unavailable under bound native workers"
+            in provider_affinity.stderr
+            or "OpenBLAS CBLAS adapter is not linked" in provider_affinity.stderr
+            or "not runtime-validated" in provider_affinity.stderr
+        )
 
     print("matcore-bench CLI/JSON contract PASS")
     return 0

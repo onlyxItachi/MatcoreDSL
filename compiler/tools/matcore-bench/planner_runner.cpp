@@ -9,6 +9,7 @@
 #include "cpu_parallel_gemm.h"
 #include "cpu_planner_v3.h"
 #include "cpu_planner_v3_resources.h"
+#include "cpu_runtime_validation.h"
 #include "cpu_topology_v1.h"
 #include "thread_affinity_v1.h"
 
@@ -410,6 +411,7 @@ struct ExecutionContextRecord {
   runtime::CpuExecutionStatusV1 creation_status =
       runtime::CpuExecutionStatusV1::invalid_configuration;
   runtime::CpuWorkerAffinityReportV1 affinity_report;
+  runtime::CpuRuntimeValidationEvidenceV1 validation_evidence;
   planner::CpuPlannerPlacementEvidenceV1 placement;
   std::string diagnostic;
 };
@@ -461,22 +463,15 @@ class PlannerRunner final : public GemmRunnerV1 {
     const auto baseline =
         runtime::discover_cpu_gemm_implementation_resources_v1(probe_problem,
                                                                 1);
-    runtime::CpuRuntimeValidationEvidenceV1 evidence;
-    evidence.packed_avx2_f32_runtime_validated =
-        platform::has_runtime_validated_feature_v2(
-            capabilities_, platform::CpuFeatureV2::avx2) &&
-        platform::has_runtime_validated_feature_v2(
-            capabilities_, platform::CpuFeatureV2::fma);
-    evidence.packed_avx512_f32_runtime_validated =
-        platform::has_runtime_validated_feature_v2(
-            capabilities_, platform::CpuFeatureV2::avx512f) &&
-        platform::has_runtime_validated_feature_v2(
-            capabilities_, platform::CpuFeatureV2::fma);
     const auto resources = runtime::augment_cpu_gemm_implementation_resources_v2(
         probe_problem, baseline,
         probe_context != nullptr ? probe_context->context.get() : nullptr,
-        evidence);
+        probe_context != nullptr
+            ? probe_context->validation_evidence
+            : runtime::CpuRuntimeValidationEvidenceV1{});
     planner::CpuThreadPolicyV1 thread_policy;
+    thread_policy.worker_affinity_active =
+        probe_context != nullptr && probe_context->placement.affinity_applied;
     const auto probe = planner::plan_cpu_gemm_v3(
         probe_problem, capabilities_, topology_, thread_policy, resources,
         planner::CpuGemmRequestV3::automatic, 0,
@@ -491,10 +486,14 @@ class PlannerRunner final : public GemmRunnerV1 {
     result.capability_record += "\nplanner_probe=";
     result.capability_record += diagnostic.data();
     result.capability_runtime_validation_source =
-        "benchmark-process numerical self-test: tiny aligned packed GEMM per "
-        "usable implemented ISA; every emitted measurement is independently "
-        "checked by a double-precision oracle; evidence is local to this "
-        "benchmark run";
+        "benchmark-process numerical self-test: exact persistent-context "
+        "reference, tiled, "
+        "compiler-vectorized, single-thread OpenBLAS, packed AVX2, packed "
+        "AVX-512, two-worker parallel AVX2, and two-worker parallel AVX-512 "
+        "are authenticated independently on the same bound or unbound worker "
+        "context later used for execution; unavailable implementations remain "
+        "false; every emitted measurement is independently checked by a "
+        "double-precision oracle";
     result.topology_record = platform::format_cpu_topology_v1(topology_);
     result.topology_record += "\nprocess_affinity=";
     result.topology_record += topology_restriction_diagnostic_;
@@ -614,24 +613,17 @@ class PlannerRunner final : public GemmRunnerV1 {
     const auto baseline =
         runtime::discover_cpu_gemm_implementation_resources_v1(
             gemm_problem, requested_threads);
-    runtime::CpuRuntimeValidationEvidenceV1 evidence;
-    evidence.packed_avx2_f32_runtime_validated =
-        platform::has_runtime_validated_feature_v2(
-            capabilities_, platform::CpuFeatureV2::avx2) &&
-        platform::has_runtime_validated_feature_v2(
-            capabilities_, platform::CpuFeatureV2::fma);
-    evidence.packed_avx512_f32_runtime_validated =
-        platform::has_runtime_validated_feature_v2(
-            capabilities_, platform::CpuFeatureV2::avx512f) &&
-        platform::has_runtime_validated_feature_v2(
-            capabilities_, platform::CpuFeatureV2::fma);
     const auto resources = runtime::augment_cpu_gemm_implementation_resources_v2(
         gemm_problem, baseline,
         context_record != nullptr ? context_record->context.get() : nullptr,
-        evidence);
+        context_record != nullptr
+            ? context_record->validation_evidence
+            : runtime::CpuRuntimeValidationEvidenceV1{});
     planner::CpuThreadPolicyV1 thread_policy;
     thread_policy.requested_threads = requested_threads;
     thread_policy.allow_smt = smt_policy == SmtPolicyV2::allow_smt;
+    thread_policy.worker_affinity_active =
+        context_record != nullptr && context_record->placement.affinity_applied;
     if (context_record != nullptr && context_record->context != nullptr)
       thread_policy.maximum_threads =
           context_record->context->info().actual_worker_count;
@@ -1171,6 +1163,9 @@ class PlannerRunner final : public GemmRunnerV1 {
           default_context_->context =
               std::shared_ptr<runtime::CpuExecutionContextV1>(
                   std::move(context));
+          default_context_->validation_evidence =
+              runtime::validate_cpu_runtime_variants_v1(
+                  *default_context_->context);
         }
       }
       if (default_context_ == nullptr || default_context_->context == nullptr) {
@@ -1259,6 +1254,8 @@ class PlannerRunner final : public GemmRunnerV1 {
               "placement evidence could not be constructed";
       return nullptr;
     }
+    record->validation_evidence =
+        runtime::validate_cpu_runtime_variants_v1(*record->context);
     record->diagnostic = policy_induced_affinity
                              ? "physical-cores-only SMT policy induced strict "
                                "one-logical-CPU-per-core scheduler affinity; "
