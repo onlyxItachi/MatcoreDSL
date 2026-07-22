@@ -10,6 +10,12 @@
 #include <string_view>
 #include <vector>
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
+
 namespace support = matcore::mdslc::support;
 
 namespace {
@@ -66,6 +72,17 @@ void test_unicode_boundaries() {
 }
 
 int child_main(int argc, char **argv) {
+#if defined(_WIN32)
+  if (argc >= 3 &&
+      std::string_view(argv[1]) == "--support-child-check-handle") {
+    const std::uintptr_t encoded =
+        static_cast<std::uintptr_t>(std::stoull(argv[2]));
+    DWORD flags = 0;
+    return ::GetHandleInformation(reinterpret_cast<HANDLE>(encoded), &flags)
+               ? 88
+               : 0;
+  }
+#endif
   if (argc >= 2 && std::string_view(argv[1]) == "--support-child-silent") {
     return 7;
   }
@@ -278,15 +295,84 @@ void test_process(const std::filesystem::path &directory,
              inherited_result.stdout_text.empty() &&
              inherited_result.stderr_text.empty(),
          "uncaptured standard streams are inherited without synthetic data");
+
+#if defined(_WIN32)
+  SECURITY_ATTRIBUTES security{};
+  security.nLength = sizeof(security);
+  security.bInheritHandle = TRUE;
+  const HANDLE unrelated = ::CreateEventW(&security, TRUE, FALSE, nullptr);
+  expect(unrelated != nullptr,
+         "inheritable handle fixture is created for leak test");
+  if (unrelated != nullptr) {
+    support::ProcessRequestV1 handle_check;
+    handle_check.argv = {
+        path_utf8(self), "--support-child-check-handle",
+        std::to_string(reinterpret_cast<std::uintptr_t>(unrelated))};
+    const support::ProcessResultV1 handle_result =
+        support::run_process_v1(handle_check);
+    expect(handle_result.launched && handle_result.exit_code == 0,
+           "unrelated inheritable handles are excluded from child process");
+    ::CloseHandle(unrelated);
+  }
+#endif
+}
+
+void test_windows_path_shadow(const std::filesystem::path &directory,
+                              const std::filesystem::path &self) {
+#if defined(_WIN32)
+  const std::filesystem::path shadow = directory / "shadow-probe.exe";
+  const std::filesystem::path empty_path = directory / "empty-path";
+  std::error_code filesystem_error;
+  std::filesystem::create_directory(empty_path, filesystem_error);
+  expect(!filesystem_error, "empty PATH fixture directory is created");
+  std::filesystem::copy_file(self, shadow,
+                             std::filesystem::copy_options::overwrite_existing,
+                             filesystem_error);
+  expect(!filesystem_error, "current-directory shadow executable is created");
+  const std::filesystem::path old_current = std::filesystem::current_path();
+  std::string error;
+  const std::optional<std::string> old_path =
+      support::environment_utf8_v1("PATH", error);
+  const std::optional<std::string> empty_path_utf8 =
+      support::path_to_utf8_v1(empty_path, error);
+  const std::wstring empty_path_wide = empty_path.native();
+  if (!filesystem_error && empty_path_utf8) {
+    std::filesystem::current_path(directory, filesystem_error);
+    expect(!filesystem_error, "shadow fixture becomes current directory");
+    expect(::SetEnvironmentVariableW(L"PATH", empty_path_wide.c_str()) != 0,
+           "isolated PATH is installed for shadow test");
+    const std::optional<std::filesystem::path> discovered =
+        support::find_executable_v1("shadow-probe.exe", error);
+    expect(!discovered && !error.empty(),
+           "executable discovery rejects current-directory shadowing");
+    std::filesystem::current_path(old_current, filesystem_error);
+    if (old_path) {
+      const int wide_count = ::MultiByteToWideChar(
+          CP_UTF8, MB_ERR_INVALID_CHARS, old_path->data(),
+          static_cast<int>(old_path->size()), nullptr, 0);
+      std::wstring old_path_wide(static_cast<std::size_t>(wide_count), L'\0');
+      ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, old_path->data(),
+                            static_cast<int>(old_path->size()),
+                            old_path_wide.data(), wide_count);
+      ::SetEnvironmentVariableW(L"PATH", old_path_wide.c_str());
+    } else {
+      ::SetEnvironmentVariableW(L"PATH", nullptr);
+    }
+  }
+#else
+  (void)directory;
+  (void)self;
+#endif
 }
 
 }  // namespace
 
-int main(int argc, char **argv) {
+int support_test_main(int argc, char **argv) {
   if (argc >= 2 &&
       (std::string_view(argv[1]) == "--support-child" ||
        std::string_view(argv[1]) == "--support-child-large" ||
-       std::string_view(argv[1]) == "--support-child-silent")) {
+       std::string_view(argv[1]) == "--support-child-silent" ||
+       std::string_view(argv[1]) == "--support-child-check-handle")) {
     return child_main(argc, argv);
   }
 
@@ -340,6 +426,7 @@ int main(int argc, char **argv) {
     expect(!copy_error, "copied test executable remains executable");
 #endif
     if (!copy_error) test_process(removed_path, copied_self);
+    test_windows_path_shadow(removed_path, *self);
   }
   expect(!std::filesystem::exists(removed_path),
          "temporary directory is removed by ownership scope");
@@ -348,3 +435,24 @@ int main(int argc, char **argv) {
   std::cout << "platform support v1 tests PASS\n";
   return 0;
 }
+
+#if defined(_WIN32)
+int wmain(int argc, wchar_t **argv) {
+  std::string error;
+  const std::optional<std::vector<std::string>> utf8 =
+      support::wide_arguments_to_utf8_v1(argc, argv, error);
+  if (!utf8) {
+    std::cerr << "FAIL: cannot decode test process arguments: " << error
+              << '\n';
+    return 1;
+  }
+  std::vector<char *> narrow;
+  narrow.reserve(utf8->size());
+  for (const std::string &argument : *utf8) {
+    narrow.push_back(const_cast<char *>(argument.c_str()));
+  }
+  return support_test_main(static_cast<int>(narrow.size()), narrow.data());
+}
+#else
+int main(int argc, char **argv) { return support_test_main(argc, argv); }
+#endif

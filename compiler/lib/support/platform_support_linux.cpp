@@ -367,5 +367,27 @@ FileIdentityV1 file_identity_native_v1(const std::filesystem::path &path,
   return identity;
 }
 
+std::vector<FileIdentityV1> path_identity_chain_native_v1(
+    const std::filesystem::path &path, std::string &error) {
+  std::vector<FileIdentityV1> chain;
+  std::filesystem::path current = path.root_path();
+  for (const std::filesystem::path &component : path.relative_path()) {
+    if (component == ".") continue;
+    current /= component;
+    struct stat status {};
+    if (::lstat(current.c_str(), &status) != 0) {
+      error = "lstat failed while capturing path identity: " +
+              std::string(std::strerror(errno));
+      return {};
+    }
+    FileIdentityV1 identity;
+    identity.kind = FileIdentityKindV1::posix_device_inode;
+    identity.words = {static_cast<std::uint64_t>(status.st_dev),
+                      static_cast<std::uint64_t>(status.st_ino)};
+    chain.push_back(identity);
+  }
+  return chain;
+}
+
 }  // namespace detail
 }  // namespace matcore::mdslc::support

@@ -338,10 +338,13 @@ FileSnapshotV1 capture_file_snapshot_v1(const std::filesystem::path &path,
                                         std::string &error) {
   FileSnapshotV1 snapshot;
   error.clear();
-  snapshot.normalized_path = normalize_path_v1(path, true, error);
-  if (!error.empty()) return snapshot;
-
   std::error_code ec;
+  snapshot.normalized_path = std::filesystem::absolute(path, ec);
+  if (ec) {
+    error = "cannot make snapshot path absolute: " + ec.message();
+    return snapshot;
+  }
+
   snapshot.exists = std::filesystem::exists(snapshot.normalized_path, ec);
   if (ec) {
     error = "cannot inspect path existence: " + ec.message();
@@ -385,6 +388,9 @@ FileSnapshotV1 capture_file_snapshot_v1(const std::filesystem::path &path,
   snapshot.last_write_time_ticks = static_cast<std::int64_t>(ticks);
   snapshot.identity =
       detail::file_identity_native_v1(snapshot.normalized_path, error);
+  if (!error.empty()) return snapshot;
+  snapshot.path_identity_chain =
+      detail::path_identity_chain_native_v1(snapshot.normalized_path, error);
   return snapshot;
 }
 

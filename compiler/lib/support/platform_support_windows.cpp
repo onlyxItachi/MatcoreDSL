@@ -4,7 +4,9 @@
 
 #include "platform_support_backend.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <cwchar>
 #include <filesystem>
 #include <limits>
@@ -23,6 +25,8 @@ ProcessLaunchBackendV1 process_launch_backend_v1() noexcept {
 
 namespace detail {
 namespace {
+
+std::string windows_error(DWORD code);
 
 class Handle {
  public:
@@ -52,6 +56,44 @@ class Handle {
 
  private:
   HANDLE value_ = INVALID_HANDLE_VALUE;
+};
+
+class ProcessAttributeList {
+ public:
+  ProcessAttributeList() = default;
+  ProcessAttributeList(const ProcessAttributeList &) = delete;
+  ProcessAttributeList &operator=(const ProcessAttributeList &) = delete;
+  ~ProcessAttributeList() {
+    if (list_ != nullptr) ::DeleteProcThreadAttributeList(list_);
+  }
+
+  bool initialize(std::string &error) {
+    SIZE_T bytes = 0;
+    ::InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+    if (bytes == 0) {
+      error = "cannot size process attribute list: " +
+              windows_error(::GetLastError());
+      return false;
+    }
+    const std::size_t words =
+        (static_cast<std::size_t>(bytes) + sizeof(std::uintptr_t) - 1) /
+        sizeof(std::uintptr_t);
+    storage_.resize(words);
+    list_ = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage_.data());
+    if (!::InitializeProcThreadAttributeList(list_, 1, 0, &bytes)) {
+      error = "cannot initialize process attribute list: " +
+              windows_error(::GetLastError());
+      list_ = nullptr;
+      return false;
+    }
+    return true;
+  }
+
+  LPPROC_THREAD_ATTRIBUTE_LIST get() const noexcept { return list_; }
+
+ private:
+  std::vector<std::uintptr_t> storage_;
+  LPPROC_THREAD_ATTRIBUTE_LIST list_ = nullptr;
 };
 
 std::string windows_error(DWORD code) {
@@ -153,6 +195,36 @@ bool make_pipe(Handle &read_end, Handle &write_end, std::string &error) {
             windows_error(::GetLastError());
     return false;
   }
+  return true;
+}
+
+bool make_inheritable_standard_handle(DWORD standard_handle,
+                                      DWORD null_access, Handle &owned,
+                                      std::string &error) {
+  const HANDLE source = ::GetStdHandle(standard_handle);
+  HANDLE duplicate = INVALID_HANDLE_VALUE;
+  if (source != nullptr && source != INVALID_HANDLE_VALUE) {
+    if (!::DuplicateHandle(::GetCurrentProcess(), source,
+                           ::GetCurrentProcess(), &duplicate, 0, TRUE,
+                           DUPLICATE_SAME_ACCESS)) {
+      error = "cannot duplicate standard handle: " +
+              windows_error(::GetLastError());
+      return false;
+    }
+  } else {
+    SECURITY_ATTRIBUTES security{};
+    security.nLength = sizeof(security);
+    security.bInheritHandle = TRUE;
+    duplicate = ::CreateFileW(L"NUL", null_access,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE, &security,
+                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (duplicate == INVALID_HANDLE_VALUE) {
+      error = "cannot create fallback standard handle: " +
+              windows_error(::GetLastError());
+      return false;
+    }
+  }
+  owned.reset(duplicate);
   return true;
 }
 
@@ -312,16 +384,49 @@ ProcessResultV1 run_process_native_v1(const ProcessRequestV1 &request) {
     return result;
   }
 
-  STARTUPINFOW startup{};
-  startup.cb = sizeof(startup);
-  startup.dwFlags = STARTF_USESTDHANDLES;
-  startup.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
-  startup.hStdOutput = request.capture_stdout
+  Handle child_stdin;
+  Handle child_stdout;
+  Handle child_stderr;
+  if (!make_inheritable_standard_handle(STD_INPUT_HANDLE, GENERIC_READ,
+                                        child_stdin, result.error) ||
+      (!request.capture_stdout &&
+       !make_inheritable_standard_handle(STD_OUTPUT_HANDLE, GENERIC_WRITE,
+                                         child_stdout, result.error)) ||
+      (!request.capture_stderr &&
+       !make_inheritable_standard_handle(STD_ERROR_HANDLE, GENERIC_WRITE,
+                                         child_stderr, result.error))) {
+    return result;
+  }
+
+  STARTUPINFOEXW startup{};
+  startup.StartupInfo.cb = sizeof(startup);
+  startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+  startup.StartupInfo.hStdInput = child_stdin.get();
+  startup.StartupInfo.hStdOutput = request.capture_stdout
       ? stdout_write.get()
-      : ::GetStdHandle(STD_OUTPUT_HANDLE);
-  startup.hStdError = request.capture_stderr
+      : child_stdout.get();
+  startup.StartupInfo.hStdError = request.capture_stderr
       ? stderr_write.get()
-      : ::GetStdHandle(STD_ERROR_HANDLE);
+      : child_stderr.get();
+
+  std::vector<HANDLE> inherited_handles{startup.StartupInfo.hStdInput,
+                                        startup.StartupInfo.hStdOutput,
+                                        startup.StartupInfo.hStdError};
+  std::sort(inherited_handles.begin(), inherited_handles.end());
+  inherited_handles.erase(
+      std::unique(inherited_handles.begin(), inherited_handles.end()),
+      inherited_handles.end());
+  ProcessAttributeList attributes;
+  if (!attributes.initialize(result.error)) return result;
+  if (!::UpdateProcThreadAttribute(
+          attributes.get(), 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+          inherited_handles.data(), inherited_handles.size() * sizeof(HANDLE),
+          nullptr, nullptr)) {
+    result.error = "cannot restrict inherited process handles: " +
+                   windows_error(::GetLastError());
+    return result;
+  }
+  startup.lpAttributeList = attributes.get();
 
   std::optional<std::vector<wchar_t>> environment =
       build_environment_block(request.environment, result.error);
@@ -333,9 +438,9 @@ ProcessResultV1 run_process_native_v1(const ProcessRequestV1 &request) {
   PROCESS_INFORMATION process{};
   if (!::CreateProcessW(
           executable->c_str(), mutable_command.data(), nullptr, nullptr, TRUE,
-          CREATE_UNICODE_ENVIRONMENT,
+          CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
           environment ? static_cast<void *>(environment->data()) : nullptr,
-          working_directory, &startup, &process)) {
+          working_directory, &startup.StartupInfo, &process)) {
     result.error = "CreateProcessW failed: " +
                    windows_error(::GetLastError());
     return result;
@@ -459,26 +564,47 @@ std::optional<std::filesystem::path> find_executable_native_v1(
     return normalize_path_v1(requested, true, error);
   }
 
-  DWORD capacity = ::SearchPathW(nullptr, wide_name->c_str(), L".exe", 0,
-                                 nullptr, nullptr);
-  if (capacity == 0) {
-    error = "executable was not found on PATH: " + std::string(name);
+  const DWORD required = ::GetEnvironmentVariableW(L"PATH", nullptr, 0);
+  if (required == 0) {
+    error = "PATH is unavailable for executable discovery";
     return std::nullopt;
   }
-  std::vector<wchar_t> buffer(static_cast<std::size_t>(capacity) + 1);
-  const DWORD count = ::SearchPathW(nullptr, wide_name->c_str(), L".exe",
-                                    static_cast<DWORD>(buffer.size()),
-                                    buffer.data(), nullptr);
+  std::vector<wchar_t> buffer(required);
+  const DWORD count = ::GetEnvironmentVariableW(
+      L"PATH", buffer.data(), static_cast<DWORD>(buffer.size()));
   if (count == 0 || count >= buffer.size()) {
-    error = "SearchPathW failed: " + windows_error(::GetLastError());
+    error = "cannot read PATH for executable discovery: " +
+            windows_error(::GetLastError());
     return std::nullopt;
   }
-  const std::filesystem::path found(std::wstring(buffer.data(), count));
-  if (!executable_file(found)) {
-    error = "PATH result is not a regular executable file";
-    return std::nullopt;
+  const std::wstring path_value(buffer.data(), count);
+  std::filesystem::path filename(*wide_name);
+  if (!filename.has_extension()) filename += L".exe";
+  std::size_t begin = 0;
+  while (begin <= path_value.size()) {
+    const std::size_t end = path_value.find(L';', begin);
+    std::wstring component = path_value.substr(
+        begin, end == std::wstring::npos ? std::wstring::npos : end - begin);
+    if (component.size() >= 2 && component.front() == L'"' &&
+        component.back() == L'"') {
+      component = component.substr(1, component.size() - 2);
+    }
+    // Empty PATH entries are deliberately skipped: unlike SearchPathW, this
+    // contract never consults the current directory or App Paths.
+    if (!component.empty()) {
+      const std::filesystem::path candidate =
+          std::filesystem::path(component) / filename;
+      if (executable_file(candidate)) {
+        return normalize_path_v1(candidate, true, error);
+      }
+    }
+    if (end == std::wstring::npos) break;
+    begin = end + 1;
   }
-  return normalize_path_v1(found, true, error);
+
+  error = "executable was not found in explicit PATH directories: " +
+          std::string(name);
+  return std::nullopt;
 }
 
 FileIdentityV1 file_identity_native_v1(const std::filesystem::path &path,
@@ -506,6 +632,20 @@ FileIdentityV1 file_identity_native_v1(const std::filesystem::path &path,
       (static_cast<std::uint64_t>(info.nFileIndexHigh) << 32U) |
           static_cast<std::uint64_t>(info.nFileIndexLow)};
   return identity;
+}
+
+std::vector<FileIdentityV1> path_identity_chain_native_v1(
+    const std::filesystem::path &path, std::string &error) {
+  std::vector<FileIdentityV1> chain;
+  std::filesystem::path current = path.root_path();
+  for (const std::filesystem::path &component : path.relative_path()) {
+    if (component == L".") continue;
+    current /= component;
+    FileIdentityV1 identity = file_identity_native_v1(current, error);
+    if (!error.empty()) return {};
+    chain.push_back(identity);
+  }
+  return chain;
 }
 
 }  // namespace detail

@@ -62,6 +62,9 @@ struct FileIdentityV1 {
   constexpr explicit operator bool() const noexcept {
     return kind != FileIdentityKindV1::unavailable;
   }
+
+  friend constexpr bool operator==(const FileIdentityV1 &,
+                                   const FileIdentityV1 &) = default;
 };
 
 struct FileSnapshotV1 {
@@ -72,6 +75,10 @@ struct FileSnapshotV1 {
   std::uint64_t size_bytes = 0;
   std::int64_t last_write_time_ticks = 0;
   FileIdentityV1 identity;
+  // Identity of each path component as traversed, including symlink/reparse
+  // components. This prevents a dependency path from being retargeted while
+  // keeping identical final bytes.
+  std::vector<FileIdentityV1> path_identity_chain;
 };
 
 class TempDirectoryV1 {
