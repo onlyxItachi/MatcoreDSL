@@ -923,10 +923,19 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
 
     if (options.planner_regret) {
       result.planner_regret.requested = true;
-      result.planner_regret.selected_median_seconds =
-          result.timing.median_seconds;
-      double fastest = std::numeric_limits<double>::infinity();
-      for (const std::string &variant : runner.variant_ids()) {
+      struct RegretPassMeasurement {
+        bool attempted = false;
+        bool timing_valid = false;
+        bool correctness_passed = false;
+        double median_seconds = 0.0;
+        std::string reason;
+      };
+
+      const std::vector<std::string> variants = runner.variant_ids();
+      result.planner_regret.candidates.reserve(variants.size());
+      std::vector<bool> measurable;
+      measurable.reserve(variants.size());
+      for (const std::string &variant : variants) {
         RegretCandidateResultV2 candidate;
         candidate.variant = variant;
         const RunnerPlanV1 candidate_plan = runner.plan(
@@ -937,42 +946,109 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
         candidate.reason = candidate_plan.reason;
         candidate.complete_implementation_comparison =
             candidate_plan.complete_implementation_comparison;
-        if (!candidate_plan.legal ||
-            !candidate_plan.complete_implementation_comparison) {
-          result.planner_regret.candidates.push_back(std::move(candidate));
-          continue;
-        }
+        measurable.push_back(candidate_plan.legal &&
+                             candidate_plan.complete_implementation_comparison);
+        result.planner_regret.candidates.push_back(std::move(candidate));
+      }
 
-        if (variant == result.plan.selected_variant) {
-          candidate.timing_valid = result.timing.valid;
-          candidate.correctness_passed = result.correctness.passed;
-          candidate.median_seconds = result.timing.median_seconds;
-          candidate.measurement_reason = result.timing.valid
-                                             ? result.correctness.reason
-                                             : result.timing.rejection_reason;
+      std::vector<RegretPassMeasurement> forward(variants.size());
+      std::vector<RegretPassMeasurement> reverse(variants.size());
+      const auto measure_candidate =
+          [&](std::size_t candidate_index, std::string_view pass_name,
+              RegretPassMeasurement &measurement) -> bool {
+        measurement.attempted = true;
+        BenchmarkOptionsV1 comparison_options = options;
+        comparison_options.profile = ProfileV1::custom;
+        comparison_options.shapes = {result.shape};
+        comparison_options.requested_variant = variants[candidate_index];
+        comparison_options.compare_one_thread = false;
+        comparison_options.planner_regret = false;
+        comparison_options.json_output.clear();
+        BenchmarkReportV1 comparison_report;
+        std::string comparison_error;
+        if (!run_benchmarks_v1(comparison_options, runner, comparison_report,
+                               comparison_error)) {
+          error = "planner-regret " + std::string(pass_name) +
+                  " pass candidate failed for " + variants[candidate_index] +
+                  ": " + comparison_error;
+          return false;
+        }
+        if (comparison_report.results.size() != 1) {
+          error = "planner-regret " + std::string(pass_name) +
+                  " pass produced an unexpected result count for " +
+                  variants[candidate_index];
+          return false;
+        }
+        const auto &measured = comparison_report.results.front();
+        measurement.timing_valid = measured.timing.valid;
+        measurement.correctness_passed = measured.correctness.passed;
+        measurement.median_seconds = measured.timing.median_seconds;
+        if (!measured.timing.valid) {
+          measurement.reason = measured.timing.rejection_reason;
         } else {
-          BenchmarkOptionsV1 comparison_options = options;
-          comparison_options.profile = ProfileV1::custom;
-          comparison_options.shapes = {result.shape};
-          comparison_options.requested_variant = variant;
-          comparison_options.compare_one_thread = false;
-          comparison_options.planner_regret = false;
-          comparison_options.json_output.clear();
-          BenchmarkReportV1 comparison_report;
-          std::string comparison_error;
-          if (!run_benchmarks_v1(comparison_options, runner,
-                                 comparison_report, comparison_error)) {
-            error = "planner-regret candidate failed for " + variant +
-                    ": " + comparison_error;
-            return false;
-          }
-          const auto &measured = comparison_report.results.front();
-          candidate.timing_valid = measured.timing.valid;
-          candidate.correctness_passed = measured.correctness.passed;
-          candidate.median_seconds = measured.timing.median_seconds;
-          candidate.measurement_reason = measured.timing.valid
-                                             ? measured.correctness.reason
-                                             : measured.timing.rejection_reason;
+          measurement.reason = measured.correctness.reason;
+        }
+        return true;
+      };
+
+      // Measure every comparable candidate in stable registry order and then
+      // in the exact reverse order. The normal selected-result measurement
+      // above remains useful as the primary benchmark result, but it is never
+      // reused for regret: selected and alternative candidates receive the
+      // same two-pass treatment.
+      for (std::size_t index = 0; index < variants.size(); ++index) {
+        if (measurable[index] &&
+            !measure_candidate(index, "forward", forward[index]))
+          return false;
+      }
+      for (std::size_t index = variants.size(); index > 0; --index) {
+        const std::size_t candidate_index = index - 1;
+        if (measurable[candidate_index] &&
+            !measure_candidate(candidate_index, "reverse",
+                               reverse[candidate_index]))
+          return false;
+      }
+
+      double fastest = std::numeric_limits<double>::infinity();
+      bool all_balanced_candidates_valid = true;
+      std::size_t selected_index = variants.size();
+      for (std::size_t index = 0; index < variants.size(); ++index) {
+        auto &candidate = result.planner_regret.candidates[index];
+        if (candidate.variant == result.plan.selected_variant)
+          selected_index = index;
+        if (!measurable[index]) continue;
+
+        const auto &forward_measurement = forward[index];
+        const auto &reverse_measurement = reverse[index];
+        candidate.correctness_passed =
+            forward_measurement.correctness_passed &&
+            reverse_measurement.correctness_passed;
+        candidate.timing_valid = forward_measurement.attempted &&
+                                 reverse_measurement.attempted &&
+                                 forward_measurement.timing_valid &&
+                                 reverse_measurement.timing_valid &&
+                                 candidate.correctness_passed;
+        if (candidate.timing_valid) {
+          candidate.median_seconds =
+              std::midpoint(forward_measurement.median_seconds,
+                            reverse_measurement.median_seconds);
+          candidate.measurement_reason =
+              "balanced complete-call timing: equal-weight arithmetic "
+              "midpoint of valid forward and reverse stable-registry-pass "
+              "medians; both passes passed correctness";
+        } else {
+          all_balanced_candidates_valid = false;
+          candidate.measurement_reason =
+              "balanced measurement rejected: forward pass " +
+              (forward_measurement.timing_valid &&
+                       forward_measurement.correctness_passed
+                   ? std::string("valid")
+                   : forward_measurement.reason) +
+              "; reverse pass " +
+              (reverse_measurement.timing_valid &&
+                       reverse_measurement.correctness_passed
+                   ? std::string("valid")
+                   : reverse_measurement.reason);
         }
         if (candidate.timing_valid && candidate.correctness_passed &&
             candidate.median_seconds > 0.0 &&
@@ -980,11 +1056,27 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
           fastest = candidate.median_seconds;
           result.planner_regret.fastest_legal_variant = candidate.variant;
         }
-        result.planner_regret.candidates.push_back(std::move(candidate));
       }
-      if (!result.timing.valid || !result.correctness.passed) {
+
+      const bool selected_balanced_valid =
+          selected_index < result.planner_regret.candidates.size() &&
+          measurable[selected_index] &&
+          result.planner_regret.candidates[selected_index].timing_valid &&
+          result.planner_regret.candidates[selected_index].correctness_passed;
+      if (selected_balanced_valid) {
+        result.planner_regret.selected_median_seconds =
+            result.planner_regret.candidates[selected_index].median_seconds;
+      }
+
+      if (!all_balanced_candidates_valid) {
         result.planner_regret.reason =
-            "selected result is invalid and is excluded from regret";
+            "balanced planner-regret measurement rejected because at least "
+            "one legal complete-call candidate had an invalid or incorrect "
+            "forward/reverse pass";
+      } else if (!selected_balanced_valid) {
+        result.planner_regret.reason =
+            "selected variant has no valid balanced forward/reverse "
+            "complete-call measurement";
       } else if (!std::isfinite(fastest) || fastest <= 0.0) {
         result.planner_regret.reason =
             "no legal complete-call candidate has a valid timing";
@@ -992,10 +1084,13 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
         result.planner_regret.valid = true;
         result.planner_regret.fastest_legal_median_seconds = fastest;
         result.planner_regret.regret =
-            result.timing.median_seconds / fastest;
+            result.planner_regret.selected_median_seconds / fastest;
         result.planner_regret.reason =
-            "selected median divided by fastest legal complete-call median; "
-            "candidate order is the stable planner-v3 registry order";
+            "selected balanced median divided by fastest legal balanced "
+            "complete-call median; every comparable candidate was measured "
+            "in deterministic forward and reverse stable planner-v3 registry "
+            "passes, and each candidate median is the equal-weight "
+            "arithmetic midpoint of its two pass medians";
       }
     }
   }

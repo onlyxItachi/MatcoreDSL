@@ -1,9 +1,11 @@
 #include "benchmark.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -20,6 +22,90 @@ void expect(bool condition, std::string_view message) {
     std::cerr << "FAIL: " << message << '\n';
   }
 }
+
+class RecordingRunner final : public bench::GemmRunnerV1 {
+ private:
+  struct ExecutionState final : bench::RunnerPlanStateV1 {
+    bool fail = false;
+  };
+
+ public:
+  explicit RecordingRunner(bool fail_reverse_selected = false)
+      : fail_reverse_selected_(fail_reverse_selected) {}
+
+  bench::RunnerEnvironmentV1 environment() const override { return {}; }
+
+  std::vector<std::string> variant_ids() const override {
+    return {"test.forward-first", "test.selected", "test.reverse-first"};
+  }
+
+  bench::RunnerPlanV1 plan(
+      const bench::GemmShapeV1 &, std::uint32_t, std::uint32_t,
+      std::string_view requested_variant, bench::PackingModeV1,
+      bench::SmtPolicyV2, bench::AffinityPolicyV2) const override {
+    plan_requests_.emplace_back(requested_variant);
+    bench::RunnerPlanV1 result;
+    result.legal = true;
+    result.selected_variant = requested_variant == "auto"
+                                  ? "test.selected"
+                                  : std::string(requested_variant);
+    result.reason = "recording runner accepts the requested variant";
+    result.diagnostic = "deterministic benchmark-order test double";
+    result.timing_scope = "complete-call";
+    result.complete_implementation_comparison = true;
+    result.planner_version = 3;
+    result.actual_threads = 1;
+    result.workspace_alignment = 1;
+    if (requested_variant == "test.selected") {
+      ++selected_plan_count_;
+      auto state = std::make_shared<ExecutionState>();
+      state->fail = fail_reverse_selected_ && selected_plan_count_ == 3;
+      result.state = std::move(state);
+    }
+    return result;
+  }
+
+  bool prepare(const bench::RunnerPlanV1 &, const bench::GemmShapeV1 &,
+               const float *, const float *, std::span<std::byte>,
+               std::span<std::byte>, bool, std::string &) const override {
+    return true;
+  }
+
+  bool execute(const bench::RunnerPlanV1 &plan,
+               const bench::GemmShapeV1 &shape, const float *lhs,
+               const float *rhs, float *output, std::span<std::byte>,
+               std::span<const std::byte>, bool,
+               std::string &error) const override {
+    const auto state =
+        std::dynamic_pointer_cast<const ExecutionState>(plan.state);
+    if (state != nullptr && state->fail) {
+      error = "recording runner injected reverse-pass failure";
+      return false;
+    }
+    for (std::int64_t row = 0; row < shape.m; ++row) {
+      for (std::int64_t column = 0; column < shape.n; ++column) {
+        float sum = 0.0F;
+        for (std::int64_t inner = 0; inner < shape.k; ++inner) {
+          sum += lhs[row * shape.k + inner] *
+                 rhs[inner * shape.n + column];
+        }
+        output[row * shape.n + column] = sum;
+      }
+    }
+    return true;
+  }
+
+  bool synchronize(std::string &) const override { return true; }
+
+  const std::vector<std::string> &plan_requests() const noexcept {
+    return plan_requests_;
+  }
+
+ private:
+  bool fail_reverse_selected_ = false;
+  mutable std::uint32_t selected_plan_count_ = 0;
+  mutable std::vector<std::string> plan_requests_;
+};
 
 }  // namespace
 
@@ -236,8 +322,59 @@ int main() {
                                   error) &&
              regret_report.results[0].planner_regret.valid &&
              regret_report.results[0].planner_regret.candidates.size() == 8 &&
-             regret_report.results[0].planner_regret.regret >= 1.0,
-         "planner regret measures the stable registry and reports selected over fastest");
+             regret_report.results[0].planner_regret.regret >= 1.0 &&
+             regret_report.results[0].planner_regret.reason.find(
+                 "equal-weight arithmetic midpoint") != std::string::npos,
+         "planner regret balances forward/reverse registry passes and reports "
+         "selected over fastest");
+
+  RecordingRunner recording_runner;
+  auto balanced_options = run_options;
+  balanced_options.requested_variant = "auto";
+  balanced_options.planner_regret = true;
+  balanced_options.measured_iterations = 1;
+  bench::BenchmarkReportV1 balanced_report;
+  expect(bench::run_benchmarks_v1(balanced_options, recording_runner,
+                                  balanced_report, error),
+         "recording runner completes balanced planner-regret measurement");
+  const std::vector<std::string> expected_plan_order = {
+      "auto", "test.forward-first", "test.selected", "test.reverse-first",
+      "test.forward-first", "test.selected", "test.reverse-first",
+      "test.reverse-first", "test.selected", "test.forward-first"};
+  const auto &balanced_regret = balanced_report.results[0].planner_regret;
+  const auto selected_candidate = std::find_if(
+      balanced_regret.candidates.begin(), balanced_regret.candidates.end(),
+      [](const bench::RegretCandidateResultV2 &candidate) {
+        return candidate.variant == "test.selected";
+      });
+  expect(recording_runner.plan_requests() == expected_plan_order,
+         "after stable candidate preflight, regret measurements run in a "
+         "complete forward pass followed by the exact reverse pass");
+  expect(balanced_regret.valid &&
+             balanced_regret.candidates.size() == 3 &&
+             balanced_regret.candidates[0].variant == "test.forward-first" &&
+             balanced_regret.candidates[1].variant == "test.selected" &&
+             balanced_regret.candidates[2].variant == "test.reverse-first" &&
+             selected_candidate != balanced_regret.candidates.end() &&
+             balanced_regret.selected_median_seconds ==
+                 selected_candidate->median_seconds &&
+             selected_candidate->measurement_reason.find(
+                 "forward and reverse stable-registry-pass medians") !=
+                 std::string::npos,
+         "regret output keeps stable registry order and derives the selected "
+         "timing from the same balanced passes as every alternative");
+
+  RecordingRunner reverse_failure_runner(/*fail_reverse_selected=*/true);
+  bench::BenchmarkReportV1 rejected_balanced_report;
+  std::string rejected_balanced_error;
+  expect(!bench::run_benchmarks_v1(balanced_options, reverse_failure_runner,
+                                   rejected_balanced_report,
+                                   rejected_balanced_error) &&
+             rejected_balanced_error.find(
+                 "planner-regret reverse pass candidate failed for "
+                 "test.selected") != std::string::npos,
+         "a failed reverse candidate pass rejects the planner-regret run with "
+         "the pass and variant identified");
 
   const auto rejected_reference_compute = runner->plan(
       {16, 16, 16}, 64, 1, "cpu.reference.f32.v1",
