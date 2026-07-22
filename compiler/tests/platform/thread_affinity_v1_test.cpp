@@ -1,6 +1,7 @@
 #include "thread_affinity_v1.h"
 
 #include <cstdint>
+#include <algorithm>
 #include <iostream>
 #include <limits>
 #include <string_view>
@@ -37,11 +38,19 @@ void status_contract() {
 
 void native_backend_contract() {
   const auto inventory = platform::discover_current_thread_affinity_v1();
+  const auto current = platform::discover_current_logical_cpu_v1();
 #if defined(__linux__)
   expect(inventory.backend_available && inventory.discovery_complete &&
              inventory.platform_error == 0 &&
              !inventory.allowed_logical_cpus.empty(),
          "Linux affinity backend discovers the calling thread's allowed CPUs");
+  expect(current.backend_available && current.discovery_complete &&
+             current.platform_error == 0 &&
+             std::find(inventory.allowed_logical_cpus.begin(),
+                       inventory.allowed_logical_cpus.end(),
+                       current.logical_cpu) !=
+                 inventory.allowed_logical_cpus.end(),
+         "Linux current-CPU discovery authenticates a CPU in the caller's allowed mask");
   if (!inventory.discovery_complete ||
       inventory.allowed_logical_cpus.empty()) {
     return;
@@ -75,6 +84,9 @@ void native_backend_contract() {
   expect(!inventory.backend_available && !inventory.discovery_complete &&
              inventory.allowed_logical_cpus.empty(),
          "unsupported platform reports no affinity backend");
+  expect(!current.backend_available && !current.discovery_complete &&
+             current.logical_cpu == platform::kUnknownLogicalCpuV1,
+         "unsupported platform cannot fabricate a current logical CPU");
   const auto unavailable = platform::apply_current_thread_affinity_v1(0);
   expect(unavailable.status ==
              platform::ThreadAffinityStatusV1::unavailable,

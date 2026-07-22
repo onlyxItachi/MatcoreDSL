@@ -82,6 +82,22 @@ ThreadAffinityInventoryV1 discover_current_thread_affinity_v1() {
   return result;
 }
 
+CurrentLogicalCpuV1 discover_current_logical_cpu_v1() noexcept {
+  CurrentLogicalCpuV1 result;
+#if defined(__linux__)
+  result.backend_available = true;
+  errno = 0;
+  const int logical_cpu = ::sched_getcpu();
+  if (logical_cpu < 0) {
+    result.platform_error = errno != 0 ? errno : ENODEV;
+    return result;
+  }
+  result.logical_cpu = static_cast<std::uint32_t>(logical_cpu);
+  result.discovery_complete = true;
+#endif
+  return result;
+}
+
 std::string_view to_string(ThreadAffinityStatusV1 status) noexcept {
   switch (status) {
     case ThreadAffinityStatusV1::not_requested:
