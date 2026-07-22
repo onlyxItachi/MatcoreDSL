@@ -6,6 +6,7 @@
 #include "cpu_openblas.h"
 #include "cpu_planner_v3.h"
 #include "cpu_planner_v3_resources.h"
+#include "cpu_runtime_validation.h"
 #include "cpu_topology_v1.h"
 #include "platform.h"
 #include "thread_affinity_v1.h"
@@ -496,22 +497,16 @@ int main(int argc, char **argv) {
       runtime::discover_cpu_gemm_implementation_resources_v1(
           problem, options->threads);
   runtime::CpuRuntimeValidationEvidenceV1 evidence;
-  evidence.packed_avx2_f32_runtime_validated =
-      platform::has_runtime_validated_feature_v2(
-          capabilities, platform::CpuFeatureV2::avx2) &&
-      platform::has_runtime_validated_feature_v2(
-          capabilities, platform::CpuFeatureV2::fma);
-  evidence.packed_avx512_f32_runtime_validated =
-      platform::has_runtime_validated_feature_v2(
-          capabilities, platform::CpuFeatureV2::avx512f) &&
-      platform::has_runtime_validated_feature_v2(
-          capabilities, platform::CpuFeatureV2::fma);
+  if (context != nullptr)
+    evidence = runtime::validate_cpu_runtime_variants_v1(*context);
   const auto resources = runtime::augment_cpu_gemm_implementation_resources_v2(
       problem, baseline, context.get(), evidence);
   planner::CpuThreadPolicyV1 thread_policy;
   thread_policy.requested_threads = options->threads;
   thread_policy.maximum_threads = options->maximum_threads;
   thread_policy.allow_smt = options->allow_smt;
+  thread_policy.worker_affinity_active =
+      placement_evidence.affinity_applied;
   const auto plan = planner::plan_cpu_gemm_v3(
       problem, capabilities, topology, thread_policy, resources,
       options->request, 0, placement_evidence);

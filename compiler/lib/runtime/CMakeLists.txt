@@ -88,6 +88,7 @@ add_library(matcore_cpu_backends_v1 STATIC
   cpu_openblas.cpp
   cpu_parallel_gemm.cpp
   cpu_planner_v3_resources.cpp
+  cpu_runtime_validation.cpp
   cpu_gemm_backend.cpp
   cpu_packed_avx2.cpp
   cpu_packed_avx512.cpp
