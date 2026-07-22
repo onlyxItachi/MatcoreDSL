@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <system_error>
 #include <utility>
@@ -93,6 +94,28 @@ bool response_argument_valid(std::string_view argument, std::string &error) {
   if (contains_nul(argument)) {
     error = "response-file arguments cannot contain NUL bytes";
     return false;
+  }
+  return true;
+}
+
+constexpr std::string_view kArgumentFileMagic = "MDSLC-ARGV-V1\r\n";
+constexpr std::uint64_t kMaximumArgumentFileBytes = 64ULL * 1024ULL * 1024ULL;
+constexpr std::uint64_t kMaximumArgumentCount = 1024ULL * 1024ULL;
+
+void append_u64(std::uint64_t value, std::string &output) {
+  for (unsigned shift = 0; shift != 64; shift += 8) {
+    output.push_back(static_cast<char>((value >> shift) & 0xffU));
+  }
+}
+
+bool take_u64(std::string_view input, std::size_t &offset,
+              std::uint64_t &value) {
+  if (input.size() - std::min(input.size(), offset) < 8) return false;
+  value = 0;
+  for (unsigned shift = 0; shift != 64; shift += 8) {
+    value |= static_cast<std::uint64_t>(
+                 static_cast<unsigned char>(input[offset++]))
+             << shift;
   }
   return true;
 }
@@ -483,6 +506,112 @@ bool write_response_file_utf8_v1(
     return false;
   }
   return true;
+}
+
+bool write_argument_file_v1(const std::filesystem::path &path,
+                            const std::vector<std::string> &arguments,
+                            std::string &error) {
+  error.clear();
+  if (arguments.size() > kMaximumArgumentCount) {
+    error = "argument-file count exceeds the v1 limit";
+    return false;
+  }
+  std::string contents(kArgumentFileMagic);
+  append_u64(static_cast<std::uint64_t>(arguments.size()), contents);
+  for (const std::string &argument : arguments) {
+    if (contains_nul(argument) || !valid_utf8(argument)) {
+      error = "argument-file values must be NUL-free well-formed UTF-8";
+      return false;
+    }
+    if (contents.size() > kMaximumArgumentFileBytes - 8 ||
+        argument.size() >
+            kMaximumArgumentFileBytes - 8 - contents.size()) {
+      error = "argument-file payload exceeds the v1 byte limit";
+      return false;
+    }
+    append_u64(static_cast<std::uint64_t>(argument.size()), contents);
+    contents.append(argument);
+  }
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  if (!output) {
+    error = "cannot open argument file for writing";
+    return false;
+  }
+  output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+  output.close();
+  if (!output) {
+    error = "cannot write argument file";
+    return false;
+  }
+  return true;
+}
+
+std::optional<std::vector<std::string>> read_argument_file_v1(
+    const std::filesystem::path &path, std::string &error) {
+  error.clear();
+  const FileSnapshotV1 before = capture_file_snapshot_v1(path, error);
+  if (!error.empty() || !before.exists || !before.regular_file ||
+      !before.identity) {
+    if (error.empty()) error = "argument file is not a regular file";
+    return std::nullopt;
+  }
+  if (before.size_bytes > kMaximumArgumentFileBytes) {
+    error = "argument-file payload exceeds the v1 byte limit";
+    return std::nullopt;
+  }
+  std::ifstream input(before.normalized_path, std::ios::binary);
+  if (!input) {
+    error = "cannot open argument file";
+    return std::nullopt;
+  }
+  const std::string contents((std::istreambuf_iterator<char>(input)),
+                             std::istreambuf_iterator<char>());
+  if (!input.eof() && input.fail()) {
+    error = "cannot read argument file";
+    return std::nullopt;
+  }
+  const FileSnapshotV1 after = capture_file_snapshot_v1(path, error);
+  if (!error.empty() || before.identity != after.identity ||
+      before.path_identity_chain != after.path_identity_chain ||
+      before.size_bytes != after.size_bytes ||
+      before.last_write_time_ticks != after.last_write_time_ticks ||
+      before.normalized_path != after.normalized_path) {
+    if (error.empty()) error = "argument file changed while it was read";
+    return std::nullopt;
+  }
+  if (!std::string_view(contents).starts_with(kArgumentFileMagic)) {
+    error = "argument file has an invalid v1 signature";
+    return std::nullopt;
+  }
+  std::size_t offset = kArgumentFileMagic.size();
+  std::uint64_t count = 0;
+  if (!take_u64(contents, offset, count) || count > kMaximumArgumentCount) {
+    error = "argument file has an invalid count";
+    return std::nullopt;
+  }
+  std::vector<std::string> arguments;
+  arguments.reserve(static_cast<std::size_t>(count));
+  for (std::uint64_t index = 0; index < count; ++index) {
+    std::uint64_t size = 0;
+    if (!take_u64(contents, offset, size) ||
+        size > contents.size() - std::min(contents.size(), offset)) {
+      error = "argument file has a truncated value";
+      return std::nullopt;
+    }
+    const std::string argument = contents.substr(
+        offset, static_cast<std::size_t>(size));
+    offset += static_cast<std::size_t>(size);
+    if (contains_nul(argument) || !valid_utf8(argument)) {
+      error = "argument file contains malformed UTF-8 or NUL";
+      return std::nullopt;
+    }
+    arguments.push_back(argument);
+  }
+  if (offset != contents.size()) {
+    error = "argument file contains trailing bytes";
+    return std::nullopt;
+  }
+  return arguments;
 }
 
 }  // namespace matcore::mdslc::support

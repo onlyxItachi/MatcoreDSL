@@ -160,6 +160,15 @@ bool write_response_file_utf8_v1(
     const std::vector<std::string> &arguments, ResponseFileSyntaxV1 syntax,
     std::string &error);
 
+// A bounded, binary, length-prefixed argv transport for launching helper
+// tools without approaching Windows' CreateProcessW command-line limit.
+bool write_argument_file_v1(const std::filesystem::path &path,
+                            const std::vector<std::string> &arguments,
+                            std::string &error);
+
+std::optional<std::vector<std::string>> read_argument_file_v1(
+    const std::filesystem::path &path, std::string &error);
+
 }  // namespace matcore::mdslc::support
 
 #endif

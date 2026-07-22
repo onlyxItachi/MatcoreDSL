@@ -180,6 +180,28 @@ void test_response_files(const std::filesystem::path &directory) {
   expect(!error.empty(), "response-file NUL injection is rejected");
 }
 
+void test_argument_files(const std::filesystem::path &directory) {
+  const std::filesystem::path path = directory / u8"compiler arguments ü.v1";
+  const std::vector<std::string> expected = {
+      "clang-cl.exe", "/TP", "/DVALUE=space value", "path ü.mdsl", ""};
+  std::string error;
+  expect(support::write_argument_file_v1(path, expected, error) &&
+             error.empty(),
+         "bounded argument file is written");
+  const std::optional<std::vector<std::string>> actual =
+      support::read_argument_file_v1(path, error);
+  expect(actual == expected && error.empty(),
+         "bounded argument file round-trips exact UTF-8 argv");
+
+  const std::filesystem::path malformed = directory / "malformed-args.v1";
+  {
+    std::ofstream output(malformed, std::ios::binary);
+    output << "MDSLC-ARGV-V1\r\ntruncated";
+  }
+  expect(!support::read_argument_file_v1(malformed, error) && !error.empty(),
+         "malformed argument file fails closed");
+}
+
 void test_file_snapshot(const std::filesystem::path &directory) {
   const std::filesystem::path fixture =
       directory / std::filesystem::path(u8"fixture UTF8 ç.txt");
@@ -407,6 +429,7 @@ int support_test_main(int argc, char **argv) {
     test_unicode_boundaries();
     test_windows_quoting();
     test_response_files(removed_path);
+    test_argument_files(removed_path);
     test_file_snapshot(removed_path);
     std::filesystem::path copied_self =
         removed_path / std::filesystem::path(u8"child executable ç");
