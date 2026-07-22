@@ -200,6 +200,11 @@ constexpr std::uint64_t estimated_cost(
       // candidates by 16^3 and on small high-aspect-ratio problems. Keeping a
       // nonzero cost still lets the allocation-free reference win truly tiny
       // calls; this is a deterministic static rule, not runtime autotuning.
+      // The validation provider's SGEMM path has a severe M=1 crossover on
+      // row-major matrices (the compiler-vectorized loop is substantially
+      // faster). Keep that measured case out of automatic OpenBLAS selection;
+      // forced provider requests remain legal and inspectable.
+      if (problem.m == 1) return std::numeric_limits<std::uint64_t>::max();
       return detail::saturating_add(work, 2000);
     case CpuGemmVariantV2::native_packed_avx2_fma:
       return detail::saturating_add(

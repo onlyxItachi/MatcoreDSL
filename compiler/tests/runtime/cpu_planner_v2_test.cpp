@@ -103,9 +103,18 @@ int main() {
   const planner::CpuGemmPlanV2 skinny_auto = planner::plan_cpu_gemm_v2(
       skinny_problem, capabilities, resources,
       planner::CpuGemmRequestV2::automatic);
+  const planner::CpuGemmProblemV1 row_vector_problem{
+      1, 4096, 4096, planner::CpuScalarTypeV1::f32,
+      planner::CpuScalarTypeV1::f32,
+      planner::CpuLayoutV1::row_major_contiguous, 64};
+  const planner::CpuGemmPlanV2 row_vector_auto = planner::plan_cpu_gemm_v2(
+      row_vector_problem, capabilities, resources,
+      planner::CpuGemmRequestV2::automatic);
   if (tiny_auto.selected_id != "cpu.reference.f32.v1" ||
       crossover_auto.selected_id != "cpu.external.openblas.f32.v1" ||
-      skinny_auto.selected_id != "cpu.external.openblas.f32.v1") {
+      skinny_auto.selected_id != "cpu.external.openblas.f32.v1" ||
+      row_vector_auto.selected_id !=
+          "cpu.compiler-vectorized.avx2-fma.f32.v1") {
     std::cerr << "calibrated OpenBLAS crossover rule regressed\n";
     return 1;
   }
