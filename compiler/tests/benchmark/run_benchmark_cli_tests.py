@@ -62,11 +62,11 @@ def main() -> int:
             [
                 str(executable),
                 "--m",
-                "2",
+                "33",
                 "--n",
-                "3",
+                "35",
                 "--k",
-                "2",
+                "37",
                 "--variant",
                 "cpu.reference.f32.v1",
                 "--warmup",
@@ -85,7 +85,7 @@ def main() -> int:
         report = json.loads(output.read_text(encoding="utf-8"))
         require_report_shape(report, schema)
         result = report["results"][0]
-        assert (result["m"], result["n"], result["k"]) == (2, 3, 2)
+        assert (result["m"], result["n"], result["k"]) == (33, 35, 37)
         assert result["selected_variant"] == "cpu.reference.f32.v1"
         assert result["correctness"] is True
         assert result["oracle_mode"] == "full-double"
@@ -139,6 +139,8 @@ def main() -> int:
                 "0",
                 "--iterations",
                 "1",
+                "--timer-floor-us",
+                "1000000",
                 "--json-out",
                 str(cold_output),
             ]
@@ -153,11 +155,11 @@ def main() -> int:
             [
                 str(executable),
                 "--m",
-                "33",
+                "127",
                 "--n",
-                "35",
+                "129",
                 "--k",
-                "37",
+                "131",
                 "--variant",
                 "cpu.native-packed.avx2-fma.f32.v1",
                 "--exclude-packing",
@@ -195,7 +197,7 @@ def main() -> int:
             include_output = pathlib.Path(temporary) / "packed include.json"
             run(
                 [
-                    str(executable), "--m", "33", "--n", "35", "--k", "37",
+                    str(executable), "--m", "127", "--n", "129", "--k", "131",
                     "--variant", "cpu.native-packed.avx2-fma.f32.v1",
                     "--include-packing", "--warmup", "0", "--iterations", "1",
                     "--timer-floor-us", "1", "--guard", "--json-out",
@@ -209,7 +211,7 @@ def main() -> int:
             prepacked_output = pathlib.Path(temporary) / "packed b.json"
             run(
                 [
-                    str(executable), "--m", "33", "--n", "35", "--k", "37",
+                    str(executable), "--m", "127", "--n", "129", "--k", "131",
                     "--variant", "cpu.native-packed.avx2-fma.f32.v1",
                     "--prepack-b", "--warmup", "0", "--iterations", "1",
                     "--timer-floor-us", "1", "--guard", "--json-out",
