@@ -117,8 +117,10 @@ optional OpenBLAS, and native packed AVX2/FMA. The packed runner exposes
 caller-owned workspace and both transient and caller-owned prepacked-B modes;
 the benchmark allocates those resources outside reused-workspace intervals.
 OpenBLAS uses authenticated LP64 CBLAS and process-local thread control. The
-single-thread native candidates reject thread counts greater than one instead
-of pretending to provide parallel execution.
+reference, tiled, and compiler-vectorized candidates report their actual
+single-thread execution even when the request permits more threads; packed v1
+requires exactly one requested thread. None pretends to provide parallel
+execution.
 
 The validation-host calibration and its static planner rules are recorded in
 `docs/performance/cpu/milestone-4-single-thread-calibration-2026-07-22.md`.

@@ -45,6 +45,9 @@ in `context.md`.
   a silent fallback. Control its thread count locally, report the actual
   provider policy, and prevent a nominal single-thread comparison from using
   an uncontrolled provider pool.
+- Reference, tiled, and compiler-vectorized v1 execute with and report one
+  actual thread even when the request permits more; native packed v1 requires
+  exactly one requested thread. None is a parallel implementation.
 - Platform diagnostics use the versioned Linux/Windows/Unknown record. Shared
   code must not acquire scattered POSIX-only process, path, dynamic-library,
   or object-format assumptions. A platform is supported only after its native
