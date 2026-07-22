@@ -97,19 +97,24 @@ struct CpuExecutionContextV1::Impl {
         work_available.wait(lock, [&] {
           return stopping || epoch != observed_epoch;
         });
-        if (stopping) {
+        const bool has_unseen_submission = epoch != observed_epoch;
+        if (stopping && !has_unseen_submission) {
           active_execution_context = nullptr;
           return;
         }
-        observed_epoch = epoch;
+        if (has_unseen_submission) observed_epoch = epoch;
         // `submission` is borrowed from the submitter's stack. Only active
         // workers participate in its lifetime barrier. Decide participation
         // while holding state_mutex and never retain the pointer on an
         // inactive worker: the submitter may return as soon as all active
         // workers complete.
-        if (submission != nullptr &&
+        if (has_unseen_submission && submission != nullptr &&
             worker_index < submission->active_threads) {
           current = submission;
+        }
+        if (stopping && current == nullptr) {
+          active_execution_context = nullptr;
+          return;
         }
       }
 
