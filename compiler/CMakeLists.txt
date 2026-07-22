@@ -365,6 +365,13 @@ install(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MatcoreDSLCompile.cmake"
   DESTINATION "${MATCOREDSL_CMAKE_INSTALL_DIR}"
 )
+if(WIN32)
+  install(
+    FILES
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MatcoreDSLWindowsRuntimePrerequisites.json"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/MatcoreDSL"
+  )
+endif()
 
 if(BUILD_TESTING)
   find_package(Python3 COMPONENTS Interpreter QUIET)

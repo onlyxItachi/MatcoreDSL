@@ -245,7 +245,12 @@ jobs:
 
       - name: Run Release tests
         shell: pwsh
-        run: ctest --test-dir $env:MDSLC_WINDOWS_RELEASE_BUILD --output-on-failure -j1
+        run: |
+          $junit = Join-Path $env:RUNNER_TEMP "mdslc-windows-release-ctest.xml"
+          ctest --test-dir $env:MDSLC_WINDOWS_RELEASE_BUILD `
+            --output-on-failure --output-junit $junit -j1
+          "MDSLC_WINDOWS_RELEASE_CTEST_JUNIT=$junit" | Out-File `
+            -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Install the Windows distribution candidate
         shell: pwsh
@@ -265,6 +270,8 @@ jobs:
             ForEach-Object { $queue.Enqueue($_.FullName) }
           $visited = [System.Collections.Generic.HashSet[string]]::new(
             [System.StringComparer]::OrdinalIgnoreCase)
+          $vcRedistImports = [System.Collections.Generic.HashSet[string]]::new(
+            [System.StringComparer]::OrdinalIgnoreCase)
           while ($queue.Count -gt 0) {
             $binary = $queue.Dequeue()
             if (-not $visited.Add($binary)) { continue }
@@ -273,6 +280,13 @@ jobs:
             foreach ($line in $imports) {
               if ($line -notmatch "Name:\s+([^\\/]+\.dll)") { continue }
               $name = $matches[1]
+              if ($name -match "^(?:vcruntime140d|msvcp140d|concrt140d|vcomp140d|ucrtbased)\.dll$") {
+                throw "$binary imports non-redistributable Debug CRT dependency $name"
+              }
+              if ($name -match "^(?:vcruntime140(?:_[0-9]+)?|msvcp140(?:_[0-9]+|_atomic_wait|_codecvt_ids)?|concrt140|vcomp140)\.dll$") {
+                [void]$vcRedistImports.Add($name)
+                continue
+              }
               $bundled = Join-Path $prefixBin $name
               if (Test-Path $bundled -PathType Leaf) {
                 $queue.Enqueue($bundled)
@@ -322,6 +336,13 @@ jobs:
             archive = $env:LLVM_ARCHIVE_NAME
             archive_sha256 = $env:LLVM_ARCHIVE_SHA256
             files = @($authenticatedDlls)
+            external_prerequisites = @(
+              [ordered]@{
+                id = "microsoft-visual-cpp-2015-2022-redistributable-x64"
+                detected_imports = @($vcRedistImports | Sort-Object)
+                bundled = $false
+              }
+            )
           } | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 `
             (Join-Path $licenseRoot "llvm\runtime-dependencies.json")
           Copy-Item "$env:RAPIDJSON_ROOT\license.txt" (Join-Path $licenseRoot "rapidjson\license.txt")
@@ -330,28 +351,17 @@ jobs:
       - name: Re-run relocated external CMake consumer
         shell: pwsh
         run: |
+          $consumerReport = Join-Path $env:RUNNER_TEMP `
+            "mdslc-windows-consumer-import-report.json"
           python compiler/tests/consumer/run_installed_consumer_test.py `
             --cmake (Get-Command cmake).Source `
             --source-dir compiler/tests/consumer `
             --producer-build-dir $env:MDSLC_WINDOWS_RELEASE_BUILD `
             --test-root (Join-Path $env:RUNNER_TEMP "MDSLC external consumer ünicode") `
-            --cxx-compiler "$env:LLVM_ROOT\bin\clang-cl.exe"
-
-      - name: Validate COFF, PE, DLL, import library and ISA artifacts
-        shell: pwsh
-        run: |
-          # Keep runner-specific environment evidence beside the ZIP, never
-          # inside the relocatable distribution candidate.
-          $report = Join-Path $env:RUNNER_TEMP "mdslc-windows-artifact-report.json"
-          python compiler/tests/windows/run_windows_distribution_validation.py `
-            --source-root $env:GITHUB_WORKSPACE `
-            --build-dir $env:MDSLC_WINDOWS_RELEASE_BUILD `
-            --install-prefix $env:MDSLC_WINDOWS_INSTALL_PREFIX `
-            --llvm-root $env:LLVM_ROOT `
-            --report-out $report `
-            --expected-clang-version 21.1.8
-          "MDSLC_WINDOWS_REPORT=$report" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Get-Content $report
+            --cxx-compiler "$env:LLVM_ROOT\bin\clang-cl.exe" `
+            --windows-import-report-out $consumerReport
+          "MDSLC_WINDOWS_CONSUMER_REPORT=$consumerReport" | Out-File `
+            -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Configure and validate focused Debug runtime
         shell: pwsh
@@ -374,9 +384,31 @@ jobs:
             "-DClang_DIR:PATH=$env:LLVM_ROOT\lib\cmake\clang" `
             "-DMDSLC_DIAGUIDS_LIBRARY:FILEPATH=$env:MDSLC_DIAGUIDS_LIBRARY"
           cmake --build $build --parallel 2
+          $junit = Join-Path $env:RUNNER_TEMP "mdslc-windows-debug-ctest.xml"
           ctest --test-dir $build `
             -R "^(ir\.|platform\.|runtime\.|planner\.)" `
-            --output-on-failure -j1
+            --output-on-failure --output-junit $junit -j1
+          "MDSLC_WINDOWS_DEBUG_CTEST_JUNIT=$junit" | Out-File `
+            -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Validate COFF, PE, DLL, import library and ISA artifacts
+        shell: pwsh
+        run: |
+          # Keep runner-specific environment evidence beside the ZIP, never
+          # inside the relocatable distribution candidate.
+          $report = Join-Path $env:RUNNER_TEMP "mdslc-windows-artifact-report.json"
+          python compiler/tests/windows/run_windows_distribution_validation.py `
+            --source-root $env:GITHUB_WORKSPACE `
+            --build-dir $env:MDSLC_WINDOWS_RELEASE_BUILD `
+            --install-prefix $env:MDSLC_WINDOWS_INSTALL_PREFIX `
+            --llvm-root $env:LLVM_ROOT `
+            --release-ctest-junit $env:MDSLC_WINDOWS_RELEASE_CTEST_JUNIT `
+            --debug-ctest-junit $env:MDSLC_WINDOWS_DEBUG_CTEST_JUNIT `
+            --report-out $report `
+            --expected-clang-version 21.1.8
+          "MDSLC_WINDOWS_REPORT=$report" | Out-File `
+            -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Get-Content $report
 
       - name: Configure and validate focused clang-cl AddressSanitizer
         shell: pwsh
@@ -448,5 +480,8 @@ jobs:
           path: |
             ${{ env.MDSLC_WINDOWS_ZIP }}
             ${{ env.MDSLC_WINDOWS_REPORT }}
+            ${{ env.MDSLC_WINDOWS_CONSUMER_REPORT }}
+            ${{ env.MDSLC_WINDOWS_RELEASE_CTEST_JUNIT }}
+            ${{ env.MDSLC_WINDOWS_DEBUG_CTEST_JUNIT }}
           if-no-files-found: error
           retention-days: 14

@@ -1,12 +1,24 @@
 #!/usr/bin/env python3
 
 import argparse
+import json
 import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
+
+
+VC_REDISTRIBUTABLE_PATTERN = re.compile(
+    r"^(?:vcruntime140(?:_[0-9]+)?|msvcp140(?:_[0-9]+|_atomic_wait|_codecvt_ids)?|"
+    r"concrt140|vcomp140)\.dll$",
+    re.IGNORECASE,
+)
+DEBUG_C_RUNTIME_PATTERN = re.compile(
+    r"^(?:vcruntime140d|msvcp140d|concrt140d|vcomp140d|ucrtbased)\.dll$",
+    re.IGNORECASE,
+)
 
 
 def run(
@@ -33,44 +45,61 @@ def run(
 def make_depfile_paths(path: Path) -> tuple[str, ...]:
     def encode(value: str) -> str:
         value = value.replace("\\", "\\\\").replace("$", "$$")
-        return value.replace(" ", "\\ ").replace("#", "\\#")
+        return (
+            value.replace(" ", "\\ ")
+            .replace("#", "\\#")
+            .replace(":", "\\:")
+        )
 
     return tuple({encode(str(path)), encode(path.as_posix())})
 
 
-def windows_test_environment(
-    prefix_bin: Path,
-    *,
-    compiler_bin: Path | None = None,
-) -> dict[str, str]:
+def is_beneath(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def contains_frontend_toolchain(path: Path) -> bool:
+    """Identify PATH entries capable of masking a missing packaged frontend DLL."""
+
+    if not path.is_dir():
+        return False
+    probes = (
+        "clang-cl.exe",
+        "clang.exe",
+        "clang-cpp.dll",
+        "libclang.dll",
+        "LLVM.dll",
+        "LLVM-C.dll",
+    )
+    return any((path / probe).is_file() for probe in probes)
+
+
+def windows_test_environment(prefix_bin: Path) -> dict[str, str]:
     """Build an explicit Windows test PATH without inherited LLVM leakage.
 
     The installed tools and runtime are tested with only their relocated bin
     directory plus the existing Windows/Visual Studio tool paths.  Compiler
-    phases additionally receive the one audited compiler directory passed by
-    the caller.  LLVM_ROOT is never inherited implicitly, so a missing packaged
-    frontend DLL cannot be satisfied accidentally by the CI extraction tree.
+    phases receive a separately staged compiler directory later. LLVM_ROOT and
+    every inherited PATH entry containing a Clang/LLVM frontend are removed, so
+    a missing packaged frontend DLL cannot be satisfied accidentally.
     """
 
     environment = os.environ.copy()
     llvm_root_text = environment.pop("LLVM_ROOT", "")
     llvm_root = Path(llvm_root_text).resolve() if llvm_root_text else None
 
-    def is_beneath(path: Path, root: Path) -> bool:
-        try:
-            path.resolve().relative_to(root.resolve())
-            return True
-        except (OSError, ValueError):
-            return False
-
     entries = [prefix_bin.resolve()]
-    if compiler_bin is not None:
-        entries.append(compiler_bin.resolve())
     for spelling in environment.get("PATH", "").split(os.pathsep):
         if not spelling:
             continue
         candidate = Path(spelling).resolve()
         if llvm_root is not None and is_beneath(candidate, llvm_root):
+            continue
+        if contains_frontend_toolchain(candidate):
             continue
         entries.append(candidate)
 
@@ -86,6 +115,146 @@ def windows_test_environment(
     return environment
 
 
+def coff_import_names(readobj: Path, binary: Path) -> list[str]:
+    inspected = run(
+        [str(readobj), "--coff-imports", str(binary)],
+        capture=True,
+    ).stdout
+    return sorted(
+        set(
+            re.findall(
+                r"\bName:\s+([^\r\n\\/]+\.dll)\b",
+                inspected,
+                re.IGNORECASE,
+            )
+        ),
+        key=str.casefold,
+    )
+
+
+def classify_windows_import(name: str) -> str:
+    """Classify an unbundled import without treating all System32 DLLs alike."""
+
+    if DEBUG_C_RUNTIME_PATTERN.fullmatch(name):
+        return "debug-c-runtime"
+    if VC_REDISTRIBUTABLE_PATTERN.fullmatch(name):
+        return "vc-redist-prerequisite"
+    lowered = name.casefold()
+    if lowered.startswith(("api-ms-win-", "ext-ms-win-")):
+        return "windows-api-set"
+    if lowered == "ucrtbase.dll":
+        return "windows-ucrt"
+    system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    if (system_root / "System32" / name).is_file():
+        return "windows-system"
+    return "unresolved"
+
+
+def validate_recursive_windows_imports(
+    readobj: Path,
+    prefix_bin: Path,
+    roots: list[Path],
+) -> dict[str, object]:
+    """Prove imports without consulting inherited PATH lookup."""
+
+    bundled = {
+        path.name.casefold(): path
+        for path in prefix_bin.iterdir()
+        if path.is_file() and path.suffix.casefold() in {".exe", ".dll"}
+    }
+    pending = list(roots)
+    visited: set[str] = set()
+    graph: dict[str, list[str]] = {}
+    system_dependencies: set[str] = set()
+    vc_redist_dependencies: set[str] = set()
+    while pending:
+        binary = pending.pop()
+        identity = os.path.normcase(str(binary.resolve()))
+        if identity in visited:
+            continue
+        visited.add(identity)
+        imports = coff_import_names(readobj, binary)
+        graph[str(binary)] = imports
+        for name in imports:
+            packaged = bundled.get(name.casefold())
+            if packaged is not None:
+                pending.append(packaged)
+                continue
+            classification = classify_windows_import(name)
+            if classification == "vc-redist-prerequisite":
+                vc_redist_dependencies.add(name)
+                continue
+            if classification.startswith("windows-"):
+                system_dependencies.add(name)
+                continue
+            if classification == "debug-c-runtime":
+                raise RuntimeError(
+                    f"release distribution imports non-redistributable debug CRT {name}: "
+                    f"{binary}"
+                )
+            raise RuntimeError(
+                f"installed binary imports {name}, which is neither bundled nor an "
+                f"explicit Windows/VC runtime prerequisite: {binary}"
+            )
+    return {
+        "schema": "matcore-windows-consumer-import-report-v1",
+        "roots": [str(path) for path in roots],
+        "graph": dict(sorted(graph.items())),
+        "windows_system_dependencies": sorted(system_dependencies, key=str.casefold),
+        "vc_redist_prerequisites": sorted(vc_redist_dependencies, key=str.casefold),
+    }
+
+
+def stage_windows_compiler(compiler: Path, readobj: Path, test_root: Path) -> Path:
+    """Stage clang-cl, archive helpers and builtin headers without LLVM DLLs."""
+
+    stage_root = test_root / "compiler-only"
+    stage_bin = stage_root / "bin"
+    stage_bin.mkdir(parents=True)
+    staged_compiler = stage_bin / compiler.name
+    shutil.copy2(compiler, staged_compiler)
+
+    staged_tools = [staged_compiler]
+    for helper_name, required in (("llvm-lib.exe", True), ("llvm-config.exe", False)):
+        helper = compiler.parent / helper_name
+        if not helper.is_file():
+            if required:
+                raise RuntimeError(
+                    f"compiler-only staging requires adjacent {helper_name}: {helper}"
+                )
+            continue
+        staged_helper = stage_bin / helper_name
+        shutil.copy2(helper, staged_helper)
+        staged_tools.append(staged_helper)
+
+    for staged_tool in staged_tools:
+        tool_imports = coff_import_names(readobj, staged_tool)
+        forbidden = [
+            name
+            for name in tool_imports
+            if classify_windows_import(name)
+            not in {
+                "vc-redist-prerequisite",
+                "windows-api-set",
+                "windows-ucrt",
+                "windows-system",
+            }
+        ]
+        if forbidden:
+            raise RuntimeError(
+                f"{staged_tool.name} cannot be staged without non-system "
+                f"toolchain DLLs: {forbidden}"
+            )
+
+    resource = run([str(compiler), "--print-resource-dir"], capture=True).stdout.strip()
+    resource_dir = Path(resource).resolve()
+    if not resource_dir.is_dir():
+        raise RuntimeError(f"clang-cl reported a missing resource directory: {resource_dir}")
+    staged_resource = stage_root / "lib" / "clang" / resource_dir.name
+    shutil.copytree(resource_dir, staged_resource)
+    return staged_compiler
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cmake", required=True)
@@ -93,6 +262,7 @@ def main() -> int:
     parser.add_argument("--producer-build-dir", required=True)
     parser.add_argument("--test-root", required=True)
     parser.add_argument("--cxx-compiler", required=True)
+    parser.add_argument("--windows-import-report-out")
     args = parser.parse_args()
     is_windows = os.name == "nt"
     executable_suffix = ".exe" if is_windows else ""
@@ -138,6 +308,10 @@ def main() -> int:
             [
                 prefix / "bin" / "matcore_runtime.dll",
                 prefix / "lib" / "matcore_runtime.lib",
+                prefix
+                / "share"
+                / "MatcoreDSL"
+                / "MatcoreDSLWindowsRuntimePrerequisites.json",
             ]
         )
     else:
@@ -154,10 +328,67 @@ def main() -> int:
     benchmark = prefix / "bin" / f"matcore-bench{executable_suffix}"
     installed_environment = os.environ.copy()
     build_environment = os.environ.copy()
+    test_compiler = Path(args.cxx_compiler).resolve()
+    windows_import_report: dict[str, object] | None = None
     if is_windows:
+        llvm_readobj = test_compiler.parent / "llvm-readobj.exe"
+        if not llvm_readobj.is_file():
+            raise RuntimeError(
+                f"Windows installed-consumer validation requires {llvm_readobj}"
+            )
+
+        prerequisite_manifest_path = (
+            prefix
+            / "share"
+            / "MatcoreDSL"
+            / "MatcoreDSLWindowsRuntimePrerequisites.json"
+        )
+        prerequisite_manifest = json.loads(
+            prerequisite_manifest_path.read_text(encoding="utf-8")
+        )
+        if (
+            prerequisite_manifest.get("schema")
+            != "matcore-windows-runtime-prerequisites-v1"
+            or prerequisite_manifest.get("release_runtime_model")
+            != "dynamic-msvc-runtime"
+            or not any(
+                prerequisite.get("id")
+                == "microsoft-visual-cpp-2015-2022-redistributable-x64"
+                for prerequisite in prerequisite_manifest.get(
+                    "external_prerequisites", []
+                )
+            )
+        ):
+            raise RuntimeError(
+                f"installed Windows runtime prerequisite manifest is invalid: "
+                f"{prerequisite_manifest_path}"
+            )
+
+        # This gate runs before any installed executable. It proves that no
+        # frontend DLL can be borrowed from the compiler or inherited PATH.
+        windows_import_report = validate_recursive_windows_imports(
+            llvm_readobj,
+            prefix / "bin",
+            [
+                driver,
+                extractor,
+                planner,
+                benchmark,
+                prefix / "bin" / "matcore_runtime.dll",
+            ],
+        )
+        windows_import_report["declared_runtime_prerequisites"] = (
+            prerequisite_manifest
+        )
+        test_compiler = stage_windows_compiler(
+            Path(args.cxx_compiler).resolve(), llvm_readobj, test_root
+        )
         installed_environment = windows_test_environment(prefix / "bin")
-        build_environment = windows_test_environment(
-            prefix / "bin", compiler_bin=Path(args.cxx_compiler).resolve().parent
+        build_environment = installed_environment.copy()
+        build_environment["PATH"] = (
+            str(test_compiler.parent)
+            + os.pathsep
+            + build_environment.get("PATH", "")
         )
     extractor_bytes = extractor.read_bytes()
     if any(
@@ -234,9 +465,9 @@ def main() -> int:
         encoding="utf-8",
     )
     extraction_compile_options = (
-        [str(Path(args.cxx_compiler).resolve()), "/TP", "/std:c++20"]
+        [str(test_compiler), "/TP", "/std:c++20"]
         if is_windows
-        else [str(Path(args.cxx_compiler).resolve()), "-x", "c++", "-std=c++20"]
+        else [str(test_compiler), "-x", "c++", "-std=c++20"]
     )
     untrusted = subprocess.run(
         [
@@ -301,7 +532,7 @@ def main() -> int:
             "-G",
             "Ninja",
             f"-DCMAKE_PREFIX_PATH={prefix}",
-            f"-DCMAKE_CXX_COMPILER={args.cxx_compiler}",
+            f"-DCMAKE_CXX_COMPILER={test_compiler}",
         ],
         environment=build_environment,
     )
@@ -310,6 +541,22 @@ def main() -> int:
         environment=build_environment,
     )
     executable = build / f"matcore_consumer{executable_suffix}"
+    if is_windows:
+        assert windows_import_report is not None
+        executable_import_report = validate_recursive_windows_imports(
+            llvm_readobj, prefix / "bin", [executable]
+        )
+        windows_import_report["consumer"] = executable_import_report
+        report_path = (
+            Path(args.windows_import_report_out).resolve()
+            if args.windows_import_report_out
+            else test_root / "windows-consumer-import-report.json"
+        )
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(
+            json.dumps(windows_import_report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     initial_run = run(
         [str(executable)], capture=True, environment=installed_environment
     )
