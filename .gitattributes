@@ -1,0 +1,3 @@
+# Deterministic Matcore IR byte-golden fixtures must not inherit a Windows
+# checkout's CRLF conversion policy.
+*.golden.json text eol=lf

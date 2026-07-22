@@ -23,6 +23,14 @@ namespace {
 
 int failures = 0;
 
+constexpr std::string_view native_line_ending() noexcept {
+#if defined(_WIN32)
+  return "\r\n";
+#else
+  return "\n";
+#endif
+}
+
 void expect(bool condition, std::string_view message) {
   if (!condition) {
     std::cerr << "FAIL: " << message << '\n';
@@ -75,13 +83,10 @@ void test_unicode_boundaries() {
 int child_main(int argc, char **argv) {
 #if defined(_WIN32)
   if (argc >= 3 &&
-      std::string_view(argv[1]) == "--support-child-check-handle") {
+      std::string_view(argv[1]) == "--support-child-signal-event") {
     const std::uintptr_t encoded =
         static_cast<std::uintptr_t>(std::stoull(argv[2]));
-    DWORD flags = 0;
-    return ::GetHandleInformation(reinterpret_cast<HANDLE>(encoded), &flags)
-               ? 88
-               : 0;
+    return ::SetEvent(reinterpret_cast<HANDLE>(encoded)) != FALSE ? 88 : 0;
   }
 #endif
   if (argc >= 2 && std::string_view(argv[1]) == "--support-child-silent") {
@@ -434,8 +439,12 @@ void test_file_snapshot(const std::filesystem::path &directory) {
   const std::filesystem::path normalized = support::normalize_path_v1(
       nested / ".." / fixture.filename(), true, error);
   expect(error.empty(), "path normalization succeeds");
-  expect(normalized == first.normalized_path,
-         "normalization resolves lexical parent components");
+  error.clear();
+  expect(support::paths_refer_to_same_location_v1(
+             normalized, first.normalized_path, error) &&
+             error.empty(),
+         "normalization resolves lexical parent components without changing "
+         "snapshot spellings");
 
   const support::FileSnapshotV1 invalid =
       support::capture_file_snapshot_v1({}, error);
@@ -479,24 +488,30 @@ void test_process(const std::filesystem::path &directory,
   request.working_directory = directory;
   request.environment = {{"MDSLC_SUPPORT_TEST_ENV", "value with spaces-çığ"}};
   const support::ProcessResultV1 result = support::run_process_v1(request);
+  const std::string line_ending(native_line_ending());
   expect(result.launched, "vector-argv child process launches without a shell");
   expect(result.error.empty(), "child process has no launch/wait error");
   expect(result.exit_code == 23, "child exit status is propagated");
-  expect(result.stdout_text.find("ENV:value with spaces-çığ\n") !=
+  expect(result.stdout_text.find("ENV:value with spaces-çığ" +
+                                 line_ending) !=
              std::string::npos,
          "child environment override preserves UTF-8 and spaces");
-  expect(result.stdout_text.find("ARG:11:space value\n") != std::string::npos,
+  expect(result.stdout_text.find("ARG:11:space value" + line_ending) !=
+             std::string::npos,
          "space-containing argument remains one argument");
-  expect(result.stdout_text.find("ARG:11:quote\"value\n") != std::string::npos,
+  expect(result.stdout_text.find("ARG:11:quote\"value" + line_ending) !=
+             std::string::npos,
          "quote-containing argument round-trips");
-  expect(result.stdout_text.find("ARG:11:utf8-çığ\n") != std::string::npos,
+  expect(result.stdout_text.find("ARG:11:utf8-çığ" + line_ending) !=
+             std::string::npos,
          "UTF-8 argument round-trips");
-  expect(result.stdout_text.find("ARG:10:semi;&|$()\n") != std::string::npos,
+  expect(result.stdout_text.find("ARG:10:semi;&|$()" + line_ending) !=
+             std::string::npos,
          "shell metacharacters remain inert argument bytes");
-  expect(result.stdout_text.find("CWD:" + path_utf8(directory) + "\n") !=
+  expect(result.stdout_text.find("CWD:" + path_utf8(directory) + line_ending) !=
              std::string::npos,
          "requested working directory is applied");
-  expect(result.stderr_text == "child-stderr\n",
+  expect(result.stderr_text == "child-stderr" + line_ending,
          "stderr is captured separately");
 
   support::ProcessRequestV1 large;
@@ -550,11 +565,13 @@ void test_process(const std::filesystem::path &directory,
   if (unrelated != nullptr) {
     support::ProcessRequestV1 handle_check;
     handle_check.argv = {
-        path_utf8(self), "--support-child-check-handle",
+        path_utf8(self), "--support-child-signal-event",
         std::to_string(reinterpret_cast<std::uintptr_t>(unrelated))};
     const support::ProcessResultV1 handle_result =
         support::run_process_v1(handle_check);
-    expect(handle_result.launched && handle_result.exit_code == 0,
+    const DWORD event_state = ::WaitForSingleObject(unrelated, 0);
+    expect(handle_result.launched && handle_result.exit_code == 0 &&
+               event_state == WAIT_TIMEOUT,
            "unrelated inheritable handles are excluded from child process");
     ::CloseHandle(unrelated);
   }
@@ -616,7 +633,7 @@ int support_test_main(int argc, char **argv) {
       (std::string_view(argv[1]) == "--support-child" ||
        std::string_view(argv[1]) == "--support-child-large" ||
        std::string_view(argv[1]) == "--support-child-silent" ||
-       std::string_view(argv[1]) == "--support-child-check-handle")) {
+       std::string_view(argv[1]) == "--support-child-signal-event")) {
     return child_main(argc, argv);
   }
 
