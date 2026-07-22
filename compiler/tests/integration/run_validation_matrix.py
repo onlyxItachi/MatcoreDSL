@@ -815,13 +815,21 @@ def execute_case(context: Context, case: dict[str, object], work: Path) -> None:
         require(
             exported_names
             == [
+                "matcore_runtime_cpu_execution_context_create_v1",
+                "matcore_runtime_cpu_execution_context_destroy_v1",
+                "matcore_runtime_cpu_execution_context_query_v1",
+                "matcore_runtime_gemm_bf16_f32_reference_v1",
+                "matcore_runtime_gemm_f32_context_workspace_size_v2",
+                "matcore_runtime_gemm_f32_execute_context_v2",
                 "matcore_runtime_gemm_f32_execute_prepacked_b_v1",
                 "matcore_runtime_gemm_f32_execute_v1",
                 "matcore_runtime_gemm_f32_prepack_b_v1",
                 "matcore_runtime_gemm_f32_prepacked_b_size_v1",
                 "matcore_runtime_gemm_f32_v0",
                 "matcore_runtime_gemm_f32_workspace_size_v1",
+                "matcore_runtime_gemm_i8_i32_reference_v1",
                 "matcore_runtime_plan_gemm_f32_v1",
+                "matcore_runtime_query_cpu_capabilities_v2",
             ],
             f"unexpected runtime exports: {exported!r}",
         )
