@@ -1,6 +1,7 @@
 # ADR-0008: MDSLC Advanced CPU Backend v2
 
-Status: Accepted for Milestone 5 implementation
+Status: Accepted; implementation complete on the Milestone 5 branch, final
+acceptance pending
 
 Date: 2026-07-22
 
@@ -114,6 +115,33 @@ compatibility phase using clang-cl/MSVC ABI, COFF/PE, a runtime DLL/import
 library, installed consumer, paths containing spaces, and a CI-produced ZIP.
 Windows limitations are reported separately and do not convert Linux evidence
 into Windows claims.
+
+## Implemented candidate and evidence boundary
+
+The Milestone 5 integration branch implements the decisions above without
+changing the valid-C++ source contract or removing an existing C ABI symbol.
+Its F32 planner-v3 registry contains all five Milestone 4 candidates plus
+packed AVX-512, parallel AVX2, and parallel AVX-512. The additive public
+execution-context and typed-reference interfaces bring the installed runtime
+surface to exactly 15 exported C functions.
+
+| Area | Implemented and focused-validation state |
+| --- | --- |
+| Capability v2 | Hardware, OS state, compiler, implementation, and physical runtime-validation domains are distinct and fail closed. |
+| AVX2/FMA F32 | Packed and persistent-parallel variants executed on the declared Linux host; exact YMM packed-FMA artifact checks pass. |
+| AVX-512F/FMA F32 | Packed and persistent-parallel variants executed on the declared Linux host; exact ZMM packed-FMA artifact checks pass. |
+| Execution context | Persistent workers, requested/actual thread reporting, deterministic row bands, explicit per-worker workspace, affinity policy, and mutually exclusive native/OpenBLAS pools are implemented. |
+| Topology/NUMA | One physical Linux NUMA node is discovered and exercised; multi-node planning is synthetic-only and performs no page placement or migration. |
+| BF16 and I8 | BF16-to-F32 and I8-to-I32 typed reference semantics, IR contracts, oracles, and C entry points are implemented. |
+| Accelerated low precision | AVX-512 BF16, AVX-512 VNNI, AMX-BF16, and AMX-INT8 are not implemented or runtime-validated. The host exposes no AMX. |
+| Windows | Frontend, COFF/PE artifacts, runtime DLL/import library, planner, package/consumer, and ZIP are unvalidated and unproduced. |
+
+This table records an implementation-complete Linux candidate and focused
+evidence, not final milestone acceptance. Fresh exact-tip Release/Debug and
+sanitizer gates, the whole-diff independent review, hosted checks, normal merge,
+issue closure, and the immutable tag remain required. The public opaque handle
+is still destroyed exactly once; only the internal C++ `shutdown()` operation
+is repeat-safe.
 
 ## Rejected alternatives
 

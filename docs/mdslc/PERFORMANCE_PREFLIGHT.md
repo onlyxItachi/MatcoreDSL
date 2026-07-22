@@ -155,5 +155,8 @@ OpenBLAS adapter. Current memory pressure makes low-parallelism builds (`-j2`)
 and explicit benchmark memory caps mandatory. At the time of this preflight,
 AVX-512, BF16, persistent parallelism, topology-aware planning, and Windows
 runtime validation were separate Milestone 5 or deferred Windows gates. The
-Linux Milestone 5 implementation later addressed the first four; Windows
-runtime validation remains a separate focused phase.
+Linux Milestone 5 branch later implemented AVX-512F/FMA F32, typed BF16-to-F32
+and I8-to-I32 reference semantics, persistent native parallelism, and topology
+planning. It did not add optimized AVX-512 BF16, VNNI, AMX-BF16, or AMX-INT8,
+and it did not physically validate multi-node NUMA. Windows runtime validation
+remains a separate focused phase.

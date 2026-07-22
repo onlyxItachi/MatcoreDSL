@@ -52,22 +52,42 @@ The architecture verdict is **passed for the standalone native CPU
 frontend/runtime vertical slice**. The AST-JSON producer remains an explicitly
 selected compatibility oracle only; it is never a fallback from native.
 
+## Current Milestone 5 gate
+
+The advanced Linux CPU implementation is complete on
+`mdslc/cpu-isa-parallel-v1`, but the milestone is not yet accepted or
+published. The implemented candidate includes:
+
+- capability record v2 with separate hardware, OS state, compiler,
+  implementation, and physical runtime-validation domains;
+- planner v3 with eight stable F32 candidates, adding packed AVX-512 and
+  persistent parallel AVX2/AVX-512 to the Milestone 4 registry;
+- exact-context legality, deterministic topology/affinity policy, explicit
+  shared/per-worker workspace, and a persistent opaque C execution context;
+- physically exercised AVX2/FMA and AVX-512F/FMA F32 paths on the declared
+  one-node Linux validation host;
+- typed BF16-to-F32 and I8-to-I32 reference semantics and additive C entry
+  points; and
+- synthetic multi-node NUMA planning without hidden page placement.
+
+The candidate does **not** include accelerated BF16/VNNI/AMX, physical
+multi-node NUMA validation, or Windows validation. Final exact-tip acceptance,
+whole-diff review, hosted Linux checks, normal merge, issue/milestone closure,
+and the immutable tag remain open gates.
+
 ## Next three exact engineering tasks
 
-1. **Add CPU capability record v2 and ISA multiversioning.** Distinguish
-   hardware, OS-enabled state, compiler support, compiled implementation, and
-   runtime validation. Add safely gated AVX-512 F32 without globally raising
-   the runtime ISA and retain AVX2 when measured cost favors it.
-2. **Add the persistent parallel CPU execution context.** Reuse workers,
-   expose requested/actual threads and per-worker workspace, prevent nested
-   provider oversubscription, and plan deterministic macro-tile distribution
-   from topology and problem size. Discover Linux topology/NUMA with synthetic
-   multi-node tests and no hidden migration.
-3. **Define BF16/INT8 semantics and finish deferred Windows validation.** Add
-   typed reference/oracle/C-ABI behavior before any hardware-gated VNNI/BF16
-   or AMX candidate. After the Linux advanced-CPU gate passes, validate the
-   existing compiler/runtime through clang-cl, COFF/PE, DLL/import-library,
-   install/consumer, and a Windows CI ZIP artifact. Do not begin GPU work.
+1. **Close the Linux Milestone 5 acceptance gate.** Run fresh Release, Debug,
+   ASan/UBSan, supported TSan, OpenBLAS ON/OFF, install/consumer/C17 ABI,
+   exact-ISA artifact, native `.mdsl`, hygiene, and legacy checks at one frozen
+   tip; then complete a fresh whole-diff adversarial review.
+2. **Publish Milestone 5 normally.** Push the reviewed branch, pass hosted
+   Linux checks, merge normally into `main`, close issue #9 and milestone #3,
+   and create the immutable `mdslc-cpu-backend-v2` tag at the merge commit.
+3. **Run the focused Windows x64 compatibility phase.** Validate clang-cl,
+   LibTooling, COFF/PE, the runtime DLL/import library, planner/native variants,
+   paths containing spaces, install/consumer, and a CI ZIP artifact. Report
+   unavailable ISA/topology paths separately and do not begin GPU work.
 
 ## Later operation and lowering milestones
 

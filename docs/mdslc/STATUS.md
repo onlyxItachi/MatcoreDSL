@@ -2,11 +2,14 @@
 
 Status date: 2026-07-22
 
-- Rewritten canonical `main` baseline:
-  `6a5b931baa6ec1136fb3c0471f515bd666a23981`
-- Milestone 4 integration branch: `mdslc/cpu-performance-v1`
-- Milestone 4 GitHub milestone: `#2`
-- Milestone 4 umbrella issue: `#8`
+- Canonical `main` and completed Milestone 4 merge:
+  `e4dc0affff6c540a65435ba25c5cefa4d69cb562`
+- Current Milestone 5 integration branch: `mdslc/cpu-isa-parallel-v1`
+- Milestone 5 GitHub milestone: `#3`, open
+- Milestone 5 umbrella issue: `#9`, open
+- Milestone 4 pull request: `#10`, merged normally
+- Milestone 4 GitHub milestone/issue: `#2` / `#8`, closed
+- Milestone 4 immutable tag: `mdslc-cpu-performance-foundation-v1`
 - Milestone 1 rewritten checkpoint tag: `mdslc-native-cpu-proof-v1`
 - Milestone 2 is preserved in rewritten mainline checkpoint tag:
   `mdslc-mainline-cpu-proof-v2`
@@ -15,11 +18,82 @@ Status date: 2026-07-22
   remapping commit IDs.
 - Milestone 3 tracker: GitHub milestone `#1`, completed
 
+## Milestone 5 advanced CPU backend
+
+**The Linux implementation and its focused validation are complete on the
+integration branch. The milestone verdict remains pending until fresh final-tip
+acceptance, a whole-diff independent review, hosted checks, normal merge, issue
+closure, and the immutable `mdslc-cpu-backend-v2` tag are complete.**
+
+Planner v3 evaluates the five Milestone 4 candidates plus three advanced native
+implementations, for eight stable F32 variants:
+
+```text
+cpu.reference.f32.v1
+cpu.tiled.f32.v1
+cpu.compiler-vectorized.avx2-fma.f32.v1
+cpu.external.openblas.f32.v1
+cpu.native-packed.avx2-fma.f32.v1
+cpu.native-packed.avx512-fma.f32.v1
+cpu.native-parallel.avx2-fma.f32.v1
+cpu.native-parallel.avx512-fma.f32.v1
+```
+
+Capability record v2 separates hardware, OS architectural state, compiler
+support, compiled implementation, and physical runtime-validation evidence.
+Legality is authenticated against the exact worker placement rather than the
+calling thread alone. On the declared Ryzen AI 9 HX 370 host, packed and
+parallel AVX2/FMA and AVX-512F/FMA F32 paths executed successfully. The
+isolated AVX2 and AVX-512 microkernels contain the required YMM and ZMM packed
+FMA instructions; no global AVX2 or AVX-512 compilation requirement was added.
+
+The additive opaque C execution context creates persistent workers once,
+reports requested and actual threads, fixes affinity/SMT/NUMA policy, assigns
+deterministic row bands, and uses caller-owned shared and per-worker workspace.
+Native workers and OpenBLAS execution are mutually exclusive, so the runtime
+does not nest provider and native pools. Internal C++ `shutdown()` is
+repeat-safe; the public C handle remains a consume-once destroy contract. The
+installed runtime exports exactly 15 public C functions and preserves all
+earlier symbols.
+
+Topology v1 reports logical processors, physical cores, packages, cache-sharing
+groups, CPU-to-node membership, and discovery completeness. Compact/scatter
+affinity and allowed-processor restrictions are implemented. Physical
+validation covers this host's one NUMA node; multi-node planning is
+synthetic-only. No page allocation, binding, migration, or interleaving is
+performed or claimed.
+
+Typed BF16-to-F32 and I8-to-I32 GEMM reference semantics, independent oracles,
+IR verification, and additive C entry points are implemented. There is no
+optimized AVX-512 BF16, AVX-512 VNNI, AMX-BF16, or AMX-INT8 variant. This host
+does not expose AMX, and no AMX runtime claim is made.
+
+`matcore-bench` schema v4 authenticates the exact build-time commit and tracked
+worktree state, records exact execution context and placement, and balances
+complete-call planner-regret measurements in forward and reverse registry
+order. The final guarded 20-shape compact calibration at source checkpoint
+`5f634aef2a0b47cd033df77c40d709456603b405` measured median regret 1.005,
+nearest-rank p95 1.047, and maximum 1.363; no shape exceeded 1.5 or 2.0. These
+are host-specific measurements, not universal performance claims. Raw results
+remain outside Git; only the reviewed sanitized summary is eligible for
+`docs/performance/cpu/`.
+
+Focused implementation reviews have closed the execution-context lifetime,
+shutdown, exact-context capability, planner-regret fairness, caller-placement,
+and benchmark-provenance findings. They do not substitute for the pending
+fresh full acceptance run and whole-diff final review.
+
+Windows remains deferred and unvalidated: no clang-cl frontend run, COFF/PE
+artifact, runtime DLL/import library, external consumer, hosted Windows job, or
+distribution ZIP is claimed. Linux completion will be reported independently
+from the later focused Windows compatibility phase.
+
 ## Milestone 4 CPU performance foundation
 
-**The implementation, local acceptance matrix, calibration, and independent
-review pass for the declared single-thread Linux host scope. Publication still
-requires the normal GitHub PR/check/merge/tag gate.**
+**Completed and published for the declared single-thread Linux host scope. PR
+#10 passed hosted checks and merged normally into `main` at `e4dc0af`; issue #8
+and milestone #2 are closed, and tag `mdslc-cpu-performance-foundation-v1`
+anchors the merge.**
 
 Planner v2 evaluates five stable implementations:
 
@@ -65,14 +139,15 @@ Evidence is in ADRs 0006/0007,
 `docs/performance/cpu/milestone-4-single-thread-calibration-2026-07-22.md`, and
 `docs/mdslc/agent-reports/m4-final-adversarial-review.md`.
 
-Windows has only the versioned portability seed in this milestone. No Windows
-compiler/runtime/package validation, parallel runtime, AVX-512, BF16, INT8,
-AMX, real multi-node NUMA, GPU, or autotuning support is claimed.
+Windows had only the versioned portability seed at this milestone. The later
+Milestone 5 branch implements Linux AVX-512 F32, persistent native parallelism,
+and typed BF16/I8 reference semantics; it still does not claim Windows,
+accelerated BF16/I8, AMX, real multi-node NUMA, GPU, or autotuning support.
 
 ## Milestone 3 mainline checkpoint
 
-**Local history-preserving consolidation passed; hosted PR checks and final
-merge remain the publication gate.**
+**Completed and published. PR #6 merged normally; the later controlled history
+sanitation preserved the source tree while remapping commit IDs.**
 
 The integration branch starts from `origin/main`, contains the historical
 `feature/device-resident-tensors` line and the complete reviewed MDSLC lineage,
@@ -92,8 +167,8 @@ The integration decision and full evidence are recorded in
 
 ## Milestone 2 verdict
 
-**Typed Matcore IR v1 and deterministic CPU GEMM planning pass local release
-gates and independent review. PR #5 enforces the hosted gates before merge.**
+**Completed and published. Typed Matcore IR v1 and deterministic CPU GEMM
+planning passed their local, independent-review, hosted, and merge gates.**
 
 The native driver now routes every authenticated `matcore::mdsl::gemm` through
 a verified v0-to-v1 boundary. IR v1 carries typed shape, dtype, accumulation,
@@ -168,10 +243,12 @@ valid C++ foo.mdsl
   -> three ordinary Clang C++ objects
   -> clang++ -r combined relocatable object
   -> ordinary clang++ link against versioned libmatcore_runtime
-  -> checked CPU capability discovery and deterministic plan selection
-  -> deterministic planner-v2 selection with explicit resource diagnostics
-  -> selected reference/tiled/compiler-vectorized/OpenBLAS/native-packed GEMM
-  -> optional caller-owned workspace or prepacked-B execution
+  -> capability-v2 discovery + topology-v1 allowed-processor restriction
+  -> exact-context hardware/OS/compiler/implementation/runtime authentication
+  -> deterministic planner-v3 legality, cost, placement, and diagnostics
+  -> selected serial or persistent-context F32 implementation (eight variants)
+  -> caller-owned shared/per-worker workspace or prepacked-B execution
+  -> synchronous checked CPU result through the stable/additive C ABI
 ```
 
 The main source and every non-system dependency are snapshotted before
@@ -201,7 +278,7 @@ allow equivalent deterministic sites to co-link across independent roots.
   parsed source snapshot; no regular-expression call matching or manual token
   boundary estimation is used.
 
-## Validation results
+## Historical Milestone 1 validation results
 
 | Validation | Result |
 | --- | --- |
@@ -311,7 +388,7 @@ ctest --test-dir /tmp/matcore-native-v1-final5-release.1R1Ecm \
 /tmp/matcore-native-v1-final5-artifacts.3aSn01/gemm_v0
 ```
 
-## Legacy regression and devices
+## Historical legacy regression and device inventory
 
 Selected legacy Python tests: 26 passed; 3 failed only because the legacy
 `_matcore_native` extension is not built in this standalone worktree. A fresh
@@ -325,16 +402,24 @@ and all accelerator compiler paths were not attempted.
 
 ## Known limitations
 
-- Linux, Ninja, Clang/LLVM 21.1.8, one `.mdsl` input, synchronous host-resident
-  rank-2 row-major contiguous f32 GEMM only.
+- Linux, Ninja, Clang/LLVM 21.1.8, one `.mdsl` input, and synchronous
+  host-resident rank-2 row-major contiguous GEMM remain the validated compiler
+  and optimized-runtime scope.
 - `matrix_view` is a minimal host f32 view, not a general tensor framework.
 - Driver-managed shared/static/PIE modes and opaque response/linker option
   forms remain rejected; emit `-c` and perform an ordinary explicit final link.
 - Bootstrap remains compatibility-only and is not the semantic authority.
-- GEMV, GEVM, ReLU-GEMM, AVX-512, parallel-native execution, BF16/INT8, AMX,
-  Windows runtime validation, MLIR lowering, CUDA/cuBLAS, HIP, Metal, NPU
-  placement, fusion, and autotuning are not implemented.
+- AVX-512F/FMA F32 and persistent native parallel execution are implemented and
+  physically exercised only on the declared Linux host. BF16/F32 and I8/I32
+  have typed reference semantics only; accelerated BF16, VNNI, and AMX variants
+  are not implemented.
+- One-node topology discovery is physically validated. Multi-node NUMA policy
+  is synthetic-only, with no runtime page placement or migration.
+- Windows runtime/frontend/package validation, GEMV, GEVM, ReLU-GEMM, MLIR
+  lowering, CUDA/cuBLAS, HIP, Metal, NPU placement, fusion, and autotuning are
+  not implemented or claimed.
 
-There is no remaining blocker to the declared standalone native CPU
-architecture proof. Broader target, operation, optimization, and production
-portability work remains future scope.
+The standalone native CPU architecture proof and Milestone 4 performance
+foundation remain passed. Milestone 5 is an implementation-complete candidate;
+its final acceptance, publication, and focused Windows compatibility gates are
+still open.
