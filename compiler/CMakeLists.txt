@@ -94,11 +94,26 @@ if(MDSLC_ENABLE_NATIVE_FRONTEND)
       "found LLVM ${LLVM_PACKAGE_VERSION}")
   endif()
   if(TARGET clang-cpp)
-    set(MDSLC_CLANG_TOOLING_LIBRARIES clang-cpp)
-    if(TARGET LLVM)
-      list(APPEND MDSLC_CLANG_TOOLING_LIBRARIES LLVM)
+    if(WIN32)
+      # The official LLVM 21.1.8 Windows package exports build-host-only DIA
+      # SDK paths through LLVM's interface.  clang-cpp and LLVM are shared
+      # imported targets, so consumers need their authenticated import
+      # libraries, not those stale private build dependencies.
+      set(MDSLC_CLANG_TOOLING_LIBRARIES
+        "$<TARGET_LINKER_FILE:clang-cpp>")
+      if(TARGET LLVM)
+        list(APPEND MDSLC_CLANG_TOOLING_LIBRARIES
+          "$<TARGET_LINKER_FILE:LLVM>")
+      endif()
+      set(MDSLC_CLANG_LINK_MODEL
+        "clang-cpp/LLVM shared import libraries")
+    else()
+      set(MDSLC_CLANG_TOOLING_LIBRARIES clang-cpp)
+      if(TARGET LLVM)
+        list(APPEND MDSLC_CLANG_TOOLING_LIBRARIES LLVM)
+      endif()
+      set(MDSLC_CLANG_LINK_MODEL "clang-cpp shared library")
     endif()
-    set(MDSLC_CLANG_LINK_MODEL "clang-cpp shared library")
   else()
     set(MDSLC_CLANG_TOOLING_LIBRARIES)
     foreach(MDSLC_REQUIRED_CLANG_TARGET IN ITEMS
