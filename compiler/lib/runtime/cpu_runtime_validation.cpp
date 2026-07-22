@@ -9,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <new>
 
 namespace matcore::mdslc::runtime {
 namespace {
@@ -31,6 +32,36 @@ struct SerialValidationTaskV1 {
   void *workspace = nullptr;
   std::size_t workspace_bytes = 0;
   bool executed = false;
+};
+
+class AlignedValidationWorkspaceV1 {
+ public:
+  explicit AlignedValidationWorkspaceV1(std::size_t bytes) noexcept
+      : bytes_(bytes),
+        data_(bytes == 0
+                  ? nullptr
+                  : static_cast<std::byte *>(::operator new(
+                        bytes, std::align_val_t(kAlignment), std::nothrow))) {}
+
+  AlignedValidationWorkspaceV1(const AlignedValidationWorkspaceV1 &) = delete;
+  AlignedValidationWorkspaceV1 &operator=(
+      const AlignedValidationWorkspaceV1 &) = delete;
+
+  ~AlignedValidationWorkspaceV1() {
+    if (data_ != nullptr)
+      ::operator delete(data_, std::align_val_t(kAlignment));
+  }
+
+  explicit operator bool() const noexcept {
+    return bytes_ == 0 || data_ != nullptr;
+  }
+  std::byte *data() noexcept { return data_; }
+  std::size_t size() const noexcept { return bytes_; }
+
+ private:
+  static constexpr std::size_t kAlignment = 64;
+  std::size_t bytes_ = 0;
+  std::byte *data_ = nullptr;
 };
 
 CpuExecutionStatusV1 execute_serial_validation_v1(
@@ -126,10 +157,12 @@ CpuRuntimeValidationEvidenceV1 validate_cpu_runtime_variants_v1(
   constexpr std::size_t m = 4;
   constexpr std::size_t n = 16;
   constexpr std::size_t k = 3;
+  constexpr std::size_t serial_workspace_bytes = 512U * 1024U;
+  AlignedValidationWorkspaceV1 serial_workspace(serial_workspace_bytes);
+  if (!serial_workspace) return evidence;
   alignas(64) std::array<float, m * k> lhs{};
   alignas(64) std::array<float, k * n> rhs{};
   alignas(64) std::array<float, m * n> out{};
-  alignas(64) std::array<std::byte, 512U * 1024U> serial_workspace{};
   initialize_validation_problem_v1<m, n, k>(lhs, rhs, out);
   const planner::CpuGemmProblemV1 problem{
       static_cast<std::int64_t>(m), static_cast<std::int64_t>(n),
@@ -173,10 +206,12 @@ CpuRuntimeValidationEvidenceV1 validate_cpu_runtime_variants_v1(
 
   if (context.info().actual_worker_count < 2) return evidence;
   constexpr std::size_t parallel_m = 256;
+  constexpr std::size_t parallel_workspace_bytes = 1024U * 1024U;
+  AlignedValidationWorkspaceV1 parallel_workspace(parallel_workspace_bytes);
+  if (!parallel_workspace) return evidence;
   alignas(64) std::array<float, parallel_m * k> parallel_lhs{};
   alignas(64) std::array<float, k * n> parallel_rhs{};
   alignas(64) std::array<float, parallel_m * n> parallel_out{};
-  alignas(64) std::array<std::byte, 1024U * 1024U> parallel_workspace{};
   initialize_validation_problem_v1<parallel_m, n, k>(
       parallel_lhs, parallel_rhs, parallel_out);
   const planner::CpuGemmProblemV1 parallel_problem{
