@@ -115,11 +115,14 @@ void run_parallel_correctness() {
          "parallel workspace query succeeds");
   expect(requirements.execution_threads == 4 &&
              requirements.alignment_bytes == 64 &&
+             requirements.shared_packed_b_bytes != 0 &&
+             requirements.worker_region_offset % 64 == 0 &&
              requirements.per_worker_bytes != 0 &&
              requirements.per_worker_stride_bytes % 64 == 0 &&
              requirements.total_bytes ==
-                 requirements.per_worker_stride_bytes * 4,
-         "parallel workspace exposes isolated worker slices");
+                 requirements.worker_region_offset +
+                     requirements.per_worker_stride_bytes * 4,
+         "parallel workspace exposes one shared B and isolated A slices");
   AlignedBuffer workspace(requirements.total_bytes);
 
   const auto workers_started = context->info().actual_worker_count;
@@ -133,8 +136,10 @@ void run_parallel_correctness() {
     expect(status == runtime::CpuParallelGemmStatusV1::success,
            "parallel packed execution succeeds");
     expect(report.actual_threads == 4 && report.macro_tile_count == 4 &&
+               report.shared_packed_b_bytes ==
+                   requirements.shared_packed_b_bytes &&
                report.context_submission == repetition,
-           "parallel report exposes threads, row tiles, and context reuse");
+           "parallel report exposes threads, shared B, tiles, and reuse");
     expect(close(out, expected),
            "parallel packed result matches double-precision oracle");
   }

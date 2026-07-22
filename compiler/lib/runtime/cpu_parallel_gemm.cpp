@@ -99,9 +99,10 @@ CpuParallelGemmStatusV1 map_packed_status(
 struct ParallelGemmJobV1 {
   planner::CpuGemmProblemV1 problem;
   const float *lhs = nullptr;
-  const float *rhs = nullptr;
   float *out = nullptr;
+  CpuPackedBViewV1 packed_b;
   std::byte *workspace = nullptr;
+  std::size_t worker_region_offset = 0;
   std::size_t per_worker_stride = 0;
 };
 
@@ -118,11 +119,11 @@ CpuExecutionStatusV1 execute_row_band(std::size_t task_index,
   band.m = static_cast<std::int64_t>(rows);
 
   void *worker_workspace =
-      job->workspace + worker_index * job->per_worker_stride;
-  const auto status = cpu_execute_packed_avx2_v1(
-      band, job->lhs + row_begin * k, job->rhs,
-      job->out + row_begin * n, worker_workspace,
-      job->per_worker_stride);
+      job->workspace + job->worker_region_offset +
+      worker_index * job->per_worker_stride;
+  const auto status = cpu_execute_packed_avx2_prepacked_b_v1(
+      band, job->lhs + row_begin * k, job->out + row_begin * n,
+      job->packed_b, worker_workspace, job->per_worker_stride);
   return status == CpuPackedGemmStatusV1::success
              ? CpuExecutionStatusV1::success
              : CpuExecutionStatusV1::callback_failed;
@@ -185,22 +186,39 @@ CpuParallelGemmStatusV1 cpu_parallel_packed_avx2_workspace_requirements_v1(
   if (problem.m > static_cast<std::int64_t>(kCpuPackedGemmMcV1)) {
     band.m = static_cast<std::int64_t>(kCpuPackedGemmMcV1);
   }
-  CpuPackedGemmWorkspaceRequirementsV1 packed_requirements;
+  CpuPackedGemmWorkspaceRequirementsV1 packed_b_requirements;
+  const auto packed_b_status =
+      cpu_packed_avx2_prepacked_b_requirements_v1(problem,
+                                                  &packed_b_requirements);
+  if (packed_b_status != CpuPackedGemmStatusV1::success)
+    return map_packed_status(packed_b_status);
+
+  CpuPackedGemmWorkspaceRequirementsV1 packed_a_requirements;
   const auto status = cpu_packed_avx2_workspace_requirements_v1(
-      band, CpuPackedGemmWorkspaceModeV1::transient_a_and_b,
-      &packed_requirements);
+      band, CpuPackedGemmWorkspaceModeV1::transient_a_with_prepacked_b,
+      &packed_a_requirements);
   if (status != CpuPackedGemmStatusV1::success) return map_packed_status(status);
 
+  std::size_t worker_region_offset = 0;
   std::size_t worker_stride = 0;
+  std::size_t worker_bytes = 0;
   std::size_t total = 0;
-  if (!checked_round_up(packed_requirements.total_bytes,
+  if (!checked_round_up(packed_b_requirements.total_bytes,
+                        kCpuPackedGemmWorkspaceAlignmentV1,
+                        &worker_region_offset) ||
+      !checked_round_up(packed_a_requirements.total_bytes,
                         kCpuPackedGemmWorkspaceAlignmentV1, &worker_stride) ||
-      !checked_multiply(worker_stride, execution_threads, &total)) {
+      !checked_multiply(worker_stride, execution_threads, &worker_bytes) ||
+      worker_bytes > std::numeric_limits<std::size_t>::max() -
+                         worker_region_offset) {
     return CpuParallelGemmStatusV1::arithmetic_overflow;
   }
+  total = worker_region_offset + worker_bytes;
   CpuParallelGemmWorkspaceRequirementsV1 result;
   result.execution_threads = execution_threads;
-  result.per_worker_bytes = packed_requirements.total_bytes;
+  result.shared_packed_b_bytes = packed_b_requirements.total_bytes;
+  result.worker_region_offset = worker_region_offset;
+  result.per_worker_bytes = packed_a_requirements.total_bytes;
   result.per_worker_stride_bytes = worker_stride;
   result.total_bytes = total;
   *requirements = result;
@@ -258,8 +276,20 @@ CpuParallelGemmStatusV1 cpu_execute_parallel_packed_avx2_v1(
       problem, lhs, rhs, out, workspace, requirements, workspace_bytes);
   if (preflight != CpuParallelGemmStatusV1::success) return preflight;
 
-  ParallelGemmJobV1 job{problem, lhs, rhs, out,
-                        static_cast<std::byte *>(workspace),
+  auto *workspace_start = static_cast<std::byte *>(workspace);
+  CpuPackedBViewV1 packed_b;
+  const auto pack_status = cpu_prepare_packed_b_avx2_v1(
+      problem, rhs, workspace_start + requirements.shared_packed_b_offset,
+      requirements.shared_packed_b_bytes, &packed_b);
+  if (pack_status != CpuPackedGemmStatusV1::success)
+    return map_packed_status(pack_status);
+
+  ParallelGemmJobV1 job{problem,
+                        lhs,
+                        out,
+                        packed_b,
+                        workspace_start,
+                        requirements.worker_region_offset,
                         requirements.per_worker_stride_bytes};
   const CpuExecutionStatusV1 execution = context.run_tasks(
       macro_tile_count, actual_threads, nesting_policy, execute_row_band, &job);
@@ -272,6 +302,7 @@ CpuParallelGemmStatusV1 cpu_execute_parallel_packed_avx2_v1(
   report->actual_threads = actual_threads;
   report->macro_tile_count = macro_tile_count;
   report->workspace_bytes = requirements.total_bytes;
+  report->shared_packed_b_bytes = requirements.shared_packed_b_bytes;
   report->per_worker_workspace_bytes = requirements.per_worker_bytes;
   report->context_submission = finished.completed_submissions;
   return CpuParallelGemmStatusV1::success;

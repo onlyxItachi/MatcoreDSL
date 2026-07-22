@@ -33,6 +33,9 @@ struct CpuParallelGemmWorkspaceRequirementsV1 {
   std::uint32_t version = kCpuParallelGemmVersionV1;
   std::uint32_t execution_threads = 0;
   std::size_t alignment_bytes = kCpuPackedGemmWorkspaceAlignmentV1;
+  std::size_t shared_packed_b_offset = 0;
+  std::size_t shared_packed_b_bytes = 0;
+  std::size_t worker_region_offset = 0;
   std::size_t per_worker_bytes = 0;
   std::size_t per_worker_stride_bytes = 0;
   std::size_t total_bytes = 0;
@@ -44,6 +47,7 @@ struct CpuParallelGemmReportV1 {
   std::uint32_t actual_threads = 0;
   std::size_t macro_tile_count = 0;
   std::size_t workspace_bytes = 0;
+  std::size_t shared_packed_b_bytes = 0;
   std::size_t per_worker_workspace_bytes = 0;
   std::uint64_t context_submission = 0;
 };
@@ -55,7 +59,9 @@ CpuParallelGemmStatusV1 cpu_parallel_packed_avx2_workspace_requirements_v1(
 
 // Executes independent MC-row bands with a deterministic cyclic assignment:
 // task t is owned by worker (t % actual_threads). The complete workspace is a
-// caller-owned arena split into cache-line-aligned, non-overlapping slices.
+// caller-owned arena containing one shared immutable packed-B image followed
+// by cache-line-aligned, non-overlapping transient-A worker slices. B packing
+// happens once before dispatch and remains part of end-to-end execution.
 CpuParallelGemmStatusV1 cpu_execute_parallel_packed_avx2_v1(
     CpuExecutionContextV1 &context,
     const planner::CpuGemmProblemV1 &problem, const float *lhs,
