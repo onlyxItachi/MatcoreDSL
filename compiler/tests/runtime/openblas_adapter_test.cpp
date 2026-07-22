@@ -44,6 +44,28 @@ int main() {
     return 1;
   }
 
+  out.fill(-8.0F);
+  if (runtime::execute_openblas_gemm_f32_v1(
+          problem, lhs.data(), rhs.data(), out.data(), 2,
+          &actual_threads) != runtime::OpenBlasExecutionStatusV1::success ||
+      actual_threads != 2 || !close(out[0], 19.0F) ||
+      !close(out[1], 22.0F) || !close(out[2], 43.0F) ||
+      !close(out[3], 50.0F)) {
+    std::cerr << "two-thread row-major OpenBLAS SGEMM failed\n";
+    return 1;
+  }
+
+  out.fill(-6.0F);
+  if (runtime::execute_openblas_gemm_f32_v1(
+          problem, lhs.data(), rhs.data(), out.data(), 1,
+          &actual_threads) != runtime::OpenBlasExecutionStatusV1::success ||
+      actual_threads != 1 || !close(out[0], 19.0F) ||
+      !close(out[1], 22.0F) || !close(out[2], 43.0F) ||
+      !close(out[3], 50.0F)) {
+    std::cerr << "OpenBLAS local thread policy was not reusable\n";
+    return 1;
+  }
+
   out.fill(-7.0F);
   if (runtime::execute_openblas_gemm_f32_v1(
           problem, lhs.data(), rhs.data(), out.data(), 0,
