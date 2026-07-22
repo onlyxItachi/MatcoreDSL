@@ -7,6 +7,9 @@
 static_assert(MATCORE_RUNTIME_ABI_VERSION_V0 == 0);
 static_assert(MATCORE_RUNTIME_PLAN_ABI_VERSION_V1 == 1);
 static_assert(MATCORE_RUNTIME_CPU_GEMM_CANDIDATE_COUNT_V1 == 3);
+static_assert(MATCORE_RUNTIME_CAPABILITY_ABI_VERSION_V2 == 2);
+static_assert(MATCORE_RUNTIME_PLAN_ABI_VERSION_V3 == 3);
+static_assert(MATCORE_RUNTIME_CPU_GEMM_CANDIDATE_COUNT_V3 == 8);
 
 static_assert(std::is_standard_layout_v<matcore_tensor_desc_v0>);
 static_assert(std::is_standard_layout_v<matcore_policy_v0>);
@@ -22,6 +25,17 @@ static_assert(
 static_assert(
     std::is_standard_layout_v<matcore_gemm_prepacked_b_requirements_v1>);
 static_assert(std::is_standard_layout_v<matcore_packed_b_desc_v1>);
+static_assert(std::is_standard_layout_v<matcore_cpu_capabilities_v2>);
+static_assert(
+    std::is_standard_layout_v<matcore_cpu_gemm_execution_options_v2>);
+static_assert(std::is_standard_layout_v<matcore_cpu_gemm_candidate_v3>);
+static_assert(std::is_standard_layout_v<matcore_cpu_gemm_plan_report_v3>);
+static_assert(
+    std::is_standard_layout_v<matcore_gemm_workspace_requirements_v2>);
+static_assert(
+    std::is_standard_layout_v<matcore_cpu_execution_context_options_v1>);
+static_assert(
+    std::is_standard_layout_v<matcore_cpu_execution_context_report_v1>);
 
 #if INTPTR_MAX == INT64_MAX
 static_assert(sizeof(matcore_tensor_desc_v0) == 192);
@@ -35,6 +49,13 @@ static_assert(sizeof(matcore_cpu_gemm_plan_report_v2) == 488);
 static_assert(sizeof(matcore_gemm_workspace_requirements_v1) == 64);
 static_assert(sizeof(matcore_gemm_prepacked_b_requirements_v1) == 72);
 static_assert(sizeof(matcore_packed_b_desc_v1) == 112);
+static_assert(sizeof(matcore_cpu_capabilities_v2) == 96);
+static_assert(sizeof(matcore_cpu_gemm_execution_options_v2) == 64);
+static_assert(sizeof(matcore_cpu_gemm_candidate_v3) == 104);
+static_assert(sizeof(matcore_cpu_gemm_plan_report_v3) == 1112);
+static_assert(sizeof(matcore_gemm_workspace_requirements_v2) == 88);
+static_assert(sizeof(matcore_cpu_execution_context_options_v1) == 64);
+static_assert(sizeof(matcore_cpu_execution_context_report_v1) == 88);
 
 static_assert(offsetof(matcore_tensor_desc_v0, data) == 8);
 static_assert(offsetof(matcore_tensor_desc_v0, dims) == 24);
@@ -61,12 +82,21 @@ static_assert(
     offsetof(matcore_gemm_prepacked_b_requirements_v1,
              execution_workspace_bytes) == 24);
 static_assert(offsetof(matcore_packed_b_desc_v1, provenance) == 72);
+static_assert(offsetof(matcore_cpu_gemm_candidate_v3, reason) == 80);
+static_assert(offsetof(matcore_cpu_gemm_plan_report_v3, candidates) == 208);
+static_assert(offsetof(matcore_cpu_gemm_plan_report_v3, selected_stable_id) ==
+              1040);
 #endif
 
 static_assert(MATCORE_STATUS_INVALID_ALIGNMENT_V0 == 16);
 static_assert(MATCORE_STATUS_PREPACK_MISMATCH_V0 == 21);
+static_assert(MATCORE_STATUS_ACCUMULATOR_OVERFLOW_V0 == 25);
 static_assert(MATCORE_CPU_FEATURE_PORTABLE_SCALAR_F32_V1 == UINT64_C(1));
 static_assert(MATCORE_CPU_FEATURE_AVX2_V1 == (UINT64_C(1) << 1));
 static_assert(MATCORE_CPU_FEATURE_FMA_V1 == (UINT64_C(1) << 2));
+static_assert(MATCORE_CPU_FEATURE_AVX512F_V2 == (UINT64_C(1) << 4));
+static_assert(MATCORE_CPU_FEATURE_AMX_INT8_V2 == (UINT64_C(1) << 12));
+static_assert(MATCORE_CPU_GEMM_REQUEST_FORCE_NATIVE_PARALLEL_AVX512_FMA_V3 ==
+              8);
 
 int main() { return 0; }
