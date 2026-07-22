@@ -1,15 +1,73 @@
 # MDSLC native frontend status
 
-Status date: 2026-07-21
+Status date: 2026-07-22
 
-- Native milestone base: `mdslc/bootstrap-v0` at
-  `3e3fa5b2d1990e1c37870f8b2096fbda6128716b`
-- Milestone 1 integration branch: `mdslc/native-libtooling-v1`
-- Milestone 2 branch: `mdslc/matcore-ir-v1-cpu-planner`
-- Milestone 2 pull request: `#5`
-- Milestone 3 integration branch: `mdslc/mainline-integration-v2`
-- Milestone 3 draft pull request: `#6`, targeting `main`
-- Milestone 3 tracker: GitHub milestone `#1`
+- Rewritten canonical `main` baseline:
+  `6a5b931baa6ec1136fb3c0471f515bd666a23981`
+- Milestone 4 integration branch: `mdslc/cpu-performance-v1`
+- Milestone 4 GitHub milestone: `#2`
+- Milestone 4 umbrella issue: `#8`
+- Milestone 1 rewritten checkpoint tag: `mdslc-native-cpu-proof-v1`
+- Milestone 2 is preserved in rewritten mainline checkpoint tag:
+  `mdslc-mainline-cpu-proof-v2`
+- Milestone 3 mainline pull request: `#6`, merged normally into `main`; the
+  later controlled history sanitation preserved its source tree while
+  remapping commit IDs.
+- Milestone 3 tracker: GitHub milestone `#1`, completed
+
+## Milestone 4 CPU performance foundation
+
+**The implementation, local acceptance matrix, calibration, and independent
+review pass for the declared single-thread Linux host scope. Publication still
+requires the normal GitHub PR/check/merge/tag gate.**
+
+Planner v2 evaluates five stable implementations:
+
+```text
+cpu.reference.f32.v1
+cpu.tiled.f32.v1
+cpu.compiler-vectorized.avx2-fma.f32.v1
+cpu.external.openblas.f32.v1
+cpu.native-packed.avx2-fma.f32.v1
+```
+
+OpenBLAS 0.3.32 is optional, authenticated through LP64 CBLAS, controlled with
+the provider's process-local thread API, and bounded by the provider-reported
+thread ceiling before planning. The native packed engine uses caller-owned
+64-byte-aligned workspace, MC=128, NC=256, KC=256, MR=4, and NR=16. Its exact
+microkernel object contains YMM packed-FMA instructions; the rest of the
+runtime remains generic and capability-gated.
+
+The existing one-shot C ABI remains compatible. Additive v1 APIs query and
+execute with explicit caller workspace and support caller-owned prepacked B.
+Insufficient/misaligned/overlapping storage and forced illegal providers or
+ISAs fail before output mutation. No hidden allocation, host/device copy, or
+silent fallback was added.
+
+`matcore-bench` freezes the JSON benchmark contract and distinguishes complete
+one-shot, reused workspace, prepacked B, and diagnostic-only packed-compute
+intervals. Raw results remain ignored outside Git. On the pinned validation
+host, the 30-shape deterministic calibration produced median regret 1.000,
+p95 1.124, maximum 1.132, and no choice above 2.0. Native packed beat the prior
+compiler-vectorized candidate on 27/30 shapes; OpenBLAS was fastest on 26/30.
+These are host/provider-specific observations, not universal or BLAS-parity
+claims.
+
+Independent exact-tip validation passed fresh Release 27/27, Debug 27/27,
+focused ASan/UBSan 8/8 with repeated benchmark smoke, OpenBLAS-disabled 5/5,
+package/install checks, seven-symbol C ABI inspection, exact AVX2/FMA
+disassembly, repository hygiene, and a fresh `.mdsl -> ELF .o -> executable`
+run printing `MDSLC CPU GEMM PASS`. The review resolved four medium findings:
+provider-thread overcommit, a misleading compute-only mode, double-live
+one-shot allocation/memory accounting, and flaky timing-smoke acceptance.
+
+Evidence is in ADRs 0006/0007,
+`docs/performance/cpu/milestone-4-single-thread-calibration-2026-07-22.md`, and
+`docs/mdslc/agent-reports/m4-final-adversarial-review.md`.
+
+Windows has only the versioned portability seed in this milestone. No Windows
+compiler/runtime/package validation, parallel runtime, AVX-512, BF16, INT8,
+AMX, real multi-node NUMA, GPU, or autotuning support is claimed.
 
 ## Milestone 3 mainline checkpoint
 
@@ -74,9 +132,9 @@ function-local YMM packed-FMA instructions, and suppress vector capability
 when sanitizer instrumentation scalarizes that body. All confirmed
 high/medium findings were revalidated before final sign-off.
 
-No coherent BLAS development package was installed, so the optional BLAS
-adapter was not added and is not required. No accelerator, fusion, or
-autotuning capability is claimed.
+At the Milestone 2 checkpoint no coherent BLAS development package was
+available, so no adapter was part of that historical gate. Milestone 4 later
+added the optional authenticated OpenBLAS implementation described above.
 
 ## Milestone 1 foundation
 
@@ -111,7 +169,9 @@ valid C++ foo.mdsl
   -> clang++ -r combined relocatable object
   -> ordinary clang++ link against versioned libmatcore_runtime
   -> checked CPU capability discovery and deterministic plan selection
-  -> synchronous selected reference/tiled/compiler-vectorized f32 GEMM
+  -> deterministic planner-v2 selection with explicit resource diagnostics
+  -> selected reference/tiled/compiler-vectorized/OpenBLAS/native-packed GEMM
+  -> optional caller-owned workspace or prepacked-B execution
 ```
 
 The main source and every non-system dependency are snapshotted before
@@ -271,8 +331,9 @@ and all accelerator compiler paths were not attempted.
 - Driver-managed shared/static/PIE modes and opaque response/linker option
   forms remain rejected; emit `-c` and perform an ordinary explicit final link.
 - Bootstrap remains compatibility-only and is not the semantic authority.
-- GEMV, GEVM, ReLU-GEMM, BLAS selection, MLIR lowering, CUDA/cuBLAS, HIP,
-  Metal, NPU placement, fusion, and autotuning are not implemented.
+- GEMV, GEVM, ReLU-GEMM, AVX-512, parallel-native execution, BF16/INT8, AMX,
+  Windows runtime validation, MLIR lowering, CUDA/cuBLAS, HIP, Metal, NPU
+  placement, fusion, and autotuning are not implemented.
 
 There is no remaining blocker to the declared standalone native CPU
 architecture proof. Broader target, operation, optimization, and production
