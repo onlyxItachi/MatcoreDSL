@@ -579,7 +579,8 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
     result.packing_mode = options.packing_mode;
     result.plan = runner.plan(shape, options.alignment_bytes,
                               options.requested_threads,
-                              options.requested_variant);
+                              options.requested_variant,
+                              options.packing_mode);
     if (!result.plan.legal) {
       error = "variant planning failed for " + std::to_string(shape.m) + "x" +
               std::to_string(shape.n) + "x" + std::to_string(shape.k) + ": " +
@@ -654,7 +655,8 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
         if (options.allocation_mode == AllocationModeV1::include_allocation) {
           active_plan = runner.plan(shape, options.alignment_bytes,
                                     options.requested_threads,
-                                    options.requested_variant);
+                                    options.requested_variant,
+                                    options.packing_mode);
           if (!active_plan.legal || active_plan.selected_variant !=
                                         result.plan.selected_variant ||
               active_plan.workspace_bytes != result.plan.workspace_bytes ||

@@ -49,6 +49,8 @@ def main() -> int:
         "cpu.reference.f32.v1",
         "cpu.tiled.f32.v1",
         "cpu.compiler-vectorized.avx2-fma.f32.v1",
+        "cpu.external.openblas.f32.v1",
+        "cpu.native-packed.avx2-fma.f32.v1",
     ]
 
     with tempfile.TemporaryDirectory(prefix="matcore bench cli ") as temporary:
@@ -215,10 +217,12 @@ def main() -> int:
             "2",
             "--threads",
             "2",
+            "--variant",
+            "cpu.native-packed.avx2-fma.f32.v1",
         ],
         expected=1,
     )
-    assert "supports exactly one thread" in bad_threads.stderr
+    assert "requested CPU GEMM variant is illegal" in bad_threads.stderr
 
     print("matcore-bench CLI/JSON contract PASS")
     return 0

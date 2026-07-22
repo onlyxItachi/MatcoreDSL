@@ -12,6 +12,12 @@ if(NOT TARGET matcore_cpu_planner_v1)
     "${CMAKE_CURRENT_BINARY_DIR}/matcore_cpu_planner_v1"
   )
 endif()
+if(NOT TARGET matcore_cpu_backends_v1)
+  add_subdirectory(
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../lib/runtime"
+    "${CMAKE_CURRENT_BINARY_DIR}/matcore_cpu_runtime"
+  )
+endif()
 
 execute_process(
   COMMAND git rev-parse HEAD
@@ -58,6 +64,7 @@ target_compile_definitions(matcore_benchmark_core_v1 PRIVATE
 )
 target_link_libraries(matcore_benchmark_core_v1
   PUBLIC MatcoreDSL::CpuPlannerV1
+  PRIVATE MatcoreDSL::CpuBackendsV1
 )
 
 add_executable(matcore-bench main.cpp)

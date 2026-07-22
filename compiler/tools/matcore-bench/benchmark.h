@@ -91,7 +91,8 @@ class GemmRunnerV1 {
   virtual RunnerPlanV1 plan(const GemmShapeV1 &shape,
                             std::uint32_t minimum_alignment,
                             std::uint32_t requested_threads,
-                            std::string_view requested_variant) const = 0;
+                            std::string_view requested_variant,
+                            PackingModeV1 packing_mode) const = 0;
   virtual bool prepare(const RunnerPlanV1 &plan, const GemmShapeV1 &shape,
                        const float *lhs, const float *rhs,
                        std::span<std::byte> workspace,
