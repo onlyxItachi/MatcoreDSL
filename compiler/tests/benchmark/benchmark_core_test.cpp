@@ -134,7 +134,10 @@ int main() {
   run_options.requested_variant = "cpu.reference.f32.v1";
   run_options.warmup_iterations = 0;
   run_options.measured_iterations = 3;
-  run_options.timer_floor_nanoseconds = 100'000;
+  // This exercises runner correctness and metadata under instrumented builds,
+  // not performance acceptance. The dedicated summarize_timings checks above
+  // retain explicit timer-floor rejection coverage.
+  run_options.timer_floor_nanoseconds = 1;
   run_options.maximum_memory_bytes = 16 * 1024 * 1024;
   bench::BenchmarkReportV1 report;
   expect(bench::run_benchmarks_v1(run_options, *runner, report, error),
