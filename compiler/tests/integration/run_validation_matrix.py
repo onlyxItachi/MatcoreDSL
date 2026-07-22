@@ -814,7 +814,15 @@ def execute_case(context: Context, case: dict[str, object], work: Path) -> None:
         exported_names = [line.split()[-1] for line in exported]
         require(
             exported_names
-            == ["matcore_runtime_gemm_f32_v0", "matcore_runtime_plan_gemm_f32_v1"],
+            == [
+                "matcore_runtime_gemm_f32_execute_prepacked_b_v1",
+                "matcore_runtime_gemm_f32_execute_v1",
+                "matcore_runtime_gemm_f32_prepack_b_v1",
+                "matcore_runtime_gemm_f32_prepacked_b_size_v1",
+                "matcore_runtime_gemm_f32_v0",
+                "matcore_runtime_gemm_f32_workspace_size_v1",
+                "matcore_runtime_plan_gemm_f32_v1",
+            ],
             f"unexpected runtime exports: {exported!r}",
         )
         return

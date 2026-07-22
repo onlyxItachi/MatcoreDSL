@@ -210,15 +210,6 @@ void planner_contract() {
   expect(matcore::mdslc::planner::has_feature(
              detected, CpuFeatureV1::portable_scalar_f32),
          "capability discovery always records portable scalar f32");
-  if (!matcore::mdslc::planner::
-          cpu_compiler_vectorization_build_available_v1()) {
-    expect(!matcore::mdslc::planner::has_feature(detected,
-                                                  CpuFeatureV1::avx2) &&
-               !matcore::mdslc::planner::has_feature(detected,
-                                                      CpuFeatureV1::fma) &&
-               detected.usable_vector_bits == 0,
-           "instrumented builds do not advertise unavailable vectorization");
-  }
 #if defined(__x86_64__)
   expect(detected.architecture == CpuArchitectureV1::x86_64,
          "capability discovery records x86_64");
@@ -227,6 +218,20 @@ void planner_contract() {
 #endif
 
   const auto vector = vector_capabilities();
+  const bool compiler_vectorized_available =
+      matcore::mdslc::planner::
+          cpu_compiler_vectorization_build_available_v1();
+  if (!compiler_vectorized_available) {
+    const auto instrumented_vector =
+        matcore::mdslc::planner::plan_cpu_gemm_v1(
+            problem(32, 32, 32), vector,
+            CpuGemmRequestV1::force_compiler_vectorized);
+    expect(instrumented_vector.status ==
+                   CpuPlanStatusV1::forced_variant_illegal &&
+               instrumented_vector.candidates[2].reason ==
+                   "compiler-vectorized implementation is unavailable in instrumented builds",
+           "instrumented implementation availability is independent of physical CPU features");
+  }
   expect_selected(matcore::mdslc::planner::plan_cpu_gemm_v1(
                       problem(2, 3, 2), vector),
                   CpuGemmVariantV1::reference, "small GEMM");
@@ -235,13 +240,21 @@ void planner_contract() {
                   CpuGemmVariantV1::tiled, "medium GEMM");
   expect_selected(matcore::mdslc::planner::plan_cpu_gemm_v1(
                       problem(32, 32, 32), vector),
-                  CpuGemmVariantV1::compiler_vectorized, "large square GEMM");
+                  compiler_vectorized_available
+                      ? CpuGemmVariantV1::compiler_vectorized
+                      : CpuGemmVariantV1::tiled,
+                  "large square GEMM");
   expect_selected(matcore::mdslc::planner::plan_cpu_gemm_v1(
                       problem(33, 35, 37), vector),
-                  CpuGemmVariantV1::compiler_vectorized, "tail GEMM");
+                  compiler_vectorized_available
+                      ? CpuGemmVariantV1::compiler_vectorized
+                      : CpuGemmVariantV1::tiled,
+                  "tail GEMM");
   expect_selected(matcore::mdslc::planner::plan_cpu_gemm_v1(
                       problem(24, 24, 24, 64), vector),
-                  CpuGemmVariantV1::compiler_vectorized,
+                  compiler_vectorized_available
+                      ? CpuGemmVariantV1::compiler_vectorized
+                      : CpuGemmVariantV1::tiled,
                   "aligned GEMM");
   expect_selected(matcore::mdslc::planner::plan_cpu_gemm_v1(
                       problem(24, 24, 24, alignof(float)), vector),
@@ -416,7 +429,10 @@ void planner_contract() {
               std::numeric_limits<std::int64_t>::max(),
               std::numeric_limits<std::int64_t>::max()),
       vector_capabilities());
-  expect_selected(saturated, CpuGemmVariantV1::compiler_vectorized,
+  expect_selected(saturated,
+                  compiler_vectorized_available
+                      ? CpuGemmVariantV1::compiler_vectorized
+                      : CpuGemmVariantV1::tiled,
                   "saturating cost plan");
   for (const auto &candidate : saturated.candidates) {
     expect(candidate.estimated_cost == std::numeric_limits<std::uint64_t>::max(),
@@ -458,8 +474,9 @@ void planner_contract() {
   expect(diagnostic.find("request=automatic status=selected") !=
              std::string_view::npos,
          "diagnostic records request and status");
-  expect(diagnostic.find("selected=cpu.compiler-vectorized") !=
-             std::string_view::npos,
+  expect(diagnostic.find(compiler_vectorized_available
+                             ? "selected=cpu.compiler-vectorized"
+                             : "selected=cpu.tiled") != std::string_view::npos,
          "diagnostic records the selected variant");
   expect(diagnostic.find("candidates=[") != std::string_view::npos,
          "diagnostic records every candidate decision");
@@ -513,7 +530,9 @@ void forced_variant_correctness() {
       detected.detection_complete &&
       matcore::mdslc::planner::has_feature(detected, CpuFeatureV1::avx2) &&
       matcore::mdslc::planner::has_feature(detected, CpuFeatureV1::fma) &&
-      detected.usable_vector_bits >= 256) {
+      detected.usable_vector_bits >= 256 &&
+      matcore::mdslc::planner::
+          cpu_compiler_vectorization_build_available_v1()) {
     run_forced_variant(CpuGemmVariantV1::compiler_vectorized,
                        CpuGemmRequestV1::force_compiler_vectorized, 19, 35, 13);
   }

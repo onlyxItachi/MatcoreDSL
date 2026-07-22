@@ -169,9 +169,11 @@ configure_file(
 add_subdirectory(lib/ir)
 add_subdirectory(lib/frontend)
 add_subdirectory(lib/codegen)
+add_subdirectory(lib/platform)
 add_subdirectory(tools/matcore-extract)
 add_subdirectory(lib/runtime)
 add_subdirectory(tools/matcore-plan)
+add_subdirectory(tools/matcore-bench)
 
 add_executable(mdslc_driver tools/mdslc/main.cpp)
 set_property(TARGET mdslc_driver PROPERTY EXPORT_NAME Compiler)

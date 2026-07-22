@@ -63,6 +63,7 @@ def main() -> int:
         prefix / "bin" / "mdslc++",
         prefix / "bin" / "matcore-extract",
         prefix / "bin" / "matcore-plan",
+        prefix / "bin" / "matcore-bench",
         prefix / "include" / "matcore" / "mdsl.h",
         prefix / "include" / "matcore" / "runtime_c.h",
         prefix / "lib" / "libmatcore_runtime.so",
@@ -80,6 +81,7 @@ def main() -> int:
     driver = prefix / "bin" / "mdslc++"
     extractor = prefix / "bin" / "matcore-extract"
     planner = prefix / "bin" / "matcore-plan"
+    benchmark = prefix / "bin" / "matcore-bench"
     if str(source_public_header).encode() in extractor.read_bytes():
         raise RuntimeError("installed extractor embeds the source checkout's public-header path")
 
@@ -105,6 +107,37 @@ def main() -> int:
         raise RuntimeError(
             "relocated plan inspector lost selected-plan diagnostics:\n"
             f"{planned.stdout}"
+        )
+
+    benchmarked = run(
+        [
+            str(benchmark),
+            "--m",
+            "2",
+            "--n",
+            "3",
+            "--k",
+            "2",
+            "--variant",
+            "cpu.reference.f32.v1",
+            "--warmup",
+            "0",
+            "--iterations",
+            "2",
+            "--timer-floor-us",
+            "100",
+            "--guard",
+        ],
+        capture=True,
+    )
+    if (
+        "variant=cpu.reference.f32.v1" not in benchmarked.stdout
+        or "correctness=pass" not in benchmarked.stdout
+        or "timing=valid" not in benchmarked.stdout
+    ):
+        raise RuntimeError(
+            "relocated benchmark tool failed its bounded runtime proof:\n"
+            f"{benchmarked.stdout}"
         )
 
     untrusted_source = test_root / "untrusted-source-header.mdsl"

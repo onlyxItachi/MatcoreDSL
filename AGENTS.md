@@ -36,11 +36,23 @@ in `context.md`.
   Clang automatically lowers Matcore IR for every accelerator.
 - The synchronous, row-major, rank-2 `f32` CPU runtime validates descriptors,
   discovers capabilities, and deterministically selects among the registered
-  reference, 32x32x64 tiled, and compiler-vectorized AVX2/FMA variants. Forced
-  illegal variants fail without fallback. The generated execution ABI retains
-  its v0 name for compatibility; planning is additive and typed IR v1 is the
-  compiler contract. GPU work is not a prerequisite for the CPU architecture
-  proof.
+  reference, 32x32x64 tiled, compiler-vectorized AVX2/FMA, optional OpenBLAS,
+  and native packed AVX2/FMA variants. Forced illegal variants fail without
+  fallback. The generated one-shot execution ABI retains its v0 name for
+  compatibility; additive v1 APIs expose caller-owned workspace and prepacked
+  B storage. Packed execution must never hide allocation or packing.
+- OpenBLAS is an optional authenticated CBLAS provider, never a requirement or
+  a silent fallback. Control its thread count locally, report the actual
+  provider policy, and prevent a nominal single-thread comparison from using
+  an uncontrolled provider pool.
+- Reference, tiled, and compiler-vectorized v1 execute with and report one
+  actual thread even when the request permits more; native packed v1 requires
+  exactly one requested thread. None is a parallel implementation.
+- Platform diagnostics use the versioned Linux/Windows/Unknown record. Shared
+  code must not acquire scattered POSIX-only process, path, dynamic-library,
+  or object-format assumptions. A platform is supported only after its native
+  compiler, linker, runtime, package, and generated artifacts execute in that
+  environment.
 - Never silently fall back between targets, silently copy between host and
   device, hide allocation, or propagate C++ exceptions across the C ABI.
 
@@ -131,12 +143,15 @@ For the driver-only language proof, use the selected executable explicitly:
 - A successful compile is not enough for an execution milestone: run the
   program, compare GEMM with an independent oracle, inspect the relocatable
   object, and verify the ordinary final link.
-- Runtime correctness tests use an independent double-precision oracle. The
-  opt-in performance-regression benchmark instead compares every legal variant
-  against the forced reference implementation and must be described that way.
-- Sanitizer builds advertise only capability-backed implementations that the
-  instrumented object actually contains; never label scalarized work as a
-  compiler-vectorized plan.
+- Runtime correctness and `matcore-bench` use an independent double-precision
+  oracle. Benchmark modes must distinguish allocation, transient packing,
+  reused workspace, prepacked B, cache state, and compute-only diagnostics.
+  Raw runs stay under ignored `benchmark_reports/`; only reviewed summaries
+  belong under `docs/performance/cpu/`.
+- Physical CPU capability discovery is independent from per-build
+  implementation availability. Sanitizer builds may report real AVX2/FMA
+  hardware while rejecting an instrumented/scalarized compiler-vectorized
+  implementation. Never label scalarized work as an ISA implementation.
 
 ## Commits and agent handoff
 

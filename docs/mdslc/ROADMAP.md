@@ -37,6 +37,16 @@ correctness, and passes its declared acceptance suite.
    annotation attacks, malformed IR/capability records, source/dependency
    races, artifact inspection, package, and legacy smoke gates have
    reproducible evidence.
+9. **Mainline integrity and history sanitation — complete.** The legacy and
+   standalone compiler lineages are consolidated on canonical `main`;
+   generated artifacts are rejected by repository hygiene and removed from
+   user-controlled historical refs without deleting source history.
+10. **CPU performance foundation — complete for the validated Linux host.**
+    The optional OpenBLAS baseline, explicit workspace/prepacked-B ABI, native
+    packed AVX2/FMA engine, five-variant planner v2, reproducible benchmark
+    contract, host-specific static calibration, packaging, sanitizers, and
+    independent review pass. Windows remains a portability seed, not a
+    runtime-validated platform.
 
 The architecture verdict is **passed for the standalone native CPU
 frontend/runtime vertical slice**. The AST-JSON producer remains an explicitly
@@ -44,20 +54,20 @@ selected compatibility oracle only; it is never a fallback from native.
 
 ## Next three exact engineering tasks
 
-1. **Freeze Milestone 2 compatibility and CPU portability.** Treat IR v1,
-   planner v1, and the additive plan-report ABI as reviewed contracts. Add
-   actual AArch64 build/runtime evidence and platform-specific capability tests
-   before claiming compiler-vectorized support outside validated x86-64.
-2. **Evaluate an optional external BLAS variant.** Add it only when configure
-   can authenticate a coherent header/library pair. It must be a separately
-   registered implementation with explicit legality, diagnostics, correctness,
-   packaging, and bounded crossover evidence; it must never be required or a
-   silent fallback.
-3. **Add an explicit NVIDIA library-call milestone only after CPU release.**
-   Require device-resident descriptors, target/capability validation,
-   synchronous cuBLAS execution, no hidden migration, no mixed residency, and
-   CPU-oracle correctness. Treat unavailable architectures as errors or
-   clearly labeled compile-only results, never runtime support.
+1. **Add CPU capability record v2 and ISA multiversioning.** Distinguish
+   hardware, OS-enabled state, compiler support, compiled implementation, and
+   runtime validation. Add safely gated AVX-512 F32 without globally raising
+   the runtime ISA and retain AVX2 when measured cost favors it.
+2. **Add the persistent parallel CPU execution context.** Reuse workers,
+   expose requested/actual threads and per-worker workspace, prevent nested
+   provider oversubscription, and plan deterministic macro-tile distribution
+   from topology and problem size. Discover Linux topology/NUMA with synthetic
+   multi-node tests and no hidden migration.
+3. **Define BF16/INT8 semantics and finish deferred Windows validation.** Add
+   typed reference/oracle/C-ABI behavior before any hardware-gated VNNI/BF16
+   or AMX candidate. After the Linux advanced-CPU gate passes, validate the
+   existing compiler/runtime through clang-cl, COFF/PE, DLL/import-library,
+   install/consumer, and a Windows CI ZIP artifact. Do not begin GPU work.
 
 ## Later operation and lowering milestones
 
