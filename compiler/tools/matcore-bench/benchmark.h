@@ -164,6 +164,10 @@ struct TimingStatisticsV1 {
   double p95_seconds = 0.0;
 };
 
+enum class TimingAggregationBoundaryV3 : std::uint8_t {
+  one_clock_pair_per_aggregate_block = 0,
+};
+
 struct CorrectnessResultV1 {
   bool passed = false;
   std::string oracle_mode;
@@ -172,8 +176,9 @@ struct CorrectnessResultV1 {
   double expected_checksum = 0.0;
   double maximum_absolute_error = 0.0;
   double maximum_allowed_error = 0.0;
-  std::uint64_t measured_executions_checked = 0;
-  std::string validation_scope;
+  bool timed_final_output_authenticated = false;
+  std::uint64_t untimed_validation_executions_checked = 0;
+  std::string untimed_validation_scope;
   std::string reason;
 };
 
@@ -219,8 +224,8 @@ struct RegretCandidateResultV3 {
   bool correctness_passed = false;
   double forward_pass_median_seconds = 0.0;
   double reverse_pass_median_seconds = 0.0;
-  std::uint64_t forward_pass_measured_executions_checked = 0;
-  std::uint64_t reverse_pass_measured_executions_checked = 0;
+  std::uint64_t forward_pass_untimed_validation_executions_checked = 0;
+  std::uint64_t reverse_pass_untimed_validation_executions_checked = 0;
   double balanced_estimate_seconds = 0.0;
   std::string measurement_reason;
 };
@@ -246,6 +251,8 @@ struct BenchmarkResultV1 {
   CacheModeV1 cache_mode = CacheModeV1::hot;
   AllocationModeV1 allocation_mode = AllocationModeV1::reuse_workspace;
   PackingModeV1 packing_mode = PackingModeV1::include;
+  TimingAggregationBoundaryV3 timing_aggregation_boundary =
+      TimingAggregationBoundaryV3::one_clock_pair_per_aggregate_block;
   TimingStatisticsV1 timing;
   CorrectnessResultV1 correctness;
   double gflops = 0.0;
@@ -313,6 +320,8 @@ std::string_view smt_policy_name_v2(SmtPolicyV2 policy) noexcept;
 std::string_view affinity_policy_name_v2(AffinityPolicyV2 policy) noexcept;
 std::string_view regret_aggregation_method_name_v3(
     RegretAggregationMethodV3 method) noexcept;
+std::string_view timing_aggregation_boundary_name_v3(
+    TimingAggregationBoundaryV3 boundary) noexcept;
 
 }  // namespace matcore::mdslc::bench
 

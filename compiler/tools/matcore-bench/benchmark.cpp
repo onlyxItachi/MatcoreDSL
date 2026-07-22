@@ -409,6 +409,15 @@ std::string_view regret_aggregation_method_name_v3(
   return "unknown";
 }
 
+std::string_view timing_aggregation_boundary_name_v3(
+    TimingAggregationBoundaryV3 boundary) noexcept {
+  switch (boundary) {
+    case TimingAggregationBoundaryV3::one_clock_pair_per_aggregate_block:
+      return "one-clock-pair-per-aggregate-repetition-block";
+  }
+  return "unknown";
+}
+
 std::vector<GemmShapeV1> quick_profile_v1() {
   return {{1, 1, 1},       {2, 3, 2},       {16, 16, 16},
           {33, 35, 37},    {64, 7, 19},     {127, 129, 131},
@@ -882,46 +891,58 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
 
       std::vector<double> samples;
       samples.reserve(options.measured_iterations);
-      CorrectnessResultV1 last_correctness;
-      std::uint64_t measured_executions_checked = 0;
       for (std::uint32_t iteration = 0;
            iteration < options.measured_iterations; ++iteration) {
         if (options.cache_mode == CacheModeV1::cold) evict_cache(cold_cache);
-        double aggregate_seconds = 0.0;
+        const auto begin = std::chrono::steady_clock::now();
         for (std::uint64_t repetition = 0; repetition < repetitions;
-             ++repetition) {
-          const auto begin = std::chrono::steady_clock::now();
+             ++repetition)
           if (!invoke()) return false;
-          const auto end = std::chrono::steady_clock::now();
-          aggregate_seconds +=
-              std::chrono::duration<double>(end - begin).count();
-
-          const float *measured_output =
-              options.allocation_mode == AllocationModeV1::include_allocation
-                  ? reinterpret_cast<const float *>(one_shot_output->data())
-                  : reinterpret_cast<const float *>(output.data());
-          last_correctness = verify_output(
-              shape, reinterpret_cast<const float *>(lhs.data()),
-              reinterpret_cast<const float *>(rhs.data()), measured_output);
-          ++measured_executions_checked;
-          if (!last_correctness.passed) {
-            error = "correctness failed for " + result.plan.selected_variant +
-                    " at measured iteration " + std::to_string(iteration) +
-                    ", aggregate repetition " +
-                    std::to_string(repetition) + ": " +
-                    last_correctness.reason;
-            return false;
-          }
-        }
+        const auto end = std::chrono::steady_clock::now();
+        const double aggregate_seconds =
+            std::chrono::duration<double>(end - begin).count();
         samples.push_back(aggregate_seconds / static_cast<double>(repetitions));
+      }
+
+      const auto active_output_data = [&]() -> const float * {
+        return options.allocation_mode == AllocationModeV1::include_allocation
+                   ? reinterpret_cast<const float *>(one_shot_output->data())
+                   : reinterpret_cast<const float *>(output.data());
+      };
+      CorrectnessResultV1 last_correctness = verify_output(
+          shape, reinterpret_cast<const float *>(lhs.data()),
+          reinterpret_cast<const float *>(rhs.data()), active_output_data());
+      if (!last_correctness.passed) {
+        error = "final timed output correctness failed for " +
+                result.plan.selected_variant + ": " + last_correctness.reason;
+        return false;
+      }
+      last_correctness.timed_final_output_authenticated = true;
+
+      const std::uint64_t validation_executions =
+          static_cast<std::uint64_t>(options.measured_iterations) * repetitions;
+      for (std::uint64_t validation = 0; validation < validation_executions;
+           ++validation) {
+        if (!invoke()) return false;
+        last_correctness = verify_output(
+            shape, reinterpret_cast<const float *>(lhs.data()),
+            reinterpret_cast<const float *>(rhs.data()), active_output_data());
+        if (!last_correctness.passed) {
+          error = "untimed correctness validation failed for " +
+                  result.plan.selected_variant + " at validation execution " +
+                  std::to_string(validation) + ": " + last_correctness.reason;
+          return false;
+        }
       }
       result.timing = summarize_timings_v1(
           std::move(samples), repetitions, options.timer_floor_nanoseconds);
-      last_correctness.measured_executions_checked =
-          measured_executions_checked;
-      last_correctness.validation_scope =
-          "every measured execution authenticated by an independent oracle "
-          "outside its timed interval";
+      last_correctness.timed_final_output_authenticated = true;
+      last_correctness.untimed_validation_executions_checked =
+          validation_executions;
+      last_correctness.untimed_validation_scope =
+          "separate untimed validation phase matched the timed execution "
+          "cardinality and authenticated every invocation with an independent "
+          "oracle; the final timed output was authenticated first";
       result.correctness = std::move(last_correctness);
       if (result.timing.valid) {
         const long double operations =
@@ -1013,7 +1034,7 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
         bool timing_valid = false;
         bool correctness_passed = false;
         double median_seconds = 0.0;
-        std::uint64_t measured_executions_checked = 0;
+        std::uint64_t untimed_validation_executions_checked = 0;
         std::string reason;
       };
 
@@ -1111,8 +1132,8 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
         measurement.timing_valid = measured.timing.valid;
         measurement.correctness_passed = measured.correctness.passed;
         measurement.median_seconds = measured.timing.median_seconds;
-        measurement.measured_executions_checked =
-            measured.correctness.measured_executions_checked;
+        measurement.untimed_validation_executions_checked =
+            measured.correctness.untimed_validation_executions_checked;
         if (!measured.timing.valid) {
           measurement.reason = measured.timing.rejection_reason;
         } else {
@@ -1155,10 +1176,10 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
             reverse_measurement.correctness_passed;
         candidate.plan_authenticated = forward_measurement.attempted &&
                                        reverse_measurement.attempted;
-        candidate.forward_pass_measured_executions_checked =
-            forward_measurement.measured_executions_checked;
-        candidate.reverse_pass_measured_executions_checked =
-            reverse_measurement.measured_executions_checked;
+        candidate.forward_pass_untimed_validation_executions_checked =
+            forward_measurement.untimed_validation_executions_checked;
+        candidate.reverse_pass_untimed_validation_executions_checked =
+            reverse_measurement.untimed_validation_executions_checked;
         candidate.timing_valid = forward_measurement.attempted &&
                                  reverse_measurement.attempted &&
                                  forward_measurement.timing_valid &&
@@ -1175,8 +1196,9 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
           candidate.measurement_reason =
               "balanced complete-call timing: equal-weight arithmetic "
               "midpoint of valid forward and reverse stable-registry-pass "
-              "medians; every measured execution in both passes passed an "
-              "independent oracle outside the timed interval";
+              "medians; each pass authenticated its final timed output and "
+              "then every invocation in an equal-cardinality untimed "
+              "validation phase";
         } else {
           all_balanced_candidates_valid = false;
           candidate.measurement_reason =
@@ -1405,7 +1427,11 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
            << ",\n      \"timing_rejection_reason\": ";
     json_string(output, result.timing.rejection_reason);
     output << ",\n      \"aggregate_repetitions\": "
-           << result.timing.aggregate_repetitions
+      << result.timing.aggregate_repetitions
+           << ",\n      \"timing_aggregation_boundary\": ";
+    json_string(output, timing_aggregation_boundary_name_v3(
+                            result.timing_aggregation_boundary));
+    output
            << ",\n      \"minimum_seconds\": " << result.timing.minimum_seconds
            << ",\n      \"median_seconds\": " << result.timing.median_seconds
            << ",\n      \"p95_seconds\": " << result.timing.p95_seconds
@@ -1422,10 +1448,13 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
            << result.correctness.maximum_absolute_error
            << ",\n      \"maximum_allowed_error\": "
            << result.correctness.maximum_allowed_error
-           << ",\n      \"measured_executions_checked\": "
-           << result.correctness.measured_executions_checked
-           << ",\n      \"correctness_validation_scope\": ";
-    json_string(output, result.correctness.validation_scope);
+           << ",\n      \"timed_final_output_authenticated\": "
+           << (result.correctness.timed_final_output_authenticated ? "true"
+                                                                  : "false")
+           << ",\n      \"untimed_validation_executions_checked\": "
+           << result.correctness.untimed_validation_executions_checked
+           << ",\n      \"untimed_validation_scope\": ";
+    json_string(output, result.correctness.untimed_validation_scope);
     output << ",\n      \"correctness_reason\": ";
     json_string(output, result.correctness.reason);
     output << ",\n      \"scaling\": {\n"
@@ -1517,10 +1546,10 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
              << candidate.forward_pass_median_seconds
              << ", \"reverse_pass_median_seconds\": "
              << candidate.reverse_pass_median_seconds
-             << ", \"forward_pass_measured_executions_checked\": "
-             << candidate.forward_pass_measured_executions_checked
-             << ", \"reverse_pass_measured_executions_checked\": "
-             << candidate.reverse_pass_measured_executions_checked
+             << ", \"forward_pass_untimed_validation_executions_checked\": "
+             << candidate.forward_pass_untimed_validation_executions_checked
+             << ", \"reverse_pass_untimed_validation_executions_checked\": "
+             << candidate.reverse_pass_untimed_validation_executions_checked
              << ", \"balanced_estimate_seconds\": "
              << candidate.balanced_estimate_seconds
              << ", \"measurement_reason\": ";

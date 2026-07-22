@@ -95,8 +95,12 @@ def main() -> int:
         assert (result["m"], result["n"], result["k"]) == (33, 35, 37)
         assert result["selected_variant"] == "cpu.reference.f32.v1"
         assert result["correctness"] is True
-        assert result["measured_executions_checked"] >= 3
-        assert "every measured execution" in result["correctness_validation_scope"]
+        assert result["timed_final_output_authenticated"] is True
+        assert result["untimed_validation_executions_checked"] >= 3
+        assert "separate untimed validation phase" in result["untimed_validation_scope"]
+        assert result["timing_aggregation_boundary"] == (
+            "one-clock-pair-per-aggregate-repetition-block"
+        )
         assert result["oracle_mode"] == "full-double"
         assert result["timing_valid"] is True
         assert result["aggregate_repetitions"] >= 1
@@ -414,8 +418,12 @@ def main() -> int:
                 assert candidate["timing_valid"] is True
                 assert candidate["correctness"] is True
                 assert candidate["plan_authenticated"] is True
-                assert candidate["forward_pass_measured_executions_checked"] >= 1
-                assert candidate["reverse_pass_measured_executions_checked"] >= 1
+                assert candidate[
+                    "forward_pass_untimed_validation_executions_checked"
+                ] >= 1
+                assert candidate[
+                    "reverse_pass_untimed_validation_executions_checked"
+                ] >= 1
                 assert candidate["forward_pass_median_seconds"] > 0
                 assert candidate["reverse_pass_median_seconds"] > 0
                 assert math.isclose(

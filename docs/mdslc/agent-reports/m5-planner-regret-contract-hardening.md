@@ -23,18 +23,17 @@ not changed.
    and mismatched field in the diagnostic. Those authenticated preflight fields
    are emitted per candidate so provider/native comparability can be audited
    without borrowing metadata from the automatic plan.
-3. Every measured execution is checked by the independent double-precision
-   oracle immediately after that execution and outside its timed interval.
-   The report records the checked-execution count and validation scope. This
-   prevents a later correct execution from overwriting evidence of an earlier
-   corrupt measured execution.
+3. The final timed output is authenticated first. A separate untimed phase then
+   executes the same number of invocations as the timed phase and checks every
+   invocation with the independent double-precision oracle. The report records
+   the untimed validation count and scope. This prevents a later correct
+   validation invocation from overwriting evidence of earlier corruption.
 
-Correctness verification remains outside timed intervals. To authenticate each
-execution without charging oracle work to the candidate, aggregate timing now
-sums individually delimited execution intervals. This adds clock-boundary
-measurement overhead relative to a single clock pair around an aggregate, so
-pre-v3 raw timings are not directly interchangeable with v3 calibration runs.
-The timer-floor contract still applies to the summed aggregate duration.
+Correctness verification remains outside timed intervals. Each timed sample
+uses exactly one clock pair around its full aggregate repetition block; no
+oracle or cache-scanning work occurs between timed repetitions. Schema v3 emits
+that boundary as `one-clock-pair-per-aggregate-repetition-block`. The timer-floor
+contract applies to that aggregate duration.
 
 ## Adversarial coverage
 
@@ -44,10 +43,10 @@ threads, workspace sizes/alignment, prepacked storage, packing flags,
 persistent-context state, SMT/affinity policy, and worker-affinity fields. It
 also injects illegal and misattributed forced selections. Every case is rejected.
 
-A separate test corrupts the second measured execution and would restore the
-correct output on the following execution. The benchmark now rejects the
-intermediate corruption at its original measured iteration rather than accepting
-the eventual final output.
+A separate test corrupts the second invocation of the untimed validation phase
+and would restore the correct output on the following invocation. The benchmark
+rejects that intermediate corruption rather than accepting the eventual final
+output.
 
 ## Validation
 
@@ -81,7 +80,7 @@ so no claim is made for validation through that third-party implementation.
 ## Compatibility
 
 `matcore-bench` now emits report version 3 by default. Consumers expecting v2
-must migrate the planner-regret names and account for per-execution timing
-boundaries; the historical v2 schema remains available for interpreting stored
-v2 reports. There is no silent dual-schema output and no change to the installed
-runtime C ABI.
+must migrate the planner-regret and untimed-validation names; the historical v2
+schema remains available for interpreting stored v2 reports. The aggregate
+timing boundary retains the pre-fairness one-clock-pair semantics. There is no
+silent dual-schema output and no change to the installed runtime C ABI.

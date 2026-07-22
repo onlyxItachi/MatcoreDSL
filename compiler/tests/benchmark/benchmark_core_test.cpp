@@ -29,7 +29,7 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
  private:
   struct ExecutionState final : bench::RunnerPlanStateV1 {
     bool fail = false;
-    bool corrupt_intermediate_measurement = false;
+    bool corrupt_intermediate_validation = false;
     mutable std::uint32_t executions = 0;
   };
 
@@ -62,11 +62,10 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
 
   explicit RecordingRunner(bool fail_reverse_selected = false,
                            PlanDrift drift = PlanDrift::none,
-                           bool corrupt_intermediate_measurement = false)
+                           bool corrupt_intermediate_validation = false)
       : fail_reverse_selected_(fail_reverse_selected),
         drift_(drift),
-        corrupt_intermediate_measurement_(
-            corrupt_intermediate_measurement) {}
+        corrupt_intermediate_validation_(corrupt_intermediate_validation) {}
 
   bench::RunnerEnvironmentV1 environment() const override { return {}; }
 
@@ -148,8 +147,8 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
       }
       auto state = std::make_shared<ExecutionState>();
       state->fail = fail_reverse_selected_ && selected_plan_count_ == 3;
-      state->corrupt_intermediate_measurement =
-          corrupt_intermediate_measurement_ && selected_plan_count_ == 2;
+      state->corrupt_intermediate_validation =
+          corrupt_intermediate_validation_ && selected_plan_count_ == 2;
       result.state = std::move(state);
     }
     return result;
@@ -184,10 +183,11 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
     }
     if (state != nullptr) {
       ++state->executions;
-      // With no warmups and a one-nanosecond floor, execution 1 is the probe;
-      // execution 3 is the second measured sample. A later sample restores the
-      // correct output, so final-output-only validation would miss this.
-      if (state->corrupt_intermediate_measurement && state->executions == 3)
+      // With no warmups, a one-nanosecond floor, and three samples, execution
+      // 1 is the probe, 2-4 are timed, and 5-7 are the separate untimed
+      // validation phase. Execution 6 is deliberately corrupt; execution 7
+      // would restore the correct output if the harness did not fail closed.
+      if (state->corrupt_intermediate_validation && state->executions == 6)
         output[0] += 100.0F;
     }
     return true;
@@ -202,7 +202,7 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
  private:
   bool fail_reverse_selected_ = false;
   PlanDrift drift_ = PlanDrift::none;
-  bool corrupt_intermediate_measurement_ = false;
+  bool corrupt_intermediate_validation_ = false;
   mutable std::uint32_t selected_plan_count_ = 0;
   mutable std::vector<std::string> plan_requests_;
 };
@@ -401,9 +401,14 @@ int main() {
              report.results[0].plan.worker_affinity_applied &&
              !report.results[0].plan.worker_affinity_user_requested &&
              report.results[0].plan.worker_affinity_policy_induced &&
-             report.results[0].correctness.measured_executions_checked >= 3 &&
-             report.results[0].correctness.validation_scope.find(
-                 "every measured execution") != std::string::npos,
+             report.results[0].correctness.timed_final_output_authenticated &&
+             report.results[0].correctness
+                     .untimed_validation_executions_checked >= 3 &&
+             report.results[0].correctness.untimed_validation_scope.find(
+                 "separate untimed validation phase") != std::string::npos &&
+             bench::timing_aggregation_boundary_name_v3(
+                 report.results[0].timing_aggregation_boundary) ==
+                 "one-clock-pair-per-aggregate-repetition-block",
          "benchmark result identifies the variant and passes independent oracle");
 
   auto scaling_options = run_options;
@@ -473,8 +478,10 @@ int main() {
                  std::midpoint(
                      selected_candidate->forward_pass_median_seconds,
                      selected_candidate->reverse_pass_median_seconds) &&
-             selected_candidate->forward_pass_measured_executions_checked >= 1 &&
-             selected_candidate->reverse_pass_measured_executions_checked >= 1 &&
+             selected_candidate
+                     ->forward_pass_untimed_validation_executions_checked >= 1 &&
+             selected_candidate
+                     ->reverse_pass_untimed_validation_executions_checked >= 1 &&
              selected_candidate->measurement_reason.find(
                  "forward and reverse stable-registry-pass medians") !=
                  std::string::npos,
@@ -583,15 +590,16 @@ int main() {
   corruption_options.measured_iterations = 3;
   RecordingRunner corruption_runner(
       /*fail_reverse_selected=*/false, RecordingRunner::PlanDrift::none,
-      /*corrupt_intermediate_measurement=*/true);
+      /*corrupt_intermediate_validation=*/true);
   bench::BenchmarkReportV1 corruption_report;
   std::string corruption_error;
   expect(!bench::run_benchmarks_v1(corruption_options, corruption_runner,
                                    corruption_report, corruption_error) &&
-             corruption_error.find("correctness failed for test.selected at "
-                                   "measured iteration 1") != std::string::npos,
-         "an intermediate corrupt execution is rejected before a later "
-         "execution can overwrite it with a correct final output");
+             corruption_error.find(
+                 "untimed correctness validation failed for test.selected at "
+                 "validation execution 1") != std::string::npos,
+         "an intermediate corrupt validation execution is rejected before a "
+         "later execution can overwrite it with a correct final output");
 
   const auto rejected_reference_compute = runner->plan(
       {16, 16, 16}, 64, 1, "cpu.reference.f32.v1",
@@ -679,9 +687,13 @@ int main() {
                  std::string::npos &&
              json.find("\"version\": 3") != std::string::npos &&
              json.find("\"correctness\": true") != std::string::npos &&
-             json.find("\"measured_executions_checked\"") !=
+             json.find("\"timed_final_output_authenticated\"") !=
                  std::string::npos &&
-             json.find("\"correctness_validation_scope\"") !=
+             json.find("\"untimed_validation_executions_checked\"") !=
+                 std::string::npos &&
+             json.find("\"untimed_validation_scope\"") !=
+                 std::string::npos &&
+             json.find("\"timing_aggregation_boundary\"") !=
                  std::string::npos &&
              json.find("\"planner_version\": 3") != std::string::npos &&
              json.find("\"shared_workspace_bytes\"") != std::string::npos &&

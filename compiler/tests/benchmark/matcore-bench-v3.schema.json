@@ -127,11 +127,13 @@
         "affinity_diagnostic", "alignment_bytes", "lhs_stride", "rhs_stride",
         "output_stride", "estimated_memory_bytes", "cache_mode",
         "allocation_mode", "packing_mode", "timing_valid",
-        "timing_rejection_reason", "aggregate_repetitions", "minimum_seconds",
+        "timing_rejection_reason", "aggregate_repetitions",
+        "timing_aggregation_boundary", "minimum_seconds",
         "median_seconds", "p95_seconds", "gflops", "checksum",
         "expected_checksum", "correctness", "oracle_mode", "checked_elements",
         "maximum_absolute_error", "maximum_allowed_error",
-        "measured_executions_checked", "correctness_validation_scope",
+        "timed_final_output_authenticated",
+        "untimed_validation_executions_checked", "untimed_validation_scope",
         "correctness_reason", "scaling", "planner_regret"
       ],
       "properties": {
@@ -172,6 +174,9 @@
         "timing_valid": {"type": "boolean"},
         "timing_rejection_reason": {"type": "string"},
         "aggregate_repetitions": {"type": "integer", "minimum": 1},
+        "timing_aggregation_boundary": {
+          "const": "one-clock-pair-per-aggregate-repetition-block"
+        },
         "minimum_seconds": {"type": "number", "minimum": 0},
         "median_seconds": {"type": "number", "minimum": 0},
         "p95_seconds": {"type": "number", "minimum": 0},
@@ -183,8 +188,9 @@
         "checked_elements": {"type": "integer", "minimum": 1},
         "maximum_absolute_error": {"type": "number", "minimum": 0},
         "maximum_allowed_error": {"type": "number", "minimum": 0},
-        "measured_executions_checked": {"type": "integer", "minimum": 1},
-        "correctness_validation_scope": {"type": "string", "minLength": 1},
+        "timed_final_output_authenticated": {"type": "boolean"},
+        "untimed_validation_executions_checked": {"type": "integer", "minimum": 1},
+        "untimed_validation_scope": {"type": "string", "minLength": 1},
         "correctness_reason": {"type": "string", "minLength": 1},
         "scaling": {"$ref": "#/$defs/scaling"},
         "planner_regret": {"$ref": "#/$defs/planner_regret"}
@@ -222,8 +228,9 @@
         "worker_affinity_policy_induced", "affinity_diagnostic",
         "plan_authenticated", "timing_valid", "correctness",
         "forward_pass_median_seconds", "reverse_pass_median_seconds",
-        "forward_pass_measured_executions_checked",
-        "reverse_pass_measured_executions_checked", "balanced_estimate_seconds",
+        "forward_pass_untimed_validation_executions_checked",
+        "reverse_pass_untimed_validation_executions_checked",
+        "balanced_estimate_seconds",
         "measurement_reason"
       ],
       "properties": {
@@ -254,8 +261,8 @@
         "correctness": {"type": "boolean"},
         "forward_pass_median_seconds": {"type": "number", "minimum": 0},
         "reverse_pass_median_seconds": {"type": "number", "minimum": 0},
-        "forward_pass_measured_executions_checked": {"type": "integer", "minimum": 0},
-        "reverse_pass_measured_executions_checked": {"type": "integer", "minimum": 0},
+        "forward_pass_untimed_validation_executions_checked": {"type": "integer", "minimum": 0},
+        "reverse_pass_untimed_validation_executions_checked": {"type": "integer", "minimum": 0},
         "balanced_estimate_seconds": {"type": "number", "minimum": 0},
         "measurement_reason": {"type": "string"}
       }
