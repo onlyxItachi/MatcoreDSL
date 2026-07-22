@@ -48,6 +48,21 @@ struct ReentrantState {
   bool request_shutdown = false;
 };
 
+struct BorrowedStackState {
+  std::uint64_t expected = 0;
+  std::uint64_t observed = 0;
+};
+
+runtime::CpuExecutionStatusV1 observe_borrowed_stack_state(
+    std::size_t task_index, std::size_t worker_index,
+    void *user_data) noexcept {
+  if (task_index != 0 || worker_index != 0 || user_data == nullptr)
+    return runtime::CpuExecutionStatusV1::invalid_configuration;
+  auto &state = *static_cast<BorrowedStackState *>(user_data);
+  state.observed = state.expected;
+  return runtime::CpuExecutionStatusV1::success;
+}
+
 #if defined(__linux__)
 struct AffinityObservationState {
   explicit AffinityObservationState(std::uint32_t workers)
@@ -199,6 +214,49 @@ void configuration_and_static_distribution() {
                             record_assignment, &state) ==
              runtime::CpuExecutionStatusV1::context_stopping,
          "stopped context rejects later submissions");
+}
+
+void inactive_workers_do_not_retain_borrowed_submissions() {
+  auto context = make_context(8, 8);
+  expect(context != nullptr && wait_for_workers(*context, 8),
+         "lifetime stress starts eight persistent workers");
+  if (context == nullptr) return;
+
+  constexpr std::uint64_t repetitions = 4096;
+  bool completed = true;
+  for (std::uint64_t generation = 1; generation <= repetitions;
+       ++generation) {
+    BorrowedStackState state{generation, 0};
+    const auto result = context->run_tasks(
+        1, 1, runtime::CpuProviderNestingPolicyV1::native_only,
+        observe_borrowed_stack_state, &state);
+    if (result != runtime::CpuExecutionStatusV1::success ||
+        state.observed != generation) {
+      completed = false;
+      break;
+    }
+
+    // Periodically activate every worker. This both exercises alternating
+    // participant counts and forces workers that were inactive in prior
+    // submissions to observe a later epoch while previous stack payloads are
+    // already out of scope.
+    if ((generation % 64U) == 0U) {
+      AssignmentState barrier{std::vector<std::size_t>(8)};
+      if (context->run_tasks(
+              barrier.owners.size(), 8,
+              runtime::CpuProviderNestingPolicyV1::native_only,
+              record_assignment, &barrier) !=
+          runtime::CpuExecutionStatusV1::success) {
+        completed = false;
+        break;
+      }
+    }
+  }
+  expect(completed,
+         "inactive workers never retain stack submissions past run_tasks");
+  expect(context->info().completed_submissions ==
+             repetitions + repetitions / 64U,
+         "alternating active-thread stress completes every submission");
 }
 
 void explicit_worker_affinity_is_strict_and_reported() {
@@ -374,6 +432,7 @@ void reentrant_operations_fail_or_stop_without_deadlock() {
 
 int main() {
   configuration_and_static_distribution();
+  inactive_workers_do_not_retain_borrowed_submissions();
   explicit_worker_affinity_is_strict_and_reported();
   independent_contexts_execute_concurrently();
   reentrant_operations_fail_or_stop_without_deadlock();
