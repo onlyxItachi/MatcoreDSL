@@ -81,7 +81,11 @@ void bf16_public_contract() {
 }
 
 void i8_public_contract() {
-  std::array<std::int8_t, 6> lhs{1, 2, 3, -1, 0, 2};
+  // The alias check reuses this storage as an I32 output descriptor. Keep the
+  // fixture naturally aligned so it reaches the intended alias diagnostic
+  // deterministically instead of failing the independent alignment contract.
+  alignas(alignof(std::int32_t)) std::array<std::int8_t, 6> lhs{
+      1, 2, 3, -1, 0, 2};
   std::array<std::int8_t, 6> rhs{1, 2, 3, 4, 5, 6};
   std::array<std::int32_t, 4> out{-17, -17, -17, -17};
   auto lhs_desc = matrix(lhs.data(), MATCORE_DTYPE_I8_V0, 2, 3,
