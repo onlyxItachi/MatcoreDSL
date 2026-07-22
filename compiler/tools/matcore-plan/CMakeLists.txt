@@ -4,6 +4,7 @@ target_compile_options(matcore-plan PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(matcore-plan PRIVATE
   MatcoreDSL::CpuBackendsV1
   MatcoreDSL::PlatformV1
+  MatcoreDSL::Runtime
 )
 set_property(TARGET matcore-plan PROPERTY EXPORT_NAME PlanInspector)
 
@@ -26,7 +27,7 @@ if(BUILD_TESTING)
     planner.cpu.cli.reference
     PROPERTIES
       PASS_REGULAR_EXPRESSION
-        "cpu-planner-v2.*selected=cpu.reference.f32.v1.*reason=explicit legal variant request"
+        "cpu-planner-v3.*selected=cpu.reference.f32.v1.*reason=explicit legal variant request"
   )
 
   add_test(
@@ -37,26 +38,37 @@ if(BUILD_TESTING)
     planner.cpu.cli.automatic
     PROPERTIES
       PASS_REGULAR_EXPRESSION
-        "cpu-planner-v2.*selected=cpu\\..*candidates=\\["
+        "cpu-planner-v3.*selected=cpu\\..*candidates=\\["
   )
 
   add_test(
-    NAME planner.cpu.cli.registry_v2
+    NAME planner.cpu.cli.registry_v3
     COMMAND
       "${CMAKE_COMMAND}"
       "-DMATCORE_PLAN=$<TARGET_FILE:matcore-plan>"
       -P
-      "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_registry_v2.cmake"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_registry_v3.cmake"
   )
 
   add_test(
-    NAME planner.cpu.cli.deterministic_v2
+    NAME planner.cpu.cli.deterministic_v3
     COMMAND
       "${CMAKE_COMMAND}"
       "-DMATCORE_PLAN=$<TARGET_FILE:matcore-plan>"
       -P
-      "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_deterministic_v2.cmake"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_deterministic_v3.cmake"
   )
+
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_test(
+      NAME planner.cpu.cli.compact_affinity_v3
+      COMMAND
+        "${CMAKE_COMMAND}"
+        "-DMATCORE_PLAN=$<TARGET_FILE:matcore-plan>"
+        -P
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_compact_affinity_v3.cmake"
+    )
+  endif()
 
   add_test(
     NAME planner.cpu.cli.invalid_threads
