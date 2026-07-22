@@ -65,6 +65,17 @@ set_target_properties(matcore_runtime PROPERTIES
 )
 
 if(BUILD_TESTING)
+  add_executable(matcore_runtime_abi_compat_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/runtime_abi_compat_test.cpp"
+  )
+  target_compile_features(matcore_runtime_abi_compat_test PRIVATE cxx_std_20)
+  target_include_directories(matcore_runtime_abi_compat_test
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+  )
+  add_test(NAME runtime.c_abi.compatibility_v1
+    COMMAND matcore_runtime_abi_compat_test
+  )
+
   add_executable(matcore_cpu_benchmark_support_test
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/cpu_benchmark_support_test.cpp"
   )
