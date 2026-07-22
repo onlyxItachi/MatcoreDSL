@@ -86,7 +86,6 @@ def extraction_command(
     command.extend(
         [
             "--",
-            str(clang),
             "/nologo",
             "/TP",
             "/std:c++20",

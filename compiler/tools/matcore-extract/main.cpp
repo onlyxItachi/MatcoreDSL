@@ -239,11 +239,16 @@ struct ConfiguredCompiler {
   std::filesystem::path resource_directory;
 };
 
-std::optional<ConfiguredCompiler> discoverConfiguredCompiler() {
+std::optional<ConfiguredCompiler>
+discoverConfiguredCompiler(std::string_view requested_compiler,
+                           bool require_prefix_coherence) {
   std::string error;
-  const std::string_view requested =
-      isWindowsHost() ? std::string_view("clang-cl.exe")
-                      : std::string_view(MDSLC_DEFAULT_CLANGXX);
+  const std::string_view requested = requested_compiler.empty()
+                                         ? (isWindowsHost()
+                                                ? std::string_view("clang-cl.exe")
+                                                : std::string_view(
+                                                      MDSLC_DEFAULT_CLANGXX))
+                                         : requested_compiler;
   const std::optional<std::filesystem::path> discovered =
       support::find_executable_v1(requested, error);
   if (!discovered) {
@@ -252,12 +257,6 @@ std::optional<ConfiguredCompiler> discoverConfiguredCompiler() {
     return std::nullopt;
   }
   std::filesystem::path compiler = *discovered;
-  if (!isWindowsHost()) {
-    const std::optional<std::filesystem::path> configured =
-        pathFromUtf8(MDSLC_DEFAULT_CLANGXX, "configured compiler");
-    if (!configured) return std::nullopt;
-    compiler = *configured;
-  }
   const std::optional<std::string> compiler_utf8 =
       pathToUtf8(compiler, "compiler");
   if (!compiler_utf8) return std::nullopt;
@@ -314,14 +313,55 @@ std::optional<ConfiguredCompiler> discoverConfiguredCompiler() {
   std::error_code relative_error;
   const std::filesystem::path relative_resource = std::filesystem::relative(
       resource_directory, compiler_prefix, relative_error);
-  if (relative_error || relative_resource.empty() ||
-      relative_resource.is_absolute() ||
-      *relative_resource.begin() == "..") {
+  if (require_prefix_coherence &&
+      (relative_error || relative_resource.empty() ||
+       relative_resource.is_absolute() || *relative_resource.begin() == "..")) {
     std::cerr << "matcore-extract: Clang resource directory is outside the "
                  "selected 21.1.8 toolchain prefix\n";
     return std::nullopt;
   }
   return ConfiguredCompiler{compiler, resource_directory};
+}
+
+bool selectCompilerArgument(CommandLine &command) {
+  if (command.frontend.compiler_arguments.empty() ||
+      command.frontend.compiler_arguments.front().starts_with("-") ||
+      (isWindowsHost() &&
+       command.frontend.compiler_arguments.front().starts_with("/"))) {
+    return true;
+  }
+  const std::optional<std::filesystem::path> candidate = pathFromUtf8(
+      command.frontend.compiler_arguments.front(), "compiler");
+  if (!candidate) return false;
+  const std::optional<std::string> filename_utf8 =
+      pathToUtf8(candidate->filename(), "compiler filename");
+  if (!filename_utf8) return false;
+  const std::string &filename = *filename_utf8;
+  if (filename.starts_with("clang")) {
+    if (command.compiler_was_explicit) {
+      std::cerr << "matcore-extract: specify the compiler either with "
+                   "--clang or after --, not both\n";
+      return false;
+    }
+    const bool canonical_placeholder =
+        (!isWindowsHost() && filename == "clang++") ||
+        (isWindowsHost() &&
+         (filename == "clang-cl" || filename == "clang-cl.exe"));
+    if (candidate->has_parent_path() || !canonical_placeholder) {
+      command.frontend.clang_path =
+          command.frontend.compiler_arguments.front();
+      command.compiler_was_explicit = true;
+    }
+    command.frontend.compiler_arguments.erase(
+        command.frontend.compiler_arguments.begin());
+    return true;
+  }
+  if (filename.starts_with("g++") || filename.starts_with("c++")) {
+    std::cerr << "matcore-extract: MDSLC extraction requires Clang; "
+                 "use --clang with a compatible clang++ executable\n";
+    return false;
+  }
+  return true;
 }
 
 std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
@@ -494,11 +534,15 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
     std::cerr << "matcore-extract: --input and --ir-out are required\n";
     return std::nullopt;
   }
+  if (!selectCompilerArgument(command)) return std::nullopt;
   // Verification and --frontend-info deliberately do not require an external
   // Clang installation. Discover the compiler/resource/header tuple only for
   // a real extraction.
   const std::optional<ConfiguredCompiler> configured_compiler =
-      discoverConfiguredCompiler();
+      discoverConfiguredCompiler(command.compiler_was_explicit
+                                     ? command.frontend.clang_path
+                                     : std::string_view{},
+                                 command.frontend_name == "native");
   if (!configured_compiler) return std::nullopt;
   const std::optional<std::string> configured_compiler_utf8 =
       pathToUtf8(configured_compiler->invocation_path, "compiler");
@@ -563,39 +607,6 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
                      "paths, not standard output\n";
         return std::nullopt;
       }
-    }
-  }
-  if (!command.frontend.compiler_arguments.empty() &&
-      !command.frontend.compiler_arguments.front().starts_with("-") &&
-      (!isWindowsHost() ||
-       !command.frontend.compiler_arguments.front().starts_with("/"))) {
-    const std::optional<std::filesystem::path> candidate = pathFromUtf8(
-        command.frontend.compiler_arguments.front(), "compiler");
-    if (!candidate) return std::nullopt;
-    const std::optional<std::string> filename_utf8 =
-        pathToUtf8(candidate->filename(), "compiler filename");
-    if (!filename_utf8) return std::nullopt;
-    const std::string &filename = *filename_utf8;
-    if (filename.starts_with("clang")) {
-      if (command.compiler_was_explicit) {
-        std::cerr << "matcore-extract: specify the compiler either with "
-                     "--clang or after --, not both\n";
-        return std::nullopt;
-      }
-      const bool canonical_placeholder =
-          (!isWindowsHost() && filename == "clang++") ||
-          (isWindowsHost() &&
-           (filename == "clang-cl" || filename == "clang-cl.exe"));
-      if (candidate->has_parent_path() || !canonical_placeholder) {
-        command.frontend.clang_path =
-            command.frontend.compiler_arguments.front();
-      }
-      command.frontend.compiler_arguments.erase(
-          command.frontend.compiler_arguments.begin());
-    } else if (filename.starts_with("g++") || filename.starts_with("c++")) {
-      std::cerr << "matcore-extract: MDSLC extraction requires Clang; "
-                   "use --clang with a compatible clang++ executable\n";
-      return std::nullopt;
     }
   }
   const std::optional<std::filesystem::path> selected_compiler =

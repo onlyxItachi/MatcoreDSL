@@ -323,7 +323,11 @@ def main() -> int:
         changing_compiler = output_root / "changing-clang++"
         changing_compiler.write_text(
             "#!/bin/sh\n"
-            "printf '\\n// concurrent edit\\n' >> \"$MDSLC_RACE_SOURCE\"\n"
+            "case \"$1\" in\n"
+            "  --version|-print-resource-dir) ;;\n"
+            "  *) printf '\\n// concurrent edit\\n' >> "
+            "\"$MDSLC_RACE_SOURCE\" ;;\n"
+            "esac\n"
             "exec /usr/bin/clang++-21 \"$@\"\n",
             encoding="utf-8",
         )
@@ -346,7 +350,10 @@ def main() -> int:
             check=False,
         )
         if changed.returncode == 0 or "changed while Clang parsed it" not in changed.stderr:
-            failures.append("concurrently changed source was not rejected cleanly")
+            failures.append(
+                "concurrently changed source was not rejected cleanly:\n"
+                f"{changed.stderr}"
+            )
 
         deterministic_output = output_root / "gemm_capture.second.json"
         deterministic = subprocess.run(

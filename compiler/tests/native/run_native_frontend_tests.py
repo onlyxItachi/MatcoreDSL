@@ -125,12 +125,19 @@ def main() -> int:
             if output.exists():
                 failures.append(f"native negative {name} emitted an IR artifact")
 
+        mismatched_compiler = output_root / "clang++-mismatched-version"
+        mismatched_compiler.write_text(
+            "#!/bin/sh\n"
+            "printf 'clang version 22.0.0 (deliberate test mismatch)\\n'\n",
+            encoding="utf-8",
+        )
+        mismatched_compiler.chmod(0o755)
         wrong_compiler = subprocess.run(
             [
                 str(extractor),
                 "--frontend=native",
                 "--clang",
-                "/usr/bin/clang++-22",
+                str(mismatched_compiler),
                 "--input",
                 source.as_posix(),
                 "--ir-out",
@@ -144,7 +151,10 @@ def main() -> int:
             capture_output=True,
             check=False,
         )
-        if wrong_compiler.returncode == 0 or "cannot honor a different" not in wrong_compiler.stderr:
+        if (
+            wrong_compiler.returncode == 0
+            or "coherent Clang 21.1.8" not in wrong_compiler.stderr
+        ):
             failures.append("native mode did not reject a mismatched --clang executable")
 
         wrong_placeholder = subprocess.run(
@@ -156,7 +166,7 @@ def main() -> int:
                 "--ir-out",
                 str(output_root / "wrong-placeholder.json"),
                 "--",
-                "/usr/bin/clang++-22",
+                str(mismatched_compiler),
                 "-std=c++20",
                 source.as_posix(),
             ],
@@ -167,7 +177,7 @@ def main() -> int:
         )
         if (
             wrong_placeholder.returncode == 0
-            or "cannot honor a different" not in wrong_placeholder.stderr
+            or "coherent Clang 21.1.8" not in wrong_placeholder.stderr
         ):
             failures.append(
                 "native mode did not reject a mismatched compiler placeholder"
