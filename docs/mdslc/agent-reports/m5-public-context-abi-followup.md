@@ -2,7 +2,7 @@
 
 Date: 2026-07-22
 
-Final reviewed integration checkpoint: `1c40346`
+Final reviewed integration checkpoint: `77afa12`
 
 Ownership: public CPU execution-context validation integration, OpenBLAS
 provider-state interaction, planner evidence regressions, persistent-executor
@@ -51,20 +51,46 @@ resume after the active-worker barrier and dereference the expired submission.
 - The benchmark lane replayed 100/100 isolated tiny Release processes and
   100/100 sanitizer processes after the fix without reproducing the failure.
 
+The final fresh reviewer then reproduced a second high-severity defect: when a
+callback requested shutdown, a worker that had not yet observed the current
+epoch exited immediately on `stopping`. With multiple active workers, that
+worker never joined the active submission barrier and the submitter waited
+forever. A 16-worker probe constrained to one CPU reproduced the old behavior
+deterministically under a three-second timeout.
+
+- A stopping worker now consumes an unseen current submission when it belongs
+  to that submission's active set. It exits on the following loop, after joining
+  the completion barrier.
+- Inactive workers and workers with no unseen submission still exit immediately,
+  so shutdown does not extend a borrowed submission lifetime.
+- The regression constrains the submitter and 16 inherited workers to one
+  allowed Linux CPU, makes every active callback request shutdown, and requires
+  all 16 callbacks plus the completed-submission count. CTest applies a
+  ten-second timeout so a barrier regression fails instead of hanging CI.
+
 Integrated focused commits:
 
 - `922ed68` — `fix(runtime): authenticate public contexts on bound workers`
 - `32efbb1` — `test(planner): preserve exact evidence on rejected plans`
 - `55943dc` — `fix(runtime): bound borrowed submissions to active workers`
 - `1c40346` — `test(runtime): stress borrowed submission lifetime`
+- `03928a3` — `fix(runtime): drain active submission during shutdown`
+- `77afa12` — `test(runtime): cover multi-worker callback shutdown`
 
 ## Validation
 
 Fresh Clang 21.1.8 builds used Ninja `-j2` and OpenBLAS 0.3.32 pthread unless
 stated otherwise.
 
-- Full Release suite on the equivalent final source state: 41/41 passed.
-- Full Debug suite on the equivalent final source state: 41/41 passed.
+- Before the final shutdown finding, the complete Release and Debug suites each
+  passed 41/41 on the otherwise equivalent integration state.
+- After the shutdown fix, the focused Release C17 ABI, executor, planner,
+  OpenBLAS, public-context, and benchmark matrix passed 6/6.
+- After the shutdown fix, the focused Debug executor, planner, public-context,
+  and benchmark matrix passed 4/4.
+- The independent reviewer reran the exact 16-worker, single-CPU reproducer:
+  it exited successfully and then passed 100/100 repeated runs. The reviewer's
+  focused Release matrix passed 4/4 and its ASan+UBSan matrix passed 2/2.
 - ASan+UBSan focused execution-context, planner, public-context, and benchmark
   matrix: 4/4 passed with leak detection and halt-on-error enabled.
 - Integration-lead ASan+UBSan matrix: 6/6 passed. The independent benchmark
@@ -93,7 +119,7 @@ workspace allocation, fallback, or C++ type was introduced across the C ABI.
 
 ## Review status
 
-The creator-thread authentication mismatch, rejected-plan evidence loss, and
-borrowed-submission lifetime race are resolved. The final fresh independent
-review is recorded separately and is required to have no unresolved high or
-medium finding before Milestone 5 completion.
+The creator-thread authentication mismatch, rejected-plan evidence loss,
+borrowed-submission lifetime race, and callback-shutdown barrier deadlock are
+resolved. The final fresh independent re-review approved the state machine with
+no unresolved high or medium finding.
