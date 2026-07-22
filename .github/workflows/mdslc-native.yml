@@ -2,9 +2,6 @@ name: mdslc-native
 
 on:
   push:
-    branches:
-      - feature/device-resident-tensors
-      - mdslc/native-libtooling-v1
     paths:
       - ".github/workflows/mdslc-native.yml"
       - "AGENTS.md"
@@ -22,9 +19,19 @@ permissions:
 
 jobs:
   clang-21-release:
-    name: Clang 21.1.8 standalone Release
+    name: Clang 21.1.8 Release (${{ matrix.openblas_label }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - openblas_label: OpenBLAS required
+            openblas_enable: "ON"
+            openblas_require: "ON"
+          - openblas_label: OpenBLAS explicitly disabled
+            openblas_enable: "OFF"
+            openblas_require: "OFF"
 
     steps:
       - uses: actions/checkout@v4
@@ -47,11 +54,14 @@ jobs:
             g++-multilib \
             libclang-21-dev \
             libclang-cpp21-dev \
+            libopenblas-pthread-dev \
             llvm-21-dev \
             ninja-build \
+            pkg-config \
             python3 \
             rapidjson-dev
           /usr/bin/clang++-21 --version | grep -F "clang version 21.1.8"
+          pkg-config --modversion openblas
 
       - name: Configure standalone MDSLC
         run: |
@@ -62,11 +72,31 @@ jobs:
             -DMDSLC_CLANGXX_EXECUTABLE=/usr/bin/clang++-21 \
             -DMDSLC_ENABLE_NATIVE_FRONTEND=ON \
             -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=ON \
+            -DMDSLC_ENABLE_OPENBLAS=${{ matrix.openblas_enable }} \
+            -DMDSLC_REQUIRE_OPENBLAS=${{ matrix.openblas_require }} \
             -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
-            -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang
+            -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang \
+            | tee build-mdslc-configure.log
+
+          if [[ "${{ matrix.openblas_require }}" == "ON" ]]; then
+            grep -E "MDSLC OpenBLAS variant: .+ via pkg-config" \
+              build-mdslc-configure.log
+          else
+            grep -F "MDSLC OpenBLAS variant: unavailable (optional)" \
+              build-mdslc-configure.log
+          fi
 
       - name: Build standalone MDSLC
         run: cmake --build build-mdslc --parallel 2
+
+      - name: Authenticate the configured BLAS linkage
+        run: |
+          if [[ "${{ matrix.openblas_require }}" == "ON" ]]; then
+            ldd build-mdslc/lib/libmatcore_runtime.so | grep -i openblas
+          elif ldd build-mdslc/lib/libmatcore_runtime.so | grep -qi openblas; then
+            echo "OpenBLAS leaked into the explicitly disabled build" >&2
+            exit 1
+          fi
 
       - name: Test standalone MDSLC
         run: ctest --test-dir build-mdslc --output-on-failure -j1
