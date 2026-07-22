@@ -109,10 +109,11 @@ jobs:
           nm --dynamic "${install_prefix}/lib/libopenblas.so" \
             | grep -E ' T openblas_set_num_threads_local$'
 
-          echo "MDSLC_CI_OPENBLAS_PREFIX=${install_prefix}" >> "${GITHUB_ENV}"
-          echo "PKG_CONFIG_PATH=${PKG_CONFIG_PATH}" >> "${GITHUB_ENV}"
-          echo "LD_LIBRARY_PATH=${install_prefix}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
-            >> "${GITHUB_ENV}"
+          {
+            echo "MDSLC_CI_OPENBLAS_PREFIX=${install_prefix}"
+            echo "PKG_CONFIG_PATH=${PKG_CONFIG_PATH}"
+            echo "LD_LIBRARY_PATH=${install_prefix}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+          } >> "${GITHUB_ENV}"
 
       - name: Configure standalone MDSLC
         run: |
