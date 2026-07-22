@@ -47,6 +47,10 @@ augment_cpu_gemm_implementation_resources_v2(
     const CpuRuntimeValidationEvidenceV1 &validation_evidence) noexcept {
   planner::CpuGemmImplementationResourcesV2 result;
   result.baseline = baseline;
+  result.native_packed_avx2_fma_runtime_validated =
+      validation_evidence.version == kCpuRuntimeValidationEvidenceVersionV1 &&
+      validation_evidence.packed_avx2_f32_runtime_validated &&
+      cpu_packed_avx2_runtime_usable_v1();
   if (execution_context != nullptr) {
     const CpuExecutionContextInfoV1 info = execution_context->info();
     result.execution_context_available = info.accepting_work;

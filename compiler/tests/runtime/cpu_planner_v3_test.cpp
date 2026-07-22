@@ -57,6 +57,7 @@ planner::CpuGemmImplementationResourcesV2 resources() {
   result.baseline.native_packed_workspace_bytes = 393216;
   result.baseline.native_packed_workspace_alignment = 64;
   result.baseline.requested_threads = 1;
+  result.native_packed_avx2_fma_runtime_validated = true;
   result.execution_context_available = true;
   result.execution_context_worker_capacity = 24;
   result.native_parallel_avx2_fma_compiled = true;
@@ -127,6 +128,9 @@ void registry_and_parallel_policy() {
              parallel.legal && parallel.actual_threads == 8 &&
              parallel.required_workspace_bytes ==
                  UINT64_C(262144) + UINT64_C(8) * UINT64_C(131072) &&
+             parallel.shared_workspace_bytes == UINT64_C(262144) &&
+             parallel.per_worker_workspace_bytes == UINT64_C(131072) &&
+             parallel.runtime_validated &&
              parallel.required_workspace_alignment == 64,
          "forced parallel AVX2 plan reports exact shared and worker workspace");
 
@@ -291,6 +295,10 @@ void versioned_capability_and_topology_projection() {
              capability.avx512f_compiler_supported &&
              capability.avx512f_implementation_available &&
              capability.avx512f_runtime_validated &&
+             capability.avx2_implementation_available &&
+             capability.avx2_runtime_validated &&
+             capability.fma_implementation_available &&
+             capability.fma_runtime_validated &&
              capability.baseline.usable_vector_bits == 512,
          "capability v2 domains project without losing AVX-512 legality facts");
   expect(topology_view.discovery_complete &&

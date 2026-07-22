@@ -13,6 +13,7 @@ struct CpuRuntimeValidationEvidenceV1 {
   std::uint32_t version = kCpuRuntimeValidationEvidenceVersionV1;
   // This is injected build/package evidence, not inferred from CPUID. Runtime
   // usability is still checked independently before the fact is accepted.
+  bool packed_avx2_f32_runtime_validated = false;
   bool packed_avx512_f32_runtime_validated = false;
 };
 

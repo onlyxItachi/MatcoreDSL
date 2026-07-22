@@ -39,6 +39,8 @@ int main() {
          "resource fixture creates a topology-capped context");
 
   runtime::CpuRuntimeValidationEvidenceV1 validation;
+  validation.packed_avx2_f32_runtime_validated =
+      runtime::cpu_packed_avx2_runtime_usable_v1();
   validation.packed_avx512_f32_runtime_validated =
       runtime::cpu_packed_avx512_runtime_usable_v1();
   const auto resources =
@@ -47,6 +49,9 @@ int main() {
   expect(resources.execution_context_available &&
              resources.execution_context_worker_capacity == 4,
          "resource projection reports persistent worker capacity");
+  expect(resources.native_packed_avx2_fma_runtime_validated ==
+             runtime::cpu_packed_avx2_runtime_usable_v1(),
+         "AVX2 runtime validation requires injected evidence and usable hardware");
   expect(resources.native_parallel_avx2_fma_compiled &&
              resources.native_parallel_avx2_workspace_size_valid &&
              resources.native_parallel_avx2_shared_workspace_bytes != 0 &&

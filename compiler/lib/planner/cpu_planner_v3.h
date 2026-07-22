@@ -65,6 +65,7 @@ struct CpuThreadPolicyV1 {
 
 struct CpuGemmImplementationResourcesV2 {
   CpuGemmImplementationResourcesV1 baseline;
+  bool native_packed_avx2_fma_runtime_validated = false;
   bool execution_context_available = false;
   std::uint32_t execution_context_worker_capacity = 0;
   bool native_parallel_avx2_fma_compiled = false;
@@ -127,6 +128,13 @@ struct CpuCandidateDecisionV3 {
   std::uint32_t required_workspace_alignment = 1;
   std::uint32_t actual_threads = 0;
   std::uint16_t deterministic_priority = 0;
+  std::uint64_t shared_workspace_bytes = 0;
+  std::uint64_t per_worker_workspace_bytes = 0;
+  std::uint64_t required_hardware_features = 0;
+  std::uint64_t required_os_features = 0;
+  std::uint64_t required_compiler_features = 0;
+  std::uint64_t required_implementation_features = 0;
+  bool runtime_validated = false;
 };
 
 struct CpuGemmPlanV3 {
@@ -153,6 +161,10 @@ struct CpuPlannerCapabilityProjectionV1 {
   bool avx512f_compiler_supported = false;
   bool avx512f_implementation_available = false;
   bool avx512f_runtime_validated = false;
+  bool avx2_implementation_available = false;
+  bool avx2_runtime_validated = false;
+  bool fma_implementation_available = false;
+  bool fma_runtime_validated = false;
 };
 
 CpuPlannerCapabilityProjectionV1 project_cpu_capabilities_v2_for_planner_v1(

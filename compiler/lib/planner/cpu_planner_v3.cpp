@@ -10,6 +10,42 @@ namespace {
 
 inline constexpr std::uint64_t kParallelMacroTileRowsV1 = 128;
 
+constexpr std::uint64_t feature(platform::CpuFeatureV2 value) noexcept {
+  return platform::feature_bit(value);
+}
+
+void populate_requirement_metadata(CpuCandidateDecisionV3 *decision) noexcept {
+  if (decision == nullptr) return;
+  const std::uint64_t portable =
+      feature(platform::CpuFeatureV2::portable_scalar_f32);
+  const std::uint64_t avx2_fma =
+      feature(platform::CpuFeatureV2::avx2) |
+      feature(platform::CpuFeatureV2::fma);
+  const std::uint64_t avx512_fma =
+      feature(platform::CpuFeatureV2::avx512f) |
+      feature(platform::CpuFeatureV2::fma);
+  std::uint64_t required = portable;
+  switch (decision->variant) {
+    case CpuGemmVariantV3::reference:
+    case CpuGemmVariantV3::tiled:
+    case CpuGemmVariantV3::external_openblas:
+      break;
+    case CpuGemmVariantV3::compiler_vectorized:
+    case CpuGemmVariantV3::native_packed_avx2_fma:
+    case CpuGemmVariantV3::native_parallel_avx2_fma:
+      required |= avx2_fma;
+      break;
+    case CpuGemmVariantV3::native_packed_avx512_fma:
+    case CpuGemmVariantV3::native_parallel_avx512_fma:
+      required |= avx512_fma;
+      break;
+  }
+  decision->required_hardware_features = required;
+  decision->required_os_features = required;
+  decision->required_compiler_features = required;
+  decision->required_implementation_features = required;
+}
+
 bool request_matches(CpuGemmRequestV3 request,
                      CpuGemmVariantV3 variant) noexcept {
   if (request == CpuGemmRequestV3::automatic) return true;
@@ -218,6 +254,14 @@ CpuPlannerCapabilityProjectionV1 project_cpu_capabilities_v2_for_planner_v1(
   result.avx512f_runtime_validated =
       platform::has_runtime_validated_feature_v2(
           capabilities, platform::CpuFeatureV2::avx512f);
+  result.avx2_implementation_available = platform::feature_available(
+      capabilities.implementation, platform::CpuFeatureV2::avx2);
+  result.avx2_runtime_validated = platform::has_runtime_validated_feature_v2(
+      capabilities, platform::CpuFeatureV2::avx2);
+  result.fma_implementation_available = platform::feature_available(
+      capabilities.implementation, platform::CpuFeatureV2::fma);
+  result.fma_runtime_validated = platform::has_runtime_validated_feature_v2(
+      capabilities, platform::CpuFeatureV2::fma);
   return result;
 }
 
@@ -289,6 +333,7 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
     decision.variant = record.variant;
     decision.stable_id = record.stable_id;
     decision.deterministic_priority = record.deterministic_priority;
+    populate_requirement_metadata(&decision);
     if (plan.status == CpuPlanStatusV1::invalid_problem ||
         plan.status == CpuPlanStatusV1::invalid_capabilities) {
       decision.reason = plan.selection_reason;
@@ -328,6 +373,32 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
           base_decision.required_workspace_alignment;
       decision.actual_threads = base_decision.actual_threads;
       decision.estimated_cost = base_decision.estimated_cost;
+      decision.shared_workspace_bytes =
+          base_decision.required_workspace_bytes;
+      if (record.variant == CpuGemmVariantV3::reference ||
+          record.variant == CpuGemmVariantV3::tiled) {
+        decision.runtime_validated = true;
+      } else if (record.variant == CpuGemmVariantV3::external_openblas) {
+        decision.runtime_validated = resources.baseline.openblas_linked;
+      } else if (record.variant == CpuGemmVariantV3::compiler_vectorized) {
+        decision.runtime_validated =
+            resources.native_packed_avx2_fma_runtime_validated;
+        if (decision.legal && !decision.runtime_validated) {
+          decision.legal = false;
+          decision.reason =
+              "compiler-vectorized AVX2/FMA implementation is not runtime-validated";
+          decision.estimated_cost = std::numeric_limits<std::uint64_t>::max();
+        }
+      } else {
+        decision.runtime_validated =
+            resources.native_packed_avx2_fma_runtime_validated;
+        if (decision.legal && !decision.runtime_validated) {
+          decision.legal = false;
+          decision.reason =
+              "native packed AVX2/FMA implementation is not runtime-validated";
+          decision.estimated_cost = std::numeric_limits<std::uint64_t>::max();
+        }
+      }
       if (record.variant == CpuGemmVariantV3::external_openblas &&
           decision.legal) {
         decision.estimated_cost = external_cost(problem, decision.actual_threads);
@@ -363,6 +434,9 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
             resources.native_packed_avx512_workspace_bytes;
         decision.required_workspace_alignment =
             resources.native_packed_avx512_workspace_alignment;
+        decision.shared_workspace_bytes =
+            resources.native_packed_avx512_workspace_bytes;
+        decision.runtime_validated = true;
         decision.estimated_cost = avx512_single_cost(problem);
       }
     } else {
@@ -408,6 +482,10 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
                 !has_feature(baseline_capabilities, CpuFeatureV1::fma) ||
                 baseline_capabilities.usable_vector_bits < 256))
         decision.reason = "parallel AVX2/FMA requires usable 256-bit state";
+      else if (!avx512 &&
+               !resources.native_packed_avx2_fma_runtime_validated)
+        decision.reason =
+            "native packed AVX2/FMA implementation is not runtime-validated";
       else if (avx512 &&
                !has_feature(baseline_capabilities, CpuFeatureV1::fma))
         decision.reason = "parallel AVX-512 F32 requires FMA";
@@ -447,6 +525,9 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
             decision.actual_threads = actual_threads;
             decision.required_workspace_bytes = total_workspace;
             decision.required_workspace_alignment = alignment;
+            decision.shared_workspace_bytes = shared_workspace;
+            decision.per_worker_workspace_bytes = per_worker;
+            decision.runtime_validated = true;
             decision.estimated_cost =
                 parallel_cost(problem, actual_threads, avx512);
           }
@@ -507,6 +588,17 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
   normalized.avx512f_os_enabled = capability.avx512f_os_enabled;
   normalized.avx512f_compiler_supported =
       capability.avx512f_compiler_supported;
+  normalized.baseline.native_packed_avx2_fma_compiled =
+      normalized.baseline.native_packed_avx2_fma_compiled &&
+      capability.avx2_implementation_available &&
+      capability.fma_implementation_available;
+  normalized.native_parallel_avx2_fma_compiled =
+      normalized.native_parallel_avx2_fma_compiled &&
+      capability.avx2_implementation_available &&
+      capability.fma_implementation_available;
+  normalized.native_packed_avx2_fma_runtime_validated =
+      normalized.native_packed_avx2_fma_runtime_validated &&
+      capability.avx2_runtime_validated && capability.fma_runtime_validated;
   normalized.native_packed_avx512_fma_compiled =
       normalized.native_packed_avx512_fma_compiled &&
       capability.avx512f_implementation_available;
@@ -533,6 +625,7 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
           kCpuGemmVariantRegistryV3[index].stable_id;
       invalid.candidates[index].deterministic_priority =
           kCpuGemmVariantRegistryV3[index].deterministic_priority;
+      populate_requirement_metadata(&invalid.candidates[index]);
       invalid.candidates[index].reason = capability.reason;
     }
     return invalid;
@@ -575,10 +668,18 @@ std::size_t format_cpu_gemm_plan_v3(const CpuGemmPlanV3 &plan,
       writer.number(candidate.estimated_cost);
       writer.text(":workspace=");
       writer.number(candidate.required_workspace_bytes);
+      writer.text(":shared-workspace=");
+      writer.number(candidate.shared_workspace_bytes);
+      writer.text(":per-worker-workspace=");
+      writer.number(candidate.per_worker_workspace_bytes);
       writer.text(":alignment=");
       writer.number(candidate.required_workspace_alignment);
       writer.text(":threads=");
       writer.number(candidate.actual_threads);
+      writer.text(":runtime-validated=");
+      writer.text(candidate.runtime_validated ? "true" : "false");
+      writer.text(":required-features=");
+      writer.number(candidate.required_hardware_features);
     } else {
       writer.text("rejected:");
       writer.text(candidate.reason);
