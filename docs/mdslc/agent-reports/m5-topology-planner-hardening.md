@@ -56,4 +56,3 @@ serial candidates are unaffected.
 
 - `67aff07103594652b9c9f6322c8abe9a4bdc1845` — topology restriction.
 - `18a9c3a3762bf1cfd97c80b584cfb8b6df2ee9e3` — placement-aware planner.
-
