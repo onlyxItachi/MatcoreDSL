@@ -604,8 +604,11 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
         if (thread_policy.maximum_threads != 0)
           provider_threads =
               std::min(provider_threads, thread_policy.maximum_threads);
-        provider_threads =
-            std::min(provider_threads, v2_resources.openblas_maximum_threads);
+        if (v2_resources.openblas_linked &&
+            v2_resources.openblas_maximum_threads != 0) {
+          provider_threads = std::min(
+              provider_threads, v2_resources.openblas_maximum_threads);
+        }
         v2_resources.requested_threads = provider_threads;
       }
       const CpuGemmPlanV2 base = plan_cpu_gemm_v2(
