@@ -50,19 +50,19 @@ std::uint32_t naturalAlignment(DType dtype) {
   return 0;
 }
 
-bool legalAccumulation(DType element, DType accumulation) {
-  switch (element) {
-  case DType::F16:
+bool legalGemmDTypeContract(DType input, DType output,
+                            DType accumulation) {
+  switch (input) {
   case DType::BF16:
-    return accumulation == DType::F32;
+    return output == DType::F32 && accumulation == DType::F32;
   case DType::F32:
-    return accumulation == DType::F32;
-  case DType::F64:
-    return accumulation == DType::F64;
+    return output == DType::F32 && accumulation == DType::F32;
   case DType::I8:
-    return accumulation == DType::I32;
+    return output == DType::I32 && accumulation == DType::I32;
+  case DType::F16:
+  case DType::F64:
   case DType::I32:
-    return accumulation == DType::I32;
+    return false;
   }
   return false;
 }
@@ -215,11 +215,14 @@ bool exactEffectsContract(const Effects &effects) {
 }
 
 bool exactRequirementContract(
-    const std::vector<SemanticRequirement> &requirements) {
+    const std::vector<SemanticRequirement> &requirements, DType input) {
+  const SemanticRequirement arithmetic =
+      input == DType::I8 ? SemanticRequirement::I32Arithmetic
+                         : SemanticRequirement::F32Arithmetic;
   return requirements ==
          std::vector<SemanticRequirement>{
              SemanticRequirement::Rank2Gemm,
-             SemanticRequirement::F32Arithmetic,
+             arithmetic,
              SemanticRequirement::HostAddressable,
              SemanticRequirement::SynchronousExecution};
 }
@@ -335,6 +338,8 @@ std::string_view toString(SemanticRequirement value) {
     return "rank2_gemm";
   case SemanticRequirement::F32Arithmetic:
     return "f32_arithmetic";
+  case SemanticRequirement::I32Arithmetic:
+    return "i32_arithmetic";
   case SemanticRequirement::HostAddressable:
     return "host_addressable";
   case SemanticRequirement::SynchronousExecution:
@@ -397,29 +402,28 @@ bool verify(const Module &module, std::string &error) {
     const TensorType &output = operation.output.type;
     const TensorType &lhs = operation.operands[0].type;
     const TensorType &rhs = operation.operands[1].type;
-    if (output.element_dtype != lhs.element_dtype ||
-        output.element_dtype != rhs.element_dtype) {
-      error = "gemm input and output element dtypes must match";
+    if (lhs.element_dtype != rhs.element_dtype) {
+      error = "gemm lhs and rhs element dtypes must match";
       return false;
     }
     if (!known(toString(operation.accumulation_dtype)) ||
-        !legalAccumulation(output.element_dtype,
-                           operation.accumulation_dtype)) {
-      error = "gemm element and accumulation dtype combination is illegal";
+        !legalGemmDTypeContract(lhs.element_dtype, output.element_dtype,
+                                operation.accumulation_dtype)) {
+      error = "gemm dtype contract must be f32xf32->f32 with f32 "
+              "accumulation, bf16xbf16->f32 with f32 accumulation, or "
+              "i8xi8->i32 with i32 accumulation";
       return false;
     }
-    if (!exactRequirementContract(operation.requirements)) {
+    if (!exactRequirementContract(operation.requirements, lhs.element_dtype)) {
       error = "gemm semantic capability requirements must be the canonical "
-              "rank2/f32/host/synchronous set";
+              "rank2/arithmetic/host/synchronous set for its dtype contract";
       return false;
     }
-    if (output.element_dtype != DType::F32 ||
-        operation.accumulation_dtype != DType::F32 ||
-        output.memory_space != MemorySpace::Host ||
+    if (output.memory_space != MemorySpace::Host ||
         lhs.memory_space != MemorySpace::Host ||
         rhs.memory_space != MemorySpace::Host) {
-      error = "current Matcore IR v1 GEMM semantics require host f32 values "
-              "with f32 accumulation";
+      error = "current Matcore IR v1 GEMM semantics require host-addressable "
+              "input and output values";
       return false;
     }
     if (!(lhs.shape[0] == output.shape[0]) ||

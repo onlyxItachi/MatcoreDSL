@@ -64,6 +64,25 @@ void expectInvalid(const v1::Module &module, std::string_view expected,
   checkContains(error, expected, "invalid module diagnostic must be actionable");
 }
 
+v1::Module withDTypeContract(const v1::Module &source, v1::DType input,
+                             v1::DType output, v1::DType accumulation,
+                             std::uint32_t input_alignment,
+                             std::uint32_t output_alignment) {
+  v1::Module result = source;
+  auto &operation = result.operations[0];
+  operation.output.type.element_dtype = output;
+  operation.output.type.required_alignment_bytes = output_alignment;
+  operation.operands[0].type.element_dtype = input;
+  operation.operands[0].type.required_alignment_bytes = input_alignment;
+  operation.operands[1].type.element_dtype = input;
+  operation.operands[1].type.required_alignment_bytes = input_alignment;
+  operation.accumulation_dtype = accumulation;
+  operation.requirements[1] =
+      input == v1::DType::I8 ? v1::SemanticRequirement::I32Arithmetic
+                             : v1::SemanticRequirement::F32Arithmetic;
+  return result;
+}
+
 } // namespace
 
 int main() {
@@ -196,6 +215,38 @@ int main() {
         "canonical upgraded v1 must project to v0");
   check(v0::serializeDeterministicJson(projected) == v0_json,
         "v0 -> v1 -> v0 must preserve exact v0 bytes");
+
+  const v1::Module bf16 =
+      withDTypeContract(typed, v1::DType::BF16, v1::DType::F32,
+                        v1::DType::F32, 2, 4);
+  check(v1::verify(bf16, error),
+        "BF16 inputs with F32 accumulation and output must verify");
+  const std::string bf16_json = v1::serializeDeterministicJson(bf16);
+  v1::Module bf16_reparsed;
+  check(v1::parseAndVerifyJson(bf16_json, bf16_reparsed, error) &&
+            v1::serializeDeterministicJson(bf16_reparsed) == bf16_json,
+        "BF16/F32 semantics must round-trip deterministically through JSON");
+  check(!v1::projectToV0(bf16, projected, error),
+        "BF16 operands must not be erased by the F32-only v0 projection");
+  checkContains(error, "losslessly",
+                "BF16 projection rejection must explain the information loss");
+
+  const v1::Module i8 =
+      withDTypeContract(typed, v1::DType::I8, v1::DType::I32,
+                        v1::DType::I32, 1, 4);
+  check(v1::verify(i8, error),
+        "I8 inputs with I32 accumulation and output must verify");
+  const std::string i8_json = v1::serializeDeterministicJson(i8);
+  checkContains(i8_json, "\"i32_arithmetic\"",
+                "I8/I32 JSON names its exact arithmetic requirement");
+  v1::Module i8_reparsed;
+  check(v1::parseAndVerifyJson(i8_json, i8_reparsed, error) &&
+            v1::serializeDeterministicJson(i8_reparsed) == i8_json,
+        "I8/I32 semantics must round-trip deterministically through JSON");
+  check(!v1::projectToV0(i8, projected, error),
+        "I8/I32 semantics must not cross the F32-only v0 projection");
+  checkContains(error, "cannot be represented losslessly",
+                "I8 projection rejection must name the lossy boundary");
 
   v1::Module static_shapes = typed;
   makeStatic(static_shapes.operations[0].output, 2, 4);
@@ -337,13 +388,13 @@ int main() {
   expectInvalid(invalid, "element dtype", "unknown dtype fails");
 
   invalid = typed;
-  invalid.operations[0].output.type.element_dtype = v1::DType::F64;
-  invalid.operations[0].output.type.required_alignment_bytes = 8;
-  expectInvalid(invalid, "element dtypes", "mismatched tensor dtypes fail");
+  invalid.operations[0].operands[1].type.element_dtype = v1::DType::F64;
+  invalid.operations[0].operands[1].type.required_alignment_bytes = 8;
+  expectInvalid(invalid, "lhs and rhs", "mismatched input dtypes fail");
 
   invalid = typed;
   invalid.operations[0].accumulation_dtype = v1::DType::F64;
-  expectInvalid(invalid, "accumulation", "illegal accumulation dtype fails");
+  expectInvalid(invalid, "dtype contract", "illegal accumulation dtype fails");
 
   invalid = typed;
   invalid.operations[0].output.type.layout = static_cast<v1::Layout>(99);
@@ -432,15 +483,20 @@ int main() {
 
   invalid = typed;
   invalid.operations[0].output.type.element_dtype = v1::DType::BF16;
+  invalid.operations[0].output.type.required_alignment_bytes = 2;
   invalid.operations[0].operands[0].type.element_dtype = v1::DType::BF16;
+  invalid.operations[0].operands[0].type.required_alignment_bytes = 2;
   invalid.operations[0].operands[1].type.element_dtype = v1::DType::BF16;
-  expectInvalid(invalid, "host f32", "unsupported bf16 execution contract fails");
+  invalid.operations[0].operands[1].type.required_alignment_bytes = 2;
+  expectInvalid(invalid, "dtype contract",
+                "BF16 output is rejected because BF16 GEMM outputs F32");
 
   invalid = typed;
   invalid.operations[0].output.type.memory_space = v1::MemorySpace::Device;
   invalid.operations[0].operands[0].type.memory_space = v1::MemorySpace::Device;
   invalid.operations[0].operands[1].type.memory_space = v1::MemorySpace::Device;
-  expectInvalid(invalid, "host f32", "device-resident v1 GEMM fails CPU scope");
+  expectInvalid(invalid, "host-addressable",
+                "device-resident v1 GEMM fails CPU scope");
 
   invalid = typed;
   invalid.operations[0].policy.target = static_cast<v1::Target>(99);
