@@ -2163,7 +2163,7 @@ matcore_runtime_cpu_execution_context_create_v1(
                     "CPU execution context requires valid capability discovery");
     }
     auto topology =
-        matcore::mdslc::platform::discover_linux_cpu_topology_v1();
+        matcore::mdslc::platform::discover_host_cpu_topology_v1();
     const auto process_affinity =
         matcore::mdslc::platform::discover_current_thread_affinity_v1();
     const auto current_cpu =

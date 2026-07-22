@@ -20,10 +20,6 @@
 #include <thread>
 #include <utility>
 
-#if defined(__linux__)
-#include <sys/utsname.h>
-#endif
-
 namespace matcore::mdslc::bench {
 namespace {
 
@@ -339,6 +335,7 @@ std::string regret_plan_mismatch(
   return {};
 }
 
+#if defined(__linux__)
 std::string read_first_matching_line(const char *path,
                                      std::string_view prefix) {
   std::ifstream input(path);
@@ -364,6 +361,7 @@ std::string read_file_trimmed(const char *path) {
     value.pop_back();
   return value.empty() ? "unknown" : value;
 }
+#endif
 
 }  // namespace
 
@@ -639,7 +637,9 @@ BenchmarkEnvironmentV1 discover_benchmark_environment_v1(
 #else
   result.architecture = "unknown";
 #endif
-#if defined(__clang__)
+#if defined(__clang__) && defined(_MSC_VER)
+  result.compiler = "clang-cl " __clang_version__;
+#elif defined(__clang__)
   result.compiler = "clang " __clang_version__;
 #elif defined(__GNUC__)
   result.compiler = "gcc " __VERSION__;
