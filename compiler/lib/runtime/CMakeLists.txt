@@ -94,6 +94,8 @@ target_link_libraries(matcore_cpu_backends_v1
   PUBLIC MatcoreDSL::CpuPlannerV1
 )
 set_target_properties(matcore_cpu_backends_v1 PROPERTIES
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN YES
   POSITION_INDEPENDENT_CODE ON
 )
 
