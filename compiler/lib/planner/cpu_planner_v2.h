@@ -195,7 +195,12 @@ constexpr std::uint64_t estimated_cost(
       return detail::saturating_add(detail::saturating_multiply(work, 4),
                                     16384);
     case CpuGemmVariantV2::external_openblas:
-      return detail::saturating_add(work, 180000);
+      // The v1 LP64 CBLAS adapter has a small fixed dispatch cost. Pinned
+      // validation-host sweeps showed the provider crossing the scalar/native
+      // candidates by 16^3 and on small high-aspect-ratio problems. Keeping a
+      // nonzero cost still lets the allocation-free reference win truly tiny
+      // calls; this is a deterministic static rule, not runtime autotuning.
+      return detail::saturating_add(work, 2000);
     case CpuGemmVariantV2::native_packed_avx2_fma:
       return detail::saturating_add(
           detail::saturating_add(detail::saturating_multiply(work, 2),

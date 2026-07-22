@@ -82,6 +82,34 @@ int main() {
     return 1;
   }
 
+  const planner::CpuGemmProblemV1 tiny_problem{
+      2, 3, 2, planner::CpuScalarTypeV1::f32,
+      planner::CpuScalarTypeV1::f32,
+      planner::CpuLayoutV1::row_major_contiguous, 64};
+  const planner::CpuGemmPlanV2 tiny_auto = planner::plan_cpu_gemm_v2(
+      tiny_problem, capabilities, resources,
+      planner::CpuGemmRequestV2::automatic);
+  const planner::CpuGemmProblemV1 crossover_problem{
+      16, 16, 16, planner::CpuScalarTypeV1::f32,
+      planner::CpuScalarTypeV1::f32,
+      planner::CpuLayoutV1::row_major_contiguous, 64};
+  const planner::CpuGemmPlanV2 crossover_auto = planner::plan_cpu_gemm_v2(
+      crossover_problem, capabilities, resources,
+      planner::CpuGemmRequestV2::automatic);
+  const planner::CpuGemmProblemV1 skinny_problem{
+      64, 7, 19, planner::CpuScalarTypeV1::f32,
+      planner::CpuScalarTypeV1::f32,
+      planner::CpuLayoutV1::row_major_contiguous, 64};
+  const planner::CpuGemmPlanV2 skinny_auto = planner::plan_cpu_gemm_v2(
+      skinny_problem, capabilities, resources,
+      planner::CpuGemmRequestV2::automatic);
+  if (tiny_auto.selected_id != "cpu.reference.f32.v1" ||
+      crossover_auto.selected_id != "cpu.external.openblas.f32.v1" ||
+      skinny_auto.selected_id != "cpu.external.openblas.f32.v1") {
+    std::cerr << "calibrated OpenBLAS crossover rule regressed\n";
+    return 1;
+  }
+
   const std::size_t required =
       planner::format_cpu_gemm_plan_v2(plan, nullptr, 0);
   std::string diagnostic(required + 1, '\0');
