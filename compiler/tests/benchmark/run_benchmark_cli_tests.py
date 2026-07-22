@@ -26,7 +26,7 @@ def require_report_shape(report: dict, schema: dict) -> None:
     required = schema["required"]
     assert all(field in report for field in required)
     assert report["schema"] == "matcore.benchmark.cpu.gemm"
-    assert report["version"] == 2
+    assert report["version"] == schema["properties"]["version"]["const"]
     assert report["operation"] == "matcore.gemm"
     assert report["dtype"] == report["accumulation_dtype"] == "f32"
     assert report["layout"] == "row-major-contiguous"
@@ -95,6 +95,8 @@ def main() -> int:
         assert (result["m"], result["n"], result["k"]) == (33, 35, 37)
         assert result["selected_variant"] == "cpu.reference.f32.v1"
         assert result["correctness"] is True
+        assert result["measured_executions_checked"] >= 3
+        assert "every measured execution" in result["correctness_validation_scope"]
         assert result["oracle_mode"] == "full-double"
         assert result["timing_valid"] is True
         assert result["aggregate_repetitions"] >= 1
@@ -378,17 +380,54 @@ def main() -> int:
         assert len(regret["candidates"]) == 8
         assert regret["fastest_legal_variant"]
         assert regret["regret"] >= 1.0
-        assert "equal-weight arithmetic midpoint" in regret["reason"]
+        assert regret["aggregation_method"] == (
+            "arithmetic-mean-of-forward-and-reverse-pass-medians"
+        )
+        assert "equal-weight arithmetic mean" in regret["reason"]
         selected = next(
             candidate
             for candidate in regret["candidates"]
             if candidate["variant"] == regret_result["selected_variant"]
         )
-        assert regret["selected_median_seconds"] == selected["median_seconds"]
+        assert regret["selected_balanced_estimate_seconds"] == (
+            selected["balanced_estimate_seconds"]
+        )
+        assert "selected_median_seconds" not in regret
+        assert "fastest_legal_median_seconds" not in regret
         for candidate in regret["candidates"]:
             if candidate["legal"] and candidate["complete_implementation_comparison"]:
+                assert candidate["selected_variant"] == candidate["variant"]
+                assert candidate["planner_version"] == 3
+                assert candidate["timing_scope"]
+                assert candidate["actual_threads"] >= 1
+                assert candidate["workspace_alignment"] >= 1
+                assert candidate["smt_policy"] in (
+                    "physical-cores-only",
+                    "allow-smt",
+                )
+                assert candidate["affinity_policy"] in (
+                    "none",
+                    "compact",
+                    "scatter",
+                    "local-first",
+                )
                 assert candidate["timing_valid"] is True
                 assert candidate["correctness"] is True
+                assert candidate["plan_authenticated"] is True
+                assert candidate["forward_pass_measured_executions_checked"] >= 1
+                assert candidate["reverse_pass_measured_executions_checked"] >= 1
+                assert candidate["forward_pass_median_seconds"] > 0
+                assert candidate["reverse_pass_median_seconds"] > 0
+                assert math.isclose(
+                    candidate["balanced_estimate_seconds"],
+                    (
+                        candidate["forward_pass_median_seconds"]
+                        + candidate["reverse_pass_median_seconds"]
+                    )
+                    / 2.0,
+                    rel_tol=1.0e-15,
+                )
+                assert "median_seconds" not in candidate
                 assert "forward and reverse stable-registry-pass medians" in (
                     candidate["measurement_reason"]
                 )

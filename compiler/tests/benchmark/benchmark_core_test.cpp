@@ -1,10 +1,12 @@
 #include "benchmark.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <numeric>
 #include <span>
 #include <sstream>
 #include <string>
@@ -27,11 +29,44 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
  private:
   struct ExecutionState final : bench::RunnerPlanStateV1 {
     bool fail = false;
+    bool corrupt_intermediate_measurement = false;
+    mutable std::uint32_t executions = 0;
   };
 
  public:
-  explicit RecordingRunner(bool fail_reverse_selected = false)
-      : fail_reverse_selected_(fail_reverse_selected) {}
+  enum class PlanDrift {
+    none,
+    legal,
+    selected_variant,
+    reason,
+    diagnostic,
+    timing_scope,
+    comparable,
+    planner_version,
+    actual_threads,
+    workspace_bytes,
+    shared_workspace_bytes,
+    per_worker_workspace_bytes,
+    workspace_alignment,
+    prepacked_b_bytes,
+    packing_required,
+    supports_prepacked_b,
+    persistent_context,
+    smt_policy,
+    affinity_policy,
+    worker_affinity_applied,
+    worker_affinity_user_requested,
+    worker_affinity_policy_induced,
+    affinity_diagnostic,
+  };
+
+  explicit RecordingRunner(bool fail_reverse_selected = false,
+                           PlanDrift drift = PlanDrift::none,
+                           bool corrupt_intermediate_measurement = false)
+      : fail_reverse_selected_(fail_reverse_selected),
+        drift_(drift),
+        corrupt_intermediate_measurement_(
+            corrupt_intermediate_measurement) {}
 
   bench::RunnerEnvironmentV1 environment() const override { return {}; }
 
@@ -58,8 +93,63 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
     result.workspace_alignment = 1;
     if (requested_variant == "test.selected") {
       ++selected_plan_count_;
+      if (selected_plan_count_ == 2) {
+        switch (drift_) {
+          case PlanDrift::none: break;
+          case PlanDrift::legal: result.legal = false; break;
+          case PlanDrift::selected_variant:
+            result.selected_variant = "test.misattributed";
+            break;
+          case PlanDrift::reason: result.reason += " drift"; break;
+          case PlanDrift::diagnostic: result.diagnostic += " drift"; break;
+          case PlanDrift::timing_scope: result.timing_scope += "-drift"; break;
+          case PlanDrift::comparable:
+            result.complete_implementation_comparison = false;
+            break;
+          case PlanDrift::planner_version: result.planner_version = 4; break;
+          case PlanDrift::actual_threads: result.actual_threads = 2; break;
+          case PlanDrift::workspace_bytes: result.workspace_bytes = 64; break;
+          case PlanDrift::shared_workspace_bytes:
+            result.shared_workspace_bytes = 16;
+            break;
+          case PlanDrift::per_worker_workspace_bytes:
+            result.per_worker_workspace_bytes = 16;
+            break;
+          case PlanDrift::workspace_alignment:
+            result.workspace_alignment = 2;
+            break;
+          case PlanDrift::prepacked_b_bytes:
+            result.prepacked_b_bytes = 16;
+            break;
+          case PlanDrift::packing_required: result.packing_required = true; break;
+          case PlanDrift::supports_prepacked_b:
+            result.supports_prepacked_b = true;
+            break;
+          case PlanDrift::persistent_context:
+            result.persistent_execution_context = true;
+            break;
+          case PlanDrift::smt_policy: result.smt_policy = "drift"; break;
+          case PlanDrift::affinity_policy:
+            result.affinity_policy = "drift";
+            break;
+          case PlanDrift::worker_affinity_applied:
+            result.worker_affinity_applied = true;
+            break;
+          case PlanDrift::worker_affinity_user_requested:
+            result.worker_affinity_user_requested = true;
+            break;
+          case PlanDrift::worker_affinity_policy_induced:
+            result.worker_affinity_policy_induced = true;
+            break;
+          case PlanDrift::affinity_diagnostic:
+            result.affinity_diagnostic = "drift";
+            break;
+        }
+      }
       auto state = std::make_shared<ExecutionState>();
       state->fail = fail_reverse_selected_ && selected_plan_count_ == 3;
+      state->corrupt_intermediate_measurement =
+          corrupt_intermediate_measurement_ && selected_plan_count_ == 2;
       result.state = std::move(state);
     }
     return result;
@@ -92,6 +182,14 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
         output[row * shape.n + column] = sum;
       }
     }
+    if (state != nullptr) {
+      ++state->executions;
+      // With no warmups and a one-nanosecond floor, execution 1 is the probe;
+      // execution 3 is the second measured sample. A later sample restores the
+      // correct output, so final-output-only validation would miss this.
+      if (state->corrupt_intermediate_measurement && state->executions == 3)
+        output[0] += 100.0F;
+    }
     return true;
   }
 
@@ -103,6 +201,8 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
 
  private:
   bool fail_reverse_selected_ = false;
+  PlanDrift drift_ = PlanDrift::none;
+  bool corrupt_intermediate_measurement_ = false;
   mutable std::uint32_t selected_plan_count_ = 0;
   mutable std::vector<std::string> plan_requests_;
 };
@@ -300,7 +400,10 @@ int main() {
              report.results[0].plan.smt_policy == "physical-cores-only" &&
              report.results[0].plan.worker_affinity_applied &&
              !report.results[0].plan.worker_affinity_user_requested &&
-             report.results[0].plan.worker_affinity_policy_induced,
+             report.results[0].plan.worker_affinity_policy_induced &&
+             report.results[0].correctness.measured_executions_checked >= 3 &&
+             report.results[0].correctness.validation_scope.find(
+                 "every measured execution") != std::string::npos,
          "benchmark result identifies the variant and passes independent oracle");
 
   auto scaling_options = run_options;
@@ -323,8 +426,9 @@ int main() {
              regret_report.results[0].planner_regret.valid &&
              regret_report.results[0].planner_regret.candidates.size() == 8 &&
              regret_report.results[0].planner_regret.regret >= 1.0 &&
-             regret_report.results[0].planner_regret.reason.find(
-                 "equal-weight arithmetic midpoint") != std::string::npos,
+             bench::regret_aggregation_method_name_v3(
+                 regret_report.results[0].planner_regret.aggregation_method) ==
+                 "arithmetic-mean-of-forward-and-reverse-pass-medians",
          "planner regret balances forward/reverse registry passes and reports "
          "selected over fastest");
 
@@ -344,7 +448,7 @@ int main() {
   const auto &balanced_regret = balanced_report.results[0].planner_regret;
   const auto selected_candidate = std::find_if(
       balanced_regret.candidates.begin(), balanced_regret.candidates.end(),
-      [](const bench::RegretCandidateResultV2 &candidate) {
+      [](const bench::RegretCandidateResultV3 &candidate) {
         return candidate.variant == "test.selected";
       });
   expect(recording_runner.plan_requests() == expected_plan_order,
@@ -356,13 +460,45 @@ int main() {
              balanced_regret.candidates[1].variant == "test.selected" &&
              balanced_regret.candidates[2].variant == "test.reverse-first" &&
              selected_candidate != balanced_regret.candidates.end() &&
-             balanced_regret.selected_median_seconds ==
-                 selected_candidate->median_seconds &&
+             selected_candidate->selected_variant == "test.selected" &&
+             selected_candidate->timing_scope == "complete-call" &&
+             selected_candidate->actual_threads == 1 &&
+             selected_candidate->workspace_alignment == 1 &&
+             selected_candidate->plan_authenticated &&
+             balanced_regret.selected_balanced_estimate_seconds ==
+                 selected_candidate->balanced_estimate_seconds &&
+             selected_candidate->forward_pass_median_seconds > 0.0 &&
+             selected_candidate->reverse_pass_median_seconds > 0.0 &&
+             selected_candidate->balanced_estimate_seconds ==
+                 std::midpoint(
+                     selected_candidate->forward_pass_median_seconds,
+                     selected_candidate->reverse_pass_median_seconds) &&
+             selected_candidate->forward_pass_measured_executions_checked >= 1 &&
+             selected_candidate->reverse_pass_measured_executions_checked >= 1 &&
              selected_candidate->measurement_reason.find(
                  "forward and reverse stable-registry-pass medians") !=
                  std::string::npos,
          "regret output keeps stable registry order and derives the selected "
          "timing from the same balanced passes as every alternative");
+  std::ostringstream balanced_encoded;
+  bench::write_json_v1(balanced_report, balanced_encoded);
+  const std::string balanced_json = balanced_encoded.str();
+  expect(balanced_json.find(
+             "\"aggregation_method\": "
+             "\"arithmetic-mean-of-forward-and-reverse-pass-medians\"") !=
+                 std::string::npos &&
+             balanced_json.find("\"forward_pass_median_seconds\"") !=
+                 std::string::npos &&
+             balanced_json.find("\"reverse_pass_median_seconds\"") !=
+                 std::string::npos &&
+             balanced_json.find("\"balanced_estimate_seconds\"") !=
+                 std::string::npos &&
+             balanced_json.find("\"selected_median_seconds\"") ==
+                 std::string::npos &&
+             balanced_json.find("\"fastest_legal_median_seconds\"") ==
+                 std::string::npos,
+         "schema v3 names pass medians and the derived balanced estimate "
+         "without representing an arithmetic mean as a median");
 
   RecordingRunner reverse_failure_runner(/*fail_reverse_selected=*/true);
   bench::BenchmarkReportV1 rejected_balanced_report;
@@ -375,6 +511,87 @@ int main() {
                  "test.selected") != std::string::npos,
          "a failed reverse candidate pass rejects the planner-regret run with "
          "the pass and variant identified");
+
+  const std::array plan_drift_cases = {
+      std::pair{RecordingRunner::PlanDrift::reason, "selection_reason"},
+      std::pair{RecordingRunner::PlanDrift::diagnostic, "plan_diagnostic"},
+      std::pair{RecordingRunner::PlanDrift::timing_scope, "timing_scope"},
+      std::pair{RecordingRunner::PlanDrift::comparable,
+                "complete_implementation_comparison"},
+      std::pair{RecordingRunner::PlanDrift::planner_version,
+                "planner_version"},
+      std::pair{RecordingRunner::PlanDrift::actual_threads, "actual_threads"},
+      std::pair{RecordingRunner::PlanDrift::workspace_bytes,
+                "workspace_bytes"},
+      std::pair{RecordingRunner::PlanDrift::shared_workspace_bytes,
+                "shared_workspace_bytes"},
+      std::pair{RecordingRunner::PlanDrift::per_worker_workspace_bytes,
+                "per_worker_workspace_bytes"},
+      std::pair{RecordingRunner::PlanDrift::workspace_alignment,
+                "workspace_alignment"},
+      std::pair{RecordingRunner::PlanDrift::prepacked_b_bytes,
+                "prepacked_b_bytes"},
+      std::pair{RecordingRunner::PlanDrift::packing_required,
+                "packing_required"},
+      std::pair{RecordingRunner::PlanDrift::supports_prepacked_b,
+                "supports_prepacked_b"},
+      std::pair{RecordingRunner::PlanDrift::persistent_context,
+                "persistent_execution_context"},
+      std::pair{RecordingRunner::PlanDrift::smt_policy, "smt_policy"},
+      std::pair{RecordingRunner::PlanDrift::affinity_policy,
+                "affinity_policy"},
+      std::pair{RecordingRunner::PlanDrift::worker_affinity_applied,
+                "worker_affinity_applied"},
+      std::pair{RecordingRunner::PlanDrift::worker_affinity_user_requested,
+                "worker_affinity_user_requested"},
+      std::pair{RecordingRunner::PlanDrift::worker_affinity_policy_induced,
+                "worker_affinity_policy_induced"},
+      std::pair{RecordingRunner::PlanDrift::affinity_diagnostic,
+                "affinity_diagnostic"},
+  };
+  for (const auto &[drift, field] : plan_drift_cases) {
+    RecordingRunner drift_runner(/*fail_reverse_selected=*/false, drift);
+    bench::BenchmarkReportV1 drift_report;
+    std::string drift_error;
+    expect(!bench::run_benchmarks_v1(balanced_options, drift_runner,
+                                     drift_report, drift_error) &&
+               drift_error.find("pass plan authentication failed") !=
+                   std::string::npos &&
+               drift_error.find(field) != std::string::npos,
+           std::string("recursive regret measurement rejects preflight drift in ") +
+               field);
+  }
+
+  for (const auto &[drift, expected_error] :
+       std::array{
+           std::pair{RecordingRunner::PlanDrift::legal,
+                     "variant planning failed"},
+           std::pair{RecordingRunner::PlanDrift::selected_variant,
+                     "instead of requested test.selected"},
+       }) {
+    RecordingRunner attribution_runner(/*fail_reverse_selected=*/false, drift);
+    bench::BenchmarkReportV1 attribution_report;
+    std::string attribution_error;
+    expect(!bench::run_benchmarks_v1(balanced_options, attribution_runner,
+                                     attribution_report, attribution_error) &&
+               attribution_error.find(expected_error) != std::string::npos,
+           "recursive regret measurement rejects legal/selection "
+           "misattribution before accepting a timing");
+  }
+
+  auto corruption_options = balanced_options;
+  corruption_options.measured_iterations = 3;
+  RecordingRunner corruption_runner(
+      /*fail_reverse_selected=*/false, RecordingRunner::PlanDrift::none,
+      /*corrupt_intermediate_measurement=*/true);
+  bench::BenchmarkReportV1 corruption_report;
+  std::string corruption_error;
+  expect(!bench::run_benchmarks_v1(corruption_options, corruption_runner,
+                                   corruption_report, corruption_error) &&
+             corruption_error.find("correctness failed for test.selected at "
+                                   "measured iteration 1") != std::string::npos,
+         "an intermediate corrupt execution is rejected before a later "
+         "execution can overwrite it with a correct final output");
 
   const auto rejected_reference_compute = runner->plan(
       {16, 16, 16}, 64, 1, "cpu.reference.f32.v1",
@@ -460,8 +677,12 @@ int main() {
   const std::string json = encoded.str();
   expect(json.find("\"schema\": \"matcore.benchmark.cpu.gemm\"") !=
                  std::string::npos &&
-             json.find("\"version\": 2") != std::string::npos &&
+             json.find("\"version\": 3") != std::string::npos &&
              json.find("\"correctness\": true") != std::string::npos &&
+             json.find("\"measured_executions_checked\"") !=
+                 std::string::npos &&
+             json.find("\"correctness_validation_scope\"") !=
+                 std::string::npos &&
              json.find("\"planner_version\": 3") != std::string::npos &&
              json.find("\"shared_workspace_bytes\"") != std::string::npos &&
              json.find("\"worker_affinity_policy_induced\"") !=

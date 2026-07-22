@@ -13,6 +13,7 @@
 namespace matcore::mdslc::bench {
 
 inline constexpr std::uint32_t kBenchmarkSchemaVersionV2 = 2;
+inline constexpr std::uint32_t kBenchmarkSchemaVersionV3 = 3;
 inline constexpr std::uint64_t kDefaultMaximumMemoryBytes =
     UINT64_C(2) * 1024 * 1024 * 1024;
 inline constexpr std::uint64_t kDefaultTimerFloorNanoseconds = 1'000'000;
@@ -171,6 +172,8 @@ struct CorrectnessResultV1 {
   double expected_checksum = 0.0;
   double maximum_absolute_error = 0.0;
   double maximum_allowed_error = 0.0;
+  std::uint64_t measured_executions_checked = 0;
+  std::string validation_scope;
   std::string reason;
 };
 
@@ -184,26 +187,55 @@ struct ScalingResultV2 {
   std::string reason;
 };
 
-struct RegretCandidateResultV2 {
+enum class RegretAggregationMethodV3 : std::uint8_t {
+  arithmetic_mean_of_pass_medians = 0,
+};
+
+struct RegretCandidateResultV3 {
   std::string variant;
+  std::string selected_variant;
   bool legal = false;
   std::string reason;
   bool complete_implementation_comparison = false;
+  std::uint32_t planner_version = 0;
+  std::string timing_scope;
+  std::uint32_t actual_threads = 1;
+  std::uint64_t workspace_bytes = 0;
+  std::uint64_t shared_workspace_bytes = 0;
+  std::uint64_t per_worker_workspace_bytes = 0;
+  std::uint32_t workspace_alignment = 1;
+  std::uint64_t prepacked_b_bytes = 0;
+  bool packing_required = false;
+  bool supports_prepacked_b = false;
+  bool persistent_execution_context = false;
+  std::string smt_policy;
+  std::string affinity_policy;
+  bool worker_affinity_applied = false;
+  bool worker_affinity_user_requested = false;
+  bool worker_affinity_policy_induced = false;
+  std::string affinity_diagnostic;
+  bool plan_authenticated = false;
   bool timing_valid = false;
   bool correctness_passed = false;
-  double median_seconds = 0.0;
+  double forward_pass_median_seconds = 0.0;
+  double reverse_pass_median_seconds = 0.0;
+  std::uint64_t forward_pass_measured_executions_checked = 0;
+  std::uint64_t reverse_pass_measured_executions_checked = 0;
+  double balanced_estimate_seconds = 0.0;
   std::string measurement_reason;
 };
 
-struct PlannerRegretResultV2 {
+struct PlannerRegretResultV3 {
   bool requested = false;
   bool valid = false;
+  RegretAggregationMethodV3 aggregation_method =
+      RegretAggregationMethodV3::arithmetic_mean_of_pass_medians;
   std::string fastest_legal_variant;
-  double fastest_legal_median_seconds = 0.0;
-  double selected_median_seconds = 0.0;
+  double fastest_legal_balanced_estimate_seconds = 0.0;
+  double selected_balanced_estimate_seconds = 0.0;
   double regret = 0.0;
   std::string reason;
-  std::vector<RegretCandidateResultV2> candidates;
+  std::vector<RegretCandidateResultV3> candidates;
 };
 
 struct BenchmarkResultV1 {
@@ -218,7 +250,7 @@ struct BenchmarkResultV1 {
   CorrectnessResultV1 correctness;
   double gflops = 0.0;
   ScalingResultV2 scaling;
-  PlannerRegretResultV2 planner_regret;
+  PlannerRegretResultV3 planner_regret;
 };
 
 struct BenchmarkEnvironmentV1 {
@@ -241,7 +273,7 @@ struct BenchmarkEnvironmentV1 {
 };
 
 struct BenchmarkReportV1 {
-  std::uint32_t schema_version = kBenchmarkSchemaVersionV2;
+  std::uint32_t schema_version = kBenchmarkSchemaVersionV3;
   std::string operation = "matcore.gemm";
   std::string dtype = "f32";
   std::string accumulation_dtype = "f32";
@@ -279,6 +311,8 @@ std::string_view packing_mode_name_v1(PackingModeV1 mode) noexcept;
 std::string_view profile_name_v1(ProfileV1 profile) noexcept;
 std::string_view smt_policy_name_v2(SmtPolicyV2 policy) noexcept;
 std::string_view affinity_policy_name_v2(AffinityPolicyV2 policy) noexcept;
+std::string_view regret_aggregation_method_name_v3(
+    RegretAggregationMethodV3 method) noexcept;
 
 }  // namespace matcore::mdslc::bench
 
