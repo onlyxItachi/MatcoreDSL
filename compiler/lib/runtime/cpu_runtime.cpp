@@ -1070,13 +1070,37 @@ matcore_runtime_gemm_f32_v0(const matcore_tensor_desc_v0 *out,
   const matcore_status_v0 result =
       validate_gemm_v0(out, lhs, rhs, policy, &validated);
   if (result.code != MATCORE_STATUS_OK_V0) return result;
-  const auto plan = matcore::mdslc::planner::plan_cpu_gemm_v1(
+  auto resources =
+      matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
+          validated.problem, 1);
+  // The original one-shot ABI cannot receive caller-owned packing storage.
+  // Keep it allocation-free by removing workspace-requiring candidates while
+  // still allowing zero-workspace external and native variants.
+  resources.native_packed_avx2_fma_compiled = false;
+  resources.native_packed_workspace_size_valid = false;
+  resources.native_packed_workspace_bytes = 0;
+  resources.native_packed_workspace_alignment = 0;
+  const auto plan = matcore::mdslc::planner::plan_cpu_gemm_v2(
       validated.problem,
-      matcore::mdslc::planner::discover_cpu_capabilities_v1());
-  if (!matcore::mdslc::planner::execute_cpu_gemm_plan_v1(
-          plan, validated.lhs, validated.rhs, validated.out)) {
-    return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
-                  "CPU GEMM planner found no legal implementation");
+      matcore::mdslc::planner::discover_cpu_capabilities_v1(), resources);
+  if (plan.status != matcore::mdslc::planner::CpuPlanStatusV1::selected)
+    return unavailable_plan_status(plan);
+  if (plan.selected_variant ==
+      matcore::mdslc::planner::CpuGemmVariantV2::external_openblas) {
+    std::uint32_t actual_threads = 0;
+    const auto provider_status =
+        matcore::mdslc::runtime::execute_openblas_gemm_f32_v1(
+            validated.problem, validated.lhs, validated.rhs, validated.out, 1,
+            &actual_threads);
+    if (provider_status !=
+            matcore::mdslc::runtime::OpenBlasExecutionStatusV1::success ||
+        actual_threads != 1) {
+      return status(MATCORE_STATUS_EXTERNAL_PROVIDER_FAILURE_V0,
+                    "OpenBLAS SGEMM failed or did not honor one-shot thread policy");
+    }
+  } else if (!execute_legacy_variant(plan.selected_variant, validated)) {
+    return status(MATCORE_STATUS_UNAVAILABLE_VARIANT_V0,
+                  "selected zero-workspace CPU GEMM implementation did not execute");
   }
   return status(MATCORE_STATUS_OK_V0, "ok");
 }
