@@ -193,6 +193,32 @@ int main() {
   expect(!local.crosses_numa_nodes,
          "local-first does not claim a crossing when local SMT is sufficient");
 
+  auto creator_node_compact_request = compact_request;
+  creator_node_compact_request.preferred_numa_node = 1;
+  const auto creator_node_compact = platform::plan_cpu_placement_v1(
+      synthetic, creator_node_compact_request);
+  expect(creator_node_compact.status ==
+                 platform::CpuPlacementStatusV1::selected &&
+             creator_node_compact.affinity ==
+                 platform::CpuAffinityPolicyV1::compact &&
+             creator_node_compact.logical_cpus ==
+                 std::vector<std::uint32_t>({2, 3}),
+         "preferred creator node preserves explicit compact ordering");
+
+  auto creator_node_scatter_request = creator_node_compact_request;
+  creator_node_scatter_request.affinity =
+      platform::CpuAffinityPolicyV1::scatter;
+  const auto creator_node_scatter = platform::plan_cpu_placement_v1(
+      synthetic, creator_node_scatter_request);
+  expect(creator_node_scatter.status ==
+                 platform::CpuPlacementStatusV1::selected &&
+             creator_node_scatter.affinity ==
+                 platform::CpuAffinityPolicyV1::scatter &&
+             std::all_of(creator_node_scatter.numa_nodes.begin(),
+                         creator_node_scatter.numa_nodes.end(),
+                         [](std::uint32_t node) { return node == 1; }),
+         "preferred creator node preserves explicit scatter policy within the node");
+
   platform::CpuPlacementRequestV1 no_cross_request;
   no_cross_request.requested_workers = 3;
   no_cross_request.smt = platform::CpuSmtPolicyV1::physical_cores_only;

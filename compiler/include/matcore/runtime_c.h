@@ -394,6 +394,7 @@ typedef struct matcore_cpu_gemm_candidate_v3 {
   matcore_cpu_feature_bits_v2 required_os_features;
   matcore_cpu_feature_bits_v2 required_compiler_features;
   matcore_cpu_feature_bits_v2 required_implementation_features;
+  /* Exact process-local execution evidence for this stable variant only. */
   uint32_t runtime_validated;
   uint32_t reserved0;
   const char *reason;
@@ -436,6 +437,12 @@ typedef struct matcore_cpu_gemm_plan_report_v3 {
   uint32_t numa_node_count;
   uint32_t available_logical_cpu_count;
   uint32_t available_physical_core_count;
+  /* Explicit even when affinity_policy is NONE: SMT/NUMA policy can bind. */
+  uint32_t worker_affinity_induced_by_smt_policy;
+  uint32_t worker_affinity_induced_by_numa_policy;
+  /* Context-creation snapshot; UINT32_MAX means unavailable. */
+  uint32_t creator_logical_cpu;
+  uint32_t selected_numa_node;
   matcore_cpu_gemm_candidate_v3
       candidates[MATCORE_RUNTIME_CPU_GEMM_CANDIDATE_COUNT_V3];
   const char *selected_stable_id;
@@ -509,6 +516,12 @@ typedef struct matcore_cpu_execution_context_report_v1 {
   int32_t affinity_platform_error;
   uint32_t affinity_complete;
   uint32_t numa_memory_placement_applied;
+  /* Explicit even when affinity_policy is NONE: SMT/NUMA policy can bind. */
+  uint32_t worker_affinity_induced_by_smt_policy;
+  uint32_t worker_affinity_induced_by_numa_policy;
+  /* Context-creation snapshot; UINT32_MAX means unavailable. */
+  uint32_t creator_logical_cpu;
+  uint32_t selected_numa_node;
   uint64_t execution_generation;
   uint64_t reserved[4];
 } matcore_cpu_execution_context_report_v1;

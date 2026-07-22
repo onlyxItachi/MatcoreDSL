@@ -38,6 +38,8 @@ static_assert(matcore::mdslc::planner::kCpuGemmCandidateCountV3 ==
 struct matcore_cpu_execution_context_v1 {
   std::uint64_t magic = 0;
   std::unique_ptr<matcore::mdslc::runtime::CpuExecutionContextV1> workers;
+  matcore::mdslc::runtime::CpuRuntimeValidationEvidenceV1 validation_evidence;
+  std::uint64_t validation_submission_baseline = 0;
   matcore::mdslc::platform::CpuCapabilitiesV2 capabilities;
   // The complete system topology is retained only for diagnostics. Planning
   // and placement use the process-affinity-restricted topology below.
@@ -51,6 +53,12 @@ struct matcore_cpu_execution_context_v1 {
       MATCORE_CPU_NUMA_SINGLE_NODE_V1;
   matcore_cpu_smt_policy_v1 smt_policy =
       MATCORE_CPU_SMT_PHYSICAL_CORES_ONLY_V1;
+  bool worker_affinity_induced_by_smt_policy = false;
+  bool worker_affinity_induced_by_numa_policy = false;
+  std::uint32_t creator_logical_cpu =
+      matcore::mdslc::platform::kUnknownLogicalCpuV1;
+  std::uint32_t selected_numa_node =
+      matcore::mdslc::platform::kUnknownTopologyIdV1;
 };
 
 namespace {
@@ -1165,6 +1173,9 @@ matcore_status_v0 validate_empty_context_report_v1(
       report->affinity_platform_error != 0 ||
       report->affinity_complete != 0 ||
       report->numa_memory_placement_applied != 0 ||
+      report->worker_affinity_induced_by_smt_policy != 0 ||
+      report->worker_affinity_induced_by_numa_policy != 0 ||
+      report->creator_logical_cpu != 0 || report->selected_numa_node != 0 ||
       report->execution_generation != 0 ||
       !reserved_is_zero(report->reserved)) {
     return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
@@ -1236,15 +1247,72 @@ void populate_context_report_v1(
   output.affinity_complete = info.affinity.complete ? 1U : 0U;
   output.numa_memory_placement_applied =
       info.affinity.numa_memory_placement_applied ? 1U : 0U;
-  output.execution_generation = info.completed_submissions;
+  output.worker_affinity_induced_by_smt_policy =
+      context.worker_affinity_induced_by_smt_policy ? 1U : 0U;
+  output.worker_affinity_induced_by_numa_policy =
+      context.worker_affinity_induced_by_numa_policy ? 1U : 0U;
+  output.creator_logical_cpu = context.creator_logical_cpu;
+  output.selected_numa_node = context.selected_numa_node;
+  output.execution_generation =
+      info.completed_submissions >= context.validation_submission_baseline
+          ? info.completed_submissions - context.validation_submission_baseline
+          : 0;
+  *report = output;
+}
+
+void populate_failed_affinity_report_v1(
+    const matcore_cpu_execution_context_options_v1 &options,
+    const matcore::mdslc::platform::CpuTopologyV1 &topology,
+    const matcore::mdslc::platform::CpuTopologyV1 &available_topology,
+    const matcore::mdslc::platform::ThreadAffinityInventoryV1 &inventory,
+    const matcore::mdslc::runtime::CpuWorkerAffinityReportV1 &affinity,
+    bool induced_by_smt, bool induced_by_numa,
+    std::uint32_t creator_logical_cpu, std::uint32_t selected_numa_node,
+    matcore_cpu_execution_context_report_v1 *report) noexcept {
+  matcore_cpu_execution_context_report_v1 output{};
+  output.abi_version = MATCORE_RUNTIME_EXECUTION_CONTEXT_ABI_VERSION_V1;
+  output.struct_size = sizeof(output);
+  output.requested_threads = options.requested_threads;
+  output.affinity_policy = options.affinity_policy;
+  output.numa_policy = options.numa_policy;
+  output.smt_policy = options.smt_policy;
+  output.topology_discovery_complete = topology.discovery_complete ? 1U : 0U;
+  output.logical_cpu_count =
+      matcore::mdslc::platform::logical_cpu_count_v1(topology);
+  output.physical_core_count =
+      matcore::mdslc::platform::physical_core_count_v1(topology);
+  output.socket_count = matcore::mdslc::platform::socket_count_v1(topology);
+  output.numa_node_count =
+      matcore::mdslc::platform::numa_node_count_v1(topology);
+  output.available_logical_cpu_count =
+      matcore::mdslc::platform::logical_cpu_count_v1(available_topology);
+  output.available_physical_core_count =
+      matcore::mdslc::platform::physical_core_count_v1(available_topology);
+  output.process_affinity_discovery_complete =
+      inventory.discovery_complete ? 1U : 0U;
+  output.process_affinity_platform_error = inventory.platform_error;
+  output.worker_affinity_status = to_c_affinity_status_v1(affinity.status);
+  output.affinity_requested_workers = affinity.requested_workers;
+  output.affinity_applied_workers = affinity.applied_workers;
+  output.affinity_first_failed_worker = affinity.first_failed_worker;
+  output.affinity_first_failed_cpu = affinity.first_failed_cpu;
+  output.affinity_platform_error = affinity.platform_error;
+  output.affinity_complete = affinity.complete ? 1U : 0U;
+  output.numa_memory_placement_applied = 0;
+  output.worker_affinity_induced_by_smt_policy = induced_by_smt ? 1U : 0U;
+  output.worker_affinity_induced_by_numa_policy = induced_by_numa ? 1U : 0U;
+  output.creator_logical_cpu = creator_logical_cpu;
+  output.selected_numa_node = selected_numa_node;
   *report = output;
 }
 
 matcore::mdslc::platform::CpuAffinityPolicyV1 placement_affinity_v1(
     matcore_cpu_affinity_policy_v1 affinity,
     matcore_cpu_numa_policy_v1 numa) noexcept {
-  if (numa == MATCORE_CPU_NUMA_LOCAL_FIRST_V1)
+  if (numa == MATCORE_CPU_NUMA_LOCAL_FIRST_V1 &&
+      affinity == MATCORE_CPU_AFFINITY_NONE_V1) {
     return matcore::mdslc::platform::CpuAffinityPolicyV1::local_first;
+  }
   return affinity == MATCORE_CPU_AFFINITY_SCATTER_V1
              ? matcore::mdslc::platform::CpuAffinityPolicyV1::scatter
              : matcore::mdslc::platform::CpuAffinityPolicyV1::compact;
@@ -1255,12 +1323,37 @@ struct ContextPlacementV1 {
   matcore::mdslc::platform::CpuPlacementPlanV1 plan;
   std::uint32_t worker_count = 0;
   std::vector<std::uint32_t> worker_cpu_ids;
+  bool affinity_induced_by_smt_policy = false;
+  bool affinity_induced_by_numa_policy = false;
+  std::uint32_t creator_logical_cpu =
+      matcore::mdslc::platform::kUnknownLogicalCpuV1;
+  std::uint32_t selected_numa_node =
+      matcore::mdslc::platform::kUnknownTopologyIdV1;
 };
+
+bool logical_cpu_numa_node_v1(
+    const matcore::mdslc::platform::CpuTopologyV1 &topology,
+    std::uint32_t logical_cpu, std::uint32_t *node) noexcept {
+  if (node == nullptr) return false;
+  const auto processor = std::find_if(
+      topology.logical_processors.begin(), topology.logical_processors.end(),
+      [logical_cpu](const auto &entry) {
+        return entry.logical_cpu == logical_cpu && entry.online;
+      });
+  if (processor == topology.logical_processors.end() ||
+      processor->numa_node_id ==
+          matcore::mdslc::platform::kUnknownTopologyIdV1) {
+    return false;
+  }
+  *node = processor->numa_node_id;
+  return true;
+}
 
 matcore_status_v0 select_context_placement_v1(
     const matcore_cpu_execution_context_options_v1 &options,
     const matcore::mdslc::platform::CpuTopologyV1 &topology,
     const matcore::mdslc::platform::ThreadAffinityInventoryV1 &inventory,
+    const matcore::mdslc::platform::CurrentLogicalCpuV1 &current_cpu,
     ContextPlacementV1 *selection) {
   if (selection == nullptr)
     return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
@@ -1299,7 +1392,8 @@ matcore_status_v0 select_context_placement_v1(
 
   const bool explicit_worker_affinity =
       options.affinity_policy != MATCORE_CPU_AFFINITY_NONE_V1 ||
-      options.numa_policy == MATCORE_CPU_NUMA_LOCAL_FIRST_V1;
+      options.numa_policy == MATCORE_CPU_NUMA_LOCAL_FIRST_V1 ||
+      options.smt_policy == MATCORE_CPU_SMT_PHYSICAL_CORES_ONLY_V1;
   if (!explicit_worker_affinity && restricted.topology.numa_nodes.size() > 1) {
     return status(MATCORE_STATUS_UNSUPPORTED_CAPABILITY_V0,
                   "a multi-node process mask requires explicit worker affinity; NUMA page placement is not implemented");
@@ -1312,8 +1406,22 @@ matcore_status_v0 select_context_placement_v1(
       options.smt_policy == MATCORE_CPU_SMT_ALLOW_V1
           ? matcore::mdslc::platform::CpuSmtPolicyV1::allow_smt
           : matcore::mdslc::platform::CpuSmtPolicyV1::physical_cores_only;
-  request.preferred_numa_node =
-      restricted.topology.numa_nodes.front().node_id;
+  std::uint32_t creator_node = restricted.topology.numa_nodes.front().node_id;
+  if (options.numa_policy == MATCORE_CPU_NUMA_LOCAL_FIRST_V1) {
+    if (!current_cpu.backend_available || !current_cpu.discovery_complete ||
+        current_cpu.platform_error != 0 ||
+        current_cpu.logical_cpu ==
+            matcore::mdslc::platform::kUnknownLogicalCpuV1) {
+      return status(MATCORE_STATUS_UNSUPPORTED_CAPABILITY_V0,
+                    "local-first placement requires authenticated current-CPU discovery");
+    }
+    if (!logical_cpu_numa_node_v1(restricted.topology,
+                                  current_cpu.logical_cpu, &creator_node)) {
+      return status(MATCORE_STATUS_UNSUPPORTED_CAPABILITY_V0,
+                    "local-first placement cannot authenticate the creator CPU inside the process-affinity topology");
+    }
+  }
+  request.preferred_numa_node = creator_node;
   request.allow_cross_numa = false;
   request.requested_workers = candidate;
   auto placement = matcore::mdslc::platform::plan_cpu_placement_v1(
@@ -1327,6 +1435,17 @@ matcore_status_v0 select_context_placement_v1(
   output.available_topology = std::move(restricted.topology);
   output.worker_count = placement.actual_workers;
   if (explicit_worker_affinity) output.worker_cpu_ids = placement.logical_cpus;
+  output.affinity_induced_by_smt_policy =
+      options.affinity_policy == MATCORE_CPU_AFFINITY_NONE_V1 &&
+      options.smt_policy == MATCORE_CPU_SMT_PHYSICAL_CORES_ONLY_V1;
+  output.affinity_induced_by_numa_policy =
+      options.affinity_policy == MATCORE_CPU_AFFINITY_NONE_V1 &&
+      options.numa_policy == MATCORE_CPU_NUMA_LOCAL_FIRST_V1;
+  output.creator_logical_cpu =
+      current_cpu.discovery_complete
+          ? current_cpu.logical_cpu
+          : matcore::mdslc::platform::kUnknownLogicalCpuV1;
+  output.selected_numa_node = creator_node;
   output.plan = std::move(placement);
   *selection = std::move(output);
   return status(MATCORE_STATUS_OK_V0, "ok");
@@ -1443,6 +1562,9 @@ matcore_status_v0 validate_empty_report_v3(
       report->socket_count != 0 || report->numa_node_count != 0 ||
       report->available_logical_cpu_count != 0 ||
       report->available_physical_core_count != 0 ||
+      report->worker_affinity_induced_by_smt_policy != 0 ||
+      report->worker_affinity_induced_by_numa_policy != 0 ||
+      report->creator_logical_cpu != 0 || report->selected_numa_node != 0 ||
       report->selected_stable_id != nullptr ||
       report->selection_reason != nullptr ||
       report->external_provider != nullptr ||
@@ -1496,6 +1618,8 @@ void populate_report_v3(
     matcore_cpu_affinity_policy_v1 affinity,
     matcore_cpu_numa_policy_v1 numa,
     matcore_cpu_smt_policy_v1 smt,
+    bool affinity_induced_by_smt, bool affinity_induced_by_numa,
+    std::uint32_t creator_logical_cpu, std::uint32_t selected_numa_node,
     const matcore::mdslc::runtime::OpenBlasProviderInfoV1 &provider,
     matcore_cpu_gemm_plan_report_v3 *report) noexcept {
   matcore_cpu_gemm_plan_report_v3 output{};
@@ -1533,6 +1657,12 @@ void populate_report_v3(
       matcore::mdslc::platform::logical_cpu_count_v1(available_topology);
   output.available_physical_core_count =
       matcore::mdslc::platform::physical_core_count_v1(available_topology);
+  output.worker_affinity_induced_by_smt_policy =
+      affinity_induced_by_smt ? 1U : 0U;
+  output.worker_affinity_induced_by_numa_policy =
+      affinity_induced_by_numa ? 1U : 0U;
+  output.creator_logical_cpu = creator_logical_cpu;
+  output.selected_numa_node = selected_numa_node;
   for (std::size_t index = 0; index < plan.candidates.size(); ++index) {
     const auto &source = plan.candidates[index];
     auto &destination = output.candidates[index];
@@ -1620,14 +1750,10 @@ AdvancedGemmPlanV3 make_advanced_gemm_plan_v3(
   baseline.native_packed_avx2_fma_compiled =
       baseline.native_packed_avx2_fma_compiled &&
       self_tests.packed_avx2_f32;
-  matcore::mdslc::runtime::CpuRuntimeValidationEvidenceV1 validation;
-  validation.packed_avx2_f32_runtime_validated =
-      self_tests.packed_avx2_f32;
-  validation.packed_avx512_f32_runtime_validated =
-      self_tests.packed_avx512_f32;
   auto resources =
       matcore::mdslc::runtime::augment_cpu_gemm_implementation_resources_v2(
-          validated.problem, baseline, context.workers.get(), validation);
+          validated.problem, baseline, context.workers.get(),
+          context.validation_evidence);
   resources.native_parallel_avx2_fma_compiled =
       resources.native_parallel_avx2_fma_compiled &&
       self_tests.packed_avx2_f32;
@@ -1637,6 +1763,10 @@ AdvancedGemmPlanV3 make_advanced_gemm_plan_v3(
   thread_policy.allow_smt =
       context.smt_policy == MATCORE_CPU_SMT_ALLOW_V1;
   thread_policy.external_provider_parallelism_active = false;
+  thread_policy.worker_affinity_active =
+      context.affinity_policy != MATCORE_CPU_AFFINITY_NONE_V1 ||
+      context.worker_affinity_induced_by_smt_policy ||
+      context.worker_affinity_induced_by_numa_policy;
   auto plan = matcore::mdslc::planner::plan_cpu_gemm_v3(
       validated.problem, context.capabilities, context.available_topology,
       thread_policy, resources, request);
@@ -1811,6 +1941,293 @@ bool execute_legacy_variant_v3(
   return false;
 }
 
+matcore_status_v0 execute_single_variant_v3(
+    matcore::mdslc::planner::CpuGemmVariantV3 variant,
+    const ValidatedGemmV0 &validated,
+    const matcore::mdslc::planner::CpuCandidateDecisionV3 &candidate,
+    void *workspace, std::size_t workspace_bytes) noexcept {
+  using Variant = matcore::mdslc::planner::CpuGemmVariantV3;
+  switch (variant) {
+    case Variant::reference:
+    case Variant::tiled:
+    case Variant::compiler_vectorized:
+      return execute_legacy_variant_v3(variant, validated)
+                 ? status(MATCORE_STATUS_OK_V0, "ok")
+                 : status(MATCORE_STATUS_UNAVAILABLE_VARIANT_V0,
+                          "selected legacy CPU GEMM implementation did not execute");
+    case Variant::external_openblas: {
+      std::uint32_t actual_threads = 0;
+      const auto provider_status =
+          matcore::mdslc::runtime::execute_openblas_gemm_f32_v1(
+              validated.problem, validated.lhs, validated.rhs, validated.out,
+              candidate.actual_threads, &actual_threads);
+      if (provider_status !=
+              matcore::mdslc::runtime::OpenBlasExecutionStatusV1::success ||
+          actual_threads != candidate.actual_threads) {
+        return status(
+            MATCORE_STATUS_EXTERNAL_PROVIDER_FAILURE_V0,
+            "OpenBLAS SGEMM failed or violated the selected thread policy");
+      }
+      return status(MATCORE_STATUS_OK_V0, "ok");
+    }
+    case Variant::native_packed_avx2_fma:
+      return packed_execution_status(
+          matcore::mdslc::runtime::cpu_execute_packed_avx2_v1(
+              validated.problem, validated.lhs, validated.rhs, validated.out,
+              workspace, workspace_bytes));
+    case Variant::native_packed_avx512_fma:
+      return packed_execution_status(
+          matcore::mdslc::runtime::cpu_execute_packed_avx512_v1(
+              validated.problem, validated.lhs, validated.rhs, validated.out,
+              workspace, workspace_bytes));
+    case Variant::native_parallel_avx2_fma:
+    case Variant::native_parallel_avx512_fma:
+      return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
+                    "parallel CPU GEMM cannot use the single-worker path");
+  }
+  return status(MATCORE_STATUS_UNAVAILABLE_VARIANT_V0,
+                "selected CPU GEMM variant is unknown");
+}
+
+struct SingleVariantTaskV3 {
+  matcore::mdslc::planner::CpuGemmVariantV3 variant =
+      matcore::mdslc::planner::CpuGemmVariantV3::reference;
+  const ValidatedGemmV0 *validated = nullptr;
+  const matcore::mdslc::planner::CpuCandidateDecisionV3 *candidate = nullptr;
+  void *workspace = nullptr;
+  std::size_t workspace_bytes = 0;
+  matcore_status_v0 result =
+      status(MATCORE_STATUS_EXECUTOR_FAILURE_V0,
+             "single-worker CPU GEMM did not execute");
+};
+
+matcore::mdslc::runtime::CpuExecutionStatusV1 single_variant_task_v3(
+    std::size_t task_index, std::size_t worker_index,
+    void *user_data) noexcept {
+  if (task_index != 0 || worker_index != 0 || user_data == nullptr) {
+    return matcore::mdslc::runtime::CpuExecutionStatusV1::
+        invalid_configuration;
+  }
+  auto &task = *static_cast<SingleVariantTaskV3 *>(user_data);
+  if (task.validated == nullptr || task.candidate == nullptr) {
+    return matcore::mdslc::runtime::CpuExecutionStatusV1::
+        invalid_configuration;
+  }
+  task.result = execute_single_variant_v3(
+      task.variant, *task.validated, *task.candidate, task.workspace,
+      task.workspace_bytes);
+  return task.result.code == MATCORE_STATUS_OK_V0
+             ? matcore::mdslc::runtime::CpuExecutionStatusV1::success
+             : matcore::mdslc::runtime::CpuExecutionStatusV1::callback_failed;
+}
+
+matcore_status_v0 execute_single_variant_in_context_v3(
+    matcore_cpu_execution_context_v1 &context,
+    matcore::mdslc::planner::CpuGemmVariantV3 variant,
+    const ValidatedGemmV0 &validated,
+    const matcore::mdslc::planner::CpuCandidateDecisionV3 &candidate,
+    void *workspace, std::size_t workspace_bytes) noexcept {
+  const auto context_info = context.workers->info();
+  if (context_info.affinity.requested_workers == 0) {
+    return execute_single_variant_v3(variant, validated, candidate, workspace,
+                                     workspace_bytes);
+  }
+  if (variant ==
+          matcore::mdslc::planner::CpuGemmVariantV3::external_openblas &&
+      candidate.actual_threads != 1) {
+    return status(MATCORE_STATUS_UNAVAILABLE_VARIANT_V0,
+                  "multi-thread OpenBLAS cannot execute inside one bound worker");
+  }
+  SingleVariantTaskV3 task;
+  task.variant = variant;
+  task.validated = &validated;
+  task.candidate = &candidate;
+  task.workspace = workspace;
+  task.workspace_bytes = workspace_bytes;
+  const auto nesting =
+      variant == matcore::mdslc::planner::CpuGemmVariantV3::external_openblas
+          ? matcore::mdslc::runtime::CpuProviderNestingPolicyV1::
+                external_provider_active
+          : matcore::mdslc::runtime::CpuProviderNestingPolicyV1::native_only;
+  const auto execution = context.workers->run_tasks(
+      1, 1, nesting, single_variant_task_v3, &task);
+  if (task.result.code != MATCORE_STATUS_OK_V0) return task.result;
+  if (execution != matcore::mdslc::runtime::CpuExecutionStatusV1::success) {
+    return status(MATCORE_STATUS_EXECUTOR_FAILURE_V0,
+                  matcore::mdslc::runtime::cpu_execution_status_message_v1(
+                      execution));
+  }
+  return status(MATCORE_STATUS_OK_V0, "ok");
+}
+
+template <std::size_t M, std::size_t N, std::size_t K>
+void initialize_runtime_self_test_v1(std::array<float, M * K> &lhs,
+                                     std::array<float, K * N> &rhs,
+                                     std::array<float, M * N> &out) noexcept {
+  for (std::size_t row = 0; row < M; ++row) {
+    for (std::size_t depth = 0; depth < K; ++depth)
+      lhs[row * K + depth] = static_cast<float>(row % 5U + depth + 1U);
+  }
+  for (std::size_t depth = 0; depth < K; ++depth) {
+    for (std::size_t column = 0; column < N; ++column)
+      rhs[depth * N + column] =
+          static_cast<float>(depth + column % 7U + 1U);
+  }
+  out.fill(0.0F);
+}
+
+template <std::size_t M, std::size_t N, std::size_t K>
+bool runtime_self_test_output_matches_v1(
+    const std::array<float, M * K> &lhs,
+    const std::array<float, K * N> &rhs,
+    const std::array<float, M * N> &out) noexcept {
+  for (std::size_t row = 0; row < M; ++row) {
+    for (std::size_t column = 0; column < N; ++column) {
+      double expected = 0.0;
+      for (std::size_t depth = 0; depth < K; ++depth) {
+        expected += static_cast<double>(lhs[row * K + depth]) *
+                    static_cast<double>(rhs[depth * N + column]);
+      }
+      if (out[row * N + column] != static_cast<float>(expected)) return false;
+    }
+  }
+  return true;
+}
+
+matcore::mdslc::runtime::CpuRuntimeValidationEvidenceV1
+validate_exact_runtime_variants_v1(
+    matcore::mdslc::runtime::CpuExecutionContextV1 &workers) noexcept {
+  using Variant = matcore::mdslc::planner::CpuGemmVariantV3;
+  matcore::mdslc::runtime::CpuRuntimeValidationEvidenceV1 evidence;
+
+  constexpr std::size_t m = 4;
+  constexpr std::size_t n = 16;
+  constexpr std::size_t k = 3;
+  alignas(64) std::array<float, m * k> lhs{};
+  alignas(64) std::array<float, k * n> rhs{};
+  alignas(64) std::array<float, m * n> out{};
+  initialize_runtime_self_test_v1<m, n, k>(lhs, rhs, out);
+  const matcore::mdslc::planner::CpuGemmProblemV1 problem{
+      static_cast<std::int64_t>(m), static_cast<std::int64_t>(n),
+      static_cast<std::int64_t>(k),
+      matcore::mdslc::planner::CpuScalarTypeV1::f32,
+      matcore::mdslc::planner::CpuScalarTypeV1::f32,
+      matcore::mdslc::planner::CpuLayoutV1::row_major_contiguous, 64};
+  const ValidatedGemmV0 validated{problem, lhs.data(), rhs.data(), out.data()};
+
+  const auto validate_legacy = [&](Variant variant) noexcept {
+    out.fill(0.0F);
+    return execute_legacy_variant_v3(variant, validated) &&
+           runtime_self_test_output_matches_v1<m, n, k>(lhs, rhs, out);
+  };
+  evidence.reference_f32_runtime_validated =
+      validate_legacy(Variant::reference);
+  evidence.tiled_f32_runtime_validated = validate_legacy(Variant::tiled);
+  evidence.compiler_vectorized_f32_runtime_validated =
+      validate_legacy(Variant::compiler_vectorized);
+
+  if (matcore::mdslc::runtime::openblas_provider_info_v1().linked) {
+    out.fill(0.0F);
+    std::uint32_t actual_threads = 0;
+    evidence.external_openblas_f32_runtime_validated =
+        matcore::mdslc::runtime::execute_openblas_gemm_f32_v1(
+            problem, lhs.data(), rhs.data(), out.data(), 1,
+            &actual_threads) ==
+            matcore::mdslc::runtime::OpenBlasExecutionStatusV1::success &&
+        actual_threads == 1 &&
+        runtime_self_test_output_matches_v1<m, n, k>(lhs, rhs, out);
+  }
+
+  alignas(64) std::array<std::byte, 512U * 1024U> serial_workspace{};
+  matcore::mdslc::runtime::CpuPackedGemmWorkspaceRequirementsV1 packed;
+  if (matcore::mdslc::runtime::cpu_packed_avx2_workspace_requirements_v1(
+          problem,
+          matcore::mdslc::runtime::CpuPackedGemmWorkspaceModeV1::
+              transient_a_and_b,
+          &packed) ==
+          matcore::mdslc::runtime::CpuPackedGemmStatusV1::success &&
+      packed.total_bytes <= serial_workspace.size()) {
+    out.fill(0.0F);
+    evidence.packed_avx2_f32_runtime_validated =
+        matcore::mdslc::runtime::cpu_execute_packed_avx2_v1(
+            problem, lhs.data(), rhs.data(), out.data(),
+            serial_workspace.data(), serial_workspace.size()) ==
+            matcore::mdslc::runtime::CpuPackedGemmStatusV1::success &&
+        runtime_self_test_output_matches_v1<m, n, k>(lhs, rhs, out);
+  }
+  if (matcore::mdslc::runtime::cpu_packed_avx512_workspace_requirements_v1(
+          problem,
+          matcore::mdslc::runtime::CpuPackedGemmWorkspaceModeV1::
+              transient_a_and_b,
+          &packed) ==
+          matcore::mdslc::runtime::CpuPackedGemmStatusV1::success &&
+      packed.total_bytes <= serial_workspace.size()) {
+    out.fill(0.0F);
+    evidence.packed_avx512_f32_runtime_validated =
+        matcore::mdslc::runtime::cpu_execute_packed_avx512_v1(
+            problem, lhs.data(), rhs.data(), out.data(),
+            serial_workspace.data(), serial_workspace.size()) ==
+            matcore::mdslc::runtime::CpuPackedGemmStatusV1::success &&
+        runtime_self_test_output_matches_v1<m, n, k>(lhs, rhs, out);
+  }
+
+  if (workers.info().actual_worker_count >= 2) {
+    constexpr std::size_t parallel_m = 256;
+    alignas(64) std::array<float, parallel_m * k> parallel_lhs{};
+    alignas(64) std::array<float, k * n> parallel_rhs{};
+    alignas(64) std::array<float, parallel_m * n> parallel_out{};
+    initialize_runtime_self_test_v1<parallel_m, n, k>(
+        parallel_lhs, parallel_rhs, parallel_out);
+    const matcore::mdslc::planner::CpuGemmProblemV1 parallel_problem{
+        static_cast<std::int64_t>(parallel_m), static_cast<std::int64_t>(n),
+        static_cast<std::int64_t>(k),
+        matcore::mdslc::planner::CpuScalarTypeV1::f32,
+        matcore::mdslc::planner::CpuScalarTypeV1::f32,
+        matcore::mdslc::planner::CpuLayoutV1::row_major_contiguous, 64};
+    alignas(64) std::array<std::byte, 1024U * 1024U> parallel_workspace{};
+    matcore::mdslc::runtime::CpuParallelGemmWorkspaceRequirementsV1
+        parallel_requirements;
+    matcore::mdslc::runtime::CpuParallelGemmReportV1 parallel_report;
+    if (matcore::mdslc::runtime::
+            cpu_parallel_packed_avx2_workspace_requirements_v1(
+                parallel_problem, 2, &parallel_requirements) ==
+            matcore::mdslc::runtime::CpuParallelGemmStatusV1::success &&
+        parallel_requirements.total_bytes <= parallel_workspace.size()) {
+      parallel_out.fill(0.0F);
+      evidence.parallel_avx2_f32_runtime_validated =
+          matcore::mdslc::runtime::cpu_execute_parallel_packed_avx2_v1(
+              workers, parallel_problem, parallel_lhs.data(),
+              parallel_rhs.data(), parallel_out.data(),
+              parallel_workspace.data(), parallel_workspace.size(), 2,
+              matcore::mdslc::runtime::CpuProviderNestingPolicyV1::native_only,
+              &parallel_report) ==
+              matcore::mdslc::runtime::CpuParallelGemmStatusV1::success &&
+          parallel_report.actual_threads == 2 &&
+          runtime_self_test_output_matches_v1<parallel_m, n, k>(
+              parallel_lhs, parallel_rhs, parallel_out);
+    }
+    if (matcore::mdslc::runtime::
+            cpu_parallel_packed_avx512_workspace_requirements_v1(
+                parallel_problem, 2, &parallel_requirements) ==
+            matcore::mdslc::runtime::CpuParallelGemmStatusV1::success &&
+        parallel_requirements.total_bytes <= parallel_workspace.size()) {
+      parallel_out.fill(0.0F);
+      evidence.parallel_avx512_f32_runtime_validated =
+          matcore::mdslc::runtime::cpu_execute_parallel_packed_avx512_v1(
+              workers, parallel_problem, parallel_lhs.data(),
+              parallel_rhs.data(), parallel_out.data(),
+              parallel_workspace.data(), parallel_workspace.size(), 2,
+              matcore::mdslc::runtime::CpuProviderNestingPolicyV1::native_only,
+              &parallel_report) ==
+              matcore::mdslc::runtime::CpuParallelGemmStatusV1::success &&
+          parallel_report.actual_threads == 2 &&
+          runtime_self_test_output_matches_v1<parallel_m, n, k>(
+              parallel_lhs, parallel_rhs, parallel_out);
+    }
+  }
+  return evidence;
+}
+
 }  // namespace
 
 extern "C" MATCORE_RUNTIME_API matcore_status_v0
@@ -1857,9 +2274,12 @@ matcore_runtime_cpu_execution_context_create_v1(
         matcore::mdslc::platform::discover_linux_cpu_topology_v1();
     const auto process_affinity =
         matcore::mdslc::platform::discover_current_thread_affinity_v1();
+    const auto current_cpu =
+        matcore::mdslc::platform::discover_current_logical_cpu_v1();
     ContextPlacementV1 selected_placement;
     matcore_status_v0 placement = select_context_placement_v1(
-        *options, topology, process_affinity, &selected_placement);
+        *options, topology, process_affinity, current_cpu,
+        &selected_placement);
     if (placement.code != MATCORE_STATUS_OK_V0) return placement;
 
     matcore::mdslc::runtime::CpuExecutionStatusV1 worker_status{};
@@ -1872,16 +2292,35 @@ matcore_runtime_cpu_execution_context_create_v1(
         worker_config, &worker_status, &worker_affinity);
     if (workers == nullptr ||
         worker_status != matcore::mdslc::runtime::CpuExecutionStatusV1::success) {
+      if (worker_status ==
+              matcore::mdslc::runtime::CpuExecutionStatusV1::affinity_unavailable ||
+          worker_status == matcore::mdslc::runtime::CpuExecutionStatusV1::
+                               affinity_application_failed) {
+        populate_failed_affinity_report_v1(
+            *options, topology, selected_placement.available_topology,
+            process_affinity, worker_affinity,
+            selected_placement.affinity_induced_by_smt_policy,
+            selected_placement.affinity_induced_by_numa_policy,
+            selected_placement.creator_logical_cpu,
+            selected_placement.selected_numa_node, report);
+      }
       return status(MATCORE_STATUS_EXECUTOR_FAILURE_V0,
                     matcore::mdslc::runtime::cpu_execution_status_message_v1(
-                        worker_status));
+                      worker_status));
     }
+    const auto validation_evidence =
+        validate_exact_runtime_variants_v1(*workers);
+    const std::uint64_t validation_submission_baseline =
+        workers->info().completed_submissions;
     auto *created = new (std::nothrow) matcore_cpu_execution_context_v1;
     if (created == nullptr)
       return status(MATCORE_STATUS_EXECUTOR_FAILURE_V0,
                     "CPU execution-context handle allocation failed");
     created->magic = kCpuExecutionContextMagicV1;
     created->workers = std::move(workers);
+    created->validation_evidence = validation_evidence;
+    created->validation_submission_baseline =
+        validation_submission_baseline;
     created->capabilities = capabilities;
     created->topology = std::move(topology);
     created->available_topology =
@@ -1892,6 +2331,12 @@ matcore_runtime_cpu_execution_context_create_v1(
     created->affinity_policy = options->affinity_policy;
     created->numa_policy = options->numa_policy;
     created->smt_policy = options->smt_policy;
+    created->worker_affinity_induced_by_smt_policy =
+        selected_placement.affinity_induced_by_smt_policy;
+    created->worker_affinity_induced_by_numa_policy =
+        selected_placement.affinity_induced_by_numa_policy;
+    created->creator_logical_cpu = selected_placement.creator_logical_cpu;
+    created->selected_numa_node = selected_placement.selected_numa_node;
     populate_context_report_v1(*created, report);
     *context = created;
     return status(MATCORE_STATUS_OK_V0, "ok");
@@ -1955,6 +2400,10 @@ matcore_runtime_gemm_f32_context_workspace_size_v2(
   populate_report_v3(advanced.plan, context->capabilities, context->topology,
                      context->available_topology, context->affinity_policy,
                      context->numa_policy, context->smt_policy,
+                     context->worker_affinity_induced_by_smt_policy,
+                     context->worker_affinity_induced_by_numa_policy,
+                     context->creator_logical_cpu,
+                     context->selected_numa_node,
                      matcore::mdslc::runtime::openblas_provider_info_v1(),
                      report);
   if (advanced.plan.status !=
@@ -1997,6 +2446,10 @@ matcore_runtime_gemm_f32_execute_context_v2(
   populate_report_v3(advanced.plan, context->capabilities, context->topology,
                      context->available_topology, context->affinity_policy,
                      context->numa_policy, context->smt_policy,
+                     context->worker_affinity_induced_by_smt_policy,
+                     context->worker_affinity_induced_by_numa_policy,
+                     context->creator_logical_cpu,
+                     context->selected_numa_node,
                      matcore::mdslc::runtime::openblas_provider_info_v1(),
                      report);
   if (advanced.plan.status !=
@@ -2022,38 +2475,12 @@ matcore_runtime_gemm_f32_execute_context_v2(
     case Variant::reference:
     case Variant::tiled:
     case Variant::compiler_vectorized:
-      if (!execute_legacy_variant_v3(advanced.plan.selected_variant,
-                                     validated)) {
-        return status(MATCORE_STATUS_UNAVAILABLE_VARIANT_V0,
-                      "selected legacy CPU GEMM implementation did not execute");
-      }
-      break;
-    case Variant::external_openblas: {
-      std::uint32_t actual_threads = 0;
-      const auto provider_status =
-          matcore::mdslc::runtime::execute_openblas_gemm_f32_v1(
-              validated.problem, validated.lhs, validated.rhs, validated.out,
-              candidate.actual_threads, &actual_threads);
-      if (provider_status !=
-              matcore::mdslc::runtime::OpenBlasExecutionStatusV1::success ||
-          actual_threads != candidate.actual_threads) {
-        return status(MATCORE_STATUS_EXTERNAL_PROVIDER_FAILURE_V0,
-                      "OpenBLAS SGEMM failed or violated the selected thread policy");
-      }
-      break;
-    }
+    case Variant::external_openblas:
     case Variant::native_packed_avx2_fma:
-      result = packed_execution_status(
-          matcore::mdslc::runtime::cpu_execute_packed_avx2_v1(
-              validated.problem, validated.lhs, validated.rhs, validated.out,
-              workspace, workspace_bytes));
-      if (result.code != MATCORE_STATUS_OK_V0) return result;
-      break;
     case Variant::native_packed_avx512_fma:
-      result = packed_execution_status(
-          matcore::mdslc::runtime::cpu_execute_packed_avx512_v1(
-              validated.problem, validated.lhs, validated.rhs, validated.out,
-              workspace, workspace_bytes));
+      result = execute_single_variant_in_context_v3(
+          *context, advanced.plan.selected_variant, validated, candidate,
+          workspace, workspace_bytes);
       if (result.code != MATCORE_STATUS_OK_V0) return result;
       break;
     case Variant::native_parallel_avx2_fma: {

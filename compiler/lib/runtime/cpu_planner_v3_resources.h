@@ -11,10 +11,17 @@ inline constexpr std::uint32_t kCpuRuntimeValidationEvidenceVersionV1 = 1;
 
 struct CpuRuntimeValidationEvidenceV1 {
   std::uint32_t version = kCpuRuntimeValidationEvidenceVersionV1;
-  // This is injected build/package evidence, not inferred from CPUID. Runtime
-  // usability is still checked independently before the fact is accepted.
+  // Each bit is exact process-local execution evidence for the named stable
+  // variant. Evidence is never inherited merely because another variant uses
+  // the same ISA, microkernel, provider library, or worker context.
+  bool reference_f32_runtime_validated = false;
+  bool tiled_f32_runtime_validated = false;
+  bool compiler_vectorized_f32_runtime_validated = false;
+  bool external_openblas_f32_runtime_validated = false;
   bool packed_avx2_f32_runtime_validated = false;
   bool packed_avx512_f32_runtime_validated = false;
+  bool parallel_avx2_f32_runtime_validated = false;
+  bool parallel_avx512_f32_runtime_validated = false;
 };
 
 planner::CpuGemmImplementationResourcesV2

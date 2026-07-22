@@ -281,7 +281,11 @@ matcore_cpu_execution_context_v1 *create_context(
              created_report->affinity_first_failed_cpu == UINT32_MAX &&
              created_report->affinity_platform_error == 0 &&
              created_report->affinity_complete == 1 &&
-             created_report->numa_memory_placement_applied == 0,
+             created_report->numa_memory_placement_applied == 0 &&
+             created_report->worker_affinity_induced_by_smt_policy == 0 &&
+             created_report->worker_affinity_induced_by_numa_policy == 0 &&
+             created_report->creator_logical_cpu != UINT32_MAX &&
+             created_report->selected_numa_node != UINT32_MAX,
          "compact placement reports strict worker affinity without claiming NUMA page placement");
 
   auto invalid_options = options;
@@ -372,6 +376,16 @@ bool run_variant(matcore_cpu_execution_context_v1 *context,
              query_report.selected_numa_policy == numa &&
              query_report.selected_smt_policy == smt &&
              query_report.numa_memory_placement_applied == 0 &&
+             query_report.worker_affinity_induced_by_smt_policy ==
+                 static_cast<std::uint32_t>(
+                     affinity == MATCORE_CPU_AFFINITY_NONE_V1 &&
+                     smt == MATCORE_CPU_SMT_PHYSICAL_CORES_ONLY_V1) &&
+             query_report.worker_affinity_induced_by_numa_policy ==
+                 static_cast<std::uint32_t>(
+                     affinity == MATCORE_CPU_AFFINITY_NONE_V1 &&
+                     numa == MATCORE_CPU_NUMA_LOCAL_FIRST_V1) &&
+             query_report.creator_logical_cpu != UINT32_MAX &&
+             query_report.selected_numa_node != UINT32_MAX &&
              requirements.affinity_policy == affinity &&
              requirements.numa_policy == numa &&
              requirements.smt_policy == smt,
@@ -517,65 +531,185 @@ void runtime_variants_and_generation(
     matcore_cpu_execution_context_v1 *context,
     const matcore_cpu_execution_context_report_v1 &created,
     const matcore_cpu_capabilities_v2 &capabilities) {
+  auto before = empty_context_report();
+  expect(matcore_runtime_cpu_execution_context_query_v1(context, &before).code ==
+             MATCORE_STATUS_OK_V0 &&
+             before.execution_generation == 0,
+         "process-local validation submissions are excluded from the public generation");
+  std::uint64_t expected_generation = 0;
+
+  GemmFixture reference(7, 5, 9);
+  if (run_variant(context, reference,
+                  MATCORE_CPU_GEMM_REQUEST_FORCE_REFERENCE_V3, 1)) {
+    ++expected_generation;
+  }
+  GemmFixture tiled(17, 19, 13);
+  if (run_variant(context, tiled, MATCORE_CPU_GEMM_REQUEST_FORCE_TILED_V3, 1)) {
+    ++expected_generation;
+  }
+
   const std::uint64_t avx2_fma =
       MATCORE_CPU_FEATURE_AVX2_V2 | MATCORE_CPU_FEATURE_FMA_V2;
   if ((capabilities.runtime_validated_features & avx2_fma) == avx2_fma) {
+    GemmFixture compiler_vectorized(9, 32, 11);
+    if (run_variant(
+            context, compiler_vectorized,
+            MATCORE_CPU_GEMM_REQUEST_FORCE_COMPILER_VECTORIZED_V3, 1)) {
+      ++expected_generation;
+    }
     GemmFixture packed_avx2(33, 35, 37);
-    expect(run_variant(
-               context, packed_avx2,
-               MATCORE_CPU_GEMM_REQUEST_FORCE_NATIVE_PACKED_AVX2_FMA_V3, 1),
+    const bool ran = run_variant(
+        context, packed_avx2,
+        MATCORE_CPU_GEMM_REQUEST_FORCE_NATIVE_PACKED_AVX2_FMA_V3, 1);
+    expect(ran,
            "physically runtime-validated packed AVX2 path is forceable");
+    if (ran) ++expected_generation;
   }
 
   const std::uint64_t avx512_fma =
       MATCORE_CPU_FEATURE_AVX512F_V2 | MATCORE_CPU_FEATURE_FMA_V2;
   if ((capabilities.runtime_validated_features & avx512_fma) == avx512_fma) {
     GemmFixture packed_avx512(35, 33, 37);
-    expect(run_variant(
-               context, packed_avx512,
-               MATCORE_CPU_GEMM_REQUEST_FORCE_NATIVE_PACKED_AVX512_FMA_V3, 1),
+    const bool ran = run_variant(
+        context, packed_avx512,
+        MATCORE_CPU_GEMM_REQUEST_FORCE_NATIVE_PACKED_AVX512_FMA_V3, 1);
+    expect(ran,
            "physically runtime-validated packed AVX-512 path is forceable");
+    if (ran) ++expected_generation;
   }
 
-  auto before = empty_context_report();
-  expect(matcore_runtime_cpu_execution_context_query_v1(context, &before).code ==
-             MATCORE_STATUS_OK_V0 &&
-             before.execution_generation == 0,
-         "nonparallel executions do not submit persistent native workers");
+  auto after_serial = empty_context_report();
+  expect(matcore_runtime_cpu_execution_context_query_v1(context, &after_serial)
+                 .code == MATCORE_STATUS_OK_V0 &&
+             after_serial.execution_generation == expected_generation,
+         "bound serial variants execute through the persistent worker context");
 
   if (created.actual_worker_count >= 2 &&
       (capabilities.runtime_validated_features & avx2_fma) == avx2_fma) {
     GemmFixture parallel(257, 128, 128);
-    expect(run_variant(
-               context, parallel,
-               MATCORE_CPU_GEMM_REQUEST_FORCE_NATIVE_PARALLEL_AVX2_FMA_V3, 2),
+    const bool first_parallel = run_variant(
+        context, parallel,
+        MATCORE_CPU_GEMM_REQUEST_FORCE_NATIVE_PARALLEL_AVX2_FMA_V3, 2);
+    expect(first_parallel,
            "parallel AVX2 executes through the public persistent context");
+    if (first_parallel) ++expected_generation;
     parallel.reset();
-    expect(run_variant(
-               context, parallel,
-               MATCORE_CPU_GEMM_REQUEST_FORCE_NATIVE_PARALLEL_AVX2_FMA_V3, 2),
+    const bool second_parallel = run_variant(
+        context, parallel,
+        MATCORE_CPU_GEMM_REQUEST_FORCE_NATIVE_PARALLEL_AVX2_FMA_V3, 2);
+    expect(second_parallel,
            "the same public persistent context executes repeatedly");
+    if (second_parallel) ++expected_generation;
     auto after = empty_context_report();
     expect(matcore_runtime_cpu_execution_context_query_v1(context, &after).code ==
                MATCORE_STATUS_OK_V0 &&
-               after.execution_generation == 2 &&
+               after.execution_generation == expected_generation &&
                after.persistent_worker_count == before.persistent_worker_count,
            "public query proves submissions advance without worker recreation");
 
-    GemmFixture provider(64, 64, 64);
-    const bool provider_ran = run_variant(
-        context, provider,
+    GemmFixture provider_rejected(64, 64, 64);
+    const auto provider_options = execution_options(
         MATCORE_CPU_GEMM_REQUEST_FORCE_EXTERNAL_OPENBLAS_V3, 2);
-    auto after_provider = empty_context_report();
-    expect(matcore_runtime_cpu_execution_context_query_v1(
-               context, &after_provider)
-                   .code == MATCORE_STATUS_OK_V0,
-           "context remains queryable after provider attempt");
-    if (provider_ran) {
-      expect(after_provider.execution_generation == after.execution_generation,
-             "OpenBLAS executes outside the native pool without nesting");
-    }
+    auto provider_requirements = empty_workspace_requirements();
+    auto provider_report = empty_plan_report();
+    const auto policy = cpu_policy();
+    const auto provider_query =
+        matcore_runtime_gemm_f32_context_workspace_size_v2(
+            context, &provider_rejected.out_desc,
+            &provider_rejected.lhs_desc, &provider_rejected.rhs_desc,
+            &policy, &provider_options, &provider_requirements,
+            &provider_report);
+    expect(provider_query.code == MATCORE_STATUS_UNAVAILABLE_VARIANT_V0 &&
+               provider_report.candidates[3].legal == 0 &&
+               provider_report.candidates[3].reason != nullptr &&
+               std::strstr(provider_report.candidates[3].reason,
+                           "bound native workers") != nullptr &&
+               provider_rejected.unchanged(),
+           "multi-thread OpenBLAS is rejected under a bound native placement policy");
   }
+
+  GemmFixture provider_single(64, 64, 64);
+  const bool provider_single_ran = run_variant(
+      context, provider_single,
+      MATCORE_CPU_GEMM_REQUEST_FORCE_EXTERNAL_OPENBLAS_V3, 1);
+  if (provider_single_ran) ++expected_generation;
+  auto after_provider = empty_context_report();
+  expect(matcore_runtime_cpu_execution_context_query_v1(context,
+                                                         &after_provider)
+                 .code == MATCORE_STATUS_OK_V0 &&
+             after_provider.execution_generation == expected_generation,
+         "single-thread OpenBLAS uses a bound worker when the provider is available");
+
+  GemmFixture automatic(257, 129, 131);
+  const auto automatic_options = execution_options(
+      MATCORE_CPU_GEMM_REQUEST_AUTOMATIC_V3, 4);
+  auto automatic_requirements = empty_workspace_requirements();
+  auto automatic_query_report = empty_plan_report();
+  const auto policy = cpu_policy();
+  const auto automatic_query =
+      matcore_runtime_gemm_f32_context_workspace_size_v2(
+          context, &automatic.out_desc, &automatic.lhs_desc,
+          &automatic.rhs_desc, &policy, &automatic_options,
+          &automatic_requirements, &automatic_query_report);
+  const bool automatic_provider_executable =
+      automatic_query_report.candidates[3].legal == 0 ||
+      automatic_query_report.candidates[3].actual_threads == 1;
+  if (automatic_query.code != MATCORE_STATUS_OK_V0 ||
+      !automatic_provider_executable ||
+      automatic_query_report.selected_stable_id == nullptr ||
+      (automatic_query_report.selected_stable_id != nullptr &&
+       std::strcmp(automatic_query_report.selected_stable_id,
+                   "cpu.external.openblas.f32.v1") == 0 &&
+       automatic_query_report.selected_actual_threads != 1)) {
+    std::cerr << "automatic provider guard diagnostic: status="
+              << automatic_query.code
+              << " provider-legal="
+              << automatic_query_report.candidates[3].legal
+              << " provider-threads="
+              << automatic_query_report.candidates[3].actual_threads
+              << " provider-reason="
+              << (automatic_query_report.candidates[3].reason == nullptr
+                      ? "null"
+                      : automatic_query_report.candidates[3].reason)
+              << " selected="
+              << (automatic_query_report.selected_stable_id == nullptr
+                      ? "null"
+                      : automatic_query_report.selected_stable_id)
+              << '\n';
+  }
+  expect(automatic_query.code == MATCORE_STATUS_OK_V0 &&
+             automatic_provider_executable &&
+             automatic_query_report.selected_stable_id != nullptr &&
+             (std::strcmp(automatic_query_report.selected_stable_id,
+                          "cpu.external.openblas.f32.v1") != 0 ||
+              automatic_query_report.selected_actual_threads == 1),
+         "automatic planning exposes only an OpenBLAS plan executable under bound workers");
+  if (automatic_query.code == MATCORE_STATUS_OK_V0) {
+    AlignedStorage workspace(
+        static_cast<std::size_t>(automatic_requirements.workspace_bytes));
+    auto automatic_execute_report = empty_plan_report();
+    const auto automatic_execution =
+        matcore_runtime_gemm_f32_execute_context_v2(
+            context, &automatic.out_desc, &automatic.lhs_desc,
+            &automatic.rhs_desc, &policy, &automatic_options,
+            workspace.data(),
+            static_cast<std::size_t>(automatic_requirements.workspace_bytes),
+            &automatic_execute_report);
+    expect(automatic_execution.code == MATCORE_STATUS_OK_V0 &&
+               automatic.correct() &&
+               automatic_execute_report.selected_stable_id != nullptr &&
+               std::strcmp(automatic_execute_report.selected_stable_id,
+                           automatic_query_report.selected_stable_id) == 0,
+           "automatic plan and execution remain executable and select identically");
+    if (automatic_execution.code == MATCORE_STATUS_OK_V0)
+      ++expected_generation;
+  }
+  auto after_automatic = empty_context_report();
+  expect(matcore_runtime_cpu_execution_context_query_v1(context,
+                                                         &after_automatic)
+                 .code == MATCORE_STATUS_OK_V0 &&
+             after_automatic.execution_generation == expected_generation,
+         "automatic execution contributes exactly one public worker submission");
 
   auto malformed = empty_context_report();
   malformed.reserved[0] = 1;
@@ -590,13 +724,23 @@ void affinity_smt_and_process_mask_contract() {
     matcore_cpu_affinity_policy_v1 affinity;
     matcore_cpu_numa_policy_v1 numa;
     matcore_cpu_smt_policy_v1 smt;
+    bool induced_by_smt;
+    bool induced_by_numa;
     std::string_view name;
   } cases[] = {
       {MATCORE_CPU_AFFINITY_SCATTER_V1,
        MATCORE_CPU_NUMA_SINGLE_NODE_V1, MATCORE_CPU_SMT_ALLOW_V1,
+       false, false,
        "scatter plus allow-SMT"},
+      {MATCORE_CPU_AFFINITY_NONE_V1,
+       MATCORE_CPU_NUMA_SINGLE_NODE_V1,
+       MATCORE_CPU_SMT_PHYSICAL_CORES_ONLY_V1, true, false,
+       "implicit physical-core binding"},
       {MATCORE_CPU_AFFINITY_NONE_V1, MATCORE_CPU_NUMA_LOCAL_FIRST_V1,
-       MATCORE_CPU_SMT_PHYSICAL_CORES_ONLY_V1, "local-first"},
+       MATCORE_CPU_SMT_PHYSICAL_CORES_ONLY_V1, true, true, "local-first"},
+      {MATCORE_CPU_AFFINITY_SCATTER_V1,
+       MATCORE_CPU_NUMA_LOCAL_FIRST_V1, MATCORE_CPU_SMT_ALLOW_V1, false,
+       false, "local-first preserves explicit scatter"},
   };
   for (const auto &entry : cases) {
     auto options = context_options(2, entry.affinity, entry.numa, entry.smt);
@@ -617,7 +761,13 @@ void affinity_smt_and_process_mask_contract() {
                report.affinity_applied_workers ==
                    report.actual_worker_count &&
                report.affinity_complete == 1 &&
-               report.numa_memory_placement_applied == 0,
+               report.numa_memory_placement_applied == 0 &&
+               report.worker_affinity_induced_by_smt_policy ==
+                   static_cast<std::uint32_t>(entry.induced_by_smt) &&
+               report.worker_affinity_induced_by_numa_policy ==
+                   static_cast<std::uint32_t>(entry.induced_by_numa) &&
+               report.creator_logical_cpu != UINT32_MAX &&
+               report.selected_numa_node != UINT32_MAX,
            "explicit placement is applied while NUMA page placement stays false");
     expect(matcore_runtime_cpu_execution_context_destroy_v1(context).code ==
                MATCORE_STATUS_OK_V0,

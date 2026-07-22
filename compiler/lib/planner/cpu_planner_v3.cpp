@@ -619,14 +619,42 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
       decision.estimated_cost = base_decision.estimated_cost;
       decision.shared_workspace_bytes =
           base_decision.required_workspace_bytes;
-      if (record.variant == CpuGemmVariantV3::reference ||
-          record.variant == CpuGemmVariantV3::tiled) {
-        decision.runtime_validated = true;
+      if (record.variant == CpuGemmVariantV3::external_openblas &&
+          decision.legal && thread_policy.worker_affinity_active &&
+          decision.actual_threads > 1) {
+        decision.legal = false;
+        decision.reason =
+            "multi-thread OpenBLAS is unavailable under bound native workers";
+        decision.estimated_cost = std::numeric_limits<std::uint64_t>::max();
+      }
+      if (record.variant == CpuGemmVariantV3::reference) {
+        decision.runtime_validated =
+            resources.reference_f32_runtime_validated;
+        if (decision.legal && !decision.runtime_validated) {
+          decision.legal = false;
+          decision.reason =
+              "reference F32 implementation is not runtime-validated";
+          decision.estimated_cost = std::numeric_limits<std::uint64_t>::max();
+        }
+      } else if (record.variant == CpuGemmVariantV3::tiled) {
+        decision.runtime_validated = resources.tiled_f32_runtime_validated;
+        if (decision.legal && !decision.runtime_validated) {
+          decision.legal = false;
+          decision.reason = "tiled F32 implementation is not runtime-validated";
+          decision.estimated_cost = std::numeric_limits<std::uint64_t>::max();
+        }
       } else if (record.variant == CpuGemmVariantV3::external_openblas) {
-        decision.runtime_validated = resources.baseline.openblas_linked;
+        decision.runtime_validated =
+            resources.external_openblas_f32_runtime_validated;
+        if (decision.legal && !decision.runtime_validated) {
+          decision.legal = false;
+          decision.reason =
+              "OpenBLAS F32 implementation is not runtime-validated";
+          decision.estimated_cost = std::numeric_limits<std::uint64_t>::max();
+        }
       } else if (record.variant == CpuGemmVariantV3::compiler_vectorized) {
         decision.runtime_validated =
-            resources.native_packed_avx2_fma_runtime_validated;
+            resources.compiler_vectorized_f32_runtime_validated;
         if (decision.legal && !decision.runtime_validated) {
           decision.legal = false;
           decision.reason =
@@ -716,6 +744,14 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
                               ? "parallel AVX-512 implementation is not compiled"
                               : "parallel AVX2/FMA implementation is not compiled";
       else if (!avx512 &&
+               !resources.native_parallel_avx2_fma_runtime_validated)
+        decision.reason =
+            "parallel AVX2/FMA implementation is not runtime-validated";
+      else if (avx512 &&
+               !resources.native_parallel_avx512_fma_runtime_validated)
+        decision.reason =
+            "parallel AVX-512 implementation is not runtime-validated";
+      else if (!avx512 &&
                (!resources.baseline.native_packed_avx2_fma_compiled ||
                 !resources.native_parallel_avx2_workspace_size_valid))
         decision.reason = "parallel AVX2/FMA workspace implementation is unavailable";
@@ -770,6 +806,15 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
           else {
             decision.legal = true;
             decision.reason = "legal";
+            decision.actual_threads = actual_threads;
+            decision.required_workspace_bytes = total_workspace;
+            decision.required_workspace_alignment = alignment;
+            decision.shared_workspace_bytes = shared_workspace;
+            decision.per_worker_workspace_bytes = per_worker;
+            decision.runtime_validated =
+                avx512
+                    ? resources.native_parallel_avx512_fma_runtime_validated
+                    : resources.native_parallel_avx2_fma_runtime_validated;
             decision.estimated_cost =
                 parallel_cost(problem, actual_threads, avx512,
                               decision.crosses_numa_nodes);
@@ -899,6 +944,8 @@ std::size_t format_cpu_gemm_plan_v3(const CpuGemmPlanV3 &plan,
   writer.text(plan.thread_policy.external_provider_parallelism_active
                   ? "true"
                   : "false");
+  writer.text(" worker-affinity-active=");
+  writer.text(plan.thread_policy.worker_affinity_active ? "true" : "false");
   writer.text(" physical-cores=");
   writer.number(plan.topology.physical_cores);
   writer.text(" logical-processors=");

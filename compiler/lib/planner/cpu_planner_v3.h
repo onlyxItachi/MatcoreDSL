@@ -66,6 +66,10 @@ struct CpuThreadPolicyV1 {
   std::uint32_t maximum_threads = 0;
   bool allow_smt = false;
   bool external_provider_parallelism_active = false;
+  // Provider-owned multithreading is not executable while work is constrained
+  // to runtime-owned bound workers. Single-thread provider execution remains
+  // legal because it can run on one bound worker.
+  bool worker_affinity_active = false;
 };
 
 enum class CpuPlannerNumaPolicyV1 : std::uint8_t {
@@ -99,10 +103,15 @@ struct CpuPlannerPlacementEvidenceV1 {
 
 struct CpuGemmImplementationResourcesV2 {
   CpuGemmImplementationResourcesV1 baseline;
+  bool reference_f32_runtime_validated = false;
+  bool tiled_f32_runtime_validated = false;
+  bool compiler_vectorized_f32_runtime_validated = false;
+  bool external_openblas_f32_runtime_validated = false;
   bool native_packed_avx2_fma_runtime_validated = false;
   bool execution_context_available = false;
   std::uint32_t execution_context_worker_capacity = 0;
   bool native_parallel_avx2_fma_compiled = false;
+  bool native_parallel_avx2_fma_runtime_validated = false;
   bool native_parallel_avx2_workspace_size_valid = false;
   std::uint64_t native_parallel_avx2_shared_workspace_bytes = 0;
   std::uint64_t native_parallel_avx2_per_worker_workspace_bytes = 0;
@@ -114,6 +123,7 @@ struct CpuGemmImplementationResourcesV2 {
   std::uint64_t native_packed_avx512_workspace_bytes = 0;
   std::uint32_t native_packed_avx512_workspace_alignment = 0;
   bool native_parallel_avx512_fma_compiled = false;
+  bool native_parallel_avx512_fma_runtime_validated = false;
   bool native_parallel_avx512_workspace_size_valid = false;
   std::uint64_t native_parallel_avx512_shared_workspace_bytes = 0;
   std::uint64_t native_parallel_avx512_per_worker_workspace_bytes = 0;

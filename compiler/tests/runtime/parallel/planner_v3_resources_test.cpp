@@ -26,6 +26,7 @@ int main() {
       planner::CpuScalarTypeV1::f32,
       planner::CpuLayoutV1::row_major_contiguous, 64};
   planner::CpuGemmImplementationResourcesV1 baseline;
+  baseline.openblas_linked = true;
   baseline.native_packed_avx2_fma_compiled = true;
   baseline.native_packed_workspace_size_valid = true;
   baseline.native_packed_workspace_bytes = 393216;
@@ -39,9 +40,17 @@ int main() {
          "resource fixture creates a topology-capped context");
 
   runtime::CpuRuntimeValidationEvidenceV1 validation;
+  validation.reference_f32_runtime_validated = true;
+  validation.tiled_f32_runtime_validated = true;
+  validation.compiler_vectorized_f32_runtime_validated = true;
+  validation.external_openblas_f32_runtime_validated = true;
   validation.packed_avx2_f32_runtime_validated =
       runtime::cpu_packed_avx2_runtime_usable_v1();
   validation.packed_avx512_f32_runtime_validated =
+      runtime::cpu_packed_avx512_runtime_usable_v1();
+  validation.parallel_avx2_f32_runtime_validated =
+      runtime::cpu_packed_avx2_runtime_usable_v1();
+  validation.parallel_avx512_f32_runtime_validated =
       runtime::cpu_packed_avx512_runtime_usable_v1();
   const auto resources =
       runtime::augment_cpu_gemm_implementation_resources_v2(
@@ -49,10 +58,17 @@ int main() {
   expect(resources.execution_context_available &&
              resources.execution_context_worker_capacity == 4,
          "resource projection reports persistent worker capacity");
+  expect(resources.reference_f32_runtime_validated &&
+             resources.tiled_f32_runtime_validated &&
+             resources.compiler_vectorized_f32_runtime_validated &&
+             resources.external_openblas_f32_runtime_validated,
+         "resource projection preserves exact evidence per serial stable variant");
   expect(resources.native_packed_avx2_fma_runtime_validated ==
              runtime::cpu_packed_avx2_runtime_usable_v1(),
          "AVX2 runtime validation requires injected evidence and usable hardware");
   expect(resources.native_parallel_avx2_fma_compiled &&
+             resources.native_parallel_avx2_fma_runtime_validated ==
+                 runtime::cpu_packed_avx2_runtime_usable_v1() &&
              resources.native_parallel_avx2_workspace_size_valid &&
              resources.native_parallel_avx2_shared_workspace_bytes != 0 &&
              resources.native_parallel_avx2_per_worker_workspace_bytes != 0 &&
@@ -82,6 +98,10 @@ int main() {
           problem, baseline, context.get(), invalid_validation);
   expect(!future_evidence.native_packed_avx512_fma_runtime_validated,
          "future validation-evidence version fails closed");
+  expect(!future_evidence.reference_f32_runtime_validated &&
+             !future_evidence.external_openblas_f32_runtime_validated &&
+             !future_evidence.native_parallel_avx2_fma_runtime_validated,
+         "future evidence cannot leak across stable variants");
 
   if (failures != 0) {
     std::cerr << failures << " planner-v3 resource checks failed\n";

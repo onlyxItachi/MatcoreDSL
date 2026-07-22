@@ -47,8 +47,20 @@ augment_cpu_gemm_implementation_resources_v2(
     const CpuRuntimeValidationEvidenceV1 &validation_evidence) noexcept {
   planner::CpuGemmImplementationResourcesV2 result;
   result.baseline = baseline;
+  const bool valid_evidence =
+      validation_evidence.version == kCpuRuntimeValidationEvidenceVersionV1;
+  result.reference_f32_runtime_validated =
+      valid_evidence && validation_evidence.reference_f32_runtime_validated;
+  result.tiled_f32_runtime_validated =
+      valid_evidence && validation_evidence.tiled_f32_runtime_validated;
+  result.compiler_vectorized_f32_runtime_validated =
+      valid_evidence &&
+      validation_evidence.compiler_vectorized_f32_runtime_validated;
+  result.external_openblas_f32_runtime_validated =
+      valid_evidence && baseline.openblas_linked &&
+      validation_evidence.external_openblas_f32_runtime_validated;
   result.native_packed_avx2_fma_runtime_validated =
-      validation_evidence.version == kCpuRuntimeValidationEvidenceVersionV1 &&
+      valid_evidence &&
       validation_evidence.packed_avx2_f32_runtime_validated &&
       cpu_packed_avx2_runtime_usable_v1();
   if (execution_context != nullptr) {
@@ -59,6 +71,9 @@ augment_cpu_gemm_implementation_resources_v2(
 
   result.native_parallel_avx2_fma_compiled =
       cpu_packed_avx2_build_available_v1();
+  result.native_parallel_avx2_fma_runtime_validated =
+      valid_evidence && validation_evidence.parallel_avx2_f32_runtime_validated &&
+      cpu_packed_avx2_runtime_usable_v1();
   CpuParallelGemmWorkspaceRequirementsV1 avx2_workspace;
   const bool avx2_workspace_valid =
       cpu_parallel_packed_avx2_workspace_requirements_v1(
@@ -73,7 +88,7 @@ augment_cpu_gemm_implementation_resources_v2(
   result.native_packed_avx512_fma_compiled =
       cpu_packed_avx512_build_available_v1();
   result.native_packed_avx512_fma_runtime_validated =
-      validation_evidence.version == kCpuRuntimeValidationEvidenceVersionV1 &&
+      valid_evidence &&
       validation_evidence.packed_avx512_f32_runtime_validated &&
       cpu_packed_avx512_runtime_usable_v1();
   CpuPackedGemmWorkspaceRequirementsV1 avx512_single;
@@ -98,6 +113,10 @@ augment_cpu_gemm_implementation_resources_v2(
 
   result.native_parallel_avx512_fma_compiled =
       cpu_packed_avx512_build_available_v1();
+  result.native_parallel_avx512_fma_runtime_validated =
+      valid_evidence &&
+      validation_evidence.parallel_avx512_f32_runtime_validated &&
+      cpu_packed_avx512_runtime_usable_v1();
   CpuParallelGemmWorkspaceRequirementsV1 avx512_workspace;
   const bool avx512_workspace_valid =
       cpu_parallel_packed_avx512_workspace_requirements_v1(

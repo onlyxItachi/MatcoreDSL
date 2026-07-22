@@ -50,9 +50,10 @@ planner::CpuPlannerTopologyViewV1 topology() {
 
 planner::CpuThreadPolicyV1 policy(std::uint32_t requested,
                                   std::uint32_t maximum = 0,
-                                  bool allow_smt = false) {
+                                  bool allow_smt = false,
+                                  bool worker_affinity_active = false) {
   return {planner::kCpuThreadPolicyVersionV1, requested, maximum, allow_smt,
-          false};
+          false, worker_affinity_active};
 }
 
 planner::CpuPlannerPlacementEvidenceV1 single_node_placement(
@@ -82,10 +83,15 @@ planner::CpuGemmImplementationResourcesV2 resources() {
   result.baseline.native_packed_workspace_bytes = 393216;
   result.baseline.native_packed_workspace_alignment = 64;
   result.baseline.requested_threads = 1;
+  result.reference_f32_runtime_validated = true;
+  result.tiled_f32_runtime_validated = true;
+  result.compiler_vectorized_f32_runtime_validated = true;
+  result.external_openblas_f32_runtime_validated = true;
   result.native_packed_avx2_fma_runtime_validated = true;
   result.execution_context_available = true;
   result.execution_context_worker_capacity = 24;
   result.native_parallel_avx2_fma_compiled = true;
+  result.native_parallel_avx2_fma_runtime_validated = true;
   result.native_parallel_avx2_workspace_size_valid = true;
   result.native_parallel_avx2_shared_workspace_bytes = 262144;
   result.native_parallel_avx2_per_worker_workspace_bytes = 131072;
@@ -190,6 +196,25 @@ void registry_and_parallel_policy() {
   expect(provider.status == planner::CpuPlanStatusV1::selected &&
              provider.candidates[3].actual_threads == 3,
          "external provider never exceeds its reported thread ceiling");
+
+  const auto bound_provider = planner::plan_cpu_gemm_v3(
+      large, avx2_capabilities(), topology(), policy(4, 0, false, true),
+      provider_resources,
+      planner::CpuGemmRequestV3::force_external_openblas);
+  expect(bound_provider.status ==
+                 planner::CpuPlanStatusV1::forced_variant_illegal &&
+             !bound_provider.candidates[3].legal &&
+             bound_provider.candidates[3].reason ==
+                 "multi-thread OpenBLAS is unavailable under bound native workers",
+         "bound native placement rejects provider-owned multithreading in the planner");
+
+  const auto bound_provider_single = planner::plan_cpu_gemm_v3(
+      large, avx2_capabilities(), topology(), policy(1, 0, false, true),
+      provider_resources,
+      planner::CpuGemmRequestV3::force_external_openblas);
+  expect(bound_provider_single.status == planner::CpuPlanStatusV1::selected &&
+             bound_provider_single.candidates[3].actual_threads == 1,
+         "one provider thread remains executable on a bound native worker");
 }
 
 void parallel_rejection_boundaries() {
@@ -365,6 +390,7 @@ void avx512_fail_closed_and_determinism() {
   avx512.native_packed_avx512_workspace_bytes = 393216;
   avx512.native_packed_avx512_workspace_alignment = 64;
   avx512.native_parallel_avx512_fma_compiled = true;
+  avx512.native_parallel_avx512_fma_runtime_validated = true;
   avx512.native_parallel_avx512_workspace_size_valid = true;
   avx512.native_parallel_avx512_shared_workspace_bytes = 262144;
   avx512.native_parallel_avx512_per_worker_workspace_bytes = 131072;
@@ -451,6 +477,7 @@ void versioned_capability_and_topology_projection() {
   available.native_packed_avx512_workspace_bytes = 393216;
   available.native_packed_avx512_workspace_alignment = 64;
   available.native_parallel_avx512_fma_compiled = true;
+  available.native_parallel_avx512_fma_runtime_validated = true;
   available.native_parallel_avx512_workspace_size_valid = true;
   available.native_parallel_avx512_shared_workspace_bytes = 262144;
   available.native_parallel_avx512_per_worker_workspace_bytes = 131072;
