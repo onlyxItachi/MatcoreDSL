@@ -91,6 +91,8 @@ struct RunnerPlanV1 {
   std::string smt_policy;
   std::string affinity_policy;
   bool worker_affinity_applied = false;
+  bool worker_affinity_user_requested = false;
+  bool worker_affinity_policy_induced = false;
   std::string affinity_diagnostic;
   std::shared_ptr<const RunnerPlanStateV1> state;
 };
@@ -111,6 +113,8 @@ struct RunnerEnvironmentV1 {
   std::uint64_t execution_context_submissions = 0;
   std::uint32_t available_processors = 0;
   bool worker_affinity_applied = false;
+  bool worker_affinity_user_requested = false;
+  bool worker_affinity_policy_induced = false;
   std::string worker_affinity_source;
   std::string provider_name;
   std::string provider_version;

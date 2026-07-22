@@ -112,8 +112,12 @@ def main() -> int:
         assert report["environment"]["execution_context_workers"] >= 1
         assert report["environment"]["execution_context_workers_started"] >= 1
         assert report["environment"]["available_processors"] >= 1
-        assert report["environment"]["worker_affinity_applied"] is False
-        assert "0 context(s)" in report["environment"]["worker_affinity_source"]
+        assert report["environment"]["worker_affinity_applied"] is True
+        assert report["environment"]["worker_affinity_user_requested"] is False
+        assert report["environment"]["worker_affinity_policy_induced"] is True
+        assert "induced by physical-cores-only SMT policy" in report["environment"][
+            "worker_affinity_source"
+        ]
         assert "restricted to inherited process" in report["environment"][
             "worker_affinity_source"
         ]
@@ -123,11 +127,15 @@ def main() -> int:
         assert result["planner_version"] == 3
         assert result["shared_workspace_bytes"] == 0
         assert result["per_worker_workspace_bytes"] == 0
-        assert result["persistent_execution_context"] is False
+        assert result["persistent_execution_context"] is True
         assert result["smt_policy"] == "physical-cores-only"
         assert result["affinity_policy"] == "none"
-        assert result["worker_affinity_applied"] is False
-        assert "inherit the process mask" in result["affinity_diagnostic"]
+        assert result["worker_affinity_applied"] is True
+        assert result["worker_affinity_user_requested"] is False
+        assert result["worker_affinity_policy_induced"] is True
+        assert "one-logical-CPU-per-core" in result["affinity_diagnostic"]
+        assert "user_requested=false" in result["affinity_diagnostic"]
+        assert "pinned persistent worker 0" in result["timing_scope"]
         assert result["scaling"]["requested"] is False
         assert result["planner_regret"]["requested"] is False
         assert result["complete_implementation_comparison"] is True
@@ -150,6 +158,8 @@ def main() -> int:
                 )
                 affinity_result = affinity_report["results"][0]
                 assert affinity_result["worker_affinity_applied"] is True
+                assert affinity_result["worker_affinity_user_requested"] is True
+                assert affinity_result["worker_affinity_policy_induced"] is False
                 assert affinity_result["affinity_policy"] == policy
                 assert "strict per-worker scheduler affinity complete" in affinity_result[
                     "affinity_diagnostic"
@@ -171,15 +181,43 @@ def main() -> int:
                     "execution_context_workers_started"
                 ] >= 2
 
-            incompatible_affinity = run(
+        affinity_serial_variants = [
+            "cpu.reference.f32.v1",
+            "cpu.tiled.f32.v1",
+            "cpu.compiler-vectorized.avx2-fma.f32.v1",
+            "cpu.external.openblas.f32.v1",
+            "cpu.native-packed.avx2-fma.f32.v1",
+            "cpu.native-packed.avx512-fma.f32.v1",
+        ]
+        for variant in affinity_serial_variants:
+            serial_output = pathlib.Path(temporary) / f"affinity-serial-{variant}.json"
+            serial = subprocess.run(
                 [
                     str(executable), "--m", "64", "--n", "64", "--k", "64",
-                    "--variant", "cpu.reference.f32.v1", "--threads", "2",
-                    "--affinity", "compact",
+                    "--variant", variant, "--threads", "1", "--affinity", "compact",
+                    "--warmup", "0", "--iterations", "1", "--timer-floor-us", "1",
+                    "--json-out", str(serial_output),
                 ],
-                expected=1,
+                text=True,
+                capture_output=True,
+                check=False,
             )
-            assert "only by native parallel variants" in incompatible_affinity.stderr
+            if serial.returncode == 0:
+                serial_report = json.loads(serial_output.read_text(encoding="utf-8"))
+                serial_result = serial_report["results"][0]
+                assert serial_result["selected_variant"] == variant
+                assert serial_result["correctness"] is True
+                assert serial_result["worker_affinity_applied"] is True
+                assert serial_result["worker_affinity_user_requested"] is True
+                assert serial_result["worker_affinity_policy_induced"] is False
+                assert "pinned persistent worker 0" in serial_result["timing_scope"]
+                assert serial_report["environment"]["execution_context_submissions"] >= 1
+            else:
+                assert (
+                    "not linked" in serial.stderr
+                    or "not runtime-validated" in serial.stderr
+                    or "unavailable" in serial.stderr
+                ), (variant, serial.stderr)
 
         allocation_output = pathlib.Path(temporary) / "allocation.json"
         run(
@@ -343,7 +381,8 @@ def main() -> int:
             [
                 str(executable), "--m", "256", "--n", "128", "--k", "128",
                 "--variant", "cpu.native-parallel.avx2-fma.f32.v1",
-                "--threads", "2", "--compare-one-thread", "--warmup", "0",
+                "--threads", "2", "--affinity", "compact",
+                "--compare-one-thread", "--warmup", "0",
                 "--iterations", "1", "--timer-floor-us", "1", "--guard",
                 "--json-out", str(parallel_output),
             ],
@@ -359,6 +398,11 @@ def main() -> int:
             assert parallel_result["per_worker_workspace_bytes"] > 0
             assert parallel_result["correctness"] is True
             assert parallel_result["scaling"]["valid"] is True
+            assert parallel_result["scaling"]["baseline_variant"] == (
+                "cpu.native-packed.avx2-fma.f32.v1"
+            )
+            assert parallel_result["worker_affinity_user_requested"] is True
+            assert parallel_result["worker_affinity_policy_induced"] is False
             parallel_report = json.loads(parallel_output.read_text(encoding="utf-8"))
             assert parallel_report["environment"]["execution_context_submissions"] >= 2
         else:
@@ -366,6 +410,38 @@ def main() -> int:
                 "runtime-validated" in parallel.stderr
                 or "topology" in parallel.stderr
                 or "unavailable" in parallel.stderr
+            )
+
+        parallel_avx512_output = pathlib.Path(temporary) / "parallel avx512.json"
+        parallel_avx512 = subprocess.run(
+            [
+                str(executable), "--m", "256", "--n", "128", "--k", "128",
+                "--variant", "cpu.native-parallel.avx512-fma.f32.v1",
+                "--threads", "2", "--affinity", "compact",
+                "--compare-one-thread", "--warmup", "0", "--iterations", "1",
+                "--timer-floor-us", "1", "--guard", "--json-out",
+                str(parallel_avx512_output),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if parallel_avx512.returncode == 0:
+            avx512_result = json.loads(
+                parallel_avx512_output.read_text(encoding="utf-8")
+            )["results"][0]
+            assert avx512_result["correctness"] is True
+            assert avx512_result["scaling"]["valid"] is True
+            assert avx512_result["scaling"]["baseline_variant"] == (
+                "cpu.native-packed.avx512-fma.f32.v1"
+            )
+            assert avx512_result["worker_affinity_applied"] is True
+            assert avx512_result["worker_affinity_user_requested"] is True
+        else:
+            assert (
+                "runtime-validated" in parallel_avx512.stderr
+                or "AVX-512" in parallel_avx512.stderr
+                or "unavailable" in parallel_avx512.stderr
             )
 
         forced_variants = [
@@ -586,6 +662,16 @@ def main() -> int:
         smt_report = json.loads(smt_output.read_text(encoding="utf-8"))
         assert smt_report["configuration"]["smt_policy"] == "allow-smt"
         assert smt_report["results"][0]["smt_policy"] == "allow-smt"
+        assert smt_report["results"][0]["worker_affinity_applied"] is False
+        assert smt_report["results"][0][
+            "worker_affinity_user_requested"
+        ] is False
+        assert smt_report["results"][0][
+            "worker_affinity_policy_induced"
+        ] is False
+        assert "inherit the process mask" in smt_report["results"][0][
+            "affinity_diagnostic"
+        ]
 
     optional_openblas = subprocess.run(
         [
@@ -623,6 +709,7 @@ def main() -> int:
                 "2",
                 "--threads",
                 "2147483647",
+                "--allow-smt",
                 "--variant",
                 "cpu.external.openblas.f32.v1",
             ],
@@ -631,6 +718,21 @@ def main() -> int:
         assert "variant=cpu.external.openblas.f32.v1" in capped_openblas_threads.stdout
     else:
         assert "OpenBLAS CBLAS adapter is not linked" in optional_openblas.stderr
+
+    unauthenticated_provider_affinity = run(
+        [
+            str(executable), "--m", "64", "--n", "64", "--k", "64",
+            "--variant", "cpu.external.openblas.f32.v1", "--threads", "2",
+            "--affinity", "compact",
+        ],
+        expected=1,
+    )
+    assert (
+        "provider-thread affinity is not authenticated"
+        in unauthenticated_provider_affinity.stderr
+        or "OpenBLAS CBLAS adapter is not linked"
+        in unauthenticated_provider_affinity.stderr
+    )
 
     print("matcore-bench CLI/JSON contract PASS")
     return 0

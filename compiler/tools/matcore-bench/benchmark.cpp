@@ -1070,6 +1070,12 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
          << environment.runner.available_processors << ",\n"
          << "    \"worker_affinity_applied\": "
          << (environment.runner.worker_affinity_applied ? "true" : "false")
+         << ",\n    \"worker_affinity_user_requested\": "
+         << (environment.runner.worker_affinity_user_requested ? "true"
+                                                               : "false")
+         << ",\n    \"worker_affinity_policy_induced\": "
+         << (environment.runner.worker_affinity_policy_induced ? "true"
+                                                              : "false")
          << ",\n";
   emit_environment("worker_affinity_source",
                    environment.runner.worker_affinity_source);
@@ -1141,6 +1147,10 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
     json_string(output, result.plan.affinity_policy);
     output << ",\n      \"worker_affinity_applied\": "
            << (result.plan.worker_affinity_applied ? "true" : "false")
+           << ",\n      \"worker_affinity_user_requested\": "
+           << (result.plan.worker_affinity_user_requested ? "true" : "false")
+           << ",\n      \"worker_affinity_policy_induced\": "
+           << (result.plan.worker_affinity_policy_induced ? "true" : "false")
            << ",\n      \"affinity_diagnostic\": ";
     json_string(output, result.plan.affinity_diagnostic);
     output << ",\n      \"alignment_bytes\": " << report.options.alignment_bytes

@@ -142,6 +142,8 @@ int main() {
              runner_environment.topology_record_version == 1 &&
              runner_environment.available_processors > 0 &&
              !runner_environment.worker_affinity_applied &&
+             !runner_environment.worker_affinity_user_requested &&
+             !runner_environment.worker_affinity_policy_induced &&
              !runner_environment.capability_record.empty() &&
              !runner_environment.topology_record.empty() &&
              !runner_environment.capability_runtime_validation_source.empty(),
@@ -163,16 +165,19 @@ int main() {
              "explicit affinity uses a strict persistent worker context and "
              "does not claim NUMA memory placement");
     }
-    const auto external_context_mismatch = runner->plan(
+    const auto affinity_serial_plan = runner->plan(
         {64, 64, 64}, 64, 2, "cpu.reference.f32.v1",
         bench::PackingModeV1::include,
         bench::SmtPolicyV2::physical_cores_only,
         bench::AffinityPolicyV2::compact);
-    expect(!external_context_mismatch.legal &&
-               external_context_mismatch.reason.find(
-                   "only by native parallel variants") != std::string::npos,
-           "worker-affinity success is not attributed to a scalar caller that "
-           "does not execute on the native worker context");
+    expect(affinity_serial_plan.legal &&
+               affinity_serial_plan.worker_affinity_applied &&
+               affinity_serial_plan.worker_affinity_user_requested &&
+               !affinity_serial_plan.worker_affinity_policy_induced &&
+               affinity_serial_plan.timing_scope.find(
+                   "pinned persistent worker 0") != std::string::npos,
+           "serial variants dispatch through pinned worker zero when affinity "
+           "is explicitly requested");
   }
   bench::BenchmarkOptionsV1 run_options;
   run_options.profile = bench::ProfileV1::custom;
@@ -196,7 +201,9 @@ int main() {
              report.results[0].timing.valid &&
              report.results[0].plan.planner_version == 3 &&
              report.results[0].plan.smt_policy == "physical-cores-only" &&
-             !report.results[0].plan.worker_affinity_applied,
+             report.results[0].plan.worker_affinity_applied &&
+             !report.results[0].plan.worker_affinity_user_requested &&
+             report.results[0].plan.worker_affinity_policy_induced,
          "benchmark result identifies the variant and passes independent oracle");
 
   auto scaling_options = run_options;
@@ -292,6 +299,11 @@ int main() {
                parallel_report.results[0].scaling.valid &&
                parallel_report.results[0].scaling.baseline_variant ==
                    "cpu.native-packed.avx2-fma.f32.v1" &&
+               parallel_report.environment.runner.worker_affinity_applied &&
+               !parallel_report.environment.runner
+                    .worker_affinity_user_requested &&
+               parallel_report.environment.runner
+                   .worker_affinity_policy_induced &&
                parallel_report.environment.runner.execution_context_submissions >
                    0,
            "persistent parallel AVX2 dispatch is oracle-checked against a same-family one-thread timing");
@@ -306,6 +318,8 @@ int main() {
              json.find("\"correctness\": true") != std::string::npos &&
              json.find("\"planner_version\": 3") != std::string::npos &&
              json.find("\"shared_workspace_bytes\"") != std::string::npos &&
+             json.find("\"worker_affinity_policy_induced\"") !=
+                 std::string::npos &&
              json.find("\"planner_regret\"") != std::string::npos &&
              json.find("\"timing_scope\"") != std::string::npos &&
              json.find("\"timer_resolution_ns\"") != std::string::npos,

@@ -403,6 +403,8 @@ struct BackendPlanState final : RunnerPlanStateV1 {
 struct ExecutionContextRecord {
   AffinityPolicyV2 affinity_policy = AffinityPolicyV2::none;
   SmtPolicyV2 smt_policy = SmtPolicyV2::physical_cores_only;
+  bool affinity_user_requested = false;
+  bool affinity_policy_induced = false;
   std::vector<std::uint32_t> worker_cpu_ids;
   std::shared_ptr<runtime::CpuExecutionContextV1> context;
   runtime::CpuExecutionStatusV1 creation_status =
@@ -441,25 +443,20 @@ class PlannerRunner final : public GemmRunnerV1 {
     }
 
     available_processors_ = platform::logical_cpu_count_v1(topology_);
-    const std::uint32_t capacity = available_processors_;
     auto record = std::make_shared<ExecutionContextRecord>();
     record->placement = unbound_placement_evidence(topology_);
     record->diagnostic =
         "workers inherit the process mask and are not individually pinned; "
         "NUMA page placement is not requested or claimed";
-    runtime::CpuExecutionContextConfigV1 config;
-    config.requested_threads = capacity;
-    config.maximum_threads = capacity;
-    auto context = runtime::CpuExecutionContextV1::create(
-        config, &record->creation_status, &record->affinity_report);
-    if (context != nullptr)
-      record->context =
-          std::shared_ptr<runtime::CpuExecutionContextV1>(std::move(context));
     default_context_ = record;
     context_records_.push_back(record);
   }
 
   RunnerEnvironmentV1 environment() const override {
+    std::string probe_context_error;
+    const auto probe_context = context_for(
+        AffinityPolicyV2::none, SmtPolicyV2::physical_cores_only, 1,
+        probe_context_error);
     const auto probe_problem = problem({1, 1, 1}, alignof(float));
     const auto baseline =
         runtime::discover_cpu_gemm_implementation_resources_v1(probe_problem,
@@ -477,14 +474,14 @@ class PlannerRunner final : public GemmRunnerV1 {
             capabilities_, platform::CpuFeatureV2::fma);
     const auto resources = runtime::augment_cpu_gemm_implementation_resources_v2(
         probe_problem, baseline,
-        default_context_ != nullptr ? default_context_->context.get() : nullptr,
+        probe_context != nullptr ? probe_context->context.get() : nullptr,
         evidence);
     planner::CpuThreadPolicyV1 thread_policy;
     const auto probe = planner::plan_cpu_gemm_v3(
         probe_problem, capabilities_, topology_, thread_policy, resources,
         planner::CpuGemmRequestV3::automatic, 0,
-        default_context_ != nullptr ? default_context_->placement
-                                    : planner::CpuPlannerPlacementEvidenceV1{});
+        probe_context != nullptr ? probe_context->placement
+                                 : planner::CpuPlannerPlacementEvidenceV1{});
     std::array<char, 8192> diagnostic{};
     planner::format_cpu_gemm_plan_v3(probe, diagnostic.data(),
                                      diagnostic.size());
@@ -512,6 +509,8 @@ class PlannerRunner final : public GemmRunnerV1 {
     {
       std::lock_guard lock(context_mutex_);
       std::uint32_t pinned_contexts = 0;
+      std::uint32_t user_requested_contexts = 0;
+      std::uint32_t policy_induced_contexts = 0;
       for (const auto &record : context_records_) {
         if (record == nullptr || record->context == nullptr) continue;
         const auto info = record->context->info();
@@ -521,28 +520,37 @@ class PlannerRunner final : public GemmRunnerV1 {
             result.execution_context_workers, info.actual_worker_count);
         result.execution_context_workers_started += info.workers_started;
         result.execution_context_submissions += info.completed_submissions;
-        if (record->affinity_policy != AffinityPolicyV2::none &&
+        if (!record->worker_cpu_ids.empty() &&
             info.completed_submissions != 0 &&
             info.affinity.complete &&
             info.affinity.status == runtime::CpuWorkerAffinityStatusV1::complete)
           ++pinned_contexts;
+        if (record->affinity_user_requested &&
+            info.completed_submissions != 0 && info.affinity.complete)
+          ++user_requested_contexts;
+        if (record->affinity_policy_induced &&
+            info.completed_submissions != 0 && info.affinity.complete)
+          ++policy_induced_contexts;
       }
       result.worker_affinity_applied = pinned_contexts != 0;
+      result.worker_affinity_user_requested = user_requested_contexts != 0;
+      result.worker_affinity_policy_induced = policy_induced_contexts != 0;
       result.worker_affinity_source =
           "aggregate over persistent benchmark contexts: " +
           std::to_string(pinned_contexts) +
           " context(s) have complete per-worker scheduler affinity; " +
+          std::to_string(user_requested_contexts) +
+          " user-requested and " + std::to_string(policy_induced_contexts) +
+          " induced by physical-cores-only SMT policy; " +
           "NUMA page placement is never claimed; " +
           topology_restriction_diagnostic_;
     }
     result.available_processors = available_processors_;
-    if (default_context_ == nullptr || default_context_->context == nullptr) {
+    if (probe_context == nullptr || probe_context->context == nullptr) {
       result.capability_record += "\nexecution_context_status=";
-      result.capability_record +=
-          runtime::cpu_execution_status_message_v1(
-              default_context_ != nullptr
-                  ? default_context_->creation_status
-                  : runtime::CpuExecutionStatusV1::invalid_configuration);
+      result.capability_record += probe_context_error.empty()
+                                      ? "required benchmark context unavailable"
+                                      : probe_context_error;
     }
     result.provider_name = provider.linked ? "OpenBLAS" : "unavailable";
     result.provider_version = provider.package_version;
@@ -578,21 +586,28 @@ class PlannerRunner final : public GemmRunnerV1 {
     std::string context_error;
     const auto context_record = context_for(
         affinity_policy, smt_policy, requested_threads, context_error);
-    if (affinity_policy != AffinityPolicyV2::none &&
+    const bool worker_binding_required =
+        affinity_policy != AffinityPolicyV2::none ||
+        smt_policy == SmtPolicyV2::physical_cores_only;
+    if (worker_binding_required &&
         (context_record == nullptr || context_record->context == nullptr ||
          !context_record->placement.evidence_complete)) {
       result.reason = context_error.empty()
-                          ? "explicit worker-affinity context is unavailable"
+                          ? "required worker-affinity context is unavailable"
                           : context_error;
       result.affinity_diagnostic = result.reason;
       return result;
     }
     if (context_record != nullptr) {
       result.worker_affinity_applied =
-          affinity_policy != AffinityPolicyV2::none &&
+          !context_record->worker_cpu_ids.empty() &&
           context_record->affinity_report.complete &&
           context_record->affinity_report.status ==
               runtime::CpuWorkerAffinityStatusV1::complete;
+      result.worker_affinity_user_requested =
+          context_record->affinity_user_requested;
+      result.worker_affinity_policy_induced =
+          context_record->affinity_policy_induced;
       result.affinity_diagnostic = context_record->diagnostic;
     }
     const auto gemm_problem = problem(shape, minimum_alignment);
@@ -637,14 +652,17 @@ class PlannerRunner final : public GemmRunnerV1 {
           !selected.candidates[candidate_index].reason.empty())
         result.reason = std::string(selected.candidates[candidate_index].reason);
     }
-    if (result.legal && affinity_policy != AffinityPolicyV2::none &&
-        !is_parallel_packed(selected.selected_variant)) {
+    if (result.legal && result.worker_affinity_applied &&
+        selected.selected_variant ==
+            planner::CpuGemmVariantV3::external_openblas &&
+        selected.candidates[static_cast<std::size_t>(
+            selected.selected_variant)].actual_threads != 1) {
       result.legal = false;
       result.worker_affinity_applied = false;
       result.reason =
-          "explicit benchmark worker affinity is supported only by native "
-          "parallel variants; the selected scalar or external-provider path "
-          "does not execute on the persistent native worker context";
+          "multi-thread OpenBLAS cannot honor native worker affinity because "
+          "provider-thread affinity is not authenticated; request one provider "
+          "thread or use a native parallel variant";
     }
     if (result.legal && packing_mode == PackingModeV1::exclude &&
         selected.selected_variant !=
@@ -669,7 +687,8 @@ class PlannerRunner final : public GemmRunnerV1 {
                                 is_parallel_packed(selected.selected_variant);
       result.supports_prepacked_b = is_single_packed(selected.selected_variant);
       result.persistent_execution_context =
-          is_parallel_packed(selected.selected_variant);
+          is_parallel_packed(selected.selected_variant) ||
+          result.worker_affinity_applied;
       if (selected.selected_variant ==
               planner::CpuGemmVariantV3::native_packed_avx2_fma &&
           packing_mode == PackingModeV1::exclude) {
@@ -753,6 +772,12 @@ class PlannerRunner final : public GemmRunnerV1 {
             "complete implementation call: selected backend has no explicit "
             "benchmark-managed packing stage";
       }
+      if (result.legal && result.worker_affinity_applied &&
+          !is_parallel_packed(selected.selected_variant)) {
+        result.timing_scope +=
+            "; timed region includes submission to pinned persistent worker 0 "
+            "and synchronization";
+      }
       if (result.legal)
         result.state = std::make_shared<BackendPlanState>(
             selected, packing_mode, compute_layout,
@@ -772,6 +797,12 @@ class PlannerRunner final : public GemmRunnerV1 {
     result.diagnostic += result.affinity_policy;
     result.diagnostic += " worker_affinity_applied=";
     result.diagnostic += result.worker_affinity_applied ? "true" : "false";
+    result.diagnostic += " worker_affinity_user_requested=";
+    result.diagnostic +=
+        result.worker_affinity_user_requested ? "true" : "false";
+    result.diagnostic += " worker_affinity_policy_induced=";
+    result.diagnostic +=
+        result.worker_affinity_policy_induced ? "true" : "false";
     result.diagnostic += " available_processors=";
     result.diagnostic += std::to_string(available_processors_);
     result.diagnostic += " affinity_detail=";
@@ -860,6 +891,56 @@ class PlannerRunner final : public GemmRunnerV1 {
                std::span<const std::byte> prepacked_b_storage,
                bool packing_is_prepared,
                std::string &error) const override {
+    const auto state =
+        std::dynamic_pointer_cast<const BackendPlanState>(plan.state);
+    if (!plan.worker_affinity_applied || state == nullptr ||
+        is_parallel_packed(state->plan.selected_variant)) {
+      return execute_direct(plan, shape, lhs, rhs, output, workspace,
+                            prepacked_b_storage, packing_is_prepared, error);
+    }
+    if (state->execution_context == nullptr) {
+      error = "affinity-aware serial execution requires a persistent context";
+      return false;
+    }
+    if (state->plan.selected_variant ==
+            planner::CpuGemmVariantV3::external_openblas &&
+        plan.actual_threads != 1) {
+      error =
+          "multi-thread OpenBLAS provider affinity is not authenticated";
+      return false;
+    }
+
+    SerialDispatchPayload payload{this,
+                                  &plan,
+                                  shape,
+                                  lhs,
+                                  rhs,
+                                  output,
+                                  workspace,
+                                  prepacked_b_storage,
+                                  packing_is_prepared,
+                                  &error};
+    const auto nesting =
+        state->plan.selected_variant ==
+                planner::CpuGemmVariantV3::external_openblas
+            ? runtime::CpuProviderNestingPolicyV1::external_provider_active
+            : runtime::CpuProviderNestingPolicyV1::native_only;
+    const auto status = state->execution_context->run_tasks(
+        1, 1, nesting, &PlannerRunner::serial_dispatch_task, &payload);
+    if (status != runtime::CpuExecutionStatusV1::success) {
+      if (error.empty())
+        error = runtime::cpu_execution_status_message_v1(status);
+      return false;
+    }
+    return payload.succeeded;
+  }
+
+  bool execute_direct(const RunnerPlanV1 &plan, const GemmShapeV1 &shape,
+                      const float *lhs, const float *rhs, float *output,
+                      std::span<std::byte> workspace,
+                      std::span<const std::byte> prepacked_b_storage,
+                      bool packing_is_prepared,
+                      std::string &error) const {
     if (workspace.size() < plan.workspace_bytes ||
         prepacked_b_storage.size() < plan.prepacked_b_bytes) {
       error = "execution storage is smaller than the declared requirement";
@@ -1030,10 +1111,68 @@ class PlannerRunner final : public GemmRunnerV1 {
   bool synchronize(std::string &) const override { return true; }
 
  private:
+  struct SerialDispatchPayload {
+    const PlannerRunner *runner = nullptr;
+    const RunnerPlanV1 *plan = nullptr;
+    GemmShapeV1 shape;
+    const float *lhs = nullptr;
+    const float *rhs = nullptr;
+    float *output = nullptr;
+    std::span<std::byte> workspace;
+    std::span<const std::byte> prepacked_b_storage;
+    bool packing_is_prepared = false;
+    std::string *error = nullptr;
+    bool succeeded = false;
+  };
+
+  static runtime::CpuExecutionStatusV1 serial_dispatch_task(
+      std::size_t task_index, std::size_t worker_index,
+      void *user_data) noexcept {
+    auto *payload = static_cast<SerialDispatchPayload *>(user_data);
+    if (payload == nullptr || payload->runner == nullptr ||
+        payload->plan == nullptr || payload->error == nullptr ||
+        task_index != 0 || worker_index != 0)
+      return runtime::CpuExecutionStatusV1::invalid_configuration;
+    try {
+      payload->succeeded = payload->runner->execute_direct(
+          *payload->plan, payload->shape, payload->lhs, payload->rhs,
+          payload->output, payload->workspace, payload->prepacked_b_storage,
+          payload->packing_is_prepared, *payload->error);
+      return payload->succeeded
+                 ? runtime::CpuExecutionStatusV1::success
+                 : runtime::CpuExecutionStatusV1::callback_failed;
+    } catch (...) {
+      try {
+        *payload->error =
+            "affinity-aware serial execution raised an internal exception";
+      } catch (...) {
+      }
+      return runtime::CpuExecutionStatusV1::resource_exhausted;
+    }
+  }
+
   std::shared_ptr<ExecutionContextRecord> context_for(
       AffinityPolicyV2 affinity_policy, SmtPolicyV2 smt_policy,
       std::uint32_t requested_threads, std::string &error) const {
-    if (affinity_policy == AffinityPolicyV2::none) {
+    const bool policy_induced_affinity =
+        affinity_policy == AffinityPolicyV2::none &&
+        smt_policy == SmtPolicyV2::physical_cores_only;
+    if (affinity_policy == AffinityPolicyV2::none &&
+        !policy_induced_affinity) {
+      std::lock_guard lock(context_mutex_);
+      if (default_context_ != nullptr && default_context_->context == nullptr) {
+        runtime::CpuExecutionContextConfigV1 config;
+        config.requested_threads = available_processors_;
+        config.maximum_threads = available_processors_;
+        auto context = runtime::CpuExecutionContextV1::create(
+            config, &default_context_->creation_status,
+            &default_context_->affinity_report);
+        if (context != nullptr) {
+          default_context_->context =
+              std::shared_ptr<runtime::CpuExecutionContextV1>(
+                  std::move(context));
+        }
+      }
       if (default_context_ == nullptr || default_context_->context == nullptr) {
         error = "persistent unbound execution context is unavailable: ";
         error += runtime::cpu_execution_status_message_v1(
@@ -1053,8 +1192,14 @@ class PlannerRunner final : public GemmRunnerV1 {
     }
 
     platform::CpuPlacementRequestV1 request;
-    request.requested_workers = requested_threads;
-    request.affinity = platform_affinity_policy(affinity_policy);
+    request.requested_workers =
+        policy_induced_affinity
+            ? std::min(requested_threads,
+                       platform::physical_core_count_v1(topology_))
+            : requested_threads;
+    request.affinity = policy_induced_affinity
+                           ? platform::CpuAffinityPolicyV1::compact
+                           : platform_affinity_policy(affinity_policy);
     request.smt = platform_smt_policy(smt_policy);
     request.allow_cross_numa = false;
     if (affinity_policy == AffinityPolicyV2::local_first)
@@ -1076,6 +1221,7 @@ class PlannerRunner final : public GemmRunnerV1 {
     for (const auto &record : context_records_) {
       if (record != nullptr && record->affinity_policy == affinity_policy &&
           record->smt_policy == smt_policy &&
+          record->affinity_policy_induced == policy_induced_affinity &&
           record->worker_cpu_ids == placement.logical_cpus)
         return record;
     }
@@ -1083,6 +1229,9 @@ class PlannerRunner final : public GemmRunnerV1 {
     auto record = std::make_shared<ExecutionContextRecord>();
     record->affinity_policy = affinity_policy;
     record->smt_policy = smt_policy;
+    record->affinity_user_requested =
+        affinity_policy != AffinityPolicyV2::none;
+    record->affinity_policy_induced = policy_induced_affinity;
     record->worker_cpu_ids = placement.logical_cpus;
     runtime::CpuExecutionContextConfigV1 config;
     config.requested_threads = placement.actual_workers;
@@ -1110,9 +1259,14 @@ class PlannerRunner final : public GemmRunnerV1 {
               "placement evidence could not be constructed";
       return nullptr;
     }
-    record->diagnostic =
-        "strict per-worker scheduler affinity complete: policy=" +
-        std::string(affinity_policy_name_v2(affinity_policy)) +
+    record->diagnostic = policy_induced_affinity
+                             ? "physical-cores-only SMT policy induced strict "
+                               "one-logical-CPU-per-core scheduler affinity; "
+                               "user_requested=false"
+                             : "strict per-worker scheduler affinity complete; "
+                               "user_requested=true";
+    record->diagnostic +=
+        " policy=" + std::string(platform::to_string(placement.affinity)) +
         " cpu_ids=" + format_cpu_ids(record->worker_cpu_ids) +
         " selected_numa_node=" +
         std::to_string(record->placement.selected_numa_nodes[0]) +

@@ -306,6 +306,12 @@ int main(int argc, char **argv) {
               << " affinity_policy=" << result.plan.affinity_policy
               << " worker_affinity_applied="
               << (result.plan.worker_affinity_applied ? "true" : "false")
+              << " worker_affinity_origin="
+              << (result.plan.worker_affinity_user_requested
+                      ? "user-requested"
+                      : result.plan.worker_affinity_policy_induced
+                            ? "smt-policy"
+                            : "none")
               << " workspace_bytes=" << result.plan.workspace_bytes
               << " shared_workspace_bytes="
               << result.plan.shared_workspace_bytes
