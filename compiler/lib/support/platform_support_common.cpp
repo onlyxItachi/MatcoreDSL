@@ -287,6 +287,7 @@ CompilerArgumentRiskV1 classify_untrusted_compiler_argument_v1(
 
   const std::string_view windows_body = windows_option_body_v1(argument);
   if (clang_cl && !windows_body.empty()) {
+    const bool slash_windows_option = argument.starts_with('/');
     const auto windows_exact_starts = [&](std::string_view prefix) {
       return windows_body.starts_with(prefix);
     };
@@ -295,6 +296,8 @@ CompilerArgumentRiskV1 classify_untrusted_compiler_argument_v1(
     // is unrelated to /Fp. Match only documented output-producing spellings.
     if (windows_exact_starts("Fa") || windows_exact_starts("FA") ||
         windows_exact_starts("Fd") || windows_exact_starts("Fe") ||
+        (slash_windows_option &&
+         (windows_exact_starts("fe") || windows_exact_starts("fo"))) ||
         windows_exact_starts("Fi") || windows_exact_starts("Fm") ||
         windows_exact_starts("Fo") || windows_exact_starts("Fp") ||
         windows_exact_starts("Fr") || windows_exact_starts("FR") ||
@@ -313,7 +316,10 @@ CompilerArgumentRiskV1 classify_untrusted_compiler_argument_v1(
         windows_body == "EP" || windows_body == "LD" ||
         windows_body == "LDd" || windows_body == "link" ||
         windows_body == "TC" || windows_body.starts_with("Tc") ||
-        windows_body.starts_with("Tp") || windows_body == "Zs" ||
+        windows_body.starts_with("Tp") ||
+        (slash_windows_option &&
+         (windows_body.starts_with("tc") || windows_body.starts_with("tp"))) ||
+        windows_body == "Zs" ||
         windows_body == "analyze" || windows_body.starts_with("analyze:")) {
       return CompilerArgumentRiskV1::unsafe_control;
     }

@@ -26,12 +26,12 @@ bool IsWindowsHost();
 
 bool WindowsCompilerOptionEquals(std::string_view argument,
                                  std::string_view name) noexcept {
-  return support::windows_option_equals_v1(argument, name);
+  return support::windows_option_body_v1(argument) == name;
 }
 
 bool WindowsCompilerOptionStartsWith(std::string_view argument,
                                      std::string_view prefix) noexcept {
-  return support::windows_option_starts_with_v1(argument, prefix);
+  return support::windows_option_body_v1(argument).starts_with(prefix);
 }
 
 bool CompilerOptionConsumesNextArgument(std::string_view argument) noexcept;
@@ -981,7 +981,7 @@ std::optional<WrapperArguments> ParseWrapperArguments(int argc, char **argv) {
       continue;
     }
     if (IsWindowsHost() && !previous_option_consumes_argument &&
-        WindowsCompilerOptionEquals(argument, "link")) {
+        support::windows_option_equals_v1(argument, "link")) {
       parsed.compiler_arguments.emplace_back(argument);
       after_windows_link = true;
       continue;
@@ -1001,8 +1001,9 @@ std::optional<WrapperArguments> ParseWrapperArguments(int argc, char **argv) {
     }
     if (IsWindowsHost() && !previous_option_consumes_argument &&
         (WindowsCompilerOptionEquals(argument, "TC") ||
-         WindowsCompilerOptionStartsWith(argument, "Tc") ||
-         WindowsCompilerOptionStartsWith(argument, "Tp"))) {
+         (support::windows_option_body_v1(argument).size() > 2 &&
+          (WindowsCompilerOptionStartsWith(argument, "Tc") ||
+           WindowsCompilerOptionStartsWith(argument, "Tp"))))) {
       std::cerr << "mdslc++: .mdsl inputs are valid C++ and cannot be compiled "
                    "with clang-cl C-language mode "
                 << argument << '\n';
@@ -1240,7 +1241,7 @@ ParseClangClCpuInvocation(const WrapperArguments &arguments) {
   for (std::size_t index = 0; index < arguments.compiler_arguments.size();
        ++index) {
     const std::string &argument = arguments.compiler_arguments[index];
-    if (WindowsCompilerOptionEquals(argument, "link")) {
+    if (support::windows_option_equals_v1(argument, "link")) {
       if (invocation.compile_only) {
         std::cerr << "mdslc++: /link arguments are invalid with /c\n";
       } else {

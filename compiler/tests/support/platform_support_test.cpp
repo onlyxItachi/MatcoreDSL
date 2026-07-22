@@ -207,7 +207,11 @@ void test_compiler_argument_policy() {
              support::classify_untrusted_compiler_argument_v1(
                  "/c", true) == Risk::unsafe_control &&
              support::classify_untrusted_compiler_argument_v1(
-                 "/Tpfixture.cpp", true) == Risk::unsafe_control,
+                 "/Tpfixture.cpp", true) == Risk::unsafe_control &&
+             support::classify_untrusted_compiler_argument_v1(
+                 "/tpfixture.cpp", true) == Risk::unsafe_control &&
+             support::classify_untrusted_compiler_argument_v1(
+                 "/fountrusted.obj", true) == Risk::output_producing,
          "clang-cl compiler-mode policy rejects non-object actions and "
          "preserves exact option case");
   expect(support::classify_untrusted_compiler_argument_v1(

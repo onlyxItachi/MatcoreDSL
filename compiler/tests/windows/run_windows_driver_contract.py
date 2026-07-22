@@ -389,6 +389,33 @@ def main() -> int:
                 (["/TC", str(host_source), f"/Fe:{temporary / 'tc.exe'}"], "valid C++"),
                 (["-TC", str(host_source), f"/Fe:{temporary / 'dash-tc.exe'}"], "valid C++"),
                 ([f"/Tp{host_source}", f"/Fe:{temporary / 'tp.exe'}"], "valid C++"),
+                (
+                    [
+                        "--matcore-target=cpu",
+                        "/C",
+                        str(host_source),
+                        f"/Fe:{temporary / 'uppercase-c.exe'}",
+                    ],
+                    "unsafe compiler mode",
+                ),
+                (
+                    [
+                        "--matcore-target=cpu",
+                        "/tp",
+                        str(host_source),
+                        f"/Fe:{temporary / 'lowercase-tp.exe'}",
+                    ],
+                    "unsafe compiler mode",
+                ),
+                (
+                    [
+                        "--matcore-target=cpu",
+                        f"/fo{temporary / 'mixed-case-output.obj'}",
+                        str(host_source),
+                        f"/Fe:{temporary / 'mixed-case-output.exe'}",
+                    ],
+                    "undeclared output-producing",
+                ),
                 (["/winsysroot"], "requires a value"),
                 (["--matcore-target=cuda", str(host_source)], "unsupported Matcore target"),
                 (
@@ -407,7 +434,7 @@ def main() -> int:
                         str(host_source),
                         f"/Fe:{temporary / 'opaque.exe'}",
                     ],
-                    "incompatible",
+                    "response files are forbidden",
                 ),
                 (
                     [
