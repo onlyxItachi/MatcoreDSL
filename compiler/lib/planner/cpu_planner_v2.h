@@ -252,6 +252,12 @@ inline CpuGemmPlanV2 plan_cpu_gemm_v2(
       continue;
     }
 
+    if ((capabilities.features & record.required_features) !=
+        record.required_features) {
+      decision.reason = "required CPU feature set is unavailable";
+      continue;
+    }
+
     if (record.variant == CpuGemmVariantV2::reference ||
         record.variant == CpuGemmVariantV2::tiled ||
         record.variant == CpuGemmVariantV2::compiler_vectorized) {

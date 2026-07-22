@@ -235,6 +235,29 @@ int main() {
     std::cerr << "prepacked-B preparation failed\n";
     return 1;
   }
+  const matcore_packed_b_desc_v1 valid_packed_b = packed_b;
+
+  alignas(64) std::array<std::byte, 256> aliased_output_storage{};
+  auto *aliased_output =
+      reinterpret_cast<float *>(aliased_output_storage.data());
+  for (std::size_t index = 0; index < out.size(); ++index)
+    aliased_output[index] = -29.0F;
+  matcore_tensor_desc_v0 aliased_out_desc =
+      tensor(aliased_output, 2, 2, MATCORE_MUTABILITY_READ_WRITE_V0);
+  matcore_packed_b_desc_v1 rejected_packed_b{};
+  rejected_packed_b.abi_version = MATCORE_RUNTIME_EXECUTION_ABI_VERSION_V1;
+  rejected_packed_b.struct_size = sizeof(rejected_packed_b);
+  result = matcore_runtime_gemm_f32_prepack_b_v1(
+      &aliased_out_desc, &lhs_desc, &rhs_desc, &cpu_policy, &packed_options,
+      aliased_output_storage.data(),
+      static_cast<std::size_t>(prepacked_requirements.packed_b_bytes),
+      &rejected_packed_b);
+  if (result.code != MATCORE_STATUS_ALIAS_VIOLATION_V0 ||
+      aliased_output[0] != -29.0F || aliased_output[1] != -29.0F ||
+      aliased_output[2] != -29.0F || aliased_output[3] != -29.0F) {
+    std::cerr << "packed-B storage overlapped and mutated output\n";
+    return 1;
+  }
 
   std::vector<std::byte> prepacked_workspace_storage(
       static_cast<std::size_t>(
@@ -256,6 +279,23 @@ int main() {
       report.selected_workspace_bytes !=
           prepacked_requirements.execution_workspace_bytes) {
     std::cerr << "prepacked-B execution failed: " << result.message << '\n';
+    return 1;
+  }
+
+  std::array<float, 4> other_rhs{2.0F, 0.0F, 0.0F, 2.0F};
+  matcore_tensor_desc_v0 other_rhs_desc =
+      tensor(other_rhs.data(), 2, 2, MATCORE_MUTABILITY_READ_ONLY_V0);
+  out.fill(-19.0F);
+  report = empty_report();
+  result = matcore_runtime_gemm_f32_execute_prepacked_b_v1(
+      &out_desc, &lhs_desc, &other_rhs_desc, &cpu_policy, &packed_options,
+      &valid_packed_b, prepacked_workspace,
+      static_cast<std::size_t>(
+          prepacked_requirements.execution_workspace_bytes),
+      &report);
+  if (result.code != MATCORE_STATUS_PREPACK_MISMATCH_V0 ||
+      out != std::array<float, 4>{-19.0F, -19.0F, -19.0F, -19.0F}) {
+    std::cerr << "prepacked-B execution accepted a different right input\n";
     return 1;
   }
 

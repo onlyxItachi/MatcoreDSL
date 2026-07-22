@@ -119,6 +119,17 @@ bool byte_count(const matcore_tensor_desc_v0 &tensor,
   return true;
 }
 
+bool byte_range(const void *pointer, std::size_t bytes,
+                std::uintptr_t *begin, std::uintptr_t *end) noexcept {
+  if (pointer == nullptr || begin == nullptr || end == nullptr) return false;
+  const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(pointer);
+  if (bytes > std::numeric_limits<std::uintptr_t>::max() - address)
+    return false;
+  *begin = address;
+  *end = address + bytes;
+  return true;
+}
+
 bool overlaps(std::uintptr_t lhs_begin, std::uintptr_t lhs_end,
               std::uintptr_t rhs_begin, std::uintptr_t rhs_end) noexcept {
   return lhs_begin < rhs_end && rhs_begin < lhs_end;
@@ -892,6 +903,49 @@ matcore_runtime_gemm_f32_prepack_b_v1(
   if (plan.status != matcore::mdslc::planner::CpuPlanStatusV1::selected)
     return unavailable_plan_status(plan);
 
+  matcore::mdslc::runtime::CpuPackedGemmWorkspaceRequirementsV1
+      packed_requirements;
+  const auto requirements_status =
+      matcore::mdslc::runtime::cpu_packed_avx2_prepacked_b_requirements_v1(
+          validated.problem, &packed_requirements);
+  if (requirements_status !=
+      matcore::mdslc::runtime::CpuPackedGemmStatusV1::success)
+    return packed_execution_status(requirements_status);
+  if (packed_storage != nullptr) {
+    std::uintptr_t storage_begin = 0;
+    std::uintptr_t storage_end = 0;
+    std::uintptr_t out_begin = 0;
+    std::uintptr_t out_end = 0;
+    std::uintptr_t lhs_begin = 0;
+    std::uintptr_t lhs_end = 0;
+    std::uintptr_t rhs_begin = 0;
+    std::uintptr_t rhs_end = 0;
+    std::uintptr_t descriptor_begin = 0;
+    std::uintptr_t descriptor_end = 0;
+    if (!byte_range(packed_storage, packed_requirements.total_bytes,
+                    &storage_begin, &storage_end) ||
+        !byte_count(*out, &out_begin, &out_end) ||
+        !byte_count(*lhs, &lhs_begin, &lhs_end) ||
+        !byte_count(*rhs, &rhs_begin, &rhs_end) ||
+        !byte_range(packed_b, sizeof(*packed_b), &descriptor_begin,
+                    &descriptor_end)) {
+      return status(MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0,
+                    "packed-B storage byte range overflows the address space");
+    }
+    if (overlaps(storage_begin, storage_end, out_begin, out_end) ||
+        overlaps(storage_begin, storage_end, lhs_begin, lhs_end) ||
+        overlaps(storage_begin, storage_end, rhs_begin, rhs_end) ||
+        overlaps(storage_begin, storage_end, descriptor_begin,
+                 descriptor_end) ||
+        overlaps(descriptor_begin, descriptor_end, out_begin, out_end) ||
+        overlaps(descriptor_begin, descriptor_end, lhs_begin, lhs_end) ||
+        overlaps(descriptor_begin, descriptor_end, rhs_begin, rhs_end)) {
+      return status(
+          MATCORE_STATUS_ALIAS_VIOLATION_V0,
+          "packed-B storage and descriptor must not overlap GEMM tensors or each other");
+    }
+  }
+
   matcore::mdslc::runtime::CpuPackedBViewV1 view;
   const auto packed_status =
       matcore::mdslc::runtime::cpu_prepare_packed_b_avx2_v1(
@@ -943,6 +997,10 @@ matcore_runtime_gemm_f32_execute_prepacked_b_v1(
   ValidatedGemmV0 validated;
   result = validate_gemm_v0(out, lhs, rhs, policy, &validated);
   if (result.code != MATCORE_STATUS_OK_V0) return result;
+  if (view.source_data != validated.rhs) {
+    return status(MATCORE_STATUS_PREPACK_MISMATCH_V0,
+                  "packed-B source identity does not match the supplied right input");
+  }
   const auto resources =
       matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
           validated.problem, options->requested_threads);

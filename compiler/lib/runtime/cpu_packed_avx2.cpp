@@ -529,7 +529,7 @@ CpuPackedGemmStatusV1 cpu_execute_packed_avx2_prepacked_b_v1(
                                     n, k, &lhs_span, &rhs_span, &out_span);
   if (status != CpuPackedGemmStatusV1::success) return status;
   if (rhs_span.begin != source_span.begin || rhs_span.end != source_span.end ||
-      overlaps(out_span, packed_span)) {
+      overlaps(lhs_span, packed_span) || overlaps(out_span, packed_span)) {
     return CpuPackedGemmStatusV1::alias_violation;
   }
   const std::array<ByteSpan, 4> forbidden{lhs_span, rhs_span, out_span,

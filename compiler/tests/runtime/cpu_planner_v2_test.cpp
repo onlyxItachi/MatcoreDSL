@@ -58,6 +58,30 @@ int main() {
     return 1;
   }
 
+  auto missing_portable = capabilities;
+  missing_portable.features =
+      planner::feature_bit(planner::CpuFeatureV1::avx2) |
+      planner::feature_bit(planner::CpuFeatureV1::fma);
+  const planner::CpuGemmPlanV2 untrusted_external = planner::plan_cpu_gemm_v2(
+      problem, missing_portable, resources,
+      planner::CpuGemmRequestV2::force_external_openblas);
+  const planner::CpuGemmPlanV2 untrusted_native = planner::plan_cpu_gemm_v2(
+      problem, missing_portable, resources,
+      planner::CpuGemmRequestV2::force_native_packed_avx2_fma);
+  if (untrusted_external.status !=
+          planner::CpuPlanStatusV1::forced_variant_illegal ||
+      untrusted_external.candidates[3].legal ||
+      untrusted_native.status !=
+          planner::CpuPlanStatusV1::forced_variant_illegal ||
+      untrusted_native.candidates[4].legal ||
+      untrusted_external.candidates[3].reason !=
+          "required CPU feature set is unavailable" ||
+      untrusted_native.candidates[4].reason !=
+          "required CPU feature set is unavailable") {
+    std::cerr << "v2 planner ignored registry feature requirements\n";
+    return 1;
+  }
+
   const std::size_t required =
       planner::format_cpu_gemm_plan_v2(plan, nullptr, 0);
   std::string diagnostic(required + 1, '\0');

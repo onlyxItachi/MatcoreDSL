@@ -82,13 +82,11 @@ inline CpuCapabilitiesV1 discover_cpu_capabilities_v1() noexcept {
 #if (defined(__clang__) || defined(__GNUC__)) && !defined(_MSC_VER)
   __builtin_cpu_init();
   result.detection_complete = true;
-  if (cpu_compiler_vectorization_build_available_v1() &&
-      __builtin_cpu_supports("avx2")) {
+  if (__builtin_cpu_supports("avx2")) {
     result.features |= feature_bit(CpuFeatureV1::avx2);
     result.usable_vector_bits = 256;
   }
-  if (cpu_compiler_vectorization_build_available_v1() &&
-      __builtin_cpu_supports("fma")) {
+  if (__builtin_cpu_supports("fma")) {
     result.features |= feature_bit(CpuFeatureV1::fma);
   }
 #endif
@@ -271,6 +269,8 @@ constexpr std::string_view capability_legality_reason(
   if (!has_feature(capabilities, CpuFeatureV1::portable_scalar_f32))
     return "portable scalar f32 capability is required";
   if (record.variant == CpuGemmVariantV1::compiler_vectorized) {
+    if (!cpu_compiler_vectorization_build_available_v1())
+      return "compiler-vectorized implementation is unavailable in instrumented builds";
     if (!capabilities.detection_complete)
       return "AVX2/FMA discovery is incomplete";
     if ((capabilities.features & record.required_features) !=
