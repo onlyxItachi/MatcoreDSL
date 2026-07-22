@@ -25,7 +25,10 @@ endif()
 if(NOT FIRST_STATUS EQUAL 0 OR
    NOT FIRST_OUTPUT MATCHES "cpu-capabilities-v2" OR
    NOT FIRST_OUTPUT MATCHES "cpu-topology-v1" OR
+   NOT FIRST_OUTPUT MATCHES "cpu-placement-v1" OR
    NOT FIRST_OUTPUT MATCHES "cpu-execution-policy-v1" OR
+   NOT FIRST_OUTPUT MATCHES "binding-source=physical-core-smt-policy" OR
+   NOT FIRST_OUTPUT MATCHES "affinity-applied=true" OR
    NOT FIRST_OUTPUT MATCHES "shared-workspace=" OR
    NOT FIRST_OUTPUT MATCHES "per-worker-workspace=" OR
    NOT FIRST_OUTPUT MATCHES "cpu-planner-v3")

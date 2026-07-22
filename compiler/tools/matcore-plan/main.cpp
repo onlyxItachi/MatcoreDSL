@@ -294,7 +294,7 @@ platform::CpuPlacementPlanV1 placement_for(
     const Options &options, const platform::CpuTopologyV1 &topology,
     std::uint32_t workers, bool &requested) {
   requested = options.affinity != AffinityOption::none ||
-              options.numa == NumaOption::local_first;
+              options.numa == NumaOption::local_first || !options.allow_smt;
   platform::CpuPlacementRequestV1 request;
   request.requested_workers = workers;
   request.smt = options.allow_smt ? platform::CpuSmtPolicyV1::allow_smt
@@ -532,6 +532,11 @@ int main(int argc, char **argv) {
             << " smt=" << (options->allow_smt ? "allow" : "physical")
             << " smt-placement-enforced="
             << (placement_requested ? "true" : "false")
+            << " binding-source="
+            << (!options->allow_smt && options->affinity == AffinityOption::none
+                    ? "physical-core-smt-policy"
+                    : placement_requested ? "explicit-placement-policy"
+                                          : "none")
             << " affinity=" << affinity_name(options->affinity)
             << " affinity-status="
             << runtime::cpu_worker_affinity_status_message_v1(
