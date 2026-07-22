@@ -5,6 +5,9 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   include(CTest)
   include(GNUInstallDirs)
 endif()
+if(NOT COMMAND mdslc_target_enable_warnings)
+  include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/MatcoreDSLCompilerOptions.cmake")
+endif()
 
 if(NOT TARGET matcore_cpu_planner_v1)
   add_subdirectory(
@@ -83,13 +86,7 @@ add_library(matcore_benchmark_core_v1 STATIC
 )
 add_dependencies(matcore_benchmark_core_v1 matcore_benchmark_provenance_v4)
 target_compile_features(matcore_benchmark_core_v1 PUBLIC cxx_std_20)
-if(MSVC)
-  target_compile_options(matcore_benchmark_core_v1 PRIVATE /W4 /WX)
-else()
-  target_compile_options(matcore_benchmark_core_v1 PRIVATE
-    -Wall -Wextra -Wpedantic -Werror
-  )
-endif()
+mdslc_target_enable_warnings(matcore_benchmark_core_v1 WERROR)
 target_include_directories(matcore_benchmark_core_v1
   PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
   PRIVATE "${MATCORE_BENCH_PROVENANCE_DIR}"
@@ -105,11 +102,7 @@ target_link_libraries(matcore_benchmark_core_v1
 
 add_executable(matcore-bench main.cpp)
 target_compile_features(matcore-bench PRIVATE cxx_std_20)
-if(MSVC)
-  target_compile_options(matcore-bench PRIVATE /W4 /WX)
-else()
-  target_compile_options(matcore-bench PRIVATE -Wall -Wextra -Wpedantic -Werror)
-endif()
+mdslc_target_enable_warnings(matcore-bench WERROR)
 target_link_libraries(matcore-bench PRIVATE matcore_benchmark_core_v1)
 set_target_properties(matcore-bench PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
@@ -126,13 +119,7 @@ if(BUILD_TESTING)
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/benchmark/benchmark_core_test.cpp"
   )
   target_compile_features(matcore_benchmark_core_test PRIVATE cxx_std_20)
-  if(MSVC)
-    target_compile_options(matcore_benchmark_core_test PRIVATE /W4 /WX)
-  else()
-    target_compile_options(matcore_benchmark_core_test PRIVATE
-      -Wall -Wextra -Wpedantic -Werror
-    )
-  endif()
+  mdslc_target_enable_warnings(matcore_benchmark_core_test WERROR)
   target_link_libraries(matcore_benchmark_core_test
     PRIVATE matcore_benchmark_core_v1
   )

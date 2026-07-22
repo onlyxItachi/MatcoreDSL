@@ -203,6 +203,7 @@ configure_file(
   COPYONLY
 )
 
+add_subdirectory(lib/support)
 add_subdirectory(lib/ir)
 add_subdirectory(lib/frontend)
 add_subdirectory(lib/codegen)
@@ -225,6 +226,7 @@ target_include_directories(
   PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated"
 )
 mdslc_target_enable_warnings(mdslc_driver)
+target_link_libraries(mdslc_driver PRIVATE MatcoreDSL::PlatformSupportV1)
 add_dependencies(mdslc_driver matcore-extract matcore_runtime)
 
 set_property(TARGET matcore-extract PROPERTY EXPORT_NAME Extractor)

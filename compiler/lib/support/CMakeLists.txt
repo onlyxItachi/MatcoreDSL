@@ -4,6 +4,9 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   project(MatcoreDSLPlatformSupport VERSION 1.0.0 LANGUAGES CXX)
   include(CTest)
 endif()
+if(NOT COMMAND mdslc_target_enable_warnings)
+  include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/MatcoreDSLCompilerOptions.cmake")
+endif()
 
 find_package(Threads REQUIRED)
 
@@ -31,12 +34,7 @@ target_include_directories(
 )
 target_link_libraries(matcore_platform_support_v1 PUBLIC Threads::Threads)
 
-if(MSVC)
-  target_compile_options(matcore_platform_support_v1 PRIVATE /W4 /WX /permissive-)
-else()
-  target_compile_options(matcore_platform_support_v1
-    PRIVATE -Wall -Wextra -Wpedantic -Werror)
-endif()
+mdslc_target_enable_warnings(matcore_platform_support_v1 WERROR)
 
 if(BUILD_TESTING)
   add_executable(matcore_platform_support_v1_test
@@ -47,12 +45,6 @@ if(BUILD_TESTING)
     PROPERTIES CXX_EXTENSIONS OFF)
   target_link_libraries(matcore_platform_support_v1_test
     PRIVATE MatcoreDSL::PlatformSupportV1)
-  if(MSVC)
-    target_compile_options(matcore_platform_support_v1_test
-      PRIVATE /W4 /WX /permissive-)
-  else()
-    target_compile_options(matcore_platform_support_v1_test
-      PRIVATE -Wall -Wextra -Wpedantic -Werror)
-  endif()
+  mdslc_target_enable_warnings(matcore_platform_support_v1_test WERROR)
   add_test(NAME support.platform.v1 COMMAND matcore_platform_support_v1_test)
 endif()
