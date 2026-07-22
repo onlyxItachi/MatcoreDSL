@@ -38,9 +38,13 @@ The four distinct measurement interpretations are:
 3. **Prepacked B**: B preparation occurs once outside measurement; repeated
    compute and synchronization are timed. A variant must explicitly advertise
    this support.
-4. **Compute diagnostic**: preparation/packing occurs before measurement. This
-   is labeled `exclude-packing` and is not compared with a complete BLAS call as
-   an end-to-end result.
+4. **Compute diagnostic**: the native packed AVX2/FMA runner prepares complete
+   packed A and B buffers before measurement, then times only microkernel
+   dispatch, tail handling, and output stores. This is labeled
+   `exclude-packing`, carries `complete_implementation_comparison=false`, and
+   is not eligible for planner-regret or complete BLAS comparisons. Other
+   variants reject `exclude-packing`; in particular, an OpenBLAS call cannot
+   claim packing exclusion because provider-internal packing is opaque.
 
 Hot-cache operations shorter than the declared timer floor are aggregated.
 Each recorded sample is the aggregate duration divided by its exact repetition

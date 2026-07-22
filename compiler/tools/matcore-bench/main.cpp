@@ -262,6 +262,11 @@ int main(int argc, char **argv) {
               << " variant=" << result.plan.selected_variant
               << " threads=" << result.plan.actual_threads
               << " workspace_bytes=" << result.plan.workspace_bytes
+              << " comparison="
+              << (result.plan.complete_implementation_comparison
+                      ? "complete-implementation"
+                      : "diagnostic-only")
+              << " timing_scope=\"" << result.plan.timing_scope << '"'
               << " median_ms=" << result.timing.median_seconds * 1.0e3
               << " p95_ms=" << result.timing.p95_seconds * 1.0e3
               << " gflops=" << result.gflops

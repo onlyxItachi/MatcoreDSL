@@ -46,6 +46,20 @@ bool checked_multiply(std::uint64_t lhs, std::uint64_t rhs,
   return true;
 }
 
+bool checked_aligned_buffer_allocation(std::uint64_t payload_bytes,
+                                       std::uint64_t alignment,
+                                       std::uint64_t &allocation_bytes) noexcept {
+  if (payload_bytes == 0) {
+    allocation_bytes = 0;
+    return true;
+  }
+  std::uint64_t alignment_slack = 0;
+  return checked_multiply(alignment, UINT64_C(2), alignment_slack) &&
+         checked_add(alignment_slack, alignof(std::max_align_t),
+                     alignment_slack) &&
+         checked_add(payload_bytes, alignment_slack, allocation_bytes);
+}
+
 bool shape_counts(const GemmShapeV1 &shape, std::uint64_t &lhs,
                   std::uint64_t &rhs, std::uint64_t &output,
                   std::uint64_t &work) noexcept {
@@ -395,6 +409,11 @@ bool validate_options_v1(BenchmarkOptionsV1 &options, std::string &error) {
     error = "prepacked-B mode requires reusable workspace";
     return false;
   }
+  if (options.packing_mode == PackingModeV1::exclude &&
+      options.allocation_mode == AllocationModeV1::include_allocation) {
+    error = "packing-excluded compute diagnostics require reusable workspace";
+    return false;
+  }
   return true;
 }
 
@@ -408,31 +427,43 @@ bool checked_memory_requirement_v1(const GemmShapeV1 &shape,
     error = "matrix element count overflows";
     return false;
   }
-  std::uint64_t elements = 0;
-  if (!checked_add(lhs, rhs, elements) || !checked_add(elements, output, elements) ||
-      !checked_multiply(elements, sizeof(float), required_bytes)) {
-    error = "matrix byte count overflows";
-    return false;
-  }
-  const std::uint64_t alignment_slack =
-      static_cast<std::uint64_t>(options.alignment_bytes) * 6;
-  if (!checked_add(required_bytes, alignment_slack, required_bytes) ||
-      !checked_add(required_bytes, plan.workspace_bytes, required_bytes)) {
-    error = "workspace byte count overflows";
-    return false;
-  }
-  std::uint64_t workspace_slack = 0;
-  if (!checked_multiply(std::max<std::uint32_t>(plan.workspace_alignment, 1U),
-                        UINT64_C(2), workspace_slack) ||
-      !checked_add(required_bytes, workspace_slack, required_bytes)) {
-    error = "workspace alignment slack overflows";
+  std::uint64_t lhs_bytes = 0;
+  std::uint64_t rhs_bytes = 0;
+  std::uint64_t output_bytes = 0;
+  std::uint64_t lhs_allocation = 0;
+  std::uint64_t rhs_allocation = 0;
+  std::uint64_t output_allocation = 0;
+  std::uint64_t workspace_allocation = 0;
+  std::uint64_t prepacked_allocation = 0;
+  const auto matrix_alignment =
+      static_cast<std::uint64_t>(options.alignment_bytes);
+  const auto workspace_alignment = static_cast<std::uint64_t>(
+      std::max<std::uint32_t>(plan.workspace_alignment, 1U));
+  if (!checked_multiply(lhs, sizeof(float), lhs_bytes) ||
+      !checked_multiply(rhs, sizeof(float), rhs_bytes) ||
+      !checked_multiply(output, sizeof(float), output_bytes) ||
+      !checked_aligned_buffer_allocation(lhs_bytes, matrix_alignment,
+                                         lhs_allocation) ||
+      !checked_aligned_buffer_allocation(rhs_bytes, matrix_alignment,
+                                         rhs_allocation) ||
+      !checked_aligned_buffer_allocation(output_bytes, matrix_alignment,
+                                         output_allocation) ||
+      !checked_aligned_buffer_allocation(plan.workspace_bytes,
+                                         workspace_alignment,
+                                         workspace_allocation) ||
+      !checked_add(lhs_allocation, rhs_allocation, required_bytes) ||
+      !checked_add(required_bytes, output_allocation, required_bytes) ||
+      !checked_add(required_bytes, workspace_allocation, required_bytes)) {
+    error = "matrix or workspace allocation byte count overflows";
     return false;
   }
   if (options.packing_mode == PackingModeV1::prepack_b &&
-      (!checked_add(required_bytes, plan.prepacked_b_bytes, required_bytes) ||
-       !checked_add(required_bytes, workspace_slack, required_bytes))) {
-      error = "prepacked-B byte count overflows";
-      return false;
+      (!checked_aligned_buffer_allocation(plan.prepacked_b_bytes,
+                                          workspace_alignment,
+                                          prepacked_allocation) ||
+       !checked_add(required_bytes, prepacked_allocation, required_bytes))) {
+    error = "prepacked-B allocation byte count overflows";
+    return false;
   }
   if (options.cache_mode == CacheModeV1::cold &&
       !checked_add(required_bytes, kColdCacheBytes, required_bytes)) {
@@ -611,10 +642,14 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
                         options.alignment_bytes, true);
       AlignedBuffer rhs(static_cast<std::size_t>(rhs_elements * sizeof(float)),
                         options.alignment_bytes, true);
-      AlignedBuffer output(static_cast<std::size_t>(output_elements * sizeof(float)),
-                           options.alignment_bytes, true);
-      AlignedBuffer workspace(static_cast<std::size_t>(result.plan.workspace_bytes),
-                              std::max(result.plan.workspace_alignment, 1U));
+      AlignedBuffer output;
+      AlignedBuffer workspace;
+      if (options.allocation_mode == AllocationModeV1::reuse_workspace) {
+        output.reset(static_cast<std::size_t>(output_elements * sizeof(float)),
+                     options.alignment_bytes, true);
+        workspace.reset(static_cast<std::size_t>(result.plan.workspace_bytes),
+                        std::max(result.plan.workspace_alignment, 1U));
+      }
       AlignedBuffer prepacked_b(
           options.packing_mode == PackingModeV1::prepack_b
               ? static_cast<std::size_t>(result.plan.prepacked_b_bytes)
@@ -653,6 +688,12 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
         AlignedBuffer *active_workspace = &workspace;
         RunnerPlanV1 active_plan = result.plan;
         if (options.allocation_mode == AllocationModeV1::include_allocation) {
+          // Release the preceding invocation's one-shot buffers before
+          // allocating the next pair. Otherwise unique_ptr move-assignment
+          // briefly makes two payloads live and invalidates the peak-memory
+          // bound recorded by checked_memory_requirement_v1().
+          one_shot_output.reset();
+          one_shot_workspace.reset();
           active_plan = runner.plan(shape, options.alignment_bytes,
                                     options.requested_threads,
                                     options.requested_variant,
@@ -850,6 +891,11 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
     output << ",\n      \"selection_reason\": "; json_string(output, result.plan.reason);
     output << ",\n      \"plan_diagnostic\": ";
     json_string(output, result.plan.diagnostic);
+    output << ",\n      \"timing_scope\": ";
+    json_string(output, result.plan.timing_scope);
+    output << ",\n      \"complete_implementation_comparison\": "
+           << (result.plan.complete_implementation_comparison ? "true"
+                                                              : "false");
     output << ",\n      \"planner_mode\": ";
     json_string(output,
                 result.requested_variant == "auto" ? "automatic" : "forced");

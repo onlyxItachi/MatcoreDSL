@@ -93,6 +93,8 @@ def main() -> int:
         assert result["p95_seconds"] >= result["median_seconds"]
         assert math.isfinite(result["gflops"]) and result["gflops"] > 0
         assert report["configuration"]["alignment_bytes"] == 4
+        assert result["complete_implementation_comparison"] is True
+        assert "complete implementation call" in result["timing_scope"]
 
         allocation_output = pathlib.Path(temporary) / "allocation.json"
         run(
@@ -143,6 +145,80 @@ def main() -> int:
         assert cold_report["results"][0]["timing_valid"] is False
         assert "timer floor" in cold_report["results"][0]["timing_rejection_reason"]
 
+        compute_output = pathlib.Path(temporary) / "packed compute only.json"
+        packed_compute = subprocess.run(
+            [
+                str(executable),
+                "--m",
+                "33",
+                "--n",
+                "35",
+                "--k",
+                "37",
+                "--variant",
+                "cpu.native-packed.avx2-fma.f32.v1",
+                "--exclude-packing",
+                "--reuse-workspace",
+                "--warmup",
+                "0",
+                "--iterations",
+                "2",
+                "--timer-floor-us",
+                "100",
+                "--guard",
+                "--json-out",
+                str(compute_output),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if packed_compute.returncode == 0:
+            compute_report = json.loads(compute_output.read_text(encoding="utf-8"))
+            compute_result = compute_report["results"][0]
+            assert compute_report["configuration"]["packing_mode"] == "exclude-packing"
+            assert compute_result["packing_mode"] == "exclude-packing"
+            assert compute_result["selected_variant"] == "cpu.native-packed.avx2-fma.f32.v1"
+            assert compute_result["correctness"] is True
+            assert compute_result["timing_valid"] is True
+            assert compute_result["packing_required"] is True
+            assert compute_result["workspace_bytes"] > 0
+            assert compute_result["complete_implementation_comparison"] is False
+            assert "packed-compute-only" in compute_result["timing_scope"]
+            assert "A and B packing prepared before timing" in compute_result["plan_diagnostic"]
+            assert "comparison=diagnostic-only" in packed_compute.stdout
+            assert "timing_scope=\"packed-compute-only:" in packed_compute.stdout
+
+            include_output = pathlib.Path(temporary) / "packed include.json"
+            run(
+                [
+                    str(executable), "--m", "33", "--n", "35", "--k", "37",
+                    "--variant", "cpu.native-packed.avx2-fma.f32.v1",
+                    "--include-packing", "--warmup", "0", "--iterations", "1",
+                    "--timer-floor-us", "100", "--guard", "--json-out",
+                    str(include_output),
+                ]
+            )
+            include_result = json.loads(include_output.read_text(encoding="utf-8"))["results"][0]
+            assert include_result["packing_mode"] == "include-packing"
+            assert "transient A and B packing" in include_result["timing_scope"]
+
+            prepacked_output = pathlib.Path(temporary) / "packed b.json"
+            run(
+                [
+                    str(executable), "--m", "33", "--n", "35", "--k", "37",
+                    "--variant", "cpu.native-packed.avx2-fma.f32.v1",
+                    "--prepack-b", "--warmup", "0", "--iterations", "1",
+                    "--timer-floor-us", "100", "--guard", "--json-out",
+                    str(prepacked_output),
+                ]
+            )
+            prepacked_result = json.loads(prepacked_output.read_text(encoding="utf-8"))["results"][0]
+            assert prepacked_result["packing_mode"] == "prepacked-b"
+            assert "transient A packing" in prepacked_result["timing_scope"]
+        else:
+            assert "AVX2" in packed_compute.stderr or "unavailable" in packed_compute.stderr
+
     invalid_modes = run(
         [
             str(executable),
@@ -158,6 +234,41 @@ def main() -> int:
         expected=1,
     )
     assert "prepacked-B mode requires reusable workspace" in invalid_modes.stderr
+
+    invalid_compute_allocation = run(
+        [
+            str(executable), "--m", "2", "--n", "2", "--k", "2",
+            "--variant", "cpu.native-packed.avx2-fma.f32.v1",
+            "--exclude-packing", "--include-allocation",
+        ],
+        expected=1,
+    )
+    assert "compute diagnostics require reusable workspace" in invalid_compute_allocation.stderr
+
+    misleading_exclusion = run(
+        [
+            str(executable), "--m", "16", "--n", "16", "--k", "16",
+            "--variant", "cpu.reference.f32.v1", "--exclude-packing",
+        ],
+        expected=1,
+    )
+    assert "diagnostic implemented only" in misleading_exclusion.stderr
+
+    misleading_openblas_exclusion = subprocess.run(
+        [
+            str(executable), "--m", "16", "--n", "16", "--k", "16",
+            "--variant", "cpu.external.openblas.f32.v1", "--exclude-packing",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert misleading_openblas_exclusion.returncode != 0
+    assert (
+        "diagnostic implemented only" in misleading_openblas_exclusion.stderr
+        or "OpenBLAS CBLAS adapter is not linked"
+        in misleading_openblas_exclusion.stderr
+    )
 
     unavailable_prepack = run(
         [

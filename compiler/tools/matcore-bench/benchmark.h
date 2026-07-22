@@ -62,6 +62,8 @@ struct RunnerPlanV1 {
   std::string selected_variant;
   std::string reason;
   std::string diagnostic;
+  std::string timing_scope;
+  bool complete_implementation_comparison = true;
   std::uint32_t actual_threads = 1;
   std::uint64_t workspace_bytes = 0;
   std::uint32_t workspace_alignment = 1;

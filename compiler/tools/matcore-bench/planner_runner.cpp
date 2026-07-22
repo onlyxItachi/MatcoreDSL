@@ -7,6 +7,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -64,13 +67,121 @@ planner::CpuGemmRequestV1 legacy_request(
   return planner::CpuGemmRequestV1::force_reference;
 }
 
+struct ComputeOnlyPackedLayout {
+  std::size_t packed_a_offset = 0;
+  std::size_t packed_a_bytes = 0;
+  std::size_t packed_b_offset = 0;
+  std::size_t packed_b_bytes = 0;
+  std::size_t total_bytes = 0;
+};
+
+bool checked_multiply(std::size_t lhs, std::size_t rhs,
+                      std::size_t &result) noexcept {
+  if (lhs != 0 && rhs > std::numeric_limits<std::size_t>::max() / lhs)
+    return false;
+  result = lhs * rhs;
+  return true;
+}
+
+bool checked_add(std::size_t lhs, std::size_t rhs,
+                 std::size_t &result) noexcept {
+  if (rhs > std::numeric_limits<std::size_t>::max() - lhs) return false;
+  result = lhs + rhs;
+  return true;
+}
+
+bool checked_round_up(std::size_t value, std::size_t multiple,
+                      std::size_t &result) noexcept {
+  if (multiple == 0) return false;
+  const std::size_t remainder = value % multiple;
+  return remainder == 0
+             ? (result = value, true)
+             : checked_add(value, multiple - remainder, result);
+}
+
+bool compute_only_layout(const GemmShapeV1 &shape,
+                         ComputeOnlyPackedLayout &result) noexcept {
+  if (shape.m <= 0 || shape.n <= 0 || shape.k <= 0 ||
+      static_cast<std::uint64_t>(shape.m) >
+          std::numeric_limits<std::size_t>::max() ||
+      static_cast<std::uint64_t>(shape.n) >
+          std::numeric_limits<std::size_t>::max() ||
+      static_cast<std::uint64_t>(shape.k) >
+          std::numeric_limits<std::size_t>::max())
+    return false;
+  const auto m = static_cast<std::size_t>(shape.m);
+  const auto n = static_cast<std::size_t>(shape.n);
+  const auto k = static_cast<std::size_t>(shape.k);
+  std::size_t padded_m = 0;
+  std::size_t padded_n = 0;
+  std::size_t packed_a_elements = 0;
+  std::size_t packed_b_elements = 0;
+  ComputeOnlyPackedLayout layout;
+  if (!checked_round_up(m, runtime::kCpuPackedGemmMrV1, padded_m) ||
+      !checked_round_up(n, runtime::kCpuPackedGemmNrV1, padded_n) ||
+      !checked_multiply(padded_m, k, packed_a_elements) ||
+      !checked_multiply(padded_n, k, packed_b_elements) ||
+      !checked_multiply(packed_a_elements, sizeof(float),
+                        layout.packed_a_bytes) ||
+      !checked_multiply(packed_b_elements, sizeof(float),
+                        layout.packed_b_bytes) ||
+      !checked_round_up(layout.packed_a_bytes,
+                        runtime::kCpuPackedGemmWorkspaceAlignmentV1,
+                        layout.packed_b_offset) ||
+      !checked_add(layout.packed_b_offset, layout.packed_b_bytes,
+                   layout.total_bytes))
+    return false;
+  result = layout;
+  return true;
+}
+
+void pack_compute_only_a(const GemmShapeV1 &shape, const float *lhs,
+                         float *packed_a) noexcept {
+  const auto m = static_cast<std::size_t>(shape.m);
+  const auto k = static_cast<std::size_t>(shape.k);
+  std::size_t destination = 0;
+  for (std::size_t row = 0; row < m;
+       row += runtime::kCpuPackedGemmMrV1) {
+    for (std::size_t p = 0; p < k; ++p) {
+      for (std::size_t lane = 0; lane < runtime::kCpuPackedGemmMrV1; ++lane) {
+        packed_a[destination++] =
+            row + lane < m ? lhs[(row + lane) * k + p] : 0.0F;
+      }
+    }
+  }
+}
+
+void pack_compute_only_b(const GemmShapeV1 &shape, const float *rhs,
+                         float *packed_b) noexcept {
+  const auto n = static_cast<std::size_t>(shape.n);
+  const auto k = static_cast<std::size_t>(shape.k);
+  std::size_t destination = 0;
+  for (std::size_t column = 0; column < n;
+       column += runtime::kCpuPackedGemmNrV1) {
+    for (std::size_t p = 0; p < k; ++p) {
+      for (std::size_t lane = 0; lane < runtime::kCpuPackedGemmNrV1; ++lane) {
+        packed_b[destination++] =
+            column + lane < n ? rhs[p * n + column + lane] : 0.0F;
+      }
+    }
+  }
+}
+
 struct BackendPlanState final : RunnerPlanStateV1 {
-  BackendPlanState(planner::CpuGemmPlanV2 value, PackingModeV1 packing)
-      : plan(std::move(value)), packing_mode(packing) {}
+  BackendPlanState(planner::CpuGemmPlanV2 value, PackingModeV1 packing,
+                   ComputeOnlyPackedLayout compute_layout)
+      : plan(std::move(value)),
+        packing_mode(packing),
+        compute_only_layout(compute_layout) {}
   planner::CpuGemmPlanV2 plan;
   PackingModeV1 packing_mode = PackingModeV1::include;
+  ComputeOnlyPackedLayout compute_only_layout;
   mutable runtime::CpuPackedBViewV1 packed_b;
   mutable bool packed_b_ready = false;
+  mutable const float *compute_only_lhs = nullptr;
+  mutable const float *compute_only_rhs = nullptr;
+  mutable const std::byte *compute_only_workspace = nullptr;
+  mutable bool compute_only_ready = false;
 };
 
 class PlannerRunner final : public GemmRunnerV1 {
@@ -126,19 +237,20 @@ class PlannerRunner final : public GemmRunnerV1 {
           !selected.candidates[candidate_index].reason.empty())
         result.reason = std::string(selected.candidates[candidate_index].reason);
     }
-    if (result.legal &&
-        selected.selected_variant ==
-            planner::CpuGemmVariantV2::native_packed_avx2_fma &&
-        packing_mode == PackingModeV1::exclude) {
+    if (result.legal && packing_mode == PackingModeV1::exclude &&
+        selected.selected_variant !=
+            planner::CpuGemmVariantV2::native_packed_avx2_fma) {
       result.legal = false;
       result.reason =
-          "native packed compute-only timing is unavailable because A packing remains required";
+          "--exclude-packing is a diagnostic implemented only for "
+          "cpu.native-packed.avx2-fma.f32.v1; other implementations expose "
+          "only complete calls with no separable benchmark-managed packing";
     }
-
+    ComputeOnlyPackedLayout compute_layout;
     if (result.legal) {
       const std::size_t selected_index =
           static_cast<std::size_t>(selected.selected_variant);
-      const auto &candidate = selected.candidates[selected_index];
+      auto &candidate = selected.candidates[selected_index];
       result.actual_threads = candidate.actual_threads;
       result.workspace_bytes = candidate.required_workspace_bytes;
       result.workspace_alignment = candidate.required_workspace_alignment;
@@ -146,7 +258,25 @@ class PlannerRunner final : public GemmRunnerV1 {
           selected.selected_variant ==
           planner::CpuGemmVariantV2::native_packed_avx2_fma;
       result.supports_prepacked_b = result.packing_required;
-      if (result.packing_required && packing_mode == PackingModeV1::prepack_b) {
+      if (result.packing_required && packing_mode == PackingModeV1::exclude) {
+        if (!compute_only_layout(shape, compute_layout)) {
+          result.legal = false;
+          result.reason =
+              "native packed compute-only workspace requirement overflows";
+        } else {
+          result.workspace_bytes = compute_layout.total_bytes;
+          result.workspace_alignment = static_cast<std::uint32_t>(
+              runtime::kCpuPackedGemmWorkspaceAlignmentV1);
+          candidate.required_workspace_bytes = compute_layout.total_bytes;
+          candidate.required_workspace_alignment = result.workspace_alignment;
+          result.timing_scope =
+              "packed-compute-only: A and B packing prepared before timing; "
+              "timed region includes AVX2/FMA microkernel dispatch, tail "
+              "handling, and output stores";
+          result.complete_implementation_comparison = false;
+        }
+      } else if (result.packing_required &&
+                 packing_mode == PackingModeV1::prepack_b) {
         runtime::CpuPackedGemmWorkspaceRequirementsV1 packed_requirements;
         const auto packed_status =
             runtime::cpu_packed_avx2_prepacked_b_requirements_v1(
@@ -171,23 +301,44 @@ class PlannerRunner final : public GemmRunnerV1 {
               execute_requirements.total_bytes;
           selected.candidates[selected_index].required_workspace_alignment =
               static_cast<std::uint32_t>(execute_requirements.alignment_bytes);
+          result.timing_scope =
+              "prepacked-B execution: B packing prepared before timing; timed "
+              "region includes transient A packing, AVX2/FMA compute, tail "
+              "handling, and output stores";
         }
+      } else if (result.packing_required) {
+        result.timing_scope =
+            "packed execution: timed region includes transient A and B "
+            "packing, AVX2/FMA compute, tail handling, and output stores";
+      } else if (selected.selected_variant ==
+                 planner::CpuGemmVariantV2::external_openblas) {
+        result.timing_scope =
+            "complete OpenBLAS CBLAS call: provider-internal packing is opaque "
+            "and remains inside the timed region";
+      } else {
+        result.timing_scope =
+            "complete implementation call: selected backend has no explicit "
+            "benchmark-managed packing stage";
       }
       if (result.legal)
-        result.state =
-            std::make_shared<BackendPlanState>(selected, packing_mode);
+        result.state = std::make_shared<BackendPlanState>(
+            selected, packing_mode, compute_layout);
     }
     std::array<char, 8192> diagnostic{};
     planner::format_cpu_gemm_plan_v2(selected, diagnostic.data(),
                                      diagnostic.size());
     result.diagnostic = diagnostic.data();
+    if (result.legal && !result.timing_scope.empty()) {
+      result.diagnostic += "\nbenchmark_timing_scope=";
+      result.diagnostic += result.timing_scope;
+    }
     if (!result.legal && result.reason.empty())
       result.reason = "planner found no legal variant";
     return result;
   }
 
   bool prepare(const RunnerPlanV1 &plan, const GemmShapeV1 &shape,
-               const float *, const float *rhs,
+               const float *lhs, const float *rhs,
                std::span<std::byte> workspace,
                std::span<std::byte> prepacked_b_storage, bool prepack_b,
                std::string &error) const override {
@@ -205,12 +356,43 @@ class PlannerRunner final : public GemmRunnerV1 {
       error = "selected backend plan state is absent or incompatible";
       return false;
     }
+    if (state->packing_mode == PackingModeV1::exclude &&
+        state->plan.selected_variant ==
+            planner::CpuGemmVariantV2::native_packed_avx2_fma) {
+      state->compute_only_lhs = nullptr;
+      state->compute_only_rhs = nullptr;
+      state->compute_only_workspace = nullptr;
+      state->compute_only_ready = false;
+      const auto &layout = state->compute_only_layout;
+      if (prepack_b || lhs == nullptr || rhs == nullptr ||
+          workspace.data() == nullptr || layout.total_bytes == 0 ||
+          workspace.size() < layout.total_bytes ||
+          !runtime::cpu_packed_avx2_runtime_usable_v1() ||
+          reinterpret_cast<std::uintptr_t>(workspace.data()) %
+                  runtime::kCpuPackedGemmWorkspaceAlignmentV1 !=
+              0) {
+        error = "native packed compute-only preparation received invalid storage";
+        return false;
+      }
+      auto *packed_a = reinterpret_cast<float *>(
+          workspace.data() + layout.packed_a_offset);
+      auto *packed_b = reinterpret_cast<float *>(
+          workspace.data() + layout.packed_b_offset);
+      pack_compute_only_a(shape, lhs, packed_a);
+      pack_compute_only_b(shape, rhs, packed_b);
+      state->compute_only_lhs = lhs;
+      state->compute_only_rhs = rhs;
+      state->compute_only_workspace = workspace.data();
+      state->compute_only_ready = true;
+      return true;
+    }
     if (!prepack_b) return true;
     if (state->plan.selected_variant !=
         planner::CpuGemmVariantV2::native_packed_avx2_fma) {
       error = "selected implementation does not support prepacked-B";
       return false;
     }
+    state->packed_b_ready = false;
     const auto packed_status = runtime::cpu_prepare_packed_b_avx2_v1(
         problem(shape, state->plan.problem.minimum_alignment_bytes), rhs,
         prepacked_b_storage.data(), prepacked_b_storage.size(),
@@ -272,6 +454,45 @@ class PlannerRunner final : public GemmRunnerV1 {
         return true;
       }
       case planner::CpuGemmVariantV2::native_packed_avx2_fma: {
+        if (state->packing_mode == PackingModeV1::exclude) {
+          if (!packing_is_prepared || !state->compute_only_ready ||
+              state->compute_only_lhs != lhs || state->compute_only_rhs != rhs ||
+              state->compute_only_workspace != workspace.data()) {
+            error =
+                "native packed compute-only execution was not prepared for "
+                "these exact buffers";
+            return false;
+          }
+          const auto m = static_cast<std::size_t>(shape.m);
+          const auto n = static_cast<std::size_t>(shape.n);
+          const auto k = static_cast<std::size_t>(shape.k);
+          const auto &layout = state->compute_only_layout;
+          const auto *packed_a = reinterpret_cast<const float *>(
+              workspace.data() + layout.packed_a_offset);
+          const auto *packed_b = reinterpret_cast<const float *>(
+              workspace.data() + layout.packed_b_offset);
+          for (std::size_t row = 0; row < m;
+               row += runtime::kCpuPackedGemmMrV1) {
+            const auto rows = static_cast<std::uint32_t>(
+                std::min(runtime::kCpuPackedGemmMrV1, m - row));
+            const float *a_panel =
+                packed_a + (row / runtime::kCpuPackedGemmMrV1) * k *
+                               runtime::kCpuPackedGemmMrV1;
+            for (std::size_t column = 0; column < n;
+                 column += runtime::kCpuPackedGemmNrV1) {
+              const auto columns = static_cast<std::uint32_t>(
+                  std::min(runtime::kCpuPackedGemmNrV1, n - column));
+              const float *b_panel =
+                  packed_b + (column / runtime::kCpuPackedGemmNrV1) * k *
+                                 runtime::kCpuPackedGemmNrV1;
+              runtime::detail::
+                  matcore_cpu_packed_avx2_4x16_microkernel_f32_v1(
+                      a_panel, b_panel, k, output + row * n + column, n, rows,
+                      columns, false);
+            }
+          }
+          return true;
+        }
         runtime::CpuPackedGemmStatusV1 packed_status;
         if (state->packing_mode == PackingModeV1::prepack_b) {
           if (!packing_is_prepared || !state->packed_b_ready) {

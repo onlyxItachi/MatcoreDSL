@@ -1,5 +1,6 @@
 #include "benchmark.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <limits>
@@ -58,6 +59,14 @@ int main() {
   expect(!bench::validate_options_v1(invalid_modes, error) &&
              error.find("requires reusable workspace") != std::string::npos,
          "prepack-B and one-shot allocation cannot be conflated");
+  auto invalid_compute_allocation = options;
+  invalid_compute_allocation.packing_mode = bench::PackingModeV1::exclude;
+  invalid_compute_allocation.allocation_mode =
+      bench::AllocationModeV1::include_allocation;
+  expect(!bench::validate_options_v1(invalid_compute_allocation, error) &&
+             error.find("compute diagnostics require reusable workspace") !=
+                 std::string::npos,
+         "compute-only packing exclusion cannot include one-shot allocation");
 
   bench::RunnerPlanV1 zero_workspace_plan;
   zero_workspace_plan.legal = true;
@@ -78,6 +87,33 @@ int main() {
               std::numeric_limits<std::int64_t>::max(), 2},
              zero_workspace_plan, options, bytes, error),
          "overflowing matrix storage is rejected");
+
+  bench::RunnerPlanV1 workspace_plan = zero_workspace_plan;
+  workspace_plan.workspace_bytes = 1024;
+  workspace_plan.workspace_alignment = 64;
+  auto include_allocation = options;
+  include_allocation.allocation_mode =
+      bench::AllocationModeV1::include_allocation;
+  const std::uint64_t matrix_payload = (4 * 6 + 6 * 5 + 4 * 5) * sizeof(float);
+  const std::uint64_t aligned_buffer_overhead =
+      2 * UINT64_C(64) + alignof(std::max_align_t);
+  const std::uint64_t exact_peak =
+      matrix_payload + 3 * aligned_buffer_overhead + 1024 +
+      aligned_buffer_overhead;
+  expect(bench::checked_memory_requirement_v1(
+             {4, 5, 6}, workspace_plan, include_allocation, bytes, error) &&
+             bytes == exact_peak,
+         "one-shot memory accounting equals one live output/workspace pair and "
+         "all AlignedBuffer slack");
+  include_allocation.maximum_memory_bytes = exact_peak;
+  expect(bench::checked_memory_requirement_v1(
+             {4, 5, 6}, workspace_plan, include_allocation, bytes, error),
+         "exact one-shot peak is accepted by the memory cap");
+  include_allocation.maximum_memory_bytes = exact_peak - 1;
+  expect(!bench::checked_memory_requirement_v1(
+             {4, 5, 6}, workspace_plan, include_allocation, bytes, error) &&
+             error.find("exceeds --max-memory-mib") != std::string::npos,
+         "one byte below the exact one-shot peak is rejected");
 
   const auto statistics =
       bench::summarize_timings_v1({0.002, 0.001, 0.004, 0.003}, 1, 1000);
@@ -111,6 +147,50 @@ int main() {
              report.results[0].timing.valid,
          "benchmark result identifies the variant and passes independent oracle");
 
+  const auto rejected_reference_compute = runner->plan(
+      {16, 16, 16}, 64, 1, "cpu.reference.f32.v1",
+      bench::PackingModeV1::exclude);
+  expect(!rejected_reference_compute.legal &&
+             rejected_reference_compute.reason.find(
+                 "diagnostic implemented only") != std::string::npos,
+         "exclude-packing rejects variants without an explicit compute-only "
+         "diagnostic path");
+
+  const auto packed_compute_plan = runner->plan(
+      {33, 35, 37}, 64, 1, "cpu.native-packed.avx2-fma.f32.v1",
+      bench::PackingModeV1::exclude);
+  if (packed_compute_plan.legal) {
+    expect(packed_compute_plan.workspace_bytes > 0 &&
+               !packed_compute_plan.complete_implementation_comparison &&
+               packed_compute_plan.timing_scope.find("packed-compute-only") !=
+                   std::string::npos &&
+               packed_compute_plan.diagnostic.find(
+                   "A and B packing prepared before timing") !=
+                   std::string::npos,
+           "native compute diagnostic declares storage and its non-comparable "
+           "timing scope");
+    bench::BenchmarkOptionsV1 compute_options = run_options;
+    compute_options.shapes = {{1, 1, 1}, {2, 3, 2}, {5, 17, 19},
+                              {33, 35, 37}, {127, 129, 131}};
+    compute_options.requested_variant =
+        "cpu.native-packed.avx2-fma.f32.v1";
+    compute_options.packing_mode = bench::PackingModeV1::exclude;
+    bench::BenchmarkReportV1 compute_report;
+    const bool compute_ran = bench::run_benchmarks_v1(
+        compute_options, *runner, compute_report, error);
+    bool every_compute_result_passed =
+        compute_ran && compute_report.results.size() == 5;
+    for (const auto &compute_result : compute_report.results) {
+      every_compute_result_passed =
+          every_compute_result_passed && compute_result.correctness.passed &&
+          compute_result.timing.valid &&
+          !compute_result.plan.complete_implementation_comparison;
+    }
+    expect(every_compute_result_passed,
+           "native compute-only diagnostic executes tiny, rectangular, and "
+           "tail shapes through the independent oracle");
+  }
+
   std::ostringstream encoded;
   bench::write_json_v1(report, encoded);
   const std::string json = encoded.str();
@@ -118,6 +198,7 @@ int main() {
                  std::string::npos &&
              json.find("\"version\": 1") != std::string::npos &&
              json.find("\"correctness\": true") != std::string::npos &&
+             json.find("\"timing_scope\"") != std::string::npos &&
              json.find("\"timer_resolution_ns\"") != std::string::npos,
          "JSON output carries schema, correctness, and timer metadata");
 
