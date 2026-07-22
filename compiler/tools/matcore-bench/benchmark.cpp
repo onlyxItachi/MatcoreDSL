@@ -1,10 +1,12 @@
 #include "benchmark.h"
+#include "matcore_bench_provenance.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <bit>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <ctime>
@@ -661,6 +663,19 @@ BenchmarkEnvironmentV1 discover_benchmark_environment_v1(
 #else
   result.source_commit = "unknown";
 #endif
+#ifdef MATCORE_BENCH_SOURCE_WORKTREE_DIRTY
+  result.source_worktree_dirty = MATCORE_BENCH_SOURCE_WORKTREE_DIRTY != 0;
+#endif
+#ifdef MATCORE_BENCH_SOURCE_PROVENANCE_STATE
+  result.source_provenance_state = MATCORE_BENCH_SOURCE_PROVENANCE_STATE;
+#else
+  result.source_provenance_state = "unknown";
+#endif
+#ifdef MATCORE_BENCH_SOURCE_PROVENANCE_ORIGIN
+  result.source_provenance_origin = MATCORE_BENCH_SOURCE_PROVENANCE_ORIGIN;
+#else
+  result.source_provenance_origin = "unavailable";
+#endif
 #if defined(__linux__)
   result.cpu_model = read_first_matching_line("/proc/cpuinfo", "model name");
   result.governor = read_file_trimmed(
@@ -696,6 +711,38 @@ BenchmarkEnvironmentV1 discover_benchmark_environment_v1(
                                       .count();
   result.runner = runner_environment;
   return result;
+}
+
+bool source_provenance_certifiable_v4(
+    const BenchmarkEnvironmentV1 &environment, std::string &reason) {
+  const bool exact_commit =
+      (environment.source_commit.size() == 40 ||
+       environment.source_commit.size() == 64) &&
+      std::all_of(environment.source_commit.begin(),
+                  environment.source_commit.end(), [](unsigned char value) {
+        return std::isxdigit(value) != 0;
+      });
+  if (!exact_commit) {
+    reason = "source commit is unknown or is not an exact Git object ID";
+    return false;
+  }
+  if (environment.source_provenance_state == "dirty" ||
+      environment.source_worktree_dirty) {
+    reason = "tracked source worktree was dirty when matcore-bench was built";
+    return false;
+  }
+  if (environment.source_provenance_state != "clean") {
+    reason = "source provenance state is unknown; configure an explicit "
+             "source-archive commit/state override to certify this build";
+    return false;
+  }
+  if (environment.source_provenance_origin != "git-worktree" &&
+      environment.source_provenance_origin != "explicit-override") {
+    reason = "source provenance origin is unavailable or inconsistent";
+    return false;
+  }
+  reason = "exact source commit and clean tracked worktree authenticated";
+  return true;
 }
 
 bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
@@ -1350,6 +1397,13 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
   output << "    \"hardware_threads\": " << environment.hardware_threads
          << ",\n";
   emit_environment("source_commit", environment.source_commit);
+  output << "    \"source_worktree_dirty\": "
+         << (environment.source_worktree_dirty ? "true" : "false")
+         << ",\n";
+  emit_environment("source_provenance_state",
+                   environment.source_provenance_state);
+  emit_environment("source_provenance_origin",
+                   environment.source_provenance_origin);
   emit_environment("timer_source", environment.timer_source);
   output << "    \"timer_resolution_ns\": "
          << environment.timer_resolution_nanoseconds << ",\n"

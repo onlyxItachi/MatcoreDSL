@@ -14,6 +14,7 @@ namespace matcore::mdslc::bench {
 
 inline constexpr std::uint32_t kBenchmarkSchemaVersionV2 = 2;
 inline constexpr std::uint32_t kBenchmarkSchemaVersionV3 = 3;
+inline constexpr std::uint32_t kBenchmarkSchemaVersionV4 = 4;
 inline constexpr std::uint64_t kDefaultMaximumMemoryBytes =
     UINT64_C(2) * 1024 * 1024 * 1024;
 inline constexpr std::uint64_t kDefaultTimerFloorNanoseconds = 1'000'000;
@@ -287,6 +288,9 @@ struct BenchmarkEnvironmentV1 {
   std::string cpu_affinity;
   std::uint32_t hardware_threads = 0;
   std::string source_commit;
+  bool source_worktree_dirty = false;
+  std::string source_provenance_state;
+  std::string source_provenance_origin;
   std::string timer_source;
   std::uint64_t timer_resolution_nanoseconds = 0;
   std::int64_t timestamp_unix_seconds = 0;
@@ -294,7 +298,7 @@ struct BenchmarkEnvironmentV1 {
 };
 
 struct BenchmarkReportV1 {
-  std::uint32_t schema_version = kBenchmarkSchemaVersionV3;
+  std::uint32_t schema_version = kBenchmarkSchemaVersionV4;
   std::string operation = "matcore.gemm";
   std::string dtype = "f32";
   std::string accumulation_dtype = "f32";
@@ -319,6 +323,8 @@ TimingStatisticsV1 summarize_timings_v1(std::vector<double> samples_seconds,
                                         std::uint64_t timer_floor_nanoseconds);
 BenchmarkEnvironmentV1 discover_benchmark_environment_v1(
     const RunnerEnvironmentV1 &runner_environment);
+bool source_provenance_certifiable_v4(
+    const BenchmarkEnvironmentV1 &environment, std::string &reason);
 bool run_benchmarks_v1(const BenchmarkOptionsV1 &options,
                        const GemmRunnerV1 &runner,
                        BenchmarkReportV1 &report, std::string &error);

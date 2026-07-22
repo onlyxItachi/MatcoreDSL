@@ -46,7 +46,7 @@ void usage(std::ostream &output) {
       "  --guard                  reject any invalid timing or correctness result\n"
       "  --compare-one-thread     add same-family one-thread speedup/efficiency\n"
       "  --planner-regret         time every legal complete-call candidate; auto only\n"
-      "  --json-out PATH          write schema-v3 JSON ('-' writes stdout)\n"
+      "  --json-out PATH          write schema-v4 JSON ('-' writes stdout)\n"
       "  --list-variants          list the runner's registered stable IDs\n"
       "  --help                   show this help\n";
 }
@@ -364,6 +364,13 @@ int main(int argc, char **argv) {
     }
   }
   if (parsed->options.guard) {
+    std::string provenance_reason;
+    if (!bench::source_provenance_certifiable_v4(report.environment,
+                                                 provenance_reason)) {
+      std::cerr << "matcore-bench: guard rejected benchmark provenance: "
+                << provenance_reason << '\n';
+      return 1;
+    }
     for (const auto &result : report.results) {
       if (!result.timing.valid || !result.correctness.passed ||
           (parsed->options.compare_one_thread && !result.scaling.valid) ||

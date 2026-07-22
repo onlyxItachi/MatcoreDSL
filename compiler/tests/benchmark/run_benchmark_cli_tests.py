@@ -91,6 +91,16 @@ def main() -> int:
         )
         report = json.loads(output.read_text(encoding="utf-8"))
         require_report_shape(report, schema)
+        assert re.fullmatch(
+            r"[0-9a-f]{40}|[0-9a-f]{64}",
+            report["environment"]["source_commit"],
+        )
+        assert report["environment"]["source_worktree_dirty"] is False
+        assert report["environment"]["source_provenance_state"] == "clean"
+        assert report["environment"]["source_provenance_origin"] in (
+            "git-worktree",
+            "explicit-override",
+        )
         result = report["results"][0]
         assert (result["m"], result["n"], result["k"]) == (33, 35, 37)
         assert result["selected_variant"] == "cpu.reference.f32.v1"

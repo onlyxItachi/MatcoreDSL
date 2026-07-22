@@ -786,7 +786,13 @@ int main() {
   const std::string json = encoded.str();
   expect(json.find("\"schema\": \"matcore.benchmark.cpu.gemm\"") !=
                  std::string::npos &&
-             json.find("\"version\": 3") != std::string::npos &&
+             json.find("\"version\": 4") != std::string::npos &&
+             json.find("\"source_worktree_dirty\"") !=
+                 std::string::npos &&
+             json.find("\"source_provenance_state\"") !=
+                 std::string::npos &&
+             json.find("\"source_provenance_origin\"") !=
+                 std::string::npos &&
              json.find("\"correctness\": true") != std::string::npos &&
              json.find("\"timed_final_output_authenticated\"") !=
                  std::string::npos &&
@@ -804,6 +810,35 @@ int main() {
              json.find("\"timing_scope\"") != std::string::npos &&
              json.find("\"timer_resolution_ns\"") != std::string::npos,
          "JSON output carries schema, correctness, and timer metadata");
+
+  bench::BenchmarkEnvironmentV1 provenance;
+  provenance.source_commit = std::string(40, 'a');
+  provenance.source_provenance_state = "clean";
+  provenance.source_provenance_origin = "git-worktree";
+  std::string provenance_reason;
+  expect(bench::source_provenance_certifiable_v4(provenance,
+                                                 provenance_reason),
+         "guard accepts an exact commit from a clean tracked worktree");
+  provenance.source_worktree_dirty = true;
+  provenance.source_provenance_state = "dirty";
+  expect(!bench::source_provenance_certifiable_v4(provenance,
+                                                  provenance_reason) &&
+             provenance_reason.find("dirty") != std::string::npos,
+         "guard rejects dirty tracked-worktree provenance actionably");
+  provenance.source_worktree_dirty = false;
+  provenance.source_provenance_state = "unknown";
+  provenance.source_commit = "unknown";
+  expect(!bench::source_provenance_certifiable_v4(provenance,
+                                                  provenance_reason) &&
+             provenance_reason.find("unknown") != std::string::npos,
+         "guard rejects unknown source provenance actionably");
+  provenance.source_commit = std::string(40, 'b');
+  provenance.source_provenance_state = "clean";
+  provenance.source_provenance_origin = "unavailable";
+  expect(!bench::source_provenance_certifiable_v4(provenance,
+                                                  provenance_reason) &&
+             provenance_reason.find("origin") != std::string::npos,
+         "guard rejects inconsistent provenance origin actionably");
 
   if (failures != 0) return 1;
   std::cout << "matcore benchmark contract PASS\n";
