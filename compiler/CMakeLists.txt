@@ -393,6 +393,21 @@ if(BUILD_TESTING)
       )
     endif()
 
+    if(MDSLC_ENABLE_NATIVE_FRONTEND)
+      add_test(
+        NAME windows.driver_coff.contract
+        COMMAND
+          "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/windows/run_windows_driver_contract.py"
+          --extractor "$<TARGET_FILE:matcore-extract>"
+          --driver "$<TARGET_FILE:mdslc_driver>"
+      )
+      set_tests_properties(
+        windows.driver_coff.contract
+        PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+      )
+    endif()
+
     if(NOT WIN32)
       # This adversarial harness intentionally models ELF/rpath relocation and
       # POSIX executable test shims. The Windows-native pipeline test below
