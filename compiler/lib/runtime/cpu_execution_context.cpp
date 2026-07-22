@@ -1,5 +1,7 @@
 #include "cpu_execution_context.h"
 
+#include "thread_affinity_v1.h"
+
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
@@ -37,18 +39,33 @@ struct SubmissionV1 {
 struct CpuExecutionContextV1::Impl {
   explicit Impl(CpuExecutionContextConfigV1 input_config,
                 std::uint32_t worker_count)
-      : config(input_config), results(worker_count), worker_count(worker_count) {}
+      : config(std::move(input_config)),
+        results(worker_count),
+        affinity_results(worker_count),
+        worker_count(worker_count) {
+    affinity_report.requested_workers =
+        static_cast<std::uint32_t>(config.worker_cpu_ids.size());
+    if (!config.worker_cpu_ids.empty()) {
+      affinity_report.complete = false;
+      affinity_report.status =
+          CpuWorkerAffinityStatusV1::application_failed;
+    }
+  }
 
   CpuExecutionContextConfigV1 config;
   std::vector<WorkerResultV1> results;
+  std::vector<platform::ThreadAffinityApplicationV1> affinity_results;
   std::vector<std::thread> workers;
   std::uint32_t worker_count = 0;
+  CpuWorkerAffinityReportV1 affinity_report;
 
   mutable std::mutex state_mutex;
   std::condition_variable work_available;
   std::condition_variable submission_complete;
+  std::condition_variable worker_startup_complete;
   SubmissionV1 *submission = nullptr;
   std::uint64_t epoch = 0;
+  std::uint32_t workers_initialized = 0;
   bool stopping = false;
 
   // Holding this for a full submission intentionally serializes callers and
@@ -59,7 +76,19 @@ struct CpuExecutionContextV1::Impl {
 
   void worker_loop(std::size_t worker_index) noexcept {
     active_execution_context = this;
+
+    platform::ThreadAffinityApplicationV1 affinity;
+    if (!config.worker_cpu_ids.empty()) {
+      affinity = platform::apply_current_thread_affinity_v1(
+          config.worker_cpu_ids[worker_index]);
+    }
+    {
+      std::lock_guard lock(state_mutex);
+      affinity_results[worker_index] = affinity;
+      ++workers_initialized;
+    }
     workers_started.fetch_add(1, std::memory_order_relaxed);
+    worker_startup_complete.notify_one();
     std::uint64_t observed_epoch = 0;
     for (;;) {
       SubmissionV1 *current = nullptr;
@@ -104,14 +133,70 @@ struct CpuExecutionContextV1::Impl {
   }
 };
 
+namespace {
+
+bool affinity_configuration_valid(const CpuExecutionContextConfigV1 &config,
+                                  std::uint32_t worker_count) {
+  if (config.worker_cpu_ids.empty()) return true;
+  if (config.worker_cpu_ids.size() != worker_count) return false;
+  std::vector<std::uint32_t> ordered = config.worker_cpu_ids;
+  std::sort(ordered.begin(), ordered.end());
+  return std::adjacent_find(ordered.begin(), ordered.end()) == ordered.end();
+}
+
+template <class Implementation>
+CpuWorkerAffinityReportV1 summarize_affinity(
+    const Implementation &implementation) noexcept {
+  CpuWorkerAffinityReportV1 report;
+  if (implementation.config.worker_cpu_ids.empty()) return report;
+
+  report.requested_workers = implementation.worker_count;
+  report.complete = false;
+  bool all_failures_unavailable = true;
+  for (std::uint32_t worker = 0; worker < implementation.worker_count;
+       ++worker) {
+    const platform::ThreadAffinityApplicationV1 &result =
+        implementation.affinity_results[worker];
+    if (result.status == platform::ThreadAffinityStatusV1::applied) {
+      ++report.applied_workers;
+      continue;
+    }
+    if (result.status != platform::ThreadAffinityStatusV1::unavailable) {
+      all_failures_unavailable = false;
+    }
+    if (report.first_failed_worker ==
+        std::numeric_limits<std::uint32_t>::max()) {
+      report.first_failed_worker = worker;
+      report.first_failed_cpu = result.requested_logical_cpu;
+      report.platform_error = result.platform_error;
+    }
+  }
+
+  if (report.applied_workers == report.requested_workers) {
+    report.status = CpuWorkerAffinityStatusV1::complete;
+    report.complete = true;
+  } else if (report.applied_workers != 0) {
+    report.status = CpuWorkerAffinityStatusV1::partially_applied;
+  } else if (all_failures_unavailable) {
+    report.status = CpuWorkerAffinityStatusV1::unavailable;
+  } else {
+    report.status = CpuWorkerAffinityStatusV1::application_failed;
+  }
+  return report;
+}
+
+}  // namespace
+
 CpuExecutionContextV1::CpuExecutionContextV1(
     std::unique_ptr<Impl> implementation) noexcept
     : impl_(std::move(implementation)) {}
 
 std::unique_ptr<CpuExecutionContextV1> CpuExecutionContextV1::create(
     const CpuExecutionContextConfigV1 &config,
-    CpuExecutionStatusV1 *status) noexcept {
+    CpuExecutionStatusV1 *status,
+    CpuWorkerAffinityReportV1 *affinity_report) noexcept {
   if (status != nullptr) *status = CpuExecutionStatusV1::invalid_configuration;
+  if (affinity_report != nullptr) *affinity_report = {};
   if (config.version != kCpuExecutionContextVersionV1 ||
       config.requested_threads == 0) {
     return nullptr;
@@ -124,6 +209,16 @@ std::unique_ptr<CpuExecutionContextV1> CpuExecutionContextV1::create(
   if (worker_count == 0) return nullptr;
 
   try {
+    if (!affinity_configuration_valid(config, worker_count)) {
+      if (affinity_report != nullptr) {
+        affinity_report->status =
+            CpuWorkerAffinityStatusV1::invalid_configuration;
+        affinity_report->requested_workers =
+            static_cast<std::uint32_t>(config.worker_cpu_ids.size());
+        affinity_report->complete = false;
+      }
+      return nullptr;
+    }
     auto implementation = std::make_unique<Impl>(config, worker_count);
     try {
       implementation->workers.reserve(worker_count);
@@ -141,6 +236,34 @@ std::unique_ptr<CpuExecutionContextV1> CpuExecutionContextV1::create(
         if (worker.joinable()) worker.join();
       }
       throw;
+    }
+
+    {
+      std::unique_lock lock(implementation->state_mutex);
+      implementation->worker_startup_complete.wait(lock, [&] {
+        return implementation->workers_initialized == worker_count;
+      });
+    }
+    implementation->affinity_report = summarize_affinity(*implementation);
+    if (affinity_report != nullptr) {
+      *affinity_report = implementation->affinity_report;
+    }
+    if (!implementation->affinity_report.complete) {
+      {
+        std::lock_guard lock(implementation->state_mutex);
+        implementation->stopping = true;
+      }
+      implementation->work_available.notify_all();
+      for (std::thread &worker : implementation->workers) {
+        if (worker.joinable()) worker.join();
+      }
+      if (status != nullptr) {
+        *status = implementation->affinity_report.status ==
+                          CpuWorkerAffinityStatusV1::unavailable
+                      ? CpuExecutionStatusV1::affinity_unavailable
+                      : CpuExecutionStatusV1::affinity_application_failed;
+      }
+      return nullptr;
     }
     auto result = std::unique_ptr<CpuExecutionContextV1>(
         new CpuExecutionContextV1(std::move(implementation)));
@@ -163,6 +286,7 @@ CpuExecutionContextInfoV1 CpuExecutionContextV1::info() const noexcept {
       impl_->workers_started.load(std::memory_order_relaxed);
   result.completed_submissions =
       impl_->completed_submissions.load(std::memory_order_relaxed);
+  result.affinity = impl_->affinity_report;
   {
     std::lock_guard lock(impl_->state_mutex);
     result.accepting_work = !impl_->stopping;
@@ -281,8 +405,31 @@ const char *cpu_execution_status_message_v1(
       return "CPU execution task failed";
     case CpuExecutionStatusV1::resource_exhausted:
       return "CPU execution-context resource allocation failed";
+    case CpuExecutionStatusV1::affinity_unavailable:
+      return "CPU worker affinity is unavailable on this platform";
+    case CpuExecutionStatusV1::affinity_application_failed:
+      return "CPU worker affinity could not be applied completely";
   }
   return "unknown CPU execution-context status";
+}
+
+const char *cpu_worker_affinity_status_message_v1(
+    CpuWorkerAffinityStatusV1 status) noexcept {
+  switch (status) {
+    case CpuWorkerAffinityStatusV1::not_requested:
+      return "worker affinity was not requested";
+    case CpuWorkerAffinityStatusV1::complete:
+      return "worker affinity was applied completely";
+    case CpuWorkerAffinityStatusV1::invalid_configuration:
+      return "worker affinity configuration is invalid";
+    case CpuWorkerAffinityStatusV1::unavailable:
+      return "worker affinity is unavailable on this platform";
+    case CpuWorkerAffinityStatusV1::application_failed:
+      return "worker affinity application failed";
+    case CpuWorkerAffinityStatusV1::partially_applied:
+      return "worker affinity was only partially applied";
+  }
+  return "unknown worker-affinity status";
 }
 
 }  // namespace matcore::mdslc::runtime

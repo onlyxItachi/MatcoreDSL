@@ -1,4 +1,5 @@
 #include "cpu_execution_context.h"
+#include "thread_affinity_v1.h"
 
 #include <atomic>
 #include <chrono>
@@ -14,6 +15,7 @@
 namespace {
 
 namespace runtime = matcore::mdslc::runtime;
+namespace platform = matcore::mdslc::platform;
 
 int failures = 0;
 
@@ -45,6 +47,36 @@ struct ReentrantState {
       runtime::CpuExecutionStatusV1::success;
   bool request_shutdown = false;
 };
+
+#if defined(__linux__)
+struct AffinityObservationState {
+  explicit AffinityObservationState(std::uint32_t workers)
+      : observed_cpus(workers,
+                      std::numeric_limits<std::uint32_t>::max()) {}
+
+  std::vector<std::uint32_t> observed_cpus;
+  std::atomic<bool> complete{true};
+};
+
+runtime::CpuExecutionStatusV1 observe_worker_affinity(
+    std::size_t, std::size_t worker_index, void *user_data) noexcept {
+  auto &state = *static_cast<AffinityObservationState *>(user_data);
+  try {
+    const auto inventory = platform::discover_current_thread_affinity_v1();
+    if (!inventory.discovery_complete ||
+        inventory.allowed_logical_cpus.size() != 1) {
+      state.complete.store(false, std::memory_order_relaxed);
+      return runtime::CpuExecutionStatusV1::callback_failed;
+    }
+    state.observed_cpus[worker_index] =
+        inventory.allowed_logical_cpus.front();
+    return runtime::CpuExecutionStatusV1::success;
+  } catch (...) {
+    state.complete.store(false, std::memory_order_relaxed);
+    return runtime::CpuExecutionStatusV1::resource_exhausted;
+  }
+}
+#endif
 
 runtime::CpuExecutionStatusV1 reentrant_callback(
     std::size_t, std::size_t, void *user_data) noexcept {
@@ -94,6 +126,13 @@ void configuration_and_static_distribution() {
   expect(initial.requested_threads == 8 && initial.actual_worker_count == 4 &&
              initial.workers_started == 4 && initial.accepting_work,
          "context reports requested and actual worker counts");
+  expect(initial.affinity.status ==
+                 runtime::CpuWorkerAffinityStatusV1::not_requested &&
+             initial.affinity.complete &&
+             initial.affinity.requested_workers == 0 &&
+             initial.affinity.applied_workers == 0 &&
+             !initial.affinity.numa_memory_placement_applied,
+         "unbound context reports no affinity and no NUMA memory placement");
 
   AssignmentState state{std::vector<std::size_t>(13,
                                                   std::numeric_limits<std::size_t>::max())};
@@ -162,6 +201,119 @@ void configuration_and_static_distribution() {
          "stopped context rejects later submissions");
 }
 
+void explicit_worker_affinity_is_strict_and_reported() {
+  const auto inventory = platform::discover_current_thread_affinity_v1();
+#if defined(__linux__)
+  expect(inventory.backend_available && inventory.discovery_complete &&
+             !inventory.allowed_logical_cpus.empty(),
+         "execution-context affinity test has a complete Linux CPU mask");
+  if (!inventory.discovery_complete ||
+      inventory.allowed_logical_cpus.empty()) {
+    return;
+  }
+
+  const std::uint32_t successful_workers =
+      inventory.allowed_logical_cpus.size() >= 2 ? 2U : 1U;
+  runtime::CpuExecutionContextConfigV1 config;
+  config.requested_threads = successful_workers;
+  config.maximum_threads = successful_workers;
+  config.worker_cpu_ids.assign(inventory.allowed_logical_cpus.begin(),
+                               inventory.allowed_logical_cpus.begin() +
+                                   successful_workers);
+
+  runtime::CpuExecutionStatusV1 status{};
+  runtime::CpuWorkerAffinityReportV1 creation_report;
+  auto context = runtime::CpuExecutionContextV1::create(
+      config, &status, &creation_report);
+  expect(context != nullptr && status == runtime::CpuExecutionStatusV1::success,
+         "strict explicit worker affinity creates a persistent context");
+  if (context == nullptr) return;
+
+  const auto info = context->info();
+  expect(creation_report.status ==
+                 runtime::CpuWorkerAffinityStatusV1::complete &&
+             creation_report.complete &&
+             creation_report.requested_workers == successful_workers &&
+             creation_report.applied_workers == successful_workers &&
+             !creation_report.numa_memory_placement_applied &&
+             info.affinity.status == creation_report.status &&
+             info.affinity.applied_workers == successful_workers,
+         "creation and context diagnostics report complete scheduler affinity only");
+
+  AffinityObservationState observed(successful_workers);
+  expect(context->run_tasks(
+             successful_workers, successful_workers,
+             runtime::CpuProviderNestingPolicyV1::native_only,
+             observe_worker_affinity, &observed) ==
+                 runtime::CpuExecutionStatusV1::success &&
+             observed.complete.load(std::memory_order_relaxed),
+         "persistent workers retain their assigned one-CPU masks");
+  for (std::uint32_t worker = 0; worker < successful_workers; ++worker) {
+    expect(observed.observed_cpus[worker] == config.worker_cpu_ids[worker],
+           "worker index maps deterministically to the requested logical CPU");
+  }
+
+  runtime::CpuExecutionContextConfigV1 wrong_count;
+  wrong_count.requested_threads = 2;
+  wrong_count.maximum_threads = 2;
+  wrong_count.worker_cpu_ids = {inventory.allowed_logical_cpus.front()};
+  creation_report = {};
+  auto rejected = runtime::CpuExecutionContextV1::create(
+      wrong_count, &status, &creation_report);
+  expect(rejected == nullptr &&
+             status == runtime::CpuExecutionStatusV1::invalid_configuration &&
+             creation_report.status ==
+                 runtime::CpuWorkerAffinityStatusV1::invalid_configuration &&
+             !creation_report.complete,
+         "CPU-ID list must exactly cover the actual persistent worker count");
+
+  runtime::CpuExecutionContextConfigV1 duplicate;
+  duplicate.requested_threads = 2;
+  duplicate.maximum_threads = 2;
+  duplicate.worker_cpu_ids = {inventory.allowed_logical_cpus.front(),
+                              inventory.allowed_logical_cpus.front()};
+  rejected = runtime::CpuExecutionContextV1::create(
+      duplicate, &status, &creation_report);
+  expect(rejected == nullptr &&
+             status == runtime::CpuExecutionStatusV1::invalid_configuration,
+         "duplicate CPU IDs are rejected instead of oversubscribing silently");
+
+  runtime::CpuExecutionContextConfigV1 partial;
+  partial.requested_threads = 2;
+  partial.maximum_threads = 2;
+  partial.worker_cpu_ids = {
+      inventory.allowed_logical_cpus.front(),
+      std::numeric_limits<std::uint32_t>::max()};
+  creation_report = {};
+  rejected = runtime::CpuExecutionContextV1::create(
+      partial, &status, &creation_report);
+  expect(rejected == nullptr &&
+             status ==
+                 runtime::CpuExecutionStatusV1::affinity_application_failed &&
+             creation_report.status ==
+                 runtime::CpuWorkerAffinityStatusV1::partially_applied &&
+             creation_report.requested_workers == 2 &&
+             creation_report.applied_workers == 1 &&
+             creation_report.first_failed_worker == 1 &&
+             creation_report.first_failed_cpu ==
+                 std::numeric_limits<std::uint32_t>::max() &&
+             !creation_report.complete &&
+             !creation_report.numa_memory_placement_applied,
+         "partial affinity application tears down the context and reports exact failure");
+#else
+  runtime::CpuExecutionContextConfigV1 config;
+  config.worker_cpu_ids = {0};
+  runtime::CpuExecutionStatusV1 status{};
+  runtime::CpuWorkerAffinityReportV1 report;
+  auto context = runtime::CpuExecutionContextV1::create(config, &status, &report);
+  expect(context == nullptr &&
+             status == runtime::CpuExecutionStatusV1::affinity_unavailable &&
+             report.status == runtime::CpuWorkerAffinityStatusV1::unavailable &&
+             !report.complete,
+         "non-Linux explicit affinity fails closed during context creation");
+#endif
+}
+
 void independent_contexts_execute_concurrently() {
   auto first = make_context(2, 2);
   auto second = make_context(2, 2);
@@ -222,6 +374,7 @@ void reentrant_operations_fail_or_stop_without_deadlock() {
 
 int main() {
   configuration_and_static_distribution();
+  explicit_worker_affinity_is_strict_and_reported();
   independent_contexts_execute_concurrently();
   reentrant_operations_fail_or_stop_without_deadlock();
   if (failures != 0) {
