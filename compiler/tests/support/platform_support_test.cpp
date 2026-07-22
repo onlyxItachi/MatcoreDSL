@@ -284,7 +284,24 @@ int main(int argc, char **argv) {
     test_windows_quoting();
     test_response_files(removed_path);
     test_file_snapshot(removed_path);
-    test_process(removed_path, *self);
+    std::filesystem::path copied_self =
+        removed_path / std::filesystem::path(u8"child executable ç");
+    copied_self += self->extension();
+    std::error_code copy_error;
+    std::filesystem::copy_file(*self, copied_self,
+                               std::filesystem::copy_options::overwrite_existing,
+                               copy_error);
+    expect(!copy_error, "test executable copies into a space/UTF-8 path");
+#if !defined(_WIN32)
+    std::filesystem::permissions(
+        copied_self,
+        std::filesystem::perms::owner_exec |
+            std::filesystem::perms::group_exec |
+            std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add, copy_error);
+    expect(!copy_error, "copied test executable remains executable");
+#endif
+    if (!copy_error) test_process(removed_path, copied_self);
   }
   expect(!std::filesystem::exists(removed_path),
          "temporary directory is removed by ownership scope");
