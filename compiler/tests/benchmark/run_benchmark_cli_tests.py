@@ -53,6 +53,9 @@ def main() -> int:
         "cpu.native-packed.avx2-fma.f32.v1",
     ]
 
+    # These are CLI/schema/correctness smoke tests rather than performance
+    # acceptance runs. A 1 us floor prevents sanitizer first-probe overhead
+    # from making later correct samples look like a timer-contract failure.
     with tempfile.TemporaryDirectory(prefix="matcore bench cli ") as temporary:
         output = pathlib.Path(temporary) / "result with spaces.json"
         run(
@@ -71,7 +74,7 @@ def main() -> int:
                 "--iterations",
                 "3",
                 "--timer-floor-us",
-                "100",
+                "1",
                 "--alignment",
                 "4",
                 "--guard",
@@ -112,7 +115,7 @@ def main() -> int:
                 "--iterations",
                 "2",
                 "--timer-floor-us",
-                "100",
+                "1",
                 "--json-out",
                 str(allocation_output),
             ]
@@ -164,7 +167,7 @@ def main() -> int:
                 "--iterations",
                 "2",
                 "--timer-floor-us",
-                "100",
+                "1",
                 "--guard",
                 "--json-out",
                 str(compute_output),
@@ -195,7 +198,7 @@ def main() -> int:
                     str(executable), "--m", "33", "--n", "35", "--k", "37",
                     "--variant", "cpu.native-packed.avx2-fma.f32.v1",
                     "--include-packing", "--warmup", "0", "--iterations", "1",
-                    "--timer-floor-us", "100", "--guard", "--json-out",
+                    "--timer-floor-us", "1", "--guard", "--json-out",
                     str(include_output),
                 ]
             )
@@ -209,7 +212,7 @@ def main() -> int:
                     str(executable), "--m", "33", "--n", "35", "--k", "37",
                     "--variant", "cpu.native-packed.avx2-fma.f32.v1",
                     "--prepack-b", "--warmup", "0", "--iterations", "1",
-                    "--timer-floor-us", "100", "--guard", "--json-out",
+                    "--timer-floor-us", "1", "--guard", "--json-out",
                     str(prepacked_output),
                 ]
             )
