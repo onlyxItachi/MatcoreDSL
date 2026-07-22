@@ -52,11 +52,12 @@ The architecture verdict is **passed for the standalone native CPU
 frontend/runtime vertical slice**. The AST-JSON producer remains an explicitly
 selected compatibility oracle only; it is never a fallback from native.
 
-## Current Milestone 5 gate
+## Milestone 5 local Linux gate
 
-The advanced Linux CPU implementation is complete on
-`mdslc/cpu-isa-parallel-v1`, but the milestone is not yet accepted or
-published. The implemented candidate includes:
+The advanced Linux CPU implementation on `mdslc/cpu-isa-parallel-v1` passes
+its local acceptance and independent-review gates for the declared validation
+host. Hosted publication and the separately reported Windows compatibility
+phase remain open. The accepted Linux candidate includes:
 
 - capability record v2 with separate hardware, OS state, compiler,
   implementation, and physical runtime-validation domains;
@@ -71,23 +72,24 @@ published. The implemented candidate includes:
 - synthetic multi-node NUMA planning without hidden page placement.
 
 The candidate does **not** include accelerated BF16/VNNI/AMX, physical
-multi-node NUMA validation, or Windows validation. Final exact-tip acceptance,
-whole-diff review, hosted Linux checks, normal merge, issue/milestone closure,
-and the immutable tag remain open gates.
+multi-node NUMA validation, or Windows validation. Hosted Linux checks, normal
+merge, the immutable tag, and the focused Windows phase remain open gates.
 
 ## Next three exact engineering tasks
 
-1. **Close the Linux Milestone 5 acceptance gate.** Run fresh Release, Debug,
-   ASan/UBSan, supported TSan, OpenBLAS ON/OFF, install/consumer/C17 ABI,
-   exact-ISA artifact, native `.mdsl`, hygiene, and legacy checks at one frozen
-   tip; then complete a fresh whole-diff adversarial review.
-2. **Publish Milestone 5 normally.** Push the reviewed branch, pass hosted
-   Linux checks, merge normally into `main`, close issue #9 and milestone #3,
-   and create the immutable `mdslc-cpu-backend-v2` tag at the merge commit.
-3. **Run the focused Windows x64 compatibility phase.** Validate clang-cl,
+1. **Publish the validated Linux Milestone 5 backend normally.** Push the
+   reviewed branch, pass hosted Linux checks, merge normally into `main`,
+   update issue #9 with the Linux verdict, and create the immutable
+   `mdslc-cpu-backend-v2` tag at the merge commit. Keep the tracker open until
+   its focused Windows checkbox is resolved.
+2. **Run the focused Windows x64 compatibility phase.** Validate clang-cl,
    LibTooling, COFF/PE, the runtime DLL/import library, planner/native variants,
    paths containing spaces, install/consumer, and a CI ZIP artifact. Report
    unavailable ISA/topology paths separately and do not begin GPU work.
+3. **Publish bounded cross-platform status.** Keep Linux performance evidence,
+   Windows compiler/runtime/package evidence, compile-only ISA status, and
+   synthetic topology status separate; do not turn a hosted portability result
+   into an unsupported hardware claim.
 
 ## Later operation and lowering milestones
 

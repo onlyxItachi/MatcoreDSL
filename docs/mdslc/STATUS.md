@@ -20,10 +20,10 @@ Status date: 2026-07-22
 
 ## Milestone 5 advanced CPU backend
 
-**The Linux implementation and its focused validation are complete on the
-integration branch. The milestone verdict remains pending until fresh final-tip
-acceptance, a whole-diff independent review, hosted checks, normal merge, issue
-closure, and the immutable `mdslc-cpu-backend-v2` tag are complete.**
+**Milestone 5 passes the local acceptance gate for the validated Linux host
+scope. Publication still requires hosted checks, a normal merge, and the
+immutable `mdslc-cpu-backend-v2` tag. Windows remains a separate, unvalidated
+compatibility phase and is not implied by this Linux verdict.**
 
 Planner v3 evaluates the five Milestone 4 candidates plus three advanced native
 implementations, for eight stable F32 variants:
@@ -75,13 +75,17 @@ order. The final guarded 20-shape compact calibration at source checkpoint
 `5f634aef2a0b47cd033df77c40d709456603b405` measured median regret 1.005,
 nearest-rank p95 1.047, and maximum 1.363; no shape exceeded 1.5 or 2.0. These
 are host-specific measurements, not universal performance claims. Raw results
-remain outside Git; only the reviewed sanitized summary is eligible for
-`docs/performance/cpu/`.
+remain outside Git; the reviewed sanitized summary is
+`docs/performance/cpu/milestone-5-advanced-cpu-2026-07-22.md`.
 
-Focused implementation reviews have closed the execution-context lifetime,
-shutdown, exact-context capability, planner-regret fairness, caller-placement,
-and benchmark-provenance findings. They do not substitute for the pending
-fresh full acceptance run and whole-diff final review.
+The independent Linux acceptance matrix passed fresh Release 42/42, Debug
+42/42, ASan/UBSan 31/31, TSan 3/3, and OpenBLAS-disabled 37/37, plus package,
+C17 ABI, generated-object, installed-consumer, hygiene, and legacy frontend
+checks. A separate whole-diff adversarial review repeated Release 42/42,
+ASan/UBSan 15/15, TSan 4/4, 100/100 executor stress, exact ISA inspection,
+provider-absence, install, ABI, and path-leak checks. It found no unresolved
+high- or medium-severity issue. The validated production and test tree is
+unchanged by the later evidence-only commits.
 
 Windows remains deferred and unvalidated: no clang-cl frontend run, COFF/PE
 artifact, runtime DLL/import library, external consumer, hosted Windows job, or

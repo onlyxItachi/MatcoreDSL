@@ -1,7 +1,7 @@
 # ADR-0008: MDSLC Advanced CPU Backend v2
 
-Status: Accepted; implementation complete on the Milestone 5 branch, final
-acceptance pending
+Status: Accepted and locally validated for the declared Linux host scope;
+hosted publication and Windows validation pending
 
 Date: 2026-07-22
 
