@@ -268,7 +268,7 @@ if(BUILD_TESTING)
     -Wall -Wextra -Wpedantic -Werror
   )
   target_link_libraries(matcore_planner_v3_resources_test
-    PRIVATE MatcoreDSL::CpuBackendsV1
+    PRIVATE MatcoreDSL::CpuBackendsV1 MatcoreDSL::PlatformV1
   )
   add_test(NAME runtime.cpu.planner_v3_resources
     COMMAND matcore_planner_v3_resources_test

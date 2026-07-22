@@ -14,14 +14,24 @@ namespace matcore::mdslc::runtime {
 
 OpenBlasProviderInfoV1 openblas_provider_info_v1() noexcept {
 #if MATCORE_MDSLC_HAS_OPENBLAS
-  const char *config = openblas_get_config();
-  const char *core = openblas_get_corename();
-  return {true,
-          MATCORE_MDSLC_OPENBLAS_VERSION,
-          config != nullptr ? config : "unknown",
-          core != nullptr ? core : "unknown",
-          openblas_get_parallel(),
-          openblas_get_num_procs()};
+  // OpenBLAS may derive openblas_get_num_procs() from the calling thread's
+  // affinity during first compute initialization.  Exact context validation
+  // deliberately runs SGEMM on a bound worker, so repeatedly querying that
+  // value would incorrectly collapse the provider ceiling to one CPU. Freeze
+  // provider identity and its process-level ceiling on the first caller; the
+  // planner still applies the stricter topology/context thread ceiling.
+  static const OpenBlasProviderInfoV1 provider = []() noexcept {
+    const char *config = openblas_get_config();
+    const char *core = openblas_get_corename();
+    return OpenBlasProviderInfoV1{
+        true,
+        MATCORE_MDSLC_OPENBLAS_VERSION,
+        config != nullptr ? config : "unknown",
+        core != nullptr ? core : "unknown",
+        openblas_get_parallel(),
+        openblas_get_num_procs()};
+  }();
+  return provider;
 #else
   return {};
 #endif
@@ -42,7 +52,8 @@ OpenBlasExecutionStatusV1 execute_openblas_gemm_f32_v1(
     return OpenBlasExecutionStatusV1::invalid_problem;
   if (requested_threads == 0 || requested_threads > INT_MAX)
     return OpenBlasExecutionStatusV1::invalid_thread_count;
-  const int maximum_threads = openblas_get_num_procs();
+  const int maximum_threads =
+      openblas_provider_info_v1().maximum_reported_threads;
   if (maximum_threads <= 0 ||
       requested_threads > static_cast<std::uint32_t>(maximum_threads))
     return OpenBlasExecutionStatusV1::invalid_thread_count;

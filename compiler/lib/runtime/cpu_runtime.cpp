@@ -11,6 +11,7 @@
 #include "cpu_planner.h"
 #include "cpu_planner_v2.h"
 #include "cpu_planner_v3.h"
+#include "cpu_runtime_validation.h"
 #include "cpu_capability_v2.h"
 #include "cpu_topology_v1.h"
 #include "thread_affinity_v1.h"
@@ -2119,174 +2120,6 @@ matcore_status_v0 execute_single_variant_in_context_v3(
   return status(MATCORE_STATUS_OK_V0, "ok");
 }
 
-template <std::size_t M, std::size_t N, std::size_t K>
-void initialize_runtime_self_test_v1(std::array<float, M * K> &lhs,
-                                     std::array<float, K * N> &rhs,
-                                     std::array<float, M * N> &out) noexcept {
-  for (std::size_t row = 0; row < M; ++row) {
-    for (std::size_t depth = 0; depth < K; ++depth)
-      lhs[row * K + depth] = static_cast<float>(row % 5U + depth + 1U);
-  }
-  for (std::size_t depth = 0; depth < K; ++depth) {
-    for (std::size_t column = 0; column < N; ++column)
-      rhs[depth * N + column] =
-          static_cast<float>(depth + column % 7U + 1U);
-  }
-  out.fill(0.0F);
-}
-
-template <std::size_t M, std::size_t N, std::size_t K>
-bool runtime_self_test_output_matches_v1(
-    const std::array<float, M * K> &lhs,
-    const std::array<float, K * N> &rhs,
-    const std::array<float, M * N> &out) noexcept {
-  for (std::size_t row = 0; row < M; ++row) {
-    for (std::size_t column = 0; column < N; ++column) {
-      double expected = 0.0;
-      for (std::size_t depth = 0; depth < K; ++depth) {
-        expected += static_cast<double>(lhs[row * K + depth]) *
-                    static_cast<double>(rhs[depth * N + column]);
-      }
-      if (out[row * N + column] != static_cast<float>(expected)) return false;
-    }
-  }
-  return true;
-}
-
-matcore::mdslc::runtime::CpuRuntimeValidationEvidenceV1
-validate_exact_runtime_variants_v1(
-    matcore::mdslc::runtime::CpuExecutionContextV1 &workers) noexcept {
-  using Variant = matcore::mdslc::planner::CpuGemmVariantV3;
-  matcore::mdslc::runtime::CpuRuntimeValidationEvidenceV1 evidence;
-
-  constexpr std::size_t m = 4;
-  constexpr std::size_t n = 16;
-  constexpr std::size_t k = 3;
-  alignas(64) std::array<float, m * k> lhs{};
-  alignas(64) std::array<float, k * n> rhs{};
-  alignas(64) std::array<float, m * n> out{};
-  initialize_runtime_self_test_v1<m, n, k>(lhs, rhs, out);
-  const matcore::mdslc::planner::CpuGemmProblemV1 problem{
-      static_cast<std::int64_t>(m), static_cast<std::int64_t>(n),
-      static_cast<std::int64_t>(k),
-      matcore::mdslc::planner::CpuScalarTypeV1::f32,
-      matcore::mdslc::planner::CpuScalarTypeV1::f32,
-      matcore::mdslc::planner::CpuLayoutV1::row_major_contiguous, 64};
-  const ValidatedGemmV0 validated{problem, lhs.data(), rhs.data(), out.data()};
-
-  const auto validate_legacy = [&](Variant variant) noexcept {
-    out.fill(0.0F);
-    return execute_legacy_variant_v3(variant, validated) &&
-           runtime_self_test_output_matches_v1<m, n, k>(lhs, rhs, out);
-  };
-  evidence.reference_f32_runtime_validated =
-      validate_legacy(Variant::reference);
-  evidence.tiled_f32_runtime_validated = validate_legacy(Variant::tiled);
-  evidence.compiler_vectorized_f32_runtime_validated =
-      validate_legacy(Variant::compiler_vectorized);
-
-  if (matcore::mdslc::runtime::openblas_provider_info_v1().linked) {
-    out.fill(0.0F);
-    std::uint32_t actual_threads = 0;
-    evidence.external_openblas_f32_runtime_validated =
-        matcore::mdslc::runtime::execute_openblas_gemm_f32_v1(
-            problem, lhs.data(), rhs.data(), out.data(), 1,
-            &actual_threads) ==
-            matcore::mdslc::runtime::OpenBlasExecutionStatusV1::success &&
-        actual_threads == 1 &&
-        runtime_self_test_output_matches_v1<m, n, k>(lhs, rhs, out);
-  }
-
-  alignas(64) std::array<std::byte, 512U * 1024U> serial_workspace{};
-  matcore::mdslc::runtime::CpuPackedGemmWorkspaceRequirementsV1 packed;
-  if (matcore::mdslc::runtime::cpu_packed_avx2_workspace_requirements_v1(
-          problem,
-          matcore::mdslc::runtime::CpuPackedGemmWorkspaceModeV1::
-              transient_a_and_b,
-          &packed) ==
-          matcore::mdslc::runtime::CpuPackedGemmStatusV1::success &&
-      packed.total_bytes <= serial_workspace.size()) {
-    out.fill(0.0F);
-    evidence.packed_avx2_f32_runtime_validated =
-        matcore::mdslc::runtime::cpu_execute_packed_avx2_v1(
-            problem, lhs.data(), rhs.data(), out.data(),
-            serial_workspace.data(), serial_workspace.size()) ==
-            matcore::mdslc::runtime::CpuPackedGemmStatusV1::success &&
-        runtime_self_test_output_matches_v1<m, n, k>(lhs, rhs, out);
-  }
-  if (matcore::mdslc::runtime::cpu_packed_avx512_workspace_requirements_v1(
-          problem,
-          matcore::mdslc::runtime::CpuPackedGemmWorkspaceModeV1::
-              transient_a_and_b,
-          &packed) ==
-          matcore::mdslc::runtime::CpuPackedGemmStatusV1::success &&
-      packed.total_bytes <= serial_workspace.size()) {
-    out.fill(0.0F);
-    evidence.packed_avx512_f32_runtime_validated =
-        matcore::mdslc::runtime::cpu_execute_packed_avx512_v1(
-            problem, lhs.data(), rhs.data(), out.data(),
-            serial_workspace.data(), serial_workspace.size()) ==
-            matcore::mdslc::runtime::CpuPackedGemmStatusV1::success &&
-        runtime_self_test_output_matches_v1<m, n, k>(lhs, rhs, out);
-  }
-
-  if (workers.info().actual_worker_count >= 2) {
-    constexpr std::size_t parallel_m = 256;
-    alignas(64) std::array<float, parallel_m * k> parallel_lhs{};
-    alignas(64) std::array<float, k * n> parallel_rhs{};
-    alignas(64) std::array<float, parallel_m * n> parallel_out{};
-    initialize_runtime_self_test_v1<parallel_m, n, k>(
-        parallel_lhs, parallel_rhs, parallel_out);
-    const matcore::mdslc::planner::CpuGemmProblemV1 parallel_problem{
-        static_cast<std::int64_t>(parallel_m), static_cast<std::int64_t>(n),
-        static_cast<std::int64_t>(k),
-        matcore::mdslc::planner::CpuScalarTypeV1::f32,
-        matcore::mdslc::planner::CpuScalarTypeV1::f32,
-        matcore::mdslc::planner::CpuLayoutV1::row_major_contiguous, 64};
-    alignas(64) std::array<std::byte, 1024U * 1024U> parallel_workspace{};
-    matcore::mdslc::runtime::CpuParallelGemmWorkspaceRequirementsV1
-        parallel_requirements;
-    matcore::mdslc::runtime::CpuParallelGemmReportV1 parallel_report;
-    if (matcore::mdslc::runtime::
-            cpu_parallel_packed_avx2_workspace_requirements_v1(
-                parallel_problem, 2, &parallel_requirements) ==
-            matcore::mdslc::runtime::CpuParallelGemmStatusV1::success &&
-        parallel_requirements.total_bytes <= parallel_workspace.size()) {
-      parallel_out.fill(0.0F);
-      evidence.parallel_avx2_f32_runtime_validated =
-          matcore::mdslc::runtime::cpu_execute_parallel_packed_avx2_v1(
-              workers, parallel_problem, parallel_lhs.data(),
-              parallel_rhs.data(), parallel_out.data(),
-              parallel_workspace.data(), parallel_workspace.size(), 2,
-              matcore::mdslc::runtime::CpuProviderNestingPolicyV1::native_only,
-              &parallel_report) ==
-              matcore::mdslc::runtime::CpuParallelGemmStatusV1::success &&
-          parallel_report.actual_threads == 2 &&
-          runtime_self_test_output_matches_v1<parallel_m, n, k>(
-              parallel_lhs, parallel_rhs, parallel_out);
-    }
-    if (matcore::mdslc::runtime::
-            cpu_parallel_packed_avx512_workspace_requirements_v1(
-                parallel_problem, 2, &parallel_requirements) ==
-            matcore::mdslc::runtime::CpuParallelGemmStatusV1::success &&
-        parallel_requirements.total_bytes <= parallel_workspace.size()) {
-      parallel_out.fill(0.0F);
-      evidence.parallel_avx512_f32_runtime_validated =
-          matcore::mdslc::runtime::cpu_execute_parallel_packed_avx512_v1(
-              workers, parallel_problem, parallel_lhs.data(),
-              parallel_rhs.data(), parallel_out.data(),
-              parallel_workspace.data(), parallel_workspace.size(), 2,
-              matcore::mdslc::runtime::CpuProviderNestingPolicyV1::native_only,
-              &parallel_report) ==
-              matcore::mdslc::runtime::CpuParallelGemmStatusV1::success &&
-          parallel_report.actual_threads == 2 &&
-          runtime_self_test_output_matches_v1<parallel_m, n, k>(
-              parallel_lhs, parallel_rhs, parallel_out);
-    }
-  }
-  return evidence;
-}
-
 }  // namespace
 
 extern "C" MATCORE_RUNTIME_API matcore_status_v0
@@ -2377,7 +2210,7 @@ matcore_runtime_cpu_execution_context_create_v1(
           "CPU execution context could not authenticate planner placement evidence");
     }
     const auto validation_evidence =
-        validate_exact_runtime_variants_v1(*workers);
+        matcore::mdslc::runtime::validate_cpu_runtime_variants_v1(*workers);
     const std::uint64_t validation_submission_baseline =
         workers->info().completed_submissions;
     auto *created = new (std::nothrow) matcore_cpu_execution_context_v1;

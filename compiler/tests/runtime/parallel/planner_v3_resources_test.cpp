@@ -1,4 +1,7 @@
 #include "cpu_planner_v3_resources.h"
+#include "cpu_openblas.h"
+#include "cpu_runtime_validation.h"
+#include "thread_affinity_v1.h"
 
 #include <cstdint>
 #include <iostream>
@@ -7,6 +10,7 @@
 namespace {
 
 namespace planner = matcore::mdslc::planner;
+namespace platform = matcore::mdslc::platform;
 namespace runtime = matcore::mdslc::runtime;
 
 int failures = 0;
@@ -102,6 +106,36 @@ int main() {
              !future_evidence.external_openblas_f32_runtime_validated &&
              !future_evidence.native_parallel_avx2_fma_runtime_validated,
          "future evidence cannot leak across stable variants");
+
+  const auto allowed = platform::discover_current_thread_affinity_v1();
+  if (allowed.discovery_complete && allowed.allowed_logical_cpus.size() >= 2) {
+    runtime::CpuExecutionContextConfigV1 bound_config;
+    bound_config.requested_threads = 2;
+    bound_config.maximum_threads = 2;
+    bound_config.worker_cpu_ids = {allowed.allowed_logical_cpus[0],
+                                   allowed.allowed_logical_cpus[1]};
+    runtime::CpuWorkerAffinityReportV1 affinity_report;
+    runtime::CpuExecutionStatusV1 bound_status{};
+    auto bound = runtime::CpuExecutionContextV1::create(
+        bound_config, &bound_status, &affinity_report);
+    expect(bound != nullptr &&
+               bound_status == runtime::CpuExecutionStatusV1::success &&
+               affinity_report.complete &&
+               affinity_report.applied_workers == 2,
+           "exact-evidence fixture creates two strictly bound workers");
+    if (bound != nullptr) {
+      const std::uint64_t before = bound->info().completed_submissions;
+      const auto exact = runtime::validate_cpu_runtime_variants_v1(*bound);
+      const std::uint64_t after = bound->info().completed_submissions;
+      const std::uint64_t expected_submissions =
+          runtime::openblas_provider_info_v1().linked ? 8U : 7U;
+      expect(exact.reference_f32_runtime_validated &&
+                 exact.tiled_f32_runtime_validated &&
+                 after - before == expected_submissions,
+             "exact stable-variant validation dispatches every serial and "
+             "parallel probe through bound workers");
+    }
+  }
 
   if (failures != 0) {
     std::cerr << failures << " planner-v3 resource checks failed\n";
