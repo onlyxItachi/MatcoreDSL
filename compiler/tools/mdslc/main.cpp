@@ -1158,7 +1158,14 @@ ParseClangClCpuInvocation(const WrapperArguments &arguments) {
     }
     if ((argument.starts_with("/Fo") || argument.starts_with("/Fe")) &&
         argument.size() > 3) {
-      if (!set_output(argument.substr(3))) return std::nullopt;
+      std::string value = argument.substr(3);
+      if (value.starts_with(':')) value.erase(value.begin());
+      if (value.empty()) {
+        std::cerr << "mdslc++: " << argument.substr(0, 3)
+                  << " requires an output path\n";
+        return std::nullopt;
+      }
+      if (!set_output(std::move(value))) return std::nullopt;
       continue;
     }
     if (argument.starts_with("-o") && argument.size() > 2) {
