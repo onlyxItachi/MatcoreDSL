@@ -247,20 +247,39 @@ jobs:
           $prefix = Join-Path $env:RUNNER_TEMP "MDSLC Windows ünicode install"
           cmake --install $env:MDSLC_WINDOWS_RELEASE_BUILD --prefix $prefix
 
-          # Copy only LLVM/Clang DLLs that an installed executable actually
-          # imports and that exist in the authenticated archive.
-          $installedBinaries = Get-ChildItem (Join-Path $prefix "bin") -File `
-            | Where-Object { $_.Extension -in @(".exe", ".dll") }
-          foreach ($binary in $installedBinaries) {
-            $imports = & "$env:LLVM_ROOT\bin\llvm-readobj.exe" --coff-imports $binary.FullName
+          # Materialize the complete non-system DLL closure from the audited
+          # LLVM archive. Validate recursively: clang-cpp/LLVM may themselves
+          # depend on another archive DLL that is not a direct executable
+          # import. No dependency is resolved from the inherited runner PATH.
+          $prefixBin = Join-Path $prefix "bin"
+          $queue = [System.Collections.Generic.Queue[string]]::new()
+          Get-ChildItem $prefixBin -File |
+            Where-Object { $_.Extension -in @(".exe", ".dll") } |
+            ForEach-Object { $queue.Enqueue($_.FullName) }
+          $visited = [System.Collections.Generic.HashSet[string]]::new(
+            [System.StringComparer]::OrdinalIgnoreCase)
+          while ($queue.Count -gt 0) {
+            $binary = $queue.Dequeue()
+            if (-not $visited.Add($binary)) { continue }
+            $imports = & "$env:LLVM_ROOT\bin\llvm-readobj.exe" --coff-imports $binary
+            if ($LASTEXITCODE -ne 0) { throw "cannot inspect imports for $binary" }
             foreach ($line in $imports) {
-              if ($line -match "Name:\s+((?:LLVM|clang)[^\\/]*\.dll)") {
-                $dependency = Join-Path $env:LLVM_ROOT "bin\$($matches[1])"
-                if (-not (Test-Path $dependency)) {
-                  throw "$($binary.Name) imports missing authenticated dependency $($matches[1])"
-                }
-                Copy-Item -Force $dependency (Join-Path $prefix "bin")
+              if ($line -notmatch "Name:\s+([^\\/]+\.dll)") { continue }
+              $name = $matches[1]
+              $bundled = Join-Path $prefixBin $name
+              if (Test-Path $bundled -PathType Leaf) {
+                $queue.Enqueue($bundled)
+                continue
               }
+              $isApiSet = $name -match "^(?:api-ms-win-|ext-ms-win-)"
+              $isSystem = Test-Path (Join-Path $env:SystemRoot "System32\$name") -PathType Leaf
+              if ($isApiSet -or $isSystem) { continue }
+              $authenticated = Join-Path $env:LLVM_ROOT "bin\$name"
+              if (-not (Test-Path $authenticated -PathType Leaf)) {
+                throw "$binary imports non-system dependency $name absent from the authenticated archive"
+              }
+              Copy-Item -Force $authenticated $prefixBin
+              $queue.Enqueue($bundled)
             }
           }
 
@@ -268,6 +287,36 @@ jobs:
           New-Item -ItemType Directory -Force -Path (Join-Path $licenseRoot "llvm") | Out-Null
           New-Item -ItemType Directory -Force -Path (Join-Path $licenseRoot "rapidjson") | Out-Null
           Copy-Item "$env:LLVM_ROOT\LICENSE.TXT" (Join-Path $licenseRoot "llvm\LICENSE.TXT")
+          foreach ($notice in @("ThirdPartyNotices.txt", "NOTICE.txt", "NOTICE")) {
+            $noticePath = Join-Path $env:LLVM_ROOT $notice
+            if (Test-Path $noticePath -PathType Leaf) {
+              Copy-Item $noticePath (Join-Path $licenseRoot "llvm\$notice")
+            }
+          }
+          $authenticatedDlls = @()
+          Get-ChildItem $prefixBin -Filter "*.dll" -File | ForEach-Object {
+            $source = Join-Path $env:LLVM_ROOT "bin\$($_.Name)"
+            if (Test-Path $source -PathType Leaf) {
+              $installedHash = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()
+              $sourceHash = (Get-FileHash -Algorithm SHA256 $source).Hash.ToLowerInvariant()
+              if ($installedHash -ne $sourceHash) {
+                throw "bundled dependency $($_.Name) differs from the authenticated archive"
+              }
+              $authenticatedDlls += [ordered]@{
+                file = $_.Name
+                sha256 = $installedHash
+              }
+            }
+          }
+          [ordered]@{
+            schema = "matcore-llvm-runtime-dependencies-v1"
+            provider = "LLVM Project official Windows archive"
+            version = $env:LLVM_VERSION
+            archive = $env:LLVM_ARCHIVE_NAME
+            archive_sha256 = $env:LLVM_ARCHIVE_SHA256
+            files = @($authenticatedDlls)
+          } | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 `
+            (Join-Path $licenseRoot "llvm\runtime-dependencies.json")
           Copy-Item "$env:RAPIDJSON_ROOT\license.txt" (Join-Path $licenseRoot "rapidjson\license.txt")
           "MDSLC_WINDOWS_INSTALL_PREFIX=$prefix" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
@@ -284,7 +333,9 @@ jobs:
       - name: Validate COFF, PE, DLL, import library and ISA artifacts
         shell: pwsh
         run: |
-          $report = Join-Path $env:MDSLC_WINDOWS_INSTALL_PREFIX "share\matcore\windows-artifact-report.json"
+          # Keep runner-specific environment evidence beside the ZIP, never
+          # inside the relocatable distribution candidate.
+          $report = Join-Path $env:RUNNER_TEMP "mdslc-windows-artifact-report.json"
           python compiler/tests/windows/run_windows_distribution_validation.py `
             --source-root $env:GITHUB_WORKSPACE `
             --build-dir $env:MDSLC_WINDOWS_RELEASE_BUILD `
@@ -292,6 +343,7 @@ jobs:
             --llvm-root $env:LLVM_ROOT `
             --report-out $report `
             --expected-clang-version 21.1.8
+          "MDSLC_WINDOWS_REPORT=$report" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Get-Content $report
 
       - name: Configure and validate focused Debug runtime
@@ -318,6 +370,55 @@ jobs:
             -R "^(ir\.|platform\.|runtime\.|planner\.)" `
             --output-on-failure -j1
 
+      - name: Configure and validate focused clang-cl AddressSanitizer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $asanRuntime = Get-ChildItem $env:LLVM_ROOT -Recurse -File `
+            -Filter "clang_rt.asan_dynamic-x86_64.dll" | Select-Object -First 1
+          if (-not $asanRuntime) {
+            throw "audited clang-cl archive lacks the x64 AddressSanitizer runtime"
+          }
+          $build = Join-Path $env:RUNNER_TEMP "MDSLC Windows ASan"
+          cmake -S compiler -B $build -G Ninja `
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+            "-DCMAKE_C_COMPILER:FILEPATH=$env:LLVM_ROOT\bin\clang-cl.exe" `
+            "-DCMAKE_CXX_COMPILER:FILEPATH=$env:LLVM_ROOT\bin\clang-cl.exe" `
+            "-DCMAKE_LINKER:FILEPATH=$env:LLVM_ROOT\bin\lld-link.exe" `
+            "-DCMAKE_AR:FILEPATH=$env:LLVM_ROOT\bin\llvm-lib.exe" `
+            "-DCMAKE_C_FLAGS:STRING=/fsanitize=address /Oy-" `
+            "-DCMAKE_CXX_FLAGS:STRING=/fsanitize=address /Oy-" `
+            "-DCMAKE_EXE_LINKER_FLAGS:STRING=/fsanitize=address" `
+            "-DCMAKE_SHARED_LINKER_FLAGS:STRING=/fsanitize=address" `
+            "-DMDSLC_CLANGXX_EXECUTABLE:FILEPATH=$env:LLVM_ROOT\bin\clang-cl.exe" `
+            -DMDSLC_ENABLE_NATIVE_FRONTEND=ON `
+            -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=OFF `
+            -DMDSLC_ENABLE_OPENBLAS=OFF `
+            -DMDSLC_USE_CCACHE=OFF `
+            "-DMATCORE_RAPIDJSON_INCLUDE_DIR:PATH=$env:RAPIDJSON_ROOT\include" `
+            "-DLLVM_DIR:PATH=$env:LLVM_ROOT\lib\cmake\llvm" `
+            "-DClang_DIR:PATH=$env:LLVM_ROOT\lib\cmake\clang"
+          cmake --build $build --parallel 2 --target `
+            matcore_runtime_cpu_test mdslc_driver
+          $env:PATH = "$($asanRuntime.DirectoryName);$env:PATH"
+          ctest --test-dir $build `
+            -R "^runtime\.cpu\.gemm_v0$" `
+            --output-on-failure -j1
+          python compiler/tests/windows/run_windows_native_pipeline.py `
+            --suite pipeline `
+            --extractor (Join-Path $build "bin\matcore-extract.exe") `
+            --driver (Join-Path $build "bin\mdslc++.exe") `
+            --clang "$env:LLVM_ROOT\bin\clang-cl.exe" `
+            --build-dir $build `
+            --asan
+          @"
+
+          ### Windows sanitizer status
+
+          - clang-cl x64 AddressSanitizer: focused runtime and generated GEMM exercised
+          - UndefinedBehaviorSanitizer: not run; no supported Windows/MSVC-ABI claim is made
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
       - name: Repository hygiene
         shell: bash
         run: bash tests/check_repository_hygiene.sh
@@ -335,6 +436,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: MatcoreDSL-windows-x64-clang21
-          path: ${{ env.MDSLC_WINDOWS_ZIP }}
+          path: |
+            ${{ env.MDSLC_WINDOWS_ZIP }}
+            ${{ env.MDSLC_WINDOWS_REPORT }}
           if-no-files-found: error
           retention-days: 14

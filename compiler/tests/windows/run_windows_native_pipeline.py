@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 
 def run(
@@ -237,9 +238,60 @@ def pipeline_suite(
     driver: Path,
     clang: Path,
     temporary: Path,
+    asan: bool,
 ) -> None:
+    sanitizer_compile_options = ["/fsanitize=address", "/Oy-"] if asan else []
+    sanitizer_link_options = ["/fsanitize=address"] if asan else []
+
+    def reject_driver(
+        label: str,
+        arguments: list[str],
+        output: Path,
+        expected_words: tuple[str, ...],
+        *,
+        clear_output: bool = True,
+    ) -> None:
+        if clear_output:
+            output.unlink(missing_ok=True)
+        rejected = run([str(driver), *arguments], cwd=temporary)
+        if rejected.returncode == 0:
+            raise RuntimeError(f"Windows driver guard {label} was accepted")
+        diagnostic = (rejected.stdout + rejected.stderr).lower()
+        if not any(word.casefold() in diagnostic for word in expected_words):
+            raise RuntimeError(
+                f"Windows driver guard {label} lacks an actionable diagnostic "
+                f"matching {expected_words}:\n{rejected.stderr}"
+            )
+        if clear_output and output.exists():
+            raise RuntimeError(f"Windows driver guard {label} emitted {output}")
+
     source = temporary / "MDSLC GEMM ünicode.mdsl"
     shutil.copy2(repository / "compiler" / "examples" / "gemm_v0.mdsl", source)
+
+    # Omitting --frontend must remain exactly the supported native path. The
+    # compatibility frontend is never an implicit fallback.
+    default_archive = temporary / "MDSLC default native.lib"
+    default_compiled = run(
+        [
+            str(driver),
+            "--matcore-target=cpu",
+            "/nologo",
+            "/TP",
+            "/std:c++20",
+            "/EHsc",
+            "/MD",
+            *sanitizer_compile_options,
+            "/c",
+            str(source),
+            "-o",
+            str(default_archive),
+        ],
+        cwd=temporary,
+    )
+    require_success(default_compiled, "default native Windows driver pipeline")
+    if not default_archive.is_file() or default_archive.stat().st_size == 0:
+        raise RuntimeError("default native Windows driver emitted no static library")
+
     archive_path = temporary / "MDSLC GEMM ünicode.lib"
     compiled = run(
         [
@@ -252,6 +304,7 @@ def pipeline_suite(
             "/std:c++20",
             "/EHsc",
             "/MD",
+            *sanitizer_compile_options,
             "/c",
             str(source),
             "-o",
@@ -271,6 +324,197 @@ def pipeline_suite(
         objects = list(temporary.glob(f"*{suffix}"))
         if len(objects) != 1 or objects[0].stat().st_size == 0:
             raise RuntimeError(f"--save-temps omitted constituent COFF {suffix}")
+    generated_irs = list(temporary.glob("*.matcore.json"))
+    if not generated_irs or not any(
+        json.loads(path.read_text(encoding="utf-8")).get("producer")
+        == "clang-libtooling-v1"
+        for path in generated_irs
+    ):
+        raise RuntimeError("explicit native driver path emitted no native Matcore IR")
+
+    # Metacharacters stay one argv element; no command shell is involved.
+    metachar_source = temporary / "gemm&echo mdslc-injection.mdsl"
+    shutil.copy2(source, metachar_source)
+    metachar_output = temporary / "gemm&still-one-argv.lib"
+    metachar_marker = temporary / "mdslc-injection.mdsl"
+    metachar_compiled = run(
+        [
+            str(driver),
+            "--matcore-target=cpu",
+            "/TP",
+            "/std:c++20",
+            *sanitizer_compile_options,
+            "/c",
+            str(metachar_source),
+            "-o",
+            str(metachar_output),
+        ],
+        cwd=temporary,
+    )
+    require_success(metachar_compiled, "metacharacter single-argv compile")
+    if not metachar_output.is_file() or metachar_marker.exists():
+        raise RuntimeError("Windows process launch interpreted a metacharacter path")
+
+    common = ["--matcore-target=cpu", "/std:c++20"]
+    guard_cases = [
+        (
+            "shared-library-mode",
+            [*common, "/LD", "/c", str(source), "-o", str(temporary / "ld.lib")],
+            temporary / "ld.lib",
+            ("/ld", "shared", "link mode"),
+        ),
+        (
+            "link-tail-in-compile-mode",
+            [
+                *common,
+                "/c",
+                str(source),
+                "-o",
+                str(temporary / "link-tail.lib"),
+                "/link",
+                "/DEBUG",
+            ],
+            temporary / "link-tail.lib",
+            ("/link", "link-only", "compile"),
+        ),
+        (
+            "wrong-static-library-extension",
+            [*common, "/c", str(source), "-o", str(temporary / "wrong.obj")],
+            temporary / "wrong.obj",
+            (".lib", "static library", "archive"),
+        ),
+        (
+            "cuda-no-fallback",
+            [
+                "--matcore-target=cuda",
+                "/c",
+                str(source),
+                "-o",
+                str(temporary / "cuda.lib"),
+            ],
+            temporary / "cuda.lib",
+            ("only cpu", "unsupported", "never falls back"),
+        ),
+        (
+            "c-language-mode",
+            [*common, "/TC", "/c", str(source), "-o", str(temporary / "c.lib")],
+            temporary / "c.lib",
+            ("/tc", "c++", "language"),
+        ),
+        (
+            "unknown-frontend",
+            [
+                "--frontend=unknown",
+                *common,
+                "/c",
+                str(source),
+                "-o",
+                str(temporary / "unknown.lib"),
+            ],
+            temporary / "unknown.lib",
+            ("frontend", "native"),
+        ),
+        (
+            "bootstrap-unavailable",
+            [
+                "--frontend=ast-json-bootstrap",
+                *common,
+                "/c",
+                str(source),
+                "-o",
+                str(temporary / "bootstrap.lib"),
+            ],
+            temporary / "bootstrap.lib",
+            ("not built", "unavailable", "compatibility"),
+        ),
+        (
+            "production-test-prefix",
+            [
+                f"--tool-prefix-for-testing={temporary}",
+                *common,
+                "/c",
+                str(source),
+                "-o",
+                str(temporary / "test-prefix.lib"),
+            ],
+            temporary / "test-prefix.lib",
+            ("production", "unavailable"),
+        ),
+    ]
+    response_file = temporary / "driver-bypass.rsp"
+    response_output = temporary / "response.lib"
+    response_file.write_text(
+        f'/c "{source}" -o "{response_output}"\n', encoding="utf-8"
+    )
+    guard_cases.append(
+        (
+            "response-file-bypass",
+            [*common, f"@{response_file}"],
+            response_output,
+            ("response", "incompatible", "@"),
+        )
+    )
+    for label, arguments, output, expected_words in guard_cases:
+        reject_driver(label, arguments, output, expected_words)
+
+    overwrite_bytes = source.read_bytes()
+    reject_driver(
+        "input-output-overwrite",
+        [*common, "/c", str(source), "-o", str(source)],
+        source,
+        ("overwrite", "input", "alias"),
+        clear_output=False,
+    )
+    if source.read_bytes() != overwrite_bytes:
+        raise RuntimeError("input/output overwrite guard modified its .mdsl source")
+
+    # Exercise the driver's authenticated snapshot checks using an observable
+    # phase boundary, not a private test hook. A large comment makes the
+    # generated compile window long enough for deterministic CI polling.
+    mutation_dir = temporary / "mutation"
+    mutation_dir.mkdir()
+    mutation_source = mutation_dir / "mutation.mdsl"
+    mutation_source.write_text(
+        source.read_text(encoding="utf-8") + "\n/*" + ("x" * 1024 * 1024) + "*/\n",
+        encoding="utf-8",
+    )
+    mutation_output = mutation_dir / "mutation.lib"
+    process = subprocess.Popen(
+        [
+            str(driver),
+            "--save-temps",
+            *common,
+            "/c",
+            str(mutation_source),
+            "-o",
+            str(mutation_output),
+        ],
+        cwd=mutation_dir,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    deadline = time.monotonic() + 30.0
+    mutated = False
+    while process.poll() is None and time.monotonic() < deadline:
+        if list(mutation_dir.glob("*.host.cpp")):
+            mutation_source.write_text(
+                mutation_source.read_text(encoding="utf-8") + "// changed during build\n",
+                encoding="utf-8",
+            )
+            mutated = True
+            break
+        time.sleep(0.001)
+    stdout, stderr = process.communicate(timeout=60)
+    if not mutated:
+        raise RuntimeError("source-mutation test could not observe the rewrite phase")
+    if process.returncode == 0 or mutation_output.exists():
+        raise RuntimeError(
+            "source mutation between extraction and compilation was not rejected:\n"
+            f"stdout:\n{stdout}\nstderr:\n{stderr}"
+        )
+    if not any(word in stderr.lower() for word in ("changed", "snapshot", "dependency")):
+        raise RuntimeError(f"source mutation rejection was not actionable:\n{stderr}")
 
     runtime_import_library = build_dir / "lib" / "matcore_runtime.lib"
     if not runtime_import_library.is_file():
@@ -282,6 +526,7 @@ def pipeline_suite(
             "/nologo",
             "/EHsc",
             "/MD",
+            *sanitizer_link_options,
             str(archive_path),
             str(runtime_import_library),
             f"/Fe{executable}",
@@ -310,6 +555,11 @@ def main() -> int:
     parser.add_argument("--driver", type=Path, required=True)
     parser.add_argument("--clang", type=Path, required=True)
     parser.add_argument("--build-dir", type=Path, required=True)
+    parser.add_argument(
+        "--asan",
+        action="store_true",
+        help="instrument generated objects and the final PE link with clang-cl ASan",
+    )
     arguments = parser.parse_args()
 
     repository = Path(__file__).resolve().parents[3]
@@ -331,6 +581,7 @@ def main() -> int:
                 driver=arguments.driver.resolve(),
                 clang=arguments.clang.resolve(),
                 temporary=temporary,
+                asan=arguments.asan,
             )
     print(f"Windows native {arguments.suite} PASS")
     return 0

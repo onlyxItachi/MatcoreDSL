@@ -105,6 +105,89 @@ def scan_for_path_leaks(paths: list[Path], forbidden: list[Path]) -> None:
                 raise RuntimeError(f"absolute checkout/build path leaked into {path}")
 
 
+def isolated_distribution_environment(prefix_bin: Path, llvm_root: Path) -> dict[str, str]:
+    """Return a runtime PATH that cannot borrow DLLs from LLVM_ROOT."""
+
+    environment = os.environ.copy()
+    environment.pop("LLVM_ROOT", None)
+    retained = [prefix_bin.resolve()]
+    for spelling in environment.get("PATH", "").split(os.pathsep):
+        if not spelling:
+            continue
+        candidate = Path(spelling).resolve()
+        try:
+            candidate.relative_to(llvm_root.resolve())
+            continue
+        except ValueError:
+            retained.append(candidate)
+
+    deduplicated: list[str] = []
+    seen: set[str] = set()
+    for path in retained:
+        identity = os.path.normcase(str(path))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        deduplicated.append(str(path))
+    environment["PATH"] = os.pathsep.join(deduplicated)
+    return environment
+
+
+def coff_import_names(readobj: Path, binary: Path) -> list[str]:
+    imports = run([str(readobj), "--coff-imports", str(binary)]).stdout
+    return sorted(
+        set(
+            re.findall(
+                r"\bName:\s+([^\r\n\\/]+\.dll)\b", imports, re.IGNORECASE
+            )
+        ),
+        key=str.casefold,
+    )
+
+
+def is_windows_system_dll(name: str) -> bool:
+    lowered = name.casefold()
+    if lowered.startswith(("api-ms-win-", "ext-ms-win-")):
+        return True
+    system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    return (system_root / "System32" / name).is_file()
+
+
+def validate_recursive_import_closure(
+    readobj: Path, prefix_bin: Path, roots: list[Path]
+) -> dict[str, list[str]]:
+    """Require every non-system PE import to be bundled, recursively."""
+
+    bundled = {
+        path.name.casefold(): path
+        for path in prefix_bin.iterdir()
+        if path.is_file() and path.suffix.casefold() in {".exe", ".dll"}
+    }
+    pending = list(roots)
+    visited: set[str] = set()
+    graph: dict[str, list[str]] = {}
+    while pending:
+        binary = pending.pop()
+        identity = os.path.normcase(str(binary.resolve()))
+        if identity in visited:
+            continue
+        visited.add(identity)
+        names = coff_import_names(readobj, binary)
+        graph[binary.relative_to(prefix_bin.parent).as_posix()] = names
+        for name in names:
+            bundled_dependency = bundled.get(name.casefold())
+            if bundled_dependency is not None:
+                pending.append(bundled_dependency)
+                continue
+            if is_windows_system_dll(name):
+                continue
+            raise RuntimeError(
+                f"{binary} imports non-system DLL {name} that is absent from "
+                f"the distribution; inherited PATH lookup is forbidden"
+            )
+    return dict(sorted(graph.items()))
+
+
 def main() -> int:
     if os.name != "nt":
         raise RuntimeError("Windows distribution validation requires native Windows")
@@ -149,8 +232,29 @@ def main() -> int:
     for path in expected.values():
         require_file(path)
 
-    executable_environment = os.environ.copy()
-    executable_environment["PATH"] = str(prefix / "bin") + os.pathsep + executable_environment.get("PATH", "")
+    # Every bundled third-party DLL must be byte-identical to a file from the
+    # authenticated LLVM archive. The Matcore runtime is the sole project DLL.
+    authenticated_runtime_dlls: dict[str, str] = {}
+    for bundled_dll in sorted((prefix / "bin").glob("*.dll")):
+        if bundled_dll.name.casefold() == "matcore_runtime.dll":
+            continue
+        authenticated = llvm_root / "bin" / bundled_dll.name
+        if not authenticated.is_file():
+            raise RuntimeError(
+                f"bundled third-party DLL has no authenticated archive source: "
+                f"{bundled_dll.name}"
+            )
+        bundled_hash = sha256(bundled_dll)
+        authenticated_hash = sha256(authenticated)
+        if bundled_hash != authenticated_hash:
+            raise RuntimeError(
+                f"bundled DLL differs from authenticated archive: {bundled_dll.name}"
+            )
+        authenticated_runtime_dlls[bundled_dll.name] = bundled_hash
+
+    executable_environment = isolated_distribution_environment(
+        prefix / "bin", llvm_root
+    )
 
     coff_evidence: dict[str, str] = {}
     for key in ("driver", "extractor", "planner", "benchmark", "runtime_dll"):
@@ -167,16 +271,17 @@ def main() -> int:
     if missing_exports:
         raise RuntimeError(f"runtime DLL is missing declared C exports: {missing_exports}")
 
-    imported_dlls: dict[str, list[str]] = {}
-    for key in ("extractor", "planner", "benchmark", "runtime_dll"):
-        imports = run(
-            [str(llvm_readobj), "--coff-imports", str(expected[key])]
-        ).stdout
-        names = sorted(set(re.findall(r"\bName:\s+([^\r\n]+\.dll)\b", imports, re.IGNORECASE)))
-        imported_dlls[key] = names
-        for name in names:
-            if name.lower().startswith(("llvm", "clang")) and not (prefix / "bin" / name).is_file():
-                raise RuntimeError(f"{expected[key]} requires unbundled LLVM DLL {name}")
+    imported_dlls = validate_recursive_import_closure(
+        llvm_readobj,
+        prefix / "bin",
+        [
+            expected["driver"],
+            expected["extractor"],
+            expected["planner"],
+            expected["benchmark"],
+            expected["runtime_dll"],
+        ],
+    )
 
     backend_archives = sorted((build_dir / "lib").glob("matcore_cpu_backends_v1*.lib"))
     if len(backend_archives) != 1:
@@ -201,6 +306,16 @@ def main() -> int:
     for marker in ("platform=windows", "object=coff", "executable=pe", "runtime=windows-dll"):
         if marker not in platform_output:
             raise RuntimeError(f"Windows platform diagnostics lack {marker}:\n{platform_output}")
+
+    frontend_info = run(
+        [str(expected["extractor"]), "--frontend-info"],
+        environment=executable_environment,
+    ).stdout
+    if "default: native" not in frontend_info or "native [built]" not in frontend_info:
+        raise RuntimeError(
+            "installed extractor did not load from the isolated distribution "
+            f"or lost native frontend support:\n{frontend_info}"
+        )
 
     runtime_test = require_file(build_dir / "bin" / "matcore_runtime_cpu_test.exe")
     runtime_output = run(
@@ -237,9 +352,11 @@ def main() -> int:
         "windows_sdk_version": os.environ.get("WindowsSDKVersion", "unknown"),
         "linker": shutil.which("lld-link") or shutil.which("link") or "unknown",
         "platform_diagnostics": platform_output.strip(),
+        "frontend_diagnostics": frontend_info.strip(),
         "runtime_output": runtime_output.strip(),
         "declared_c_exports": sorted(declared_exports),
         "imported_dlls": imported_dlls,
+        "authenticated_llvm_runtime_dlls": authenticated_runtime_dlls,
         "isa_artifact_evidence": isa_evidence,
         "artifacts": inventory,
     }
