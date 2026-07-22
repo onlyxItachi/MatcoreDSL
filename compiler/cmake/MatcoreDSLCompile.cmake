@@ -73,10 +73,6 @@ function(matcoredsl_add_executable target_name)
     set(mdsl_compile_only_option "/c")
     set(mdsl_output_option -o
       "${mdsl_object_dir}/${mdsl_stem}-${mdsl_source_hash}.lib")
-    set(mdsl_dependency_options
-      /clang:-MD
-      /clang:-MF
-      "/clang:${mdsl_object_dir}/${mdsl_stem}-${mdsl_source_hash}.lib.d")
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
       set(mdsl_runtime_option /MDd)
     else()
@@ -89,13 +85,16 @@ function(matcoredsl_add_executable target_name)
     set(mdsl_compile_only_option -c)
     set(mdsl_output_option -o
       "${mdsl_object_dir}/${mdsl_stem}-${mdsl_source_hash}.o")
-    set(mdsl_dependency_options -MD -MF
-      "${mdsl_object_dir}/${mdsl_stem}-${mdsl_source_hash}.o.d")
     set(mdsl_frontend_options)
   endif()
   set(mdsl_object
       "${mdsl_object_dir}/${mdsl_stem}-${mdsl_source_hash}${mdsl_object_extension}")
   set(mdsl_depfile "${mdsl_object}.d")
+  # These are public mdslc++ options rather than clang-cl escape hatches.  The
+  # driver scans the original and generated translation units, authenticates
+  # that their dependency closures agree, and atomically publishes this one
+  # CMake/Ninja DEPFILE without temporary generated paths.
+  set(mdsl_dependency_options -MD -MF "${mdsl_depfile}")
 
   add_custom_command(
     OUTPUT "${mdsl_object}"

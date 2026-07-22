@@ -185,6 +185,18 @@ if(MDSLC_ENABLE_NATIVE_FRONTEND)
   endif()
 endif()
 
+# MDSLC_CLANGXX_EXECUTABLE is the configure-time authenticated compiler.  It
+# must remain absolute so that configuration proves the linked Clang libraries
+# and host driver belong to one coherent tuple.  Installed Windows binaries,
+# however, must not remember the runner-local extraction directory: the
+# platform process backend resolves this deliberately bare runtime tool name
+# from the deployed environment.
+if(WIN32)
+  set(MDSLC_RUNTIME_CLANG_DRIVER "clang-cl.exe")
+else()
+  set(MDSLC_RUNTIME_CLANG_DRIVER "${MDSLC_CLANGXX_EXECUTABLE}")
+endif()
+
 configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/mdslc_config.h.in"
   "${CMAKE_CURRENT_BINARY_DIR}/generated/mdslc_config.h"

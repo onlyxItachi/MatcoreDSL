@@ -38,6 +38,54 @@ def make_depfile_paths(path: Path) -> tuple[str, ...]:
     return tuple({encode(str(path)), encode(path.as_posix())})
 
 
+def windows_test_environment(
+    prefix_bin: Path,
+    *,
+    compiler_bin: Path | None = None,
+) -> dict[str, str]:
+    """Build an explicit Windows test PATH without inherited LLVM leakage.
+
+    The installed tools and runtime are tested with only their relocated bin
+    directory plus the existing Windows/Visual Studio tool paths.  Compiler
+    phases additionally receive the one audited compiler directory passed by
+    the caller.  LLVM_ROOT is never inherited implicitly, so a missing packaged
+    frontend DLL cannot be satisfied accidentally by the CI extraction tree.
+    """
+
+    environment = os.environ.copy()
+    llvm_root_text = environment.pop("LLVM_ROOT", "")
+    llvm_root = Path(llvm_root_text).resolve() if llvm_root_text else None
+
+    def is_beneath(path: Path, root: Path) -> bool:
+        try:
+            path.resolve().relative_to(root.resolve())
+            return True
+        except (OSError, ValueError):
+            return False
+
+    entries = [prefix_bin.resolve()]
+    if compiler_bin is not None:
+        entries.append(compiler_bin.resolve())
+    for spelling in environment.get("PATH", "").split(os.pathsep):
+        if not spelling:
+            continue
+        candidate = Path(spelling).resolve()
+        if llvm_root is not None and is_beneath(candidate, llvm_root):
+            continue
+        entries.append(candidate)
+
+    deduplicated: list[str] = []
+    seen: set[str] = set()
+    for entry in entries:
+        identity = os.path.normcase(str(entry))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        deduplicated.append(str(entry))
+    environment["PATH"] = os.pathsep.join(deduplicated)
+    return environment
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cmake", required=True)
@@ -105,8 +153,12 @@ def main() -> int:
     planner = prefix / "bin" / f"matcore-plan{executable_suffix}"
     benchmark = prefix / "bin" / f"matcore-bench{executable_suffix}"
     installed_environment = os.environ.copy()
+    build_environment = os.environ.copy()
     if is_windows:
-        installed_environment["PATH"] = str(prefix / "bin") + os.pathsep + installed_environment.get("PATH", "")
+        installed_environment = windows_test_environment(prefix / "bin")
+        build_environment = windows_test_environment(
+            prefix / "bin", compiler_bin=Path(args.cxx_compiler).resolve().parent
+        )
     extractor_bytes = extractor.read_bytes()
     if any(
         spelling.encode() in extractor_bytes
@@ -239,18 +291,24 @@ def main() -> int:
             f"{production_override.stderr}"
         )
 
-    run([
-        args.cmake,
-        "-S",
-        str(source),
-        "-B",
-        str(build),
-        "-G",
-        "Ninja",
-        f"-DCMAKE_PREFIX_PATH={prefix}",
-        f"-DCMAKE_CXX_COMPILER={args.cxx_compiler}",
-    ])
-    run([args.cmake, "--build", str(build), "--parallel", "2"])
+    run(
+        [
+            args.cmake,
+            "-S",
+            str(source),
+            "-B",
+            str(build),
+            "-G",
+            "Ninja",
+            f"-DCMAKE_PREFIX_PATH={prefix}",
+            f"-DCMAKE_CXX_COMPILER={args.cxx_compiler}",
+        ],
+        environment=build_environment,
+    )
+    run(
+        [args.cmake, "--build", str(build), "--parallel", "2"],
+        environment=build_environment,
+    )
     executable = build / f"matcore_consumer{executable_suffix}"
     initial_run = run(
         [str(executable)], capture=True, environment=installed_environment
@@ -304,7 +362,9 @@ def main() -> int:
         )
 
     initial_noop = run(
-        [args.cmake, "--build", str(build), "--parallel", "2"], capture=True
+        [args.cmake, "--build", str(build), "--parallel", "2"],
+        capture=True,
+        environment=build_environment,
     )
     if "no work to do" not in initial_noop.stdout.lower():
         raise RuntimeError(
@@ -318,7 +378,9 @@ def main() -> int:
         encoding="utf-8",
     )
     rebuild = run(
-        [args.cmake, "--build", str(build), "--parallel", "2"], capture=True
+        [args.cmake, "--build", str(build), "--parallel", "2"],
+        capture=True,
+        environment=build_environment,
     )
     if "Compiling MDSLC source consumer.mdsl" not in rebuild.stdout:
         raise RuntimeError(f"MDSLC source was not regenerated:\n{rebuild.stdout}")
@@ -347,7 +409,9 @@ def main() -> int:
         encoding="utf-8",
     )
     header_rebuild = run(
-        [args.cmake, "--build", str(build), "--parallel", "2"], capture=True
+        [args.cmake, "--build", str(build), "--parallel", "2"],
+        capture=True,
+        environment=build_environment,
     )
     if "Compiling MDSLC source consumer.mdsl" not in header_rebuild.stdout:
         raise RuntimeError(
@@ -384,7 +448,9 @@ def main() -> int:
         encoding="utf-8",
     )
     runtime_header_rebuild = run(
-        [args.cmake, "--build", str(build), "--parallel", "2"], capture=True
+        [args.cmake, "--build", str(build), "--parallel", "2"],
+        capture=True,
+        environment=build_environment,
     )
     if "Compiling MDSLC source consumer.mdsl" not in runtime_header_rebuild.stdout:
         raise RuntimeError(
@@ -416,7 +482,9 @@ def main() -> int:
         )
 
     noop = run(
-        [args.cmake, "--build", str(build), "--parallel", "2"], capture=True
+        [args.cmake, "--build", str(build), "--parallel", "2"],
+        capture=True,
+        environment=build_environment,
     )
     if "no work to do" not in noop.stdout.lower():
         raise RuntimeError(f"second rebuild was not a no-op:\n{noop.stdout}")
