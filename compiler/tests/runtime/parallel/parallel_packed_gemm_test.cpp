@@ -224,11 +224,46 @@ void rejection_preserves_output() {
          "preflight rejection submits no worker tasks");
 }
 
+void run_parallel_avx512_correctness() {
+  if (!runtime::cpu_packed_avx512_runtime_usable_v1()) {
+    std::cout << "parallel packed AVX-512 runtime unavailable: test skipped\n";
+    return;
+  }
+  constexpr std::size_t m = 257;
+  constexpr std::size_t k = 35;
+  constexpr std::size_t n = 33;
+  const auto gemm_problem = problem(m, k, n);
+  std::vector<float> lhs(m * k);
+  std::vector<float> rhs(k * n);
+  std::vector<float> out(m * n, -3.0F);
+  fill(lhs, 511);
+  fill(rhs, 512);
+  const auto expected = oracle(lhs, rhs, m, k, n);
+  auto context = make_context();
+  runtime::CpuParallelGemmWorkspaceRequirementsV1 requirements;
+  expect(runtime::cpu_parallel_packed_avx512_workspace_requirements_v1(
+             gemm_problem, 3, &requirements) ==
+             runtime::CpuParallelGemmStatusV1::success,
+         "parallel AVX-512 workspace query succeeds");
+  AlignedBuffer workspace(requirements.total_bytes);
+  runtime::CpuParallelGemmReportV1 report;
+  expect(runtime::cpu_execute_parallel_packed_avx512_v1(
+             *context, gemm_problem, lhs.data(), rhs.data(), out.data(),
+             workspace.data(), workspace.size(), 3,
+             runtime::CpuProviderNestingPolicyV1::native_only, &report) ==
+             runtime::CpuParallelGemmStatusV1::success &&
+             report.actual_threads == 3 && report.macro_tile_count == 3,
+         "parallel AVX-512 packed execution succeeds on usable hardware");
+  expect(close(out, expected),
+         "parallel AVX-512 result matches double-precision oracle");
+}
+
 }  // namespace
 
 int main() {
   run_parallel_correctness();
   rejection_preserves_output();
+  run_parallel_avx512_correctness();
   if (failures != 0) {
     std::cerr << failures << " parallel packed GEMM checks failed\n";
     return 1;

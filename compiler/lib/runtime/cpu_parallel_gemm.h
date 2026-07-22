@@ -3,6 +3,7 @@
 
 #include "cpu_execution_context.h"
 #include "cpu_gemm_backend.h"
+#include "cpu_packed_avx512.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +13,8 @@ namespace matcore::mdslc::runtime {
 inline constexpr std::uint32_t kCpuParallelGemmVersionV1 = 1;
 inline constexpr const char kCpuParallelPackedAvx2StableIdV1[] =
     "cpu.native-parallel.avx2-fma.f32.v1";
+inline constexpr const char kCpuParallelPackedAvx512StableIdV1[] =
+    "cpu.native-parallel.avx512-fma.f32.v1";
 
 enum class CpuParallelGemmStatusV1 : std::uint32_t {
   success = 0,
@@ -57,12 +60,25 @@ CpuParallelGemmStatusV1 cpu_parallel_packed_avx2_workspace_requirements_v1(
     std::uint32_t execution_threads,
     CpuParallelGemmWorkspaceRequirementsV1 *requirements) noexcept;
 
+CpuParallelGemmStatusV1 cpu_parallel_packed_avx512_workspace_requirements_v1(
+    const planner::CpuGemmProblemV1 &problem,
+    std::uint32_t execution_threads,
+    CpuParallelGemmWorkspaceRequirementsV1 *requirements) noexcept;
+
 // Executes independent MC-row bands with a deterministic cyclic assignment:
 // task t is owned by worker (t % actual_threads). The complete workspace is a
 // caller-owned arena containing one shared immutable packed-B image followed
 // by cache-line-aligned, non-overlapping transient-A worker slices. B packing
 // happens once before dispatch and remains part of end-to-end execution.
 CpuParallelGemmStatusV1 cpu_execute_parallel_packed_avx2_v1(
+    CpuExecutionContextV1 &context,
+    const planner::CpuGemmProblemV1 &problem, const float *lhs,
+    const float *rhs, float *out, void *workspace,
+    std::size_t workspace_bytes, std::uint32_t requested_threads,
+    CpuProviderNestingPolicyV1 nesting_policy,
+    CpuParallelGemmReportV1 *report) noexcept;
+
+CpuParallelGemmStatusV1 cpu_execute_parallel_packed_avx512_v1(
     CpuExecutionContextV1 &context,
     const planner::CpuGemmProblemV1 &problem, const float *lhs,
     const float *rhs, float *out, void *workspace,

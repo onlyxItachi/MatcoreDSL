@@ -9,6 +9,42 @@
 namespace matcore::mdslc::runtime {
 namespace {
 
+using RuntimeUsableFnV1 = bool (*)() noexcept;
+using WorkspaceRequirementsFnV1 = CpuPackedGemmStatusV1 (*)(
+    const planner::CpuGemmProblemV1 &, CpuPackedGemmWorkspaceModeV1,
+    CpuPackedGemmWorkspaceRequirementsV1 *) noexcept;
+using PrepackedRequirementsFnV1 = CpuPackedGemmStatusV1 (*)(
+    const planner::CpuGemmProblemV1 &,
+    CpuPackedGemmWorkspaceRequirementsV1 *) noexcept;
+using PreparePackedBFnV1 = CpuPackedGemmStatusV1 (*)(
+    const planner::CpuGemmProblemV1 &, const float *, void *, std::size_t,
+    CpuPackedBViewV1 *) noexcept;
+using ExecutePrepackedFnV1 = CpuPackedGemmStatusV1 (*)(
+    const planner::CpuGemmProblemV1 &, const float *, float *,
+    const CpuPackedBViewV1 &, void *, std::size_t) noexcept;
+
+struct PackedBackendOpsV1 {
+  RuntimeUsableFnV1 runtime_usable = nullptr;
+  WorkspaceRequirementsFnV1 workspace_requirements = nullptr;
+  PrepackedRequirementsFnV1 prepacked_requirements = nullptr;
+  PreparePackedBFnV1 prepare_b = nullptr;
+  ExecutePrepackedFnV1 execute_prepacked = nullptr;
+};
+
+inline constexpr PackedBackendOpsV1 kPackedAvx2Ops{
+    cpu_packed_avx2_runtime_usable_v1,
+    cpu_packed_avx2_workspace_requirements_v1,
+    cpu_packed_avx2_prepacked_b_requirements_v1,
+    cpu_prepare_packed_b_avx2_v1,
+    cpu_execute_packed_avx2_prepacked_b_v1};
+
+inline constexpr PackedBackendOpsV1 kPackedAvx512Ops{
+    cpu_packed_avx512_runtime_usable_v1,
+    cpu_packed_avx512_workspace_requirements_v1,
+    cpu_packed_avx512_prepacked_b_requirements_v1,
+    cpu_prepare_packed_b_avx512_v1,
+    cpu_execute_packed_avx512_prepacked_b_v1};
+
 struct ByteSpan {
   std::uintptr_t begin = 0;
   std::uintptr_t end = 0;
@@ -101,6 +137,7 @@ struct ParallelGemmJobV1 {
   const float *lhs = nullptr;
   float *out = nullptr;
   CpuPackedBViewV1 packed_b;
+  ExecutePrepackedFnV1 execute_prepacked = nullptr;
   std::byte *workspace = nullptr;
   std::size_t worker_region_offset = 0;
   std::size_t per_worker_stride = 0;
@@ -121,12 +158,152 @@ CpuExecutionStatusV1 execute_row_band(std::size_t task_index,
   void *worker_workspace =
       job->workspace + job->worker_region_offset +
       worker_index * job->per_worker_stride;
-  const auto status = cpu_execute_packed_avx2_prepacked_b_v1(
+  const auto status = job->execute_prepacked(
       band, job->lhs + row_begin * k, job->out + row_begin * n,
       job->packed_b, worker_workspace, job->per_worker_stride);
   return status == CpuPackedGemmStatusV1::success
              ? CpuExecutionStatusV1::success
              : CpuExecutionStatusV1::callback_failed;
+}
+
+CpuParallelGemmStatusV1 workspace_requirements(
+    const PackedBackendOpsV1 &ops,
+    const planner::CpuGemmProblemV1 &problem,
+    std::uint32_t execution_threads,
+    CpuParallelGemmWorkspaceRequirementsV1 *requirements) noexcept {
+  if (requirements == nullptr) return CpuParallelGemmStatusV1::null_pointer;
+  if (execution_threads == 0)
+    return CpuParallelGemmStatusV1::invalid_thread_count;
+
+  planner::CpuGemmProblemV1 band = problem;
+  if (problem.m > static_cast<std::int64_t>(kCpuPackedGemmMcV1)) {
+    band.m = static_cast<std::int64_t>(kCpuPackedGemmMcV1);
+  }
+  CpuPackedGemmWorkspaceRequirementsV1 packed_b_requirements;
+  const auto packed_b_status =
+      ops.prepacked_requirements(problem, &packed_b_requirements);
+  if (packed_b_status != CpuPackedGemmStatusV1::success)
+    return map_packed_status(packed_b_status);
+
+  CpuPackedGemmWorkspaceRequirementsV1 packed_a_requirements;
+  const auto status = ops.workspace_requirements(
+      band, CpuPackedGemmWorkspaceModeV1::transient_a_with_prepacked_b,
+      &packed_a_requirements);
+  if (status != CpuPackedGemmStatusV1::success) return map_packed_status(status);
+
+  std::size_t worker_region_offset = 0;
+  std::size_t worker_stride = 0;
+  std::size_t worker_bytes = 0;
+  std::size_t total = 0;
+  if (!checked_round_up(packed_b_requirements.total_bytes,
+                        kCpuPackedGemmWorkspaceAlignmentV1,
+                        &worker_region_offset) ||
+      !checked_round_up(packed_a_requirements.total_bytes,
+                        kCpuPackedGemmWorkspaceAlignmentV1, &worker_stride) ||
+      !checked_multiply(worker_stride, execution_threads, &worker_bytes) ||
+      worker_bytes > std::numeric_limits<std::size_t>::max() -
+                         worker_region_offset) {
+    return CpuParallelGemmStatusV1::arithmetic_overflow;
+  }
+  total = worker_region_offset + worker_bytes;
+  CpuParallelGemmWorkspaceRequirementsV1 result;
+  result.execution_threads = execution_threads;
+  result.shared_packed_b_bytes = packed_b_requirements.total_bytes;
+  result.worker_region_offset = worker_region_offset;
+  result.per_worker_bytes = packed_a_requirements.total_bytes;
+  result.per_worker_stride_bytes = worker_stride;
+  result.total_bytes = total;
+  *requirements = result;
+  return CpuParallelGemmStatusV1::success;
+}
+
+CpuParallelGemmStatusV1 validate_tensor_and_workspace(
+    const planner::CpuGemmProblemV1 &problem, const float *lhs,
+    const float *rhs, float *out, void *workspace,
+    const CpuParallelGemmWorkspaceRequirementsV1 &requirements,
+    std::size_t supplied_workspace_bytes) noexcept;
+
+CpuParallelGemmStatusV1 execute_parallel(
+    const PackedBackendOpsV1 &ops, CpuExecutionContextV1 &context,
+    const planner::CpuGemmProblemV1 &problem, const float *lhs,
+    const float *rhs, float *out, void *workspace,
+    std::size_t workspace_bytes, std::uint32_t requested_threads,
+    CpuProviderNestingPolicyV1 nesting_policy,
+    CpuParallelGemmReportV1 *report) noexcept {
+  if (report == nullptr) return CpuParallelGemmStatusV1::null_pointer;
+  *report = CpuParallelGemmReportV1{};
+  report->requested_threads = requested_threads;
+  if (requested_threads == 0)
+    return CpuParallelGemmStatusV1::invalid_thread_count;
+  if (nesting_policy != CpuProviderNestingPolicyV1::native_only &&
+      nesting_policy != CpuProviderNestingPolicyV1::external_provider_active) {
+    return CpuParallelGemmStatusV1::invalid_problem;
+  }
+
+  CpuPackedGemmWorkspaceRequirementsV1 problem_validation;
+  const auto problem_status = ops.workspace_requirements(
+      problem, CpuPackedGemmWorkspaceModeV1::transient_a_and_b,
+      &problem_validation);
+  if (problem_status != CpuPackedGemmStatusV1::success)
+    return map_packed_status(problem_status);
+  if (!ops.runtime_usable()) return CpuParallelGemmStatusV1::isa_unavailable;
+
+  const CpuExecutionContextInfoV1 context_info = context.info();
+  if (!context_info.accepting_work || context_info.actual_worker_count == 0)
+    return CpuParallelGemmStatusV1::context_unavailable;
+  if (requested_threads > context_info.actual_worker_count)
+    return CpuParallelGemmStatusV1::invalid_thread_count;
+  const std::size_t m = static_cast<std::size_t>(problem.m);
+  const std::size_t macro_tile_count =
+      (m + kCpuPackedGemmMcV1 - 1U) / kCpuPackedGemmMcV1;
+  const auto actual_threads = static_cast<std::uint32_t>(
+      std::min<std::size_t>(requested_threads, macro_tile_count));
+  if (actual_threads == 0)
+    return CpuParallelGemmStatusV1::invalid_thread_count;
+  if (nesting_policy == CpuProviderNestingPolicyV1::external_provider_active &&
+      actual_threads > 1) {
+    return CpuParallelGemmStatusV1::nested_parallelism_rejected;
+  }
+
+  CpuParallelGemmWorkspaceRequirementsV1 requirements;
+  const auto query = workspace_requirements(ops, problem, actual_threads,
+                                            &requirements);
+  if (query != CpuParallelGemmStatusV1::success) return query;
+  const auto preflight = validate_tensor_and_workspace(
+      problem, lhs, rhs, out, workspace, requirements, workspace_bytes);
+  if (preflight != CpuParallelGemmStatusV1::success) return preflight;
+
+  auto *workspace_start = static_cast<std::byte *>(workspace);
+  CpuPackedBViewV1 packed_b;
+  const auto pack_status = ops.prepare_b(
+      problem, rhs, workspace_start + requirements.shared_packed_b_offset,
+      requirements.shared_packed_b_bytes, &packed_b);
+  if (pack_status != CpuPackedGemmStatusV1::success)
+    return map_packed_status(pack_status);
+
+  ParallelGemmJobV1 job{problem,
+                        lhs,
+                        out,
+                        packed_b,
+                        ops.execute_prepacked,
+                        workspace_start,
+                        requirements.worker_region_offset,
+                        requirements.per_worker_stride_bytes};
+  const CpuExecutionStatusV1 execution = context.run_tasks(
+      macro_tile_count, actual_threads, nesting_policy, execute_row_band, &job);
+  if (execution == CpuExecutionStatusV1::nested_parallelism_rejected)
+    return CpuParallelGemmStatusV1::nested_parallelism_rejected;
+  if (execution != CpuExecutionStatusV1::success)
+    return CpuParallelGemmStatusV1::worker_task_failed;
+
+  const CpuExecutionContextInfoV1 finished = context.info();
+  report->actual_threads = actual_threads;
+  report->macro_tile_count = macro_tile_count;
+  report->workspace_bytes = requirements.total_bytes;
+  report->shared_packed_b_bytes = requirements.shared_packed_b_bytes;
+  report->per_worker_workspace_bytes = requirements.per_worker_bytes;
+  report->context_submission = finished.completed_submissions;
+  return CpuParallelGemmStatusV1::success;
 }
 
 CpuParallelGemmStatusV1 validate_tensor_and_workspace(
@@ -178,51 +355,16 @@ CpuParallelGemmStatusV1 cpu_parallel_packed_avx2_workspace_requirements_v1(
     const planner::CpuGemmProblemV1 &problem,
     std::uint32_t execution_threads,
     CpuParallelGemmWorkspaceRequirementsV1 *requirements) noexcept {
-  if (requirements == nullptr) return CpuParallelGemmStatusV1::null_pointer;
-  if (execution_threads == 0)
-    return CpuParallelGemmStatusV1::invalid_thread_count;
+  return workspace_requirements(kPackedAvx2Ops, problem, execution_threads,
+                                requirements);
+}
 
-  planner::CpuGemmProblemV1 band = problem;
-  if (problem.m > static_cast<std::int64_t>(kCpuPackedGemmMcV1)) {
-    band.m = static_cast<std::int64_t>(kCpuPackedGemmMcV1);
-  }
-  CpuPackedGemmWorkspaceRequirementsV1 packed_b_requirements;
-  const auto packed_b_status =
-      cpu_packed_avx2_prepacked_b_requirements_v1(problem,
-                                                  &packed_b_requirements);
-  if (packed_b_status != CpuPackedGemmStatusV1::success)
-    return map_packed_status(packed_b_status);
-
-  CpuPackedGemmWorkspaceRequirementsV1 packed_a_requirements;
-  const auto status = cpu_packed_avx2_workspace_requirements_v1(
-      band, CpuPackedGemmWorkspaceModeV1::transient_a_with_prepacked_b,
-      &packed_a_requirements);
-  if (status != CpuPackedGemmStatusV1::success) return map_packed_status(status);
-
-  std::size_t worker_region_offset = 0;
-  std::size_t worker_stride = 0;
-  std::size_t worker_bytes = 0;
-  std::size_t total = 0;
-  if (!checked_round_up(packed_b_requirements.total_bytes,
-                        kCpuPackedGemmWorkspaceAlignmentV1,
-                        &worker_region_offset) ||
-      !checked_round_up(packed_a_requirements.total_bytes,
-                        kCpuPackedGemmWorkspaceAlignmentV1, &worker_stride) ||
-      !checked_multiply(worker_stride, execution_threads, &worker_bytes) ||
-      worker_bytes > std::numeric_limits<std::size_t>::max() -
-                         worker_region_offset) {
-    return CpuParallelGemmStatusV1::arithmetic_overflow;
-  }
-  total = worker_region_offset + worker_bytes;
-  CpuParallelGemmWorkspaceRequirementsV1 result;
-  result.execution_threads = execution_threads;
-  result.shared_packed_b_bytes = packed_b_requirements.total_bytes;
-  result.worker_region_offset = worker_region_offset;
-  result.per_worker_bytes = packed_a_requirements.total_bytes;
-  result.per_worker_stride_bytes = worker_stride;
-  result.total_bytes = total;
-  *requirements = result;
-  return CpuParallelGemmStatusV1::success;
+CpuParallelGemmStatusV1 cpu_parallel_packed_avx512_workspace_requirements_v1(
+    const planner::CpuGemmProblemV1 &problem,
+    std::uint32_t execution_threads,
+    CpuParallelGemmWorkspaceRequirementsV1 *requirements) noexcept {
+  return workspace_requirements(kPackedAvx512Ops, problem, execution_threads,
+                                requirements);
 }
 
 CpuParallelGemmStatusV1 cpu_execute_parallel_packed_avx2_v1(
@@ -232,80 +374,21 @@ CpuParallelGemmStatusV1 cpu_execute_parallel_packed_avx2_v1(
     std::size_t workspace_bytes, std::uint32_t requested_threads,
     CpuProviderNestingPolicyV1 nesting_policy,
     CpuParallelGemmReportV1 *report) noexcept {
-  if (report == nullptr) return CpuParallelGemmStatusV1::null_pointer;
-  *report = CpuParallelGemmReportV1{};
-  report->requested_threads = requested_threads;
-  if (requested_threads == 0)
-    return CpuParallelGemmStatusV1::invalid_thread_count;
-  if (nesting_policy != CpuProviderNestingPolicyV1::native_only &&
-      nesting_policy != CpuProviderNestingPolicyV1::external_provider_active) {
-    return CpuParallelGemmStatusV1::invalid_problem;
-  }
+  return execute_parallel(kPackedAvx2Ops, context, problem, lhs, rhs, out,
+                          workspace, workspace_bytes, requested_threads,
+                          nesting_policy, report);
+}
 
-  CpuPackedGemmWorkspaceRequirementsV1 problem_validation;
-  const auto problem_status = cpu_packed_avx2_workspace_requirements_v1(
-      problem, CpuPackedGemmWorkspaceModeV1::transient_a_and_b,
-      &problem_validation);
-  if (problem_status != CpuPackedGemmStatusV1::success)
-    return map_packed_status(problem_status);
-  if (!cpu_packed_avx2_runtime_usable_v1())
-    return CpuParallelGemmStatusV1::isa_unavailable;
-
-  const CpuExecutionContextInfoV1 context_info = context.info();
-  if (!context_info.accepting_work || context_info.actual_worker_count == 0)
-    return CpuParallelGemmStatusV1::context_unavailable;
-  if (requested_threads > context_info.actual_worker_count)
-    return CpuParallelGemmStatusV1::invalid_thread_count;
-  const std::size_t m = static_cast<std::size_t>(problem.m);
-  const std::size_t macro_tile_count =
-      (m + kCpuPackedGemmMcV1 - 1U) / kCpuPackedGemmMcV1;
-  const auto actual_threads = static_cast<std::uint32_t>(
-      std::min<std::size_t>(requested_threads, macro_tile_count));
-  if (actual_threads == 0)
-    return CpuParallelGemmStatusV1::invalid_thread_count;
-  if (nesting_policy == CpuProviderNestingPolicyV1::external_provider_active &&
-      actual_threads > 1) {
-    return CpuParallelGemmStatusV1::nested_parallelism_rejected;
-  }
-
-  CpuParallelGemmWorkspaceRequirementsV1 requirements;
-  const auto query = cpu_parallel_packed_avx2_workspace_requirements_v1(
-      problem, actual_threads, &requirements);
-  if (query != CpuParallelGemmStatusV1::success) return query;
-  const auto preflight = validate_tensor_and_workspace(
-      problem, lhs, rhs, out, workspace, requirements, workspace_bytes);
-  if (preflight != CpuParallelGemmStatusV1::success) return preflight;
-
-  auto *workspace_start = static_cast<std::byte *>(workspace);
-  CpuPackedBViewV1 packed_b;
-  const auto pack_status = cpu_prepare_packed_b_avx2_v1(
-      problem, rhs, workspace_start + requirements.shared_packed_b_offset,
-      requirements.shared_packed_b_bytes, &packed_b);
-  if (pack_status != CpuPackedGemmStatusV1::success)
-    return map_packed_status(pack_status);
-
-  ParallelGemmJobV1 job{problem,
-                        lhs,
-                        out,
-                        packed_b,
-                        workspace_start,
-                        requirements.worker_region_offset,
-                        requirements.per_worker_stride_bytes};
-  const CpuExecutionStatusV1 execution = context.run_tasks(
-      macro_tile_count, actual_threads, nesting_policy, execute_row_band, &job);
-  if (execution == CpuExecutionStatusV1::nested_parallelism_rejected)
-    return CpuParallelGemmStatusV1::nested_parallelism_rejected;
-  if (execution != CpuExecutionStatusV1::success)
-    return CpuParallelGemmStatusV1::worker_task_failed;
-
-  const CpuExecutionContextInfoV1 finished = context.info();
-  report->actual_threads = actual_threads;
-  report->macro_tile_count = macro_tile_count;
-  report->workspace_bytes = requirements.total_bytes;
-  report->shared_packed_b_bytes = requirements.shared_packed_b_bytes;
-  report->per_worker_workspace_bytes = requirements.per_worker_bytes;
-  report->context_submission = finished.completed_submissions;
-  return CpuParallelGemmStatusV1::success;
+CpuParallelGemmStatusV1 cpu_execute_parallel_packed_avx512_v1(
+    CpuExecutionContextV1 &context,
+    const planner::CpuGemmProblemV1 &problem, const float *lhs,
+    const float *rhs, float *out, void *workspace,
+    std::size_t workspace_bytes, std::uint32_t requested_threads,
+    CpuProviderNestingPolicyV1 nesting_policy,
+    CpuParallelGemmReportV1 *report) noexcept {
+  return execute_parallel(kPackedAvx512Ops, context, problem, lhs, rhs, out,
+                          workspace, workspace_bytes, requested_threads,
+                          nesting_policy, report);
 }
 
 const char *cpu_parallel_gemm_status_message_v1(
@@ -324,7 +407,7 @@ const char *cpu_parallel_gemm_status_message_v1(
     case CpuParallelGemmStatusV1::arithmetic_overflow:
       return "parallel GEMM size arithmetic overflowed";
     case CpuParallelGemmStatusV1::isa_unavailable:
-      return "parallel AVX2/FMA execution is unavailable";
+      return "requested parallel packed ISA execution is unavailable";
     case CpuParallelGemmStatusV1::workspace_misaligned:
       return "parallel GEMM workspace is not 64-byte aligned";
     case CpuParallelGemmStatusV1::workspace_insufficient:
