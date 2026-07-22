@@ -6,7 +6,7 @@ set_source_files_properties(
   matcore_ir.cpp
   matcore_ir_v1_json.cpp
   PROPERTIES COMPILE_OPTIONS
-    "-fno-sanitize=pointer-overflow;${MDSLC_RAPIDJSON_COMPAT_COMPILE_OPTIONS}"
+    "${MDSLC_RAPIDJSON_NO_POINTER_OVERFLOW_OPTION};${MDSLC_RAPIDJSON_COMPAT_COMPILE_OPTIONS}"
 )
 
 add_library(matcore_ir_v0 STATIC matcore_ir.cpp)
@@ -32,7 +32,7 @@ target_include_directories(
   PRIVATE "${MATCORE_RAPIDJSON_INCLUDE_DIR}"
 )
 target_link_libraries(matcore_ir_v1 PUBLIC matcore_ir_v0)
-target_compile_options(matcore_ir_v1 PRIVATE -Wall -Wextra -Wpedantic)
+mdslc_target_enable_warnings(matcore_ir_v1)
 
 if(BUILD_TESTING)
   add_executable(
@@ -40,10 +40,7 @@ if(BUILD_TESTING)
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/ir/matcore_ir_v1_test.cpp"
   )
   target_link_libraries(matcore_ir_v1_tests PRIVATE matcore_ir_v1)
-  target_compile_options(
-    matcore_ir_v1_tests
-    PRIVATE -Wall -Wextra -Wpedantic
-  )
+  mdslc_target_enable_warnings(matcore_ir_v1_tests)
   target_compile_definitions(
     matcore_ir_v1_tests
     PRIVATE

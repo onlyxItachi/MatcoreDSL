@@ -14,3 +14,9 @@ matcoredsl_add_executable(
 
 enable_testing()
 add_test(NAME matcore_consumer.runs COMMAND matcore_consumer)
+if(WIN32)
+  set_tests_properties(matcore_consumer.runs PROPERTIES
+    ENVIRONMENT_MODIFICATION
+      "PATH=path_list_prepend:$<TARGET_FILE_DIR:MatcoreDSL::Runtime>"
+  )
+endif()

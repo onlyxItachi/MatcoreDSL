@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import os
 from pathlib import Path
 import re
 import shutil
@@ -8,13 +9,19 @@ import subprocess
 import sys
 
 
-def run(command: list[str], *, capture: bool = False) -> subprocess.CompletedProcess[str]:
+def run(
+    command: list[str],
+    *,
+    capture: bool = False,
+    environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         command,
         check=False,
         text=True,
         stdout=subprocess.PIPE if capture else None,
         stderr=subprocess.STDOUT if capture else None,
+        env=environment,
     )
     if result.returncode != 0:
         if result.stdout:
@@ -23,9 +30,12 @@ def run(command: list[str], *, capture: bool = False) -> subprocess.CompletedPro
     return result
 
 
-def make_depfile_path(path: Path) -> str:
-    encoded = str(path).replace("\\", "\\\\").replace("$", "$$")
-    return encoded.replace(" ", "\\ ").replace("#", "\\#")
+def make_depfile_paths(path: Path) -> tuple[str, ...]:
+    def encode(value: str) -> str:
+        value = value.replace("\\", "\\\\").replace("$", "$$")
+        return value.replace(" ", "\\ ").replace("#", "\\#")
+
+    return tuple({encode(str(path)), encode(path.as_posix())})
 
 
 def main() -> int:
@@ -36,6 +46,9 @@ def main() -> int:
     parser.add_argument("--test-root", required=True)
     parser.add_argument("--cxx-compiler", required=True)
     args = parser.parse_args()
+    is_windows = os.name == "nt"
+    executable_suffix = ".exe" if is_windows else ""
+    object_suffix = ".obj" if is_windows else ".o"
 
     test_root = Path(args.test_root).resolve()
     if test_root.exists():
@@ -43,11 +56,12 @@ def main() -> int:
     source = test_root / "source"
     build = test_root / "build"
     staging_prefix = test_root / "install-staging"
-    # A space-bearing prefix verifies argv-safe package relocation. Commas in
-    # an ELF runtime directory are covered at the driver layer, which forwards
-    # rpath using separate -Xlinker arguments; CMake's compiler-driver rpath
-    # encoding uses comma-separated -Wl syntax and cannot represent that path.
-    prefix = test_root / "relocated" / "matcoredsl prefix"
+    # This deliberately exercises both whitespace and Unicode through install,
+    # trusted-header discovery, generated objects, linking, and execution.
+    # Commas in an ELF runtime directory remain covered at the Linux driver
+    # layer because CMake's compiler-driver rpath encoding cannot represent
+    # such a path.
+    prefix = test_root / "relocated" / "matcoredsl prefix ünicode"
     shutil.copytree(Path(args.source_dir).resolve(), source)
 
     run([
@@ -60,29 +74,44 @@ def main() -> int:
     prefix.parent.mkdir(parents=True)
     shutil.move(staging_prefix, prefix)
     expected_install_files = [
-        prefix / "bin" / "mdslc++",
-        prefix / "bin" / "matcore-extract",
-        prefix / "bin" / "matcore-plan",
-        prefix / "bin" / "matcore-bench",
+        prefix / "bin" / f"mdslc++{executable_suffix}",
+        prefix / "bin" / f"matcore-extract{executable_suffix}",
+        prefix / "bin" / f"matcore-plan{executable_suffix}",
+        prefix / "bin" / f"matcore-bench{executable_suffix}",
         prefix / "include" / "matcore" / "mdsl.h",
         prefix / "include" / "matcore" / "runtime_c.h",
-        prefix / "lib" / "libmatcore_runtime.so",
         prefix / "lib" / "cmake" / "MatcoreDSL" / "MatcoreDSLConfig.cmake",
         prefix / "lib" / "cmake" / "MatcoreDSL" / "MatcoreDSLConfigVersion.cmake",
         prefix / "lib" / "cmake" / "MatcoreDSL" / "MatcoreDSLTargets.cmake",
         prefix / "lib" / "cmake" / "MatcoreDSL" / "MatcoreDSLCompile.cmake",
     ]
+    if is_windows:
+        expected_install_files.extend(
+            [
+                prefix / "bin" / "matcore_runtime.dll",
+                prefix / "lib" / "matcore_runtime.lib",
+            ]
+        )
+    else:
+        expected_install_files.append(prefix / "lib" / "libmatcore_runtime.so")
     missing = [path for path in expected_install_files if not path.exists()]
     if missing:
         raise RuntimeError(f"installed package is incomplete: {missing}")
 
     repository = Path(__file__).resolve().parents[3]
     source_public_header = repository / "compiler" / "include" / "matcore" / "mdsl.h"
-    driver = prefix / "bin" / "mdslc++"
-    extractor = prefix / "bin" / "matcore-extract"
-    planner = prefix / "bin" / "matcore-plan"
-    benchmark = prefix / "bin" / "matcore-bench"
-    if str(source_public_header).encode() in extractor.read_bytes():
+    driver = prefix / "bin" / f"mdslc++{executable_suffix}"
+    extractor = prefix / "bin" / f"matcore-extract{executable_suffix}"
+    planner = prefix / "bin" / f"matcore-plan{executable_suffix}"
+    benchmark = prefix / "bin" / f"matcore-bench{executable_suffix}"
+    installed_environment = os.environ.copy()
+    if is_windows:
+        installed_environment["PATH"] = str(prefix / "bin") + os.pathsep + installed_environment.get("PATH", "")
+    extractor_bytes = extractor.read_bytes()
+    if any(
+        spelling.encode() in extractor_bytes
+        for spelling in (str(source_public_header), source_public_header.as_posix())
+    ):
         raise RuntimeError("installed extractor embeds the source checkout's public-header path")
 
     planned = run(
@@ -98,6 +127,7 @@ def main() -> int:
             "reference",
         ],
         capture=True,
+        environment=installed_environment,
     )
     if (
         "status=selected" not in planned.stdout
@@ -129,6 +159,7 @@ def main() -> int:
             "--guard",
         ],
         capture=True,
+        environment=installed_environment,
     )
     if (
         "variant=cpu.reference.f32.v1" not in benchmarked.stdout
@@ -143,12 +174,17 @@ def main() -> int:
     untrusted_source = test_root / "untrusted-source-header.mdsl"
     untrusted_ir = test_root / "untrusted-source-header.json"
     untrusted_source.write_text(
-        f'#include "{source_public_header}"\n\n'
+        f'#include "{source_public_header.as_posix()}"\n\n'
         "namespace md = matcore::mdsl;\n"
         "void capture(md::matrix_view &C, md::matrix_view &A, md::matrix_view &B) {\n"
         "  md::gemm(md::out(C), A, B);\n"
         "}\n",
         encoding="utf-8",
+    )
+    extraction_compile_options = (
+        [str(Path(args.cxx_compiler).resolve()), "/TP", "/std:c++20"]
+        if is_windows
+        else [str(Path(args.cxx_compiler).resolve()), "-x", "c++", "-std=c++20"]
     )
     untrusted = subprocess.run(
         [
@@ -159,13 +195,13 @@ def main() -> int:
             "--ir-out",
             str(untrusted_ir),
             "--",
-            "clang++",
-            "-std=c++20",
+            *extraction_compile_options,
             str(untrusted_source),
         ],
         check=False,
         text=True,
         capture_output=True,
+        env=installed_environment,
     )
     if untrusted.returncode == 0 or "trusted <matcore/mdsl.h> header" not in untrusted.stderr:
         raise RuntimeError(
@@ -175,19 +211,23 @@ def main() -> int:
     if untrusted_ir.exists():
         raise RuntimeError("untrusted checkout header produced Matcore IR")
 
+    override_output = test_root / f"override{object_suffix}"
+    override_compile_options = (
+        ["/c", str(source / "consumer.mdsl"), f"/Fo{override_output}"]
+        if is_windows
+        else ["-c", str(source / "consumer.mdsl"), "-o", str(override_output)]
+    )
     production_override = subprocess.run(
         [
             str(driver),
             f"--tool-prefix-for-testing={prefix}",
             "--matcore-target=cpu",
-            "-c",
-            str(source / "consumer.mdsl"),
-            "-o",
-            str(test_root / "override.o"),
+            *override_compile_options,
         ],
         check=False,
         text=True,
         capture_output=True,
+        env=installed_environment,
     )
     if (
         production_override.returncode == 0
@@ -210,16 +250,24 @@ def main() -> int:
         f"-DCMAKE_PREFIX_PATH={prefix}",
         f"-DCMAKE_CXX_COMPILER={args.cxx_compiler}",
     ])
-    run([args.cmake, "--build", str(build), "--", "-j2"])
-    executable = build / "matcore_consumer"
-    initial_run = run([str(executable)], capture=True)
+    run([args.cmake, "--build", str(build), "--parallel", "2"])
+    executable = build / f"matcore_consumer{executable_suffix}"
+    initial_run = run(
+        [str(executable)], capture=True, environment=installed_environment
+    )
     if "consumer-header=1" not in initial_run.stdout:
         raise RuntimeError(f"initial consumer header value is wrong:\n{initial_run.stdout}")
 
-    objects = list((build / "CMakeFiles" / "matcore_consumer.mdsl").glob("*.o"))
+    objects = list(
+        (build / "CMakeFiles" / "matcore_consumer.mdsl").glob(f"*{object_suffix}")
+    )
     if len(objects) != 1:
         raise RuntimeError(f"expected one generated MDSLC object, found {objects}")
-    depfiles = list((build / "CMakeFiles" / "matcore_consumer.mdsl").glob("*.o.d"))
+    depfiles = list(
+        (build / "CMakeFiles" / "matcore_consumer.mdsl").glob(
+            f"*{object_suffix}.d"
+        )
+    )
     if len(depfiles) != 1:
         raise RuntimeError(f"expected one MDSLC depfile, found {depfiles}")
     depfile_text = depfiles[0].read_text(encoding="utf-8")
@@ -228,7 +276,10 @@ def main() -> int:
         source / "consumer_value.h",
         prefix / "include" / "matcore" / "runtime_c.h",
     ):
-        if make_depfile_path(expected_dependency) not in depfile_text:
+        if not any(
+            spelling in depfile_text
+            for spelling in make_depfile_paths(expected_dependency)
+        ):
             raise RuntimeError(
                 f"MDSLC depfile does not track {expected_dependency}:\n{depfile_text}"
             )
@@ -242,13 +293,13 @@ def main() -> int:
             raise RuntimeError(
                 f"temporary generated dependency leaked into depfile: {depfile_text}"
             )
-    if re.search(r"/mdslc-[A-Za-z0-9]{6}/", depfile_text):
+    if re.search(r"[\\/]mdslc-[A-Za-z0-9]{6}[\\/]", depfile_text):
         raise RuntimeError(
             f"temporary MDSLC workspace leaked into depfile: {depfile_text}"
         )
 
     initial_noop = run(
-        [args.cmake, "--build", str(build), "--", "-j2"], capture=True
+        [args.cmake, "--build", str(build), "--parallel", "2"], capture=True
     )
     if "no work to do" not in initial_noop.stdout.lower():
         raise RuntimeError(
@@ -262,7 +313,7 @@ def main() -> int:
         encoding="utf-8",
     )
     rebuild = run(
-        [args.cmake, "--build", str(build), "--", "-j2"], capture=True
+        [args.cmake, "--build", str(build), "--parallel", "2"], capture=True
     )
     if "Compiling MDSLC source consumer.mdsl" not in rebuild.stdout:
         raise RuntimeError(f"MDSLC source was not regenerated:\n{rebuild.stdout}")
@@ -276,7 +327,9 @@ def main() -> int:
         )
     if objects[0].stat().st_mtime_ns <= object_before:
         raise RuntimeError("generated MDSLC object timestamp did not advance")
-    source_rebuilt_run = run([str(executable)], capture=True)
+    source_rebuilt_run = run(
+        [str(executable)], capture=True, environment=installed_environment
+    )
     if "consumer-header=1" not in source_rebuilt_run.stdout:
         raise RuntimeError(
             f"source rebuild changed the header value unexpectedly:\n{source_rebuilt_run.stdout}"
@@ -289,7 +342,7 @@ def main() -> int:
         encoding="utf-8",
     )
     header_rebuild = run(
-        [args.cmake, "--build", str(build), "--", "-j2"], capture=True
+        [args.cmake, "--build", str(build), "--parallel", "2"], capture=True
     )
     if "Compiling MDSLC source consumer.mdsl" not in header_rebuild.stdout:
         raise RuntimeError(
@@ -309,7 +362,9 @@ def main() -> int:
         )
     if objects[0].stat().st_mtime_ns <= object_before_header:
         raise RuntimeError("included-header rebuild did not refresh the MDSLC object")
-    header_rebuilt_run = run([str(executable)], capture=True)
+    header_rebuilt_run = run(
+        [str(executable)], capture=True, environment=installed_environment
+    )
     if "consumer-header=2" not in header_rebuilt_run.stdout:
         raise RuntimeError(
             "included-header rebuild executed stale code:\n"
@@ -324,7 +379,7 @@ def main() -> int:
         encoding="utf-8",
     )
     runtime_header_rebuild = run(
-        [args.cmake, "--build", str(build), "--", "-j2"], capture=True
+        [args.cmake, "--build", str(build), "--parallel", "2"], capture=True
     )
     if "Compiling MDSLC source consumer.mdsl" not in runtime_header_rebuild.stdout:
         raise RuntimeError(
@@ -346,14 +401,18 @@ def main() -> int:
         )
     if objects[0].stat().st_mtime_ns <= object_before_runtime_header:
         raise RuntimeError("runtime_c.h rebuild did not refresh the MDSLC object")
-    runtime_header_run = run([str(executable)], capture=True)
+    runtime_header_run = run(
+        [str(executable)], capture=True, environment=installed_environment
+    )
     if "consumer-header=2" not in runtime_header_run.stdout:
         raise RuntimeError(
             "runtime_c.h rebuild executed stale or incorrect code:\n"
             f"{runtime_header_run.stdout}"
         )
 
-    noop = run([args.cmake, "--build", str(build), "--", "-j2"], capture=True)
+    noop = run(
+        [args.cmake, "--build", str(build), "--parallel", "2"], capture=True
+    )
     if "no work to do" not in noop.stdout.lower():
         raise RuntimeError(f"second rebuild was not a no-op:\n{noop.stdout}")
 

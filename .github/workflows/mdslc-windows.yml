@@ -1,0 +1,335 @@
+name: mdslc-windows
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/mdslc-windows.yml"
+      - "AGENTS.md"
+      - "compiler/**"
+      - "docs/mdslc/**"
+  pull_request:
+    paths:
+      - ".github/workflows/mdslc-windows.yml"
+      - "AGENTS.md"
+      - "compiler/**"
+      - "docs/mdslc/**"
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64-clang-cl:
+    name: Windows x64 clang-cl 21.1.8
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      LLVM_VERSION: "21.1.8"
+      LLVM_ARCHIVE_NAME: "clang+llvm-21.1.8-x86_64-pc-windows-msvc.tar.xz"
+      LLVM_ARCHIVE_SIZE: "942572476"
+      LLVM_ARCHIVE_SHA256: "749d22f565fcd5718dbed06512572d0e5353b502c03fe1f7f17ee8b8aca21a47"
+      LLVM_ARCHIVE_URL: "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/clang%2Bllvm-21.1.8-x86_64-pc-windows-msvc.tar.xz"
+      RAPIDJSON_VERSION: "1.1.0"
+      RAPIDJSON_COMMIT: "f54b0e47a08782a6131cc3d60f94d038fa6e0a51"
+      RAPIDJSON_ARCHIVE_SIZE: "1020103"
+      RAPIDJSON_ARCHIVE_SHA256: "4a76453d36770c9628d7d175a2e9baccbfbd2169ced44f0cb72e86c5f5f2f7cd"
+      RAPIDJSON_ARCHIVE_URL: "https://github.com/Tencent/rapidjson/archive/f54b0e47a08782a6131cc3d60f94d038fa6e0a51.tar.gz"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore the audited LLVM development archive
+        id: llvm-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\llvm-21.1.8-windows-msvc
+          key: llvm-${{ runner.os }}-x64-21.1.8-749d22f565fcd5718dbed06512572d0e5353b502c03fe1f7f17ee8b8aca21a47
+
+      - name: Download and authenticate LLVM 21.1.8
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = Join-Path $env:RUNNER_TEMP $env:LLVM_ARCHIVE_NAME
+          $llvmRoot = Join-Path $env:RUNNER_TEMP "llvm-21.1.8-windows-msvc"
+
+          curl.exe --fail --location --retry 3 --proto "=https" `
+            --output $archive $env:LLVM_ARCHIVE_URL
+          if ((Get-Item $archive).Length -ne [int64]$env:LLVM_ARCHIVE_SIZE) {
+            throw "LLVM archive byte size mismatch"
+          }
+          $actualHash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actualHash -ne $env:LLVM_ARCHIVE_SHA256) {
+            throw "LLVM archive SHA-256 mismatch: $actualHash"
+          }
+
+          New-Item -ItemType Directory -Force -Path $llvmRoot | Out-Null
+          tar.exe -xJf $archive -C $llvmRoot --strip-components=1
+          Set-Content -NoNewline -Encoding ascii `
+            (Join-Path $llvmRoot ".archive-sha256") $actualHash
+          Set-Content -NoNewline -Encoding ascii `
+            (Join-Path $llvmRoot ".archive-size") $env:LLVM_ARCHIVE_SIZE
+
+      - name: Verify coherent LLVM, Clang, Tooling and frontend surface
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $llvmRoot = Join-Path $env:RUNNER_TEMP "llvm-21.1.8-windows-msvc"
+          if ((Get-Content (Join-Path $llvmRoot ".archive-sha256")) -ne $env:LLVM_ARCHIVE_SHA256) {
+            throw "cached LLVM archive identity is not the audited SHA-256"
+          }
+          if ((Get-Content (Join-Path $llvmRoot ".archive-size")) -ne $env:LLVM_ARCHIVE_SIZE) {
+            throw "cached LLVM archive identity has the wrong byte size"
+          }
+
+          $required = @(
+            "bin\clang-cl.exe",
+            "bin\lld-link.exe",
+            "bin\llvm-config.exe",
+            "bin\llvm-lib.exe",
+            "bin\llvm-nm.exe",
+            "bin\llvm-objdump.exe",
+            "bin\llvm-readobj.exe",
+            "include\clang\Tooling\Tooling.h",
+            "include\clang\Tooling\CommonOptionsParser.h",
+            "include\clang\ASTMatchers\ASTMatchFinder.h",
+            "include\clang\Rewrite\Core\Rewriter.h",
+            "include\clang\Frontend\FrontendActions.h",
+            "include\clang\Frontend\CompilerInstance.h",
+            "include\clang\Lex\Lexer.h",
+            "include\clang\AST\Attr.h",
+            "lib\cmake\llvm\LLVMConfig.cmake",
+            "lib\cmake\clang\ClangConfig.cmake"
+          )
+          foreach ($relative in $required) {
+            if (-not (Test-Path (Join-Path $llvmRoot $relative) -PathType Leaf)) {
+              throw "audited LLVM archive is missing $relative"
+            }
+          }
+
+          $version = & (Join-Path $llvmRoot "bin\clang-cl.exe") --version
+          $llvmVersion = & (Join-Path $llvmRoot "bin\llvm-config.exe") --version
+          if ($version -notmatch "clang version 21\.1\.8" -or
+              $version -notmatch "x86_64-pc-windows-msvc" -or
+              $llvmVersion.Trim() -ne "21.1.8") {
+            throw "LLVM/Clang archive version or target mismatch: $version / $llvmVersion"
+          }
+          "LLVM_ROOT=$llvmRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          (Join-Path $llvmRoot "bin") | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Download and authenticate RapidJSON 1.1.0
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = Join-Path $env:RUNNER_TEMP "rapidjson-1.1.0.tar.gz"
+          $sourceRoot = Join-Path $env:RUNNER_TEMP "rapidjson-1.1.0"
+          curl.exe --fail --location --retry 3 --proto "=https" `
+            --output $archive $env:RAPIDJSON_ARCHIVE_URL
+          if ((Get-Item $archive).Length -ne [int64]$env:RAPIDJSON_ARCHIVE_SIZE) {
+            throw "RapidJSON archive byte size mismatch"
+          }
+          $actualHash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actualHash -ne $env:RAPIDJSON_ARCHIVE_SHA256) {
+            throw "RapidJSON archive SHA-256 mismatch: $actualHash"
+          }
+          New-Item -ItemType Directory -Force -Path $sourceRoot | Out-Null
+          tar.exe -xzf $archive -C $sourceRoot --strip-components=1
+          if (-not (Test-Path (Join-Path $sourceRoot "include\rapidjson\document.h"))) {
+            throw "pinned RapidJSON archive lacks document.h"
+          }
+          "RAPIDJSON_ROOT=$sourceRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Locate Visual Studio Build Tools and Windows SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsRoot = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          if (-not $vsRoot) { throw "Visual Studio C++ Build Tools were not found" }
+          $devCmd = Join-Path $vsRoot "Common7\Tools\VsDevCmd.bat"
+          if (-not (Test-Path $devCmd)) { throw "VsDevCmd.bat is missing" }
+
+          # Avoid nested cmd/PowerShell quoting around a Program Files path by
+          # materializing one short command file. Only the selected VS install
+          # path is interpolated, and it came directly from vswhere.
+          $environmentScript = Join-Path $env:RUNNER_TEMP "mdslc-vs-environment.cmd"
+          @"
+          @echo off
+          call "$devCmd" -no_logo -arch=x64 -host_arch=x64 >nul
+          if errorlevel 1 exit /b %errorlevel%
+          set
+          "@ | Set-Content -Encoding ascii $environmentScript
+          $environmentLines = & cmd.exe /d /s /c "`"$environmentScript`""
+          if ($LASTEXITCODE -ne 0) {
+            throw "Visual Studio developer environment initialization failed"
+          }
+          foreach ($line in $environmentLines) {
+            if ($line -match "^([^=]+)=(.*)$") {
+              $name = $matches[1]
+              if ($name -in @("INCLUDE", "LIB", "LIBPATH", "PATH", "VCToolsInstallDir", "WindowsSdkDir", "WindowsSDKVersion")) {
+                "$name=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+              }
+            }
+          }
+          "VS_INSTALLATION=$vsRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Record compiler, linker, SDK and runner environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          clang-cl --version
+          lld-link --version
+          cmake --version
+          ninja --version
+          where.exe cl.exe
+          where.exe link.exe
+          where.exe clang-cl.exe
+          Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsBuildNumber, OsArchitecture
+          @"
+          ## Windows x64 environment
+
+          - runner: windows-2025
+          - LLVM/Clang: 21.1.8, audited official archive
+          - target: x86_64-pc-windows-msvc
+          - Visual Studio: $env:VS_INSTALLATION
+          - MSVC tools: $env:VCToolsInstallDir
+          - Windows SDK: $env:WindowsSDKVersion
+          - linker: lld-link
+          - OpenBLAS: intentionally disabled
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Configure Release under a space-bearing path
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $build = Join-Path $env:RUNNER_TEMP "MDSLC Windows Release"
+          "MDSLC_WINDOWS_RELEASE_BUILD=$build" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          cmake -S compiler -B $build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            "-DCMAKE_C_COMPILER:FILEPATH=$env:LLVM_ROOT\bin\clang-cl.exe" `
+            "-DCMAKE_CXX_COMPILER:FILEPATH=$env:LLVM_ROOT\bin\clang-cl.exe" `
+            "-DCMAKE_LINKER:FILEPATH=$env:LLVM_ROOT\bin\lld-link.exe" `
+            "-DCMAKE_AR:FILEPATH=$env:LLVM_ROOT\bin\llvm-lib.exe" `
+            "-DMDSLC_CLANGXX_EXECUTABLE:FILEPATH=$env:LLVM_ROOT\bin\clang-cl.exe" `
+            -DMDSLC_ENABLE_NATIVE_FRONTEND=ON `
+            -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=OFF `
+            -DMDSLC_ENABLE_OPENBLAS=OFF `
+            -DMDSLC_REQUIRE_OPENBLAS=OFF `
+            -DMDSLC_USE_CCACHE=OFF `
+            "-DMATCORE_RAPIDJSON_INCLUDE_DIR:PATH=$env:RAPIDJSON_ROOT\include" `
+            "-DLLVM_DIR:PATH=$env:LLVM_ROOT\lib\cmake\llvm" `
+            "-DClang_DIR:PATH=$env:LLVM_ROOT\lib\cmake\clang" `
+            | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP "mdslc-windows-configure.log")
+          Select-String -Path (Join-Path $env:RUNNER_TEMP "mdslc-windows-configure.log") `
+            -Pattern "MDSLC native frontend link model:"
+          Select-String -Path (Join-Path $env:RUNNER_TEMP "mdslc-windows-configure.log") `
+            -SimpleMatch "MDSLC OpenBLAS variant: unavailable (optional)"
+
+      - name: Build Release
+        shell: pwsh
+        run: cmake --build $env:MDSLC_WINDOWS_RELEASE_BUILD --parallel 2
+
+      - name: Run Release tests
+        shell: pwsh
+        run: ctest --test-dir $env:MDSLC_WINDOWS_RELEASE_BUILD --output-on-failure -j1
+
+      - name: Install the Windows distribution candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $prefix = Join-Path $env:RUNNER_TEMP "MDSLC Windows ünicode install"
+          cmake --install $env:MDSLC_WINDOWS_RELEASE_BUILD --prefix $prefix
+
+          # Copy only LLVM/Clang DLLs that an installed executable actually
+          # imports and that exist in the authenticated archive.
+          $installedBinaries = Get-ChildItem (Join-Path $prefix "bin") -File `
+            | Where-Object { $_.Extension -in @(".exe", ".dll") }
+          foreach ($binary in $installedBinaries) {
+            $imports = & "$env:LLVM_ROOT\bin\llvm-readobj.exe" --coff-imports $binary.FullName
+            foreach ($line in $imports) {
+              if ($line -match "Name:\s+((?:LLVM|clang)[^\\/]*\.dll)") {
+                $dependency = Join-Path $env:LLVM_ROOT "bin\$($matches[1])"
+                if (-not (Test-Path $dependency)) {
+                  throw "$($binary.Name) imports missing authenticated dependency $($matches[1])"
+                }
+                Copy-Item -Force $dependency (Join-Path $prefix "bin")
+              }
+            }
+          }
+
+          $licenseRoot = Join-Path $prefix "share\licenses"
+          New-Item -ItemType Directory -Force -Path (Join-Path $licenseRoot "llvm") | Out-Null
+          New-Item -ItemType Directory -Force -Path (Join-Path $licenseRoot "rapidjson") | Out-Null
+          Copy-Item "$env:LLVM_ROOT\LICENSE.TXT" (Join-Path $licenseRoot "llvm\LICENSE.TXT")
+          Copy-Item "$env:RAPIDJSON_ROOT\license.txt" (Join-Path $licenseRoot "rapidjson\license.txt")
+          "MDSLC_WINDOWS_INSTALL_PREFIX=$prefix" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Re-run relocated external CMake consumer
+        shell: pwsh
+        run: |
+          python compiler/tests/consumer/run_installed_consumer_test.py `
+            --cmake (Get-Command cmake).Source `
+            --source-dir compiler/tests/consumer `
+            --producer-build-dir $env:MDSLC_WINDOWS_RELEASE_BUILD `
+            --test-root (Join-Path $env:RUNNER_TEMP "MDSLC external consumer ünicode") `
+            --cxx-compiler "$env:LLVM_ROOT\bin\clang-cl.exe"
+
+      - name: Validate COFF, PE, DLL, import library and ISA artifacts
+        shell: pwsh
+        run: |
+          $report = Join-Path $env:MDSLC_WINDOWS_INSTALL_PREFIX "share\matcore\windows-artifact-report.json"
+          python compiler/tests/windows/run_windows_distribution_validation.py `
+            --source-root $env:GITHUB_WORKSPACE `
+            --build-dir $env:MDSLC_WINDOWS_RELEASE_BUILD `
+            --install-prefix $env:MDSLC_WINDOWS_INSTALL_PREFIX `
+            --llvm-root $env:LLVM_ROOT `
+            --report-out $report `
+            --expected-clang-version 21.1.8
+          Get-Content $report
+
+      - name: Configure and validate focused Debug runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $build = Join-Path $env:RUNNER_TEMP "MDSLC Windows Debug"
+          cmake -S compiler -B $build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Debug `
+            "-DCMAKE_C_COMPILER:FILEPATH=$env:LLVM_ROOT\bin\clang-cl.exe" `
+            "-DCMAKE_CXX_COMPILER:FILEPATH=$env:LLVM_ROOT\bin\clang-cl.exe" `
+            "-DCMAKE_LINKER:FILEPATH=$env:LLVM_ROOT\bin\lld-link.exe" `
+            "-DCMAKE_AR:FILEPATH=$env:LLVM_ROOT\bin\llvm-lib.exe" `
+            "-DMDSLC_CLANGXX_EXECUTABLE:FILEPATH=$env:LLVM_ROOT\bin\clang-cl.exe" `
+            -DMDSLC_ENABLE_NATIVE_FRONTEND=ON `
+            -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=OFF `
+            -DMDSLC_ENABLE_OPENBLAS=OFF `
+            -DMDSLC_USE_CCACHE=OFF `
+            "-DMATCORE_RAPIDJSON_INCLUDE_DIR:PATH=$env:RAPIDJSON_ROOT\include" `
+            "-DLLVM_DIR:PATH=$env:LLVM_ROOT\lib\cmake\llvm" `
+            "-DClang_DIR:PATH=$env:LLVM_ROOT\lib\cmake\clang"
+          cmake --build $build --parallel 2
+          ctest --test-dir $build `
+            -R "^(ir\.|platform\.|runtime\.|planner\.)" `
+            --output-on-failure -j1
+
+      - name: Repository hygiene
+        shell: bash
+        run: bash tests/check_repository_hygiene.sh
+
+      - name: Create ZIP distribution candidate
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "MatcoreDSL-windows-x64-clang21.zip"
+          Compress-Archive -Path (Join-Path $env:MDSLC_WINDOWS_INSTALL_PREFIX "*") `
+            -DestinationPath $zip -CompressionLevel Optimal
+          "MDSLC_WINDOWS_ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Get-FileHash -Algorithm SHA256 $zip
+
+      - name: Upload Windows x64 distribution candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: MatcoreDSL-windows-x64-clang21
+          path: ${{ env.MDSLC_WINDOWS_ZIP }}
+          if-no-files-found: error
+          retention-days: 14

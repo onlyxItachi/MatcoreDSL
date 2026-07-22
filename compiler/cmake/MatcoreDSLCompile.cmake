@@ -63,8 +63,33 @@ function(matcoredsl_add_executable target_name)
   get_filename_component(mdsl_stem "${mdsl_source}" NAME_WE)
   set(mdsl_object_dir
       "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/${target_name}.mdsl")
-  set(mdsl_object
+  if(MSVC OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    set(mdsl_object_extension ".obj")
+    set(mdsl_standard_option "/std:c++${MDSLC_CXX_STANDARD}")
+    set(mdsl_compile_only_option "/c")
+    set(mdsl_output_option "/Fo${mdsl_object_dir}/${mdsl_stem}-${mdsl_source_hash}.obj")
+    set(mdsl_dependency_options
+      /clang:-MD
+      /clang:-MF
+      "/clang:${mdsl_object_dir}/${mdsl_stem}-${mdsl_source_hash}.obj.d")
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+      set(mdsl_runtime_option /MDd)
+    else()
+      set(mdsl_runtime_option /MD)
+    endif()
+    set(mdsl_frontend_options /TP /EHsc /Zc:__cplusplus ${mdsl_runtime_option})
+  else()
+    set(mdsl_object_extension ".o")
+    set(mdsl_standard_option "-std=c++${MDSLC_CXX_STANDARD}")
+    set(mdsl_compile_only_option -c)
+    set(mdsl_output_option -o
       "${mdsl_object_dir}/${mdsl_stem}-${mdsl_source_hash}.o")
+    set(mdsl_dependency_options -MD -MF
+      "${mdsl_object_dir}/${mdsl_stem}-${mdsl_source_hash}.o.d")
+    set(mdsl_frontend_options)
+  endif()
+  set(mdsl_object
+      "${mdsl_object_dir}/${mdsl_stem}-${mdsl_source_hash}${mdsl_object_extension}")
   set(mdsl_depfile "${mdsl_object}.d")
 
   add_custom_command(
@@ -72,13 +97,14 @@ function(matcoredsl_add_executable target_name)
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${mdsl_object_dir}"
     COMMAND
       "$<TARGET_FILE:MatcoreDSL::Compiler>"
-      "-std=c++${MDSLC_CXX_STANDARD}"
+      "${mdsl_standard_option}"
       "--matcore-target=${MDSLC_MATCORE_TARGET}"
       "--frontend=${MDSLC_FRONTEND}"
+      ${mdsl_frontend_options}
       ${MDSLC_COMPILE_OPTIONS}
-      -MD -MF "${mdsl_depfile}"
-      -c "${mdsl_source}"
-      -o "${mdsl_object}"
+      ${mdsl_dependency_options}
+      ${mdsl_compile_only_option} "${mdsl_source}"
+      ${mdsl_output_option}
     DEPENDS
       "${mdsl_source}"
       MatcoreDSL::Compiler
