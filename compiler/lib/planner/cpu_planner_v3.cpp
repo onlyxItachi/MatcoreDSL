@@ -1,0 +1,463 @@
+#include "cpu_planner_v3.h"
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+
+namespace matcore::mdslc::planner {
+namespace {
+
+inline constexpr std::uint64_t kParallelMacroTileRowsV1 = 128;
+
+bool request_matches(CpuGemmRequestV3 request,
+                     CpuGemmVariantV3 variant) noexcept {
+  if (request == CpuGemmRequestV3::automatic) return true;
+  return static_cast<unsigned>(request) ==
+         static_cast<unsigned>(variant) + 1U;
+}
+
+CpuGemmRequestV2 v2_request(CpuGemmVariantV3 variant) noexcept {
+  switch (variant) {
+    case CpuGemmVariantV3::reference:
+      return CpuGemmRequestV2::force_reference;
+    case CpuGemmVariantV3::tiled:
+      return CpuGemmRequestV2::force_tiled;
+    case CpuGemmVariantV3::compiler_vectorized:
+      return CpuGemmRequestV2::force_compiler_vectorized;
+    case CpuGemmVariantV3::external_openblas:
+      return CpuGemmRequestV2::force_external_openblas;
+    case CpuGemmVariantV3::native_packed_avx2_fma:
+    case CpuGemmVariantV3::native_packed_avx512_fma:
+    case CpuGemmVariantV3::native_parallel_avx2_fma:
+    case CpuGemmVariantV3::native_parallel_avx512_fma:
+      return CpuGemmRequestV2::force_native_packed_avx2_fma;
+  }
+  return CpuGemmRequestV2::force_reference;
+}
+
+std::size_t v2_index(CpuGemmVariantV3 variant) noexcept {
+  switch (variant) {
+    case CpuGemmVariantV3::reference:
+      return 0;
+    case CpuGemmVariantV3::tiled:
+      return 1;
+    case CpuGemmVariantV3::compiler_vectorized:
+      return 2;
+    case CpuGemmVariantV3::external_openblas:
+      return 3;
+    case CpuGemmVariantV3::native_packed_avx2_fma:
+    case CpuGemmVariantV3::native_packed_avx512_fma:
+    case CpuGemmVariantV3::native_parallel_avx2_fma:
+    case CpuGemmVariantV3::native_parallel_avx512_fma:
+      return 4;
+  }
+  return 0;
+}
+
+std::string_view topology_reason(
+    const CpuPlannerTopologyViewV1 &topology) noexcept {
+  if (topology.version != kCpuPlannerTopologyViewVersionV1)
+    return "CPU planner topology view version is unsupported";
+  if (!topology.discovery_complete)
+    return "complete CPU topology discovery is required for parallel planning";
+  if (topology.logical_processors == 0 || topology.physical_cores == 0 ||
+      topology.available_processors == 0 || topology.numa_nodes == 0)
+    return "complete CPU topology counts must be positive";
+  if (topology.physical_cores > topology.logical_processors)
+    return "physical core count exceeds logical processor count";
+  if (topology.available_processors > topology.logical_processors)
+    return "available processor count exceeds logical processor count";
+  return {};
+}
+
+std::string_view thread_policy_reason(
+    const CpuThreadPolicyV1 &policy) noexcept {
+  if (policy.version != kCpuThreadPolicyVersionV1)
+    return "CPU thread policy version is unsupported";
+  if (policy.requested_threads == 0)
+    return "requested thread count must be positive";
+  return {};
+}
+
+std::uint32_t policy_thread_ceiling(
+    const CpuPlannerTopologyViewV1 &topology,
+    const CpuThreadPolicyV1 &policy,
+    const CpuGemmImplementationResourcesV2 &resources) noexcept {
+  std::uint32_t result = policy.requested_threads;
+  if (policy.maximum_threads != 0) result = std::min(result, policy.maximum_threads);
+  result = std::min(result, resources.execution_context_worker_capacity);
+  result = std::min(result, topology.available_processors);
+  result = std::min(result, policy.allow_smt ? topology.logical_processors
+                                             : topology.physical_cores);
+  return result;
+}
+
+std::uint64_t divide_round_up(std::uint64_t numerator,
+                              std::uint64_t denominator) noexcept {
+  if (denominator == 0) return std::numeric_limits<std::uint64_t>::max();
+  return numerator / denominator + (numerator % denominator != 0 ? 1U : 0U);
+}
+
+bool total_parallel_workspace(std::uint64_t shared_bytes,
+                        std::uint64_t per_worker_bytes,
+                        std::uint32_t threads,
+                        std::uint64_t *total) noexcept {
+  if (total == nullptr ||
+      (per_worker_bytes != 0 &&
+       threads > std::numeric_limits<std::uint64_t>::max() /
+                     per_worker_bytes))
+    return false;
+  const std::uint64_t worker_bytes = per_worker_bytes * threads;
+  if (worker_bytes > std::numeric_limits<std::uint64_t>::max() - shared_bytes)
+    return false;
+  *total = shared_bytes + worker_bytes;
+  return true;
+}
+
+std::uint64_t parallel_cost(const CpuGemmProblemV1 &problem,
+                            std::uint32_t threads, bool avx512) noexcept {
+  const std::uint64_t work = detail::operation_count(problem);
+  const std::uint64_t compute_factor = avx512 ? 1 : 2;
+  const std::uint64_t compute = divide_round_up(
+      detail::saturating_multiply(work, compute_factor), threads);
+  const std::uint64_t a_pack = detail::saturating_multiply(
+      detail::saturating_multiply(static_cast<std::uint64_t>(problem.m),
+                                  static_cast<std::uint64_t>(problem.k)),
+      6);
+  // B is packed once into a caller-owned shared immutable image before the
+  // row-band workers run. Only transient A storage is per-worker.
+  const std::uint64_t b_pack = detail::saturating_multiply(
+      detail::saturating_multiply(static_cast<std::uint64_t>(problem.k),
+                                  static_cast<std::uint64_t>(problem.n)),
+      6);
+  return detail::saturating_add(
+      detail::saturating_add(compute, detail::saturating_add(a_pack, b_pack)),
+      detail::saturating_add(UINT64_C(200000),
+                             detail::saturating_multiply(threads, 20000)));
+}
+
+std::uint64_t avx512_single_cost(const CpuGemmProblemV1 &problem) noexcept {
+  const std::uint64_t work = detail::operation_count(problem);
+  const std::uint64_t packing = detail::saturating_add(
+      detail::saturating_multiply(static_cast<std::uint64_t>(problem.m),
+                                  static_cast<std::uint64_t>(problem.k)),
+      detail::saturating_multiply(static_cast<std::uint64_t>(problem.k),
+                                  static_cast<std::uint64_t>(problem.n)));
+  return detail::saturating_add(
+      detail::saturating_add(work, detail::saturating_multiply(packing, 5)),
+      48000);
+}
+
+std::uint64_t external_cost(const CpuGemmProblemV1 &problem,
+                            std::uint32_t threads) noexcept {
+  if (problem.m == 1) return std::numeric_limits<std::uint64_t>::max();
+  return detail::saturating_add(
+      divide_round_up(detail::operation_count(problem), threads), 2000);
+}
+
+}  // namespace
+
+const std::array<CpuGemmVariantRecordV3, kCpuGemmCandidateCountV3> &
+cpu_gemm_variant_registry_v3() noexcept {
+  return kCpuGemmVariantRegistryV3;
+}
+
+CpuGemmPlanV3 plan_cpu_gemm_v3(
+    const CpuGemmProblemV1 &problem,
+    const CpuCapabilitiesV1 &baseline_capabilities,
+    const CpuPlannerTopologyViewV1 &topology,
+    const CpuThreadPolicyV1 &thread_policy,
+    const CpuGemmImplementationResourcesV2 &resources,
+    CpuGemmRequestV3 request) noexcept {
+  CpuGemmPlanV3 plan;
+  plan.problem = problem;
+  plan.baseline_capabilities = baseline_capabilities;
+  plan.topology = topology;
+  plan.thread_policy = thread_policy;
+  plan.resources = resources;
+  plan.request = request;
+
+  const std::string_view policy_error = thread_policy_reason(thread_policy);
+  const CpuGemmPlanV1 problem_check = plan_cpu_gemm_v1(
+      problem, baseline_capabilities, CpuGemmRequestV1::force_reference);
+  if (problem_check.status == CpuPlanStatusV1::invalid_problem ||
+      problem_check.status == CpuPlanStatusV1::invalid_capabilities) {
+    plan.status = problem_check.status;
+    plan.selection_reason = problem_check.selection_reason;
+  } else if (!policy_error.empty()) {
+    plan.status = CpuPlanStatusV1::invalid_capabilities;
+    plan.selection_reason = policy_error;
+  }
+
+  const std::string_view topology_error = topology_reason(topology);
+  const std::uint64_t macro_tiles =
+      problem.m > 0
+          ? (static_cast<std::uint64_t>(problem.m) +
+             kParallelMacroTileRowsV1 - 1U) /
+                kParallelMacroTileRowsV1
+          : 0;
+  const std::uint32_t thread_ceiling =
+      topology_error.empty()
+          ? policy_thread_ceiling(topology, thread_policy, resources)
+          : 0;
+
+  bool found = false;
+  std::uint64_t best_cost = std::numeric_limits<std::uint64_t>::max();
+  std::uint16_t best_priority = std::numeric_limits<std::uint16_t>::max();
+  std::size_t best_index = kCpuGemmCandidateCountV3;
+
+  for (std::size_t index = 0; index < kCpuGemmCandidateCountV3; ++index) {
+    const CpuGemmVariantRecordV3 &record = kCpuGemmVariantRegistryV3[index];
+    CpuCandidateDecisionV3 &decision = plan.candidates[index];
+    decision.variant = record.variant;
+    decision.stable_id = record.stable_id;
+    decision.deterministic_priority = record.deterministic_priority;
+    if (plan.status == CpuPlanStatusV1::invalid_problem ||
+        plan.status == CpuPlanStatusV1::invalid_capabilities) {
+      decision.reason = plan.selection_reason;
+      continue;
+    }
+
+    if (record.variant <= CpuGemmVariantV3::native_packed_avx2_fma) {
+      CpuGemmImplementationResourcesV1 v2_resources = resources.baseline;
+      v2_resources.requested_threads = 1;
+      if (record.variant == CpuGemmVariantV3::external_openblas) {
+        const std::uint32_t topology_limit = topology_error.empty()
+                                                 ? std::min(
+                                                       topology.available_processors,
+                                                       thread_policy.allow_smt
+                                                           ? topology.logical_processors
+                                                           : topology.physical_cores)
+                                                 : 1;
+        std::uint32_t provider_threads =
+            std::min(thread_policy.requested_threads, topology_limit);
+        if (thread_policy.maximum_threads != 0)
+          provider_threads =
+              std::min(provider_threads, thread_policy.maximum_threads);
+        provider_threads =
+            std::min(provider_threads, v2_resources.openblas_maximum_threads);
+        v2_resources.requested_threads = provider_threads;
+      }
+      const CpuGemmPlanV2 base = plan_cpu_gemm_v2(
+          problem, baseline_capabilities, v2_resources,
+          v2_request(record.variant));
+      const CpuCandidateDecisionV2 &base_decision =
+          base.candidates[v2_index(record.variant)];
+      decision.legal = base_decision.legal;
+      decision.reason = base_decision.reason;
+      decision.required_workspace_bytes =
+          base_decision.required_workspace_bytes;
+      decision.required_workspace_alignment =
+          base_decision.required_workspace_alignment;
+      decision.actual_threads = base_decision.actual_threads;
+      decision.estimated_cost = base_decision.estimated_cost;
+      if (record.variant == CpuGemmVariantV3::external_openblas &&
+          decision.legal) {
+        decision.estimated_cost = external_cost(problem, decision.actual_threads);
+      }
+    } else if (record.variant ==
+               CpuGemmVariantV3::native_packed_avx512_fma) {
+      if (!resources.avx512f_hardware)
+        decision.reason = "AVX-512F hardware support is unavailable";
+      else if (!baseline_capabilities.detection_complete ||
+               baseline_capabilities.architecture != CpuArchitectureV1::x86_64)
+        decision.reason = "AVX-512 F32 candidate requires complete x86_64 discovery";
+      else if (!has_feature(baseline_capabilities, CpuFeatureV1::fma))
+        decision.reason = "AVX-512 F32 candidate requires FMA";
+      else if (!resources.avx512f_os_enabled)
+        decision.reason = "AVX-512F architectural state is not OS-enabled";
+      else if (!resources.avx512f_compiler_supported)
+        decision.reason = "AVX-512F compiler support is unavailable";
+      else if (!resources.native_packed_avx512_fma_compiled)
+        decision.reason = "native packed AVX-512 implementation is not compiled";
+      else if (!resources.native_packed_avx512_fma_runtime_validated)
+        decision.reason = "native packed AVX-512 implementation is not runtime-validated";
+      else if (!resources.native_packed_avx512_workspace_size_valid)
+        decision.reason = "native packed AVX-512 workspace requirement overflowed";
+      else if (resources.native_packed_avx512_workspace_alignment < 64 ||
+               (resources.native_packed_avx512_workspace_alignment &
+                (resources.native_packed_avx512_workspace_alignment - 1U)) != 0)
+        decision.reason = "native packed AVX-512 workspace alignment is invalid";
+      else {
+        decision.legal = true;
+        decision.reason = "legal";
+        decision.actual_threads = 1;
+        decision.required_workspace_bytes =
+            resources.native_packed_avx512_workspace_bytes;
+        decision.required_workspace_alignment =
+            resources.native_packed_avx512_workspace_alignment;
+        decision.estimated_cost = avx512_single_cost(problem);
+      }
+    } else {
+      const bool avx512 = record.variant ==
+                          CpuGemmVariantV3::native_parallel_avx512_fma;
+      if (!topology_error.empty())
+        decision.reason = topology_error;
+      else if (!resources.execution_context_available ||
+               resources.execution_context_worker_capacity == 0)
+        decision.reason = "persistent CPU execution context is unavailable";
+      else if (thread_policy.external_provider_parallelism_active)
+        decision.reason = "native/provider nested parallelism is prohibited";
+      else if ((!avx512 && !resources.native_parallel_avx2_fma_compiled) ||
+               (avx512 && !resources.native_parallel_avx512_fma_compiled))
+        decision.reason = avx512
+                              ? "parallel AVX-512 implementation is not compiled"
+                              : "parallel AVX2/FMA implementation is not compiled";
+      else if (!avx512 &&
+               (!resources.baseline.native_packed_avx2_fma_compiled ||
+                !resources.native_parallel_avx2_workspace_size_valid))
+        decision.reason = "parallel AVX2/FMA workspace implementation is unavailable";
+      else if (avx512 &&
+               (!resources.native_packed_avx512_fma_compiled ||
+                !resources.native_parallel_avx512_workspace_size_valid))
+        decision.reason = "parallel AVX-512 workspace implementation is unavailable";
+      else if (avx512 && !resources.avx512f_hardware)
+        decision.reason = "AVX-512F hardware support is unavailable";
+      else if (avx512 &&
+               (!baseline_capabilities.detection_complete ||
+                baseline_capabilities.architecture != CpuArchitectureV1::x86_64))
+        decision.reason = "parallel AVX-512 requires complete x86_64 discovery";
+      else if (avx512 && !resources.avx512f_os_enabled)
+        decision.reason = "AVX-512F architectural state is not OS-enabled";
+      else if (avx512 && !resources.avx512f_compiler_supported)
+        decision.reason = "AVX-512F compiler support is unavailable";
+      else if (avx512 &&
+               !resources.native_packed_avx512_fma_runtime_validated)
+        decision.reason = "native packed AVX-512 implementation is not runtime-validated";
+      else if (!avx512 &&
+               (!baseline_capabilities.detection_complete ||
+                baseline_capabilities.architecture != CpuArchitectureV1::x86_64 ||
+                !has_feature(baseline_capabilities, CpuFeatureV1::avx2) ||
+                !has_feature(baseline_capabilities, CpuFeatureV1::fma) ||
+                baseline_capabilities.usable_vector_bits < 256))
+        decision.reason = "parallel AVX2/FMA requires usable 256-bit state";
+      else if (avx512 &&
+               !has_feature(baseline_capabilities, CpuFeatureV1::fma))
+        decision.reason = "parallel AVX-512 F32 requires FMA";
+      else {
+        const std::uint32_t actual_threads = static_cast<std::uint32_t>(
+            std::min<std::uint64_t>(thread_ceiling, macro_tiles));
+        if (actual_threads < 2)
+          decision.reason = "parallel candidate requires at least two output macro-tiles and workers";
+        else if (divide_round_up(detail::operation_count(problem),
+                                 actual_threads) <
+                 kCpuParallelMinimumWorkPerThreadV1)
+          decision.reason = "parallel work per thread is below the deterministic threshold";
+        else {
+          const std::uint64_t shared_workspace =
+              avx512
+                  ? resources.native_parallel_avx512_shared_workspace_bytes
+                  : resources.native_parallel_avx2_shared_workspace_bytes;
+          const std::uint64_t per_worker =
+              avx512
+                  ? resources.native_parallel_avx512_per_worker_workspace_bytes
+                  : resources.native_parallel_avx2_per_worker_workspace_bytes;
+          const std::uint32_t alignment =
+              avx512 ? resources.native_parallel_avx512_workspace_alignment
+                     : resources.native_parallel_avx2_workspace_alignment;
+          std::uint64_t total_workspace = 0;
+          if (shared_workspace == 0 || per_worker == 0)
+            decision.reason = "parallel workspace requirements must be nonzero";
+          else if (alignment < 32 || (alignment & (alignment - 1U)) != 0)
+            decision.reason = "parallel per-worker workspace alignment is invalid";
+          else if (!total_parallel_workspace(shared_workspace, per_worker,
+                                              actual_threads,
+                                              &total_workspace))
+            decision.reason = "parallel workspace requirement overflowed";
+          else {
+            decision.legal = true;
+            decision.reason = "legal";
+            decision.actual_threads = actual_threads;
+            decision.required_workspace_bytes = total_workspace;
+            decision.required_workspace_alignment = alignment;
+            decision.estimated_cost =
+                parallel_cost(problem, actual_threads, avx512);
+          }
+        }
+      }
+    }
+
+    if (!decision.legal || !request_matches(request, record.variant)) continue;
+    if (!found || decision.estimated_cost < best_cost ||
+        (decision.estimated_cost == best_cost &&
+         (decision.deterministic_priority < best_priority ||
+          (decision.deterministic_priority == best_priority &&
+           index < best_index)))) {
+      found = true;
+      best_cost = decision.estimated_cost;
+      best_priority = decision.deterministic_priority;
+      best_index = index;
+      plan.selected_variant = record.variant;
+      plan.selected_id = record.stable_id;
+    }
+  }
+
+  if (plan.status == CpuPlanStatusV1::invalid_problem ||
+      plan.status == CpuPlanStatusV1::invalid_capabilities)
+    return plan;
+  if (!found) {
+    plan.status = request == CpuGemmRequestV3::automatic
+                      ? CpuPlanStatusV1::no_legal_variant
+                      : CpuPlanStatusV1::forced_variant_illegal;
+    plan.selection_reason = request == CpuGemmRequestV3::automatic
+                                ? "no legal CPU GEMM variant"
+                                : "requested CPU GEMM variant is illegal";
+    return plan;
+  }
+  plan.status = CpuPlanStatusV1::selected;
+  plan.selection_reason =
+      request == CpuGemmRequestV3::automatic
+          ? "lowest deterministic static cost; ties use priority then registry order"
+          : "explicit legal variant request";
+  return plan;
+}
+
+std::size_t format_cpu_gemm_plan_v3(const CpuGemmPlanV3 &plan,
+                                    char *output,
+                                    std::size_t capacity) noexcept {
+  if (output == nullptr) capacity = 0;
+  detail::DiagnosticWriter writer{output, capacity};
+  writer.text("cpu-planner-v3 request=");
+  writer.number(static_cast<std::uint64_t>(plan.request));
+  writer.text(" requested-threads=");
+  writer.number(plan.thread_policy.requested_threads);
+  writer.text(" max-threads=");
+  writer.number(plan.thread_policy.maximum_threads);
+  writer.text(" physical-cores=");
+  writer.number(plan.topology.physical_cores);
+  writer.text(" logical-processors=");
+  writer.number(plan.topology.logical_processors);
+  writer.text(" numa-nodes=");
+  writer.number(plan.topology.numa_nodes);
+  writer.text(" status=");
+  writer.number(static_cast<std::uint64_t>(plan.status));
+  writer.text(" selected=");
+  writer.text(plan.selected_id.empty() ? "none" : plan.selected_id);
+  writer.text(" reason=");
+  writer.text(plan.selection_reason);
+  writer.text(" candidates=[");
+  for (std::size_t index = 0; index < plan.candidates.size(); ++index) {
+    if (index != 0) writer.character(',');
+    const CpuCandidateDecisionV3 &candidate = plan.candidates[index];
+    writer.text(candidate.stable_id);
+    writer.character(':');
+    if (candidate.legal) {
+      writer.text("legal:cost=");
+      writer.number(candidate.estimated_cost);
+      writer.text(":workspace=");
+      writer.number(candidate.required_workspace_bytes);
+      writer.text(":alignment=");
+      writer.number(candidate.required_workspace_alignment);
+      writer.text(":threads=");
+      writer.number(candidate.actual_threads);
+    } else {
+      writer.text("rejected:");
+      writer.text(candidate.reason);
+    }
+  }
+  writer.character(']');
+  return writer.finish();
+}
+
+}  // namespace matcore::mdslc::planner
