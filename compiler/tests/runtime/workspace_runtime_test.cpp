@@ -259,6 +259,27 @@ int main() {
     return 1;
   }
 
+  alignas(64) std::array<std::byte, 256> aliased_lhs_storage{};
+  auto *aliased_lhs = reinterpret_cast<float *>(aliased_lhs_storage.data());
+  for (std::size_t index = 0; index < lhs.size(); ++index)
+    aliased_lhs[index] = lhs[index];
+  matcore_tensor_desc_v0 aliased_lhs_desc =
+      tensor(aliased_lhs, 2, 2, MATCORE_MUTABILITY_READ_ONLY_V0);
+  rejected_packed_b = {};
+  rejected_packed_b.abi_version = MATCORE_RUNTIME_EXECUTION_ABI_VERSION_V1;
+  rejected_packed_b.struct_size = sizeof(rejected_packed_b);
+  result = matcore_runtime_gemm_f32_prepack_b_v1(
+      &out_desc, &aliased_lhs_desc, &rhs_desc, &cpu_policy, &packed_options,
+      aliased_lhs_storage.data(),
+      static_cast<std::size_t>(prepacked_requirements.packed_b_bytes),
+      &rejected_packed_b);
+  if (result.code != MATCORE_STATUS_ALIAS_VIOLATION_V0 ||
+      aliased_lhs[0] != lhs[0] || aliased_lhs[1] != lhs[1] ||
+      aliased_lhs[2] != lhs[2] || aliased_lhs[3] != lhs[3]) {
+    std::cerr << "packed-B storage overlapped and mutated left input\n";
+    return 1;
+  }
+
   std::vector<std::byte> prepacked_workspace_storage(
       static_cast<std::size_t>(
           prepacked_requirements.execution_workspace_bytes) +
@@ -296,6 +317,23 @@ int main() {
   if (result.code != MATCORE_STATUS_PREPACK_MISMATCH_V0 ||
       out != std::array<float, 4>{-19.0F, -19.0F, -19.0F, -19.0F}) {
     std::cerr << "prepacked-B execution accepted a different right input\n";
+    return 1;
+  }
+
+  matcore_tensor_desc_v0 packed_storage_lhs_desc = tensor(
+      const_cast<void *>(valid_packed_b.packed_data), 2, 2,
+      MATCORE_MUTABILITY_READ_ONLY_V0);
+  out.fill(-23.0F);
+  report = empty_report();
+  result = matcore_runtime_gemm_f32_execute_prepacked_b_v1(
+      &out_desc, &packed_storage_lhs_desc, &rhs_desc, &cpu_policy,
+      &packed_options, &valid_packed_b, prepacked_workspace,
+      static_cast<std::size_t>(
+          prepacked_requirements.execution_workspace_bytes),
+      &report);
+  if (result.code != MATCORE_STATUS_ALIAS_VIOLATION_V0 ||
+      out != std::array<float, 4>{-23.0F, -23.0F, -23.0F, -23.0F}) {
+    std::cerr << "prepacked-B execution accepted packed storage as left input\n";
     return 1;
   }
 
