@@ -16,7 +16,7 @@ std::optional<std::filesystem::path> find_executable_native_v1(
     std::string_view name, std::string &error);
 FileIdentityV1 file_identity_native_v1(const std::filesystem::path &path,
                                        std::string &error);
-std::vector<FileIdentityV1> path_identity_chain_native_v1(
+std::vector<PathComponentSnapshotV1> path_identity_chain_native_v1(
     const std::filesystem::path &path, std::string &error);
 
 }  // namespace matcore::mdslc::support::detail

@@ -634,16 +634,42 @@ FileIdentityV1 file_identity_native_v1(const std::filesystem::path &path,
   return identity;
 }
 
-std::vector<FileIdentityV1> path_identity_chain_native_v1(
+std::vector<PathComponentSnapshotV1> path_identity_chain_native_v1(
     const std::filesystem::path &path, std::string &error) {
-  std::vector<FileIdentityV1> chain;
+  std::vector<PathComponentSnapshotV1> chain;
   std::filesystem::path current = path.root_path();
   for (const std::filesystem::path &component : path.relative_path()) {
     if (component == L".") continue;
     current /= component;
-    FileIdentityV1 identity = file_identity_native_v1(current, error);
+    PathComponentSnapshotV1 snapshot;
+    snapshot.identity = file_identity_native_v1(current, error);
     if (!error.empty()) return {};
-    chain.push_back(identity);
+    WIN32_FILE_ATTRIBUTE_DATA attributes{};
+    if (!::GetFileAttributesExW(current.c_str(), GetFileExInfoStandard,
+                                &attributes)) {
+      error = "GetFileAttributesExW failed while capturing path identity: " +
+              windows_error(::GetLastError());
+      return {};
+    }
+    const DWORD stable_type_attributes =
+        attributes.dwFileAttributes &
+        (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT);
+    snapshot.metadata_words[0] =
+        static_cast<std::uint64_t>(stable_type_attributes);
+    // Directory write times legitimately change while generated artifacts are
+    // emitted.  Preserve richer metadata only for reparse points, whose
+    // retargeting must invalidate an authenticated path traversal.
+    if ((attributes.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+      snapshot.metadata_words[1] =
+          (static_cast<std::uint64_t>(attributes.nFileSizeHigh) << 32U) |
+          attributes.nFileSizeLow;
+      snapshot.metadata_words[2] =
+          (static_cast<std::uint64_t>(
+               attributes.ftLastWriteTime.dwHighDateTime)
+           << 32U) |
+          attributes.ftLastWriteTime.dwLowDateTime;
+    }
+    chain.push_back(std::move(snapshot));
   }
   return chain;
 }

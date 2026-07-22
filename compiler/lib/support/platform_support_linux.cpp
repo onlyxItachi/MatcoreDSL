@@ -367,9 +367,9 @@ FileIdentityV1 file_identity_native_v1(const std::filesystem::path &path,
   return identity;
 }
 
-std::vector<FileIdentityV1> path_identity_chain_native_v1(
+std::vector<PathComponentSnapshotV1> path_identity_chain_native_v1(
     const std::filesystem::path &path, std::string &error) {
-  std::vector<FileIdentityV1> chain;
+  std::vector<PathComponentSnapshotV1> chain;
   std::filesystem::path current = path.root_path();
   for (const std::filesystem::path &component : path.relative_path()) {
     if (component == ".") continue;
@@ -380,11 +380,54 @@ std::vector<FileIdentityV1> path_identity_chain_native_v1(
               std::string(std::strerror(errno));
       return {};
     }
-    FileIdentityV1 identity;
-    identity.kind = FileIdentityKindV1::posix_device_inode;
-    identity.words = {static_cast<std::uint64_t>(status.st_dev),
-                      static_cast<std::uint64_t>(status.st_ino)};
-    chain.push_back(identity);
+    PathComponentSnapshotV1 snapshot;
+    snapshot.identity.kind = FileIdentityKindV1::posix_device_inode;
+    snapshot.identity.words = {static_cast<std::uint64_t>(status.st_dev),
+                               static_cast<std::uint64_t>(status.st_ino)};
+    // Directory timestamps and sizes legitimately change while the driver
+    // creates generated objects next to generated sources.  Type and object
+    // identity are stable for ordinary components; only symlinks need the
+    // richer metadata and exact target needed to reject a retarget even when
+    // the filesystem immediately reuses an inode.
+    snapshot.metadata_words[0] =
+        static_cast<std::uint64_t>(status.st_mode & S_IFMT);
+    if (S_ISLNK(status.st_mode)) {
+      snapshot.metadata_words[1] =
+          static_cast<std::uint64_t>(status.st_size);
+      snapshot.metadata_words[2] =
+          static_cast<std::uint64_t>(status.st_mtim.tv_sec);
+      snapshot.metadata_words[3] =
+          static_cast<std::uint64_t>(status.st_mtim.tv_nsec);
+      snapshot.metadata_words[4] =
+          static_cast<std::uint64_t>(status.st_ctim.tv_sec);
+      snapshot.metadata_words[5] =
+          static_cast<std::uint64_t>(status.st_ctim.tv_nsec);
+      std::size_t capacity = status.st_size > 0
+                                 ? static_cast<std::size_t>(status.st_size) + 1
+                                 : 256;
+      constexpr std::size_t maximum_capacity = 1024 * 1024;
+      for (;;) {
+        if (capacity > maximum_capacity) {
+          error = "symlink target exceeds path snapshot limit";
+          return {};
+        }
+        std::string target(capacity, '\0');
+        const ssize_t count =
+            ::readlink(current.c_str(), target.data(), target.size());
+        if (count < 0) {
+          error = "readlink failed while capturing path identity: " +
+                  std::string(std::strerror(errno));
+          return {};
+        }
+        if (static_cast<std::size_t>(count) < target.size()) {
+          target.resize(static_cast<std::size_t>(count));
+          snapshot.symbolic_link_target = std::move(target);
+          break;
+        }
+        capacity *= 2;
+      }
+    }
+    chain.push_back(std::move(snapshot));
   }
   return chain;
 }

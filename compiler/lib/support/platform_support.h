@@ -67,6 +67,15 @@ struct FileIdentityV1 {
                                    const FileIdentityV1 &) = default;
 };
 
+struct PathComponentSnapshotV1 {
+  FileIdentityV1 identity;
+  std::array<std::uint64_t, 6> metadata_words{};
+  std::string symbolic_link_target;
+
+  friend bool operator==(const PathComponentSnapshotV1 &,
+                         const PathComponentSnapshotV1 &) = default;
+};
+
 struct FileSnapshotV1 {
   std::uint32_t version = kPlatformSupportApiVersionV1;
   std::filesystem::path normalized_path;
@@ -78,7 +87,7 @@ struct FileSnapshotV1 {
   // Identity of each path component as traversed, including symlink/reparse
   // components. This prevents a dependency path from being retargeted while
   // keeping identical final bytes.
-  std::vector<FileIdentityV1> path_identity_chain;
+  std::vector<PathComponentSnapshotV1> path_identity_chain;
 };
 
 class TempDirectoryV1 {
