@@ -283,6 +283,104 @@ std::string format_cpu_ids(const std::vector<std::uint32_t> &cpu_ids) {
   return output.str();
 }
 
+const platform::CpuLogicalProcessorV1 *find_logical_processor(
+    const platform::CpuTopologyV1 &topology,
+    std::uint32_t logical_cpu) noexcept {
+  const auto found = std::find_if(
+      topology.logical_processors.begin(), topology.logical_processors.end(),
+      [logical_cpu](const platform::CpuLogicalProcessorV1 &processor) {
+        return processor.logical_cpu == logical_cpu;
+      });
+  return found == topology.logical_processors.end() ? nullptr : &*found;
+}
+
+bool same_physical_core(
+    const platform::CpuLogicalProcessorV1 &left,
+    const platform::CpuLogicalProcessorV1 &right) noexcept {
+  return left.package_id != platform::kUnknownTopologyIdV1 &&
+         left.core_id != platform::kUnknownTopologyIdV1 &&
+         right.package_id != platform::kUnknownTopologyIdV1 &&
+         right.core_id != platform::kUnknownTopologyIdV1 &&
+         left.package_id == right.package_id && left.core_id == right.core_id;
+}
+
+struct BenchmarkCallerSpareV1 {
+  bool selected = false;
+  bool dedicated_physical_core = false;
+  std::uint32_t logical_cpu = platform::kUnknownTopologyIdV1;
+  std::uint32_t numa_node = platform::kUnknownTopologyIdV1;
+  std::vector<std::uint32_t> reserved_logical_cpus;
+};
+
+BenchmarkCallerSpareV1 select_benchmark_caller_spare_v1(
+    const platform::CpuTopologyV1 &topology,
+    const platform::CpuPlacementPlanV1 &worker_placement) {
+  BenchmarkCallerSpareV1 result;
+  const std::uint32_t worker_node =
+      worker_placement.numa_nodes.size() == 1
+          ? worker_placement.numa_nodes.front()
+          : platform::kUnknownTopologyIdV1;
+  const auto is_worker_cpu = [&](std::uint32_t logical_cpu) {
+    return std::find(worker_placement.logical_cpus.begin(),
+                     worker_placement.logical_cpus.end(),
+                     logical_cpu) != worker_placement.logical_cpus.end();
+  };
+  const auto worker_uses_core = [&](
+                                    const platform::CpuLogicalProcessorV1 &candidate) {
+    return std::any_of(
+        worker_placement.logical_cpus.begin(),
+        worker_placement.logical_cpus.end(),
+        [&](std::uint32_t worker_cpu) {
+          const auto *worker = find_logical_processor(topology, worker_cpu);
+          return worker != nullptr && same_physical_core(candidate, *worker);
+        });
+  };
+  const auto select_highest = [&](bool require_same_node,
+                                  bool require_unused_core)
+      -> const platform::CpuLogicalProcessorV1 * {
+    const platform::CpuLogicalProcessorV1 *selected = nullptr;
+    for (const auto &candidate : topology.logical_processors) {
+      if (!candidate.online || is_worker_cpu(candidate.logical_cpu) ||
+          (require_same_node &&
+           (worker_node == platform::kUnknownTopologyIdV1 ||
+            candidate.numa_node_id != worker_node)) ||
+          (require_unused_core &&
+           (candidate.package_id == platform::kUnknownTopologyIdV1 ||
+            candidate.core_id == platform::kUnknownTopologyIdV1 ||
+            worker_uses_core(candidate))))
+        continue;
+      if (selected == nullptr || candidate.logical_cpu > selected->logical_cpu)
+        selected = &candidate;
+    }
+    return selected;
+  };
+
+  const platform::CpuLogicalProcessorV1 *selected =
+      select_highest(true, true);
+  if (selected != nullptr) {
+    result.dedicated_physical_core = true;
+  } else {
+    selected = select_highest(true, false);
+    if (selected == nullptr) selected = select_highest(false, false);
+  }
+  if (selected == nullptr) return result;
+
+  result.selected = true;
+  result.logical_cpu = selected->logical_cpu;
+  result.numa_node = selected->numa_node_id;
+  if (result.dedicated_physical_core) {
+    for (const auto &processor : topology.logical_processors) {
+      if (processor.online && same_physical_core(*selected, processor))
+        result.reserved_logical_cpus.push_back(processor.logical_cpu);
+    }
+  }
+  if (result.reserved_logical_cpus.empty())
+    result.reserved_logical_cpus.push_back(result.logical_cpu);
+  std::sort(result.reserved_logical_cpus.begin(),
+            result.reserved_logical_cpus.end());
+  return result;
+}
+
 platform::CpuAffinityPolicyV1 platform_affinity_policy(
     AffinityPolicyV2 policy) noexcept {
   switch (policy) {
@@ -452,13 +550,16 @@ class PlannerRunner final : public GemmRunnerV1 {
         "NUMA page placement is not requested or claimed";
     default_context_ = record;
     context_records_.push_back(record);
+    caller_placement_diagnostic_ =
+        "benchmark caller scheduler affinity not requested: no measured "
+        "bound-worker placement has been established";
   }
 
   RunnerEnvironmentV1 environment() const override {
     std::string probe_context_error;
     const auto probe_context = context_for(
         AffinityPolicyV2::none, SmtPolicyV2::physical_cores_only, 1,
-        probe_context_error);
+        probe_context_error, false);
     const auto probe_problem = problem({1, 1, 1}, alignof(float));
     const auto baseline =
         runtime::discover_cpu_gemm_implementation_resources_v1(probe_problem,
@@ -543,6 +644,10 @@ class PlannerRunner final : public GemmRunnerV1 {
           " induced by physical-cores-only SMT policy; " +
           "NUMA page placement is never claimed; " +
           topology_restriction_diagnostic_;
+      result.worker_affinity_source += "; ";
+      result.worker_affinity_source += caller_placement_diagnostic_;
+      result.topology_record += "\nbenchmark_caller_affinity=";
+      result.topology_record += caller_placement_diagnostic_;
     }
     result.available_processors = available_processors_;
     if (probe_context == nullptr || probe_context->context == nullptr) {
@@ -608,6 +713,8 @@ class PlannerRunner final : public GemmRunnerV1 {
       result.worker_affinity_policy_induced =
           context_record->affinity_policy_induced;
       result.affinity_diagnostic = context_record->diagnostic;
+      result.affinity_diagnostic += "; ";
+      result.affinity_diagnostic += caller_placement_diagnostic();
     }
     const auto gemm_problem = problem(shape, minimum_alignment);
     const auto baseline =
@@ -1145,7 +1252,8 @@ class PlannerRunner final : public GemmRunnerV1 {
 
   std::shared_ptr<ExecutionContextRecord> context_for(
       AffinityPolicyV2 affinity_policy, SmtPolicyV2 smt_policy,
-      std::uint32_t requested_threads, std::string &error) const {
+      std::uint32_t requested_threads, std::string &error,
+      bool isolate_benchmark_caller = true) const {
     const bool policy_induced_affinity =
         affinity_policy == AffinityPolicyV2::none &&
         smt_policy == SmtPolicyV2::physical_cores_only;
@@ -1199,20 +1307,125 @@ class PlannerRunner final : public GemmRunnerV1 {
     request.allow_cross_numa = false;
     if (affinity_policy == AffinityPolicyV2::local_first)
       request.preferred_numa_node = topology_.numa_nodes.front().node_id;
-    const auto placement = platform::plan_cpu_placement_v1(topology_, request);
-    if (placement.status != platform::CpuPlacementStatusV1::selected) {
-      error = "worker CPU placement rejected: ";
-      error += placement.reason;
-      return nullptr;
-    }
-    if (placement.crosses_numa_nodes || placement.numa_nodes.size() != 1) {
-      error =
-          "benchmark worker placement refuses cross-NUMA execution because "
-          "no NUMA page-placement backend is active";
+    std::lock_guard lock(context_mutex_);
+    if (isolate_benchmark_caller && caller_affinity_failed_) {
+      error = caller_placement_diagnostic_;
       return nullptr;
     }
 
-    std::lock_guard lock(context_mutex_);
+    platform::CpuTopologyV1 worker_topology = topology_;
+    const auto restrict_workers_away_from_caller = [&]() -> bool {
+      if (!caller_affinity_applied_) return true;
+      std::vector<std::uint32_t> allowed;
+      allowed.reserve(topology_.logical_processors.size());
+      for (const auto &processor : topology_.logical_processors) {
+        if (processor.online &&
+            std::find(caller_reserved_cpu_ids_.begin(),
+                      caller_reserved_cpu_ids_.end(),
+                      processor.logical_cpu) == caller_reserved_cpu_ids_.end())
+          allowed.push_back(processor.logical_cpu);
+      }
+      const auto restricted =
+          platform::restrict_cpu_topology_v1(topology_, allowed);
+      if (!restricted) {
+        error = "worker topology cannot exclude reserved benchmark caller "
+                "CPUs: ";
+        error += restricted.reason;
+        return false;
+      }
+      worker_topology = restricted.topology;
+      return true;
+    };
+    if (!restrict_workers_away_from_caller()) return nullptr;
+
+    auto placement =
+        platform::plan_cpu_placement_v1(worker_topology, request);
+    const auto placement_is_usable = [&]() {
+      if (placement.status != platform::CpuPlacementStatusV1::selected) {
+        error = caller_affinity_applied_
+                    ? "worker CPU placement rejected after reserving the "
+                      "benchmark caller: "
+                    : "worker CPU placement rejected: ";
+        error += placement.reason;
+        return false;
+      }
+      if (placement.crosses_numa_nodes || placement.numa_nodes.size() != 1) {
+        error =
+            "benchmark worker placement refuses cross-NUMA execution because "
+            "no NUMA page-placement backend is active";
+        return false;
+      }
+      return true;
+    };
+    if (!placement_is_usable()) return nullptr;
+
+    if (isolate_benchmark_caller) {
+      if (caller_affinity_applied_) {
+        const auto application = platform::apply_current_thread_affinity_v1(
+            caller_cpu_id_);
+        if (application.status != platform::ThreadAffinityStatusV1::applied) {
+          caller_affinity_failed_ = true;
+          caller_placement_diagnostic_ =
+              "benchmark caller scheduler-affinity reauthentication failed: "
+              "caller_cpu_id=" +
+              std::to_string(caller_cpu_id_) + " status=" +
+              std::string(platform::to_string(application.status)) +
+              " platform_error=" +
+              std::to_string(application.platform_error) +
+              "; bound benchmark planning fails closed";
+          error = caller_placement_diagnostic_;
+          return nullptr;
+        }
+      } else {
+        const auto spare =
+            select_benchmark_caller_spare_v1(topology_, placement);
+        if (!spare.selected) {
+          caller_placement_diagnostic_ =
+              "benchmark caller isolation unavailable: no spare logical CPU "
+              "remains outside worker_cpu_ids=" +
+              format_cpu_ids(placement.logical_cpus) +
+              "; caller_scheduler_affinity_applied=false";
+        } else {
+          const auto application =
+              platform::apply_current_thread_affinity_v1(spare.logical_cpu);
+          if (application.status != platform::ThreadAffinityStatusV1::applied) {
+            caller_affinity_failed_ = true;
+            caller_placement_diagnostic_ =
+                "benchmark caller scheduler-affinity application failed: "
+                "selected caller_cpu_id=" +
+                std::to_string(spare.logical_cpu) + " status=" +
+                std::string(platform::to_string(application.status)) +
+                " platform_error=" +
+                std::to_string(application.platform_error) +
+                "; bound benchmark planning fails closed";
+            error = caller_placement_diagnostic_;
+            return nullptr;
+          }
+          caller_affinity_applied_ = true;
+          caller_cpu_id_ = spare.logical_cpu;
+          caller_reserved_cpu_ids_ = spare.reserved_logical_cpus;
+          caller_placement_diagnostic_ =
+              "benchmark caller scheduler affinity applied: caller_cpu_id=" +
+              std::to_string(spare.logical_cpu) +
+              " dedicated_physical_core=" +
+              (spare.dedicated_physical_core ? std::string("true")
+                                             : std::string("false")) +
+              " reserved_cpu_ids=" +
+              format_cpu_ids(spare.reserved_logical_cpus) +
+              " selected_numa_node=" +
+              (spare.numa_node == platform::kUnknownTopologyIdV1
+                   ? std::string("unknown")
+                   : std::to_string(spare.numa_node)) +
+              "; caller is excluded from worker placement; "
+              "numa_memory_placement=false";
+          if (!restrict_workers_away_from_caller()) return nullptr;
+          placement =
+              platform::plan_cpu_placement_v1(worker_topology, request);
+          if (!placement_is_usable()) return nullptr;
+        }
+      }
+    }
+
     for (const auto &record : context_records_) {
       if (record != nullptr && record->affinity_policy == affinity_policy &&
           record->smt_policy == smt_policy &&
@@ -1280,6 +1493,11 @@ class PlannerRunner final : public GemmRunnerV1 {
     return alignment;
   }
 
+  std::string caller_placement_diagnostic() const {
+    std::lock_guard lock(context_mutex_);
+    return caller_placement_diagnostic_;
+  }
+
   platform::CpuCapabilitiesV2 capabilities_;
   platform::CpuTopologyV1 topology_;
   platform::ThreadAffinityInventoryV1 process_affinity_;
@@ -1287,6 +1505,11 @@ class PlannerRunner final : public GemmRunnerV1 {
   std::shared_ptr<ExecutionContextRecord> default_context_;
   mutable std::mutex context_mutex_;
   mutable std::vector<std::shared_ptr<ExecutionContextRecord>> context_records_;
+  mutable bool caller_affinity_applied_ = false;
+  mutable bool caller_affinity_failed_ = false;
+  mutable std::uint32_t caller_cpu_id_ = platform::kUnknownTopologyIdV1;
+  mutable std::vector<std::uint32_t> caller_reserved_cpu_ids_;
+  mutable std::string caller_placement_diagnostic_;
   std::uint32_t available_processors_ = 0;
 };
 
