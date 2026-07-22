@@ -11,6 +11,46 @@ option(
   OFF
 )
 
+option(
+  MDSLC_ENABLE_OPENBLAS
+  "Enable the optional authenticated OpenBLAS/CBLAS CPU variant"
+  ON
+)
+option(
+  MDSLC_REQUIRE_OPENBLAS
+  "Fail configuration when the optional OpenBLAS development surface is absent"
+  OFF
+)
+
+set(MDSLC_HAS_OPENBLAS OFF)
+if(MDSLC_ENABLE_OPENBLAS)
+  find_package(PkgConfig QUIET)
+  if(PkgConfig_FOUND)
+    pkg_check_modules(MDSLC_OPENBLAS QUIET IMPORTED_TARGET openblas)
+  endif()
+  if(MDSLC_OPENBLAS_FOUND)
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_REQUIRED_LIBRARIES PkgConfig::MDSLC_OPENBLAS)
+    check_cxx_source_compiles(
+      "#include <cblas.h>\n#include <climits>\nstatic_assert(sizeof(blasint) == sizeof(int));\nint main() { float a[1]={1}, b[1]={1}, c[1]={0}; int previous=openblas_set_num_threads_local(1); cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,1,1,1,1.0f,a,1,b,1,0.0f,c,1); openblas_set_num_threads_local(previous); return c[0] == 1.0f ? 0 : 1; }"
+      MDSLC_OPENBLAS_CBLAS_COMPILES
+    )
+    unset(CMAKE_REQUIRED_LIBRARIES)
+    if(MDSLC_OPENBLAS_CBLAS_COMPILES)
+      set(MDSLC_HAS_OPENBLAS ON)
+      message(STATUS
+        "MDSLC OpenBLAS variant: ${MDSLC_OPENBLAS_VERSION} via pkg-config")
+    endif()
+  endif()
+endif()
+if(MDSLC_REQUIRE_OPENBLAS AND NOT MDSLC_HAS_OPENBLAS)
+  message(FATAL_ERROR
+    "MDSLC_REQUIRE_OPENBLAS=ON requires a coherent LP64 OpenBLAS CBLAS provider")
+endif()
+if(NOT MDSLC_HAS_OPENBLAS)
+  message(STATUS "MDSLC OpenBLAS variant: unavailable (optional)")
+endif()
+
 function(matcore_enable_debug_cpu_vectorization target_name)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     if(CMAKE_CONFIGURATION_TYPES)
@@ -39,13 +79,24 @@ if(MDSLC_BUILD_RUNTIME_BENCHMARKS)
   matcore_enable_debug_cpu_vectorization(matcore_cpu_planner_benchmark)
 endif()
 
-add_library(matcore_runtime SHARED cpu_runtime.cpp)
+add_library(matcore_runtime SHARED cpu_runtime.cpp cpu_openblas.cpp)
 add_library(MatcoreDSL::Runtime ALIAS matcore_runtime)
 set_property(TARGET matcore_runtime PROPERTY EXPORT_NAME Runtime)
 
 target_compile_features(matcore_runtime PUBLIC cxx_std_20)
 target_compile_definitions(matcore_runtime PRIVATE MATCORE_RUNTIME_BUILD)
 target_link_libraries(matcore_runtime PRIVATE MatcoreDSL::CpuPlannerV1)
+if(MDSLC_HAS_OPENBLAS)
+  target_link_libraries(matcore_runtime PRIVATE PkgConfig::MDSLC_OPENBLAS)
+  target_compile_definitions(matcore_runtime PRIVATE
+    MATCORE_MDSLC_HAS_OPENBLAS=1
+    "MATCORE_MDSLC_OPENBLAS_VERSION=\"${MDSLC_OPENBLAS_VERSION}\""
+  )
+else()
+  target_compile_definitions(matcore_runtime PRIVATE
+    MATCORE_MDSLC_HAS_OPENBLAS=0
+  )
+endif()
 # The planner may select the AVX2/FMA implementation at runtime. Debug and an
 # unset single-config build type otherwise supply no optimization flag, which
 # would leave this candidate as a scalar loop. Preserve the configured level
@@ -65,6 +116,32 @@ set_target_properties(matcore_runtime PROPERTIES
 )
 
 if(BUILD_TESTING)
+  add_executable(matcore_openblas_adapter_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/openblas_adapter_test.cpp"
+    cpu_openblas.cpp
+  )
+  target_compile_features(matcore_openblas_adapter_test PRIVATE cxx_std_20)
+  target_include_directories(matcore_openblas_adapter_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../planner"
+  )
+  if(MDSLC_HAS_OPENBLAS)
+    target_link_libraries(matcore_openblas_adapter_test
+      PRIVATE PkgConfig::MDSLC_OPENBLAS
+    )
+    target_compile_definitions(matcore_openblas_adapter_test PRIVATE
+      MATCORE_MDSLC_HAS_OPENBLAS=1
+      "MATCORE_MDSLC_OPENBLAS_VERSION=\"${MDSLC_OPENBLAS_VERSION}\""
+    )
+  else()
+    target_compile_definitions(matcore_openblas_adapter_test PRIVATE
+      MATCORE_MDSLC_HAS_OPENBLAS=0
+    )
+  endif()
+  add_test(NAME runtime.cpu.openblas_adapter
+    COMMAND matcore_openblas_adapter_test
+  )
+
   add_executable(matcore_runtime_abi_compat_test
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/runtime_abi_compat_test.cpp"
   )
