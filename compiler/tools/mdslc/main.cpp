@@ -26,12 +26,12 @@ bool IsWindowsHost();
 
 bool WindowsCompilerOptionEquals(std::string_view argument,
                                  std::string_view name) noexcept {
-  return support::windows_option_body_v1(argument) == name;
+  return support::windows_option_equals_v1(argument, name);
 }
 
 bool WindowsCompilerOptionStartsWith(std::string_view argument,
                                      std::string_view prefix) noexcept {
-  return support::windows_option_body_v1(argument).starts_with(prefix);
+  return support::windows_option_starts_with_v1(argument, prefix);
 }
 
 bool CompilerOptionConsumesNextArgument(std::string_view argument) noexcept;
@@ -1001,7 +1001,8 @@ std::optional<WrapperArguments> ParseWrapperArguments(int argc, char **argv) {
     }
     if (IsWindowsHost() && !previous_option_consumes_argument &&
         (WindowsCompilerOptionEquals(argument, "TC") ||
-         WindowsCompilerOptionStartsWith(argument, "Tc"))) {
+         WindowsCompilerOptionStartsWith(argument, "Tc") ||
+         WindowsCompilerOptionStartsWith(argument, "Tp"))) {
       std::cerr << "mdslc++: .mdsl inputs are valid C++ and cannot be compiled "
                    "with clang-cl C-language mode "
                 << argument << '\n';
@@ -1953,7 +1954,8 @@ int CompileRewrittenHost(const fs::path &virtual_source,
                            toolchain);
   if (toolchain.flavor == CompilerFlavor::ClangCl) {
     command.insert(command.end(),
-                   {"-ivfsoverlay", PathArgument(overlay), "/TP", "/c",
+                   {"-Xclang", "-ivfsoverlay", "-Xclang",
+                    PathArgument(overlay), "/TP", "/c",
                     PathArgument(virtual_source),
                     "/Fo" + PathArgument(object)});
   } else {
@@ -2059,7 +2061,8 @@ int GenerateRewrittenHostDependencyFile(
   if (toolchain.flavor == CompilerFlavor::ClangCl) {
     (void)dependency_mode;
     command.insert(command.end(),
-                   {"-ivfsoverlay", PathArgument(overlay)});
+                   {"-Xclang", "-ivfsoverlay", "-Xclang",
+                    PathArgument(overlay)});
     return GenerateClangClDependencyFile(std::move(command), virtual_source,
                                          object_target, dependency_output,
                                          verbose);

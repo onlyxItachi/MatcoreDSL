@@ -389,6 +389,14 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
         return std::nullopt;
       }
       command.compiler_was_explicit = true;
+    } else if (argument.starts_with("--clang=")) {
+      command.frontend.clang_path =
+          argument.substr(std::string("--clang=").size());
+      if (command.frontend.clang_path.empty()) {
+        std::cerr << "matcore-extract: --clang requires a non-empty path\n";
+        return std::nullopt;
+      }
+      command.compiler_was_explicit = true;
     } else if (argument == "--frontend") {
       if (!takeValue(argc, argv, index, command.frontend_name,
                      "--frontend")) {
