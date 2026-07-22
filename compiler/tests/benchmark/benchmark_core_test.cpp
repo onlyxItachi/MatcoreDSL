@@ -128,6 +128,32 @@ int main() {
          "sub-floor timing is retained but rejected for performance claims");
 
   auto runner = bench::make_planner_runner_v1();
+  const auto registered_variants = runner->variant_ids();
+  expect(registered_variants.size() == 8 &&
+             registered_variants[5] ==
+                 "cpu.native-packed.avx512-fma.f32.v1" &&
+             registered_variants[6] ==
+                 "cpu.native-parallel.avx2-fma.f32.v1" &&
+             registered_variants[7] ==
+                 "cpu.native-parallel.avx512-fma.f32.v1",
+         "benchmark exposes the stable planner-v3 eight-variant registry");
+  const auto runner_environment = runner->environment();
+  expect(runner_environment.capability_record_version == 2 &&
+             runner_environment.topology_record_version == 1 &&
+             runner_environment.available_processors > 0 &&
+             !runner_environment.worker_affinity_applied &&
+             !runner_environment.capability_record.empty() &&
+             !runner_environment.topology_record.empty() &&
+             !runner_environment.capability_runtime_validation_source.empty(),
+         "runner exposes versioned capability, topology, and validation-source metadata");
+  const auto unsupported_affinity = runner->plan(
+      {256, 128, 128}, 64, 2, "auto", bench::PackingModeV1::include,
+      bench::SmtPolicyV2::physical_cores_only,
+      bench::AffinityPolicyV2::compact);
+  expect(!unsupported_affinity.legal &&
+             unsupported_affinity.reason.find("worker-affinity policy") !=
+                 std::string::npos,
+         "unimplemented worker binding is rejected instead of conflating it with inherited affinity");
   bench::BenchmarkOptionsV1 run_options;
   run_options.profile = bench::ProfileV1::custom;
   run_options.shapes = {{2, 3, 2}};
@@ -147,8 +173,33 @@ int main() {
                  "cpu.reference.f32.v1" &&
              report.results[0].correctness.passed &&
              report.results[0].correctness.oracle_mode == "full-double" &&
-             report.results[0].timing.valid,
+             report.results[0].timing.valid &&
+             report.results[0].plan.planner_version == 3 &&
+             report.results[0].plan.smt_policy == "physical-cores-only" &&
+             !report.results[0].plan.worker_affinity_applied,
          "benchmark result identifies the variant and passes independent oracle");
+
+  auto scaling_options = run_options;
+  scaling_options.compare_one_thread = true;
+  bench::BenchmarkReportV1 scaling_report;
+  expect(bench::run_benchmarks_v1(scaling_options, *runner, scaling_report,
+                                  error) &&
+             scaling_report.results[0].scaling.valid &&
+             scaling_report.results[0].scaling.speedup_over_one_thread == 1.0 &&
+             scaling_report.results[0].scaling.parallel_efficiency == 1.0,
+         "explicit one-thread comparison records a deterministic unit baseline");
+
+  auto regret_options = run_options;
+  regret_options.requested_variant = "auto";
+  regret_options.planner_regret = true;
+  regret_options.measured_iterations = 1;
+  bench::BenchmarkReportV1 regret_report;
+  expect(bench::run_benchmarks_v1(regret_options, *runner, regret_report,
+                                  error) &&
+             regret_report.results[0].planner_regret.valid &&
+             regret_report.results[0].planner_regret.candidates.size() == 8 &&
+             regret_report.results[0].planner_regret.regret >= 1.0,
+         "planner regret measures the stable registry and reports selected over fastest");
 
   const auto rejected_reference_compute = runner->plan(
       {16, 16, 16}, 64, 1, "cpu.reference.f32.v1",
@@ -194,13 +245,48 @@ int main() {
            "tail shapes through the independent oracle");
   }
 
+  const auto parallel_plan = runner->plan(
+      {256, 128, 128}, 64, 2,
+      "cpu.native-parallel.avx2-fma.f32.v1",
+      bench::PackingModeV1::include);
+  if (parallel_plan.legal) {
+    expect(parallel_plan.actual_threads == 2 &&
+               parallel_plan.persistent_execution_context &&
+               parallel_plan.shared_workspace_bytes > 0 &&
+               parallel_plan.per_worker_workspace_bytes > 0 &&
+               parallel_plan.workspace_bytes >=
+                   parallel_plan.shared_workspace_bytes +
+                       2 * parallel_plan.per_worker_workspace_bytes,
+           "parallel AVX2 plan exposes persistent-context and split workspace metadata");
+    auto parallel_options = run_options;
+    parallel_options.shapes = {{256, 128, 128}};
+    parallel_options.requested_variant =
+        "cpu.native-parallel.avx2-fma.f32.v1";
+    parallel_options.requested_threads = 2;
+    parallel_options.measured_iterations = 1;
+    parallel_options.compare_one_thread = true;
+    bench::BenchmarkReportV1 parallel_report;
+    expect(bench::run_benchmarks_v1(parallel_options, *runner,
+                                    parallel_report, error) &&
+               parallel_report.results[0].correctness.passed &&
+               parallel_report.results[0].scaling.valid &&
+               parallel_report.results[0].scaling.baseline_variant ==
+                   "cpu.native-packed.avx2-fma.f32.v1" &&
+               parallel_report.environment.runner.execution_context_submissions >
+                   0,
+           "persistent parallel AVX2 dispatch is oracle-checked against a same-family one-thread timing");
+  }
+
   std::ostringstream encoded;
   bench::write_json_v1(report, encoded);
   const std::string json = encoded.str();
   expect(json.find("\"schema\": \"matcore.benchmark.cpu.gemm\"") !=
                  std::string::npos &&
-             json.find("\"version\": 1") != std::string::npos &&
+             json.find("\"version\": 2") != std::string::npos &&
              json.find("\"correctness\": true") != std::string::npos &&
+             json.find("\"planner_version\": 3") != std::string::npos &&
+             json.find("\"shared_workspace_bytes\"") != std::string::npos &&
+             json.find("\"planner_regret\"") != std::string::npos &&
              json.find("\"timing_scope\"") != std::string::npos &&
              json.find("\"timer_resolution_ns\"") != std::string::npos,
          "JSON output carries schema, correctness, and timer metadata");

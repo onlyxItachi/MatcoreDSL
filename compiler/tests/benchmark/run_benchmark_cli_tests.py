@@ -22,7 +22,7 @@ def require_report_shape(report: dict, schema: dict) -> None:
     required = schema["required"]
     assert all(field in report for field in required)
     assert report["schema"] == "matcore.benchmark.cpu.gemm"
-    assert report["version"] == 1
+    assert report["version"] == 2
     assert report["operation"] == "matcore.gemm"
     assert report["dtype"] == report["accumulation_dtype"] == "f32"
     assert report["layout"] == "row-major-contiguous"
@@ -51,6 +51,9 @@ def main() -> int:
         "cpu.compiler-vectorized.avx2-fma.f32.v1",
         "cpu.external.openblas.f32.v1",
         "cpu.native-packed.avx2-fma.f32.v1",
+        "cpu.native-packed.avx512-fma.f32.v1",
+        "cpu.native-parallel.avx2-fma.f32.v1",
+        "cpu.native-parallel.avx512-fma.f32.v1",
     ]
 
     # These are CLI/schema/correctness smoke tests rather than performance
@@ -96,6 +99,30 @@ def main() -> int:
         assert result["p95_seconds"] >= result["median_seconds"]
         assert math.isfinite(result["gflops"]) and result["gflops"] > 0
         assert report["configuration"]["alignment_bytes"] == 4
+        assert report["configuration"]["compare_one_thread"] is False
+        assert report["configuration"]["planner_regret"] is False
+        assert report["configuration"]["smt_policy"] == "physical-cores-only"
+        assert report["configuration"]["affinity_policy"] == "none"
+        assert report["environment"]["capability_record_version"] == 2
+        assert report["environment"]["topology_record_version"] == 1
+        assert report["environment"]["execution_context_workers"] >= 1
+        assert report["environment"]["execution_context_workers_started"] >= 1
+        assert report["environment"]["available_processors"] >= 1
+        assert report["environment"]["worker_affinity_applied"] is False
+        assert "not pinned" in report["environment"]["worker_affinity_source"]
+        assert "benchmark-process numerical self-test" in report["environment"][
+            "capability_runtime_validation_source"
+        ]
+        assert result["planner_version"] == 3
+        assert result["shared_workspace_bytes"] == 0
+        assert result["per_worker_workspace_bytes"] == 0
+        assert result["persistent_execution_context"] is False
+        assert result["smt_policy"] == "physical-cores-only"
+        assert result["affinity_policy"] == "none"
+        assert result["worker_affinity_applied"] is False
+        assert "inherited process mask" in result["affinity_diagnostic"]
+        assert result["scaling"]["requested"] is False
+        assert result["planner_regret"]["requested"] is False
         assert result["complete_implementation_comparison"] is True
         assert "complete implementation call" in result["timing_scope"]
 
@@ -224,6 +251,107 @@ def main() -> int:
         else:
             assert "AVX2" in packed_compute.stderr or "unavailable" in packed_compute.stderr
 
+        scaling_output = pathlib.Path(temporary) / "scaling.json"
+        run(
+            [
+                str(executable), "--m", "64", "--n", "64", "--k", "64",
+                "--variant", "cpu.reference.f32.v1", "--compare-one-thread",
+                "--warmup", "0", "--iterations", "1", "--timer-floor-us", "1",
+                "--guard", "--json-out", str(scaling_output),
+            ]
+        )
+        scaling = json.loads(scaling_output.read_text(encoding="utf-8"))["results"][0]["scaling"]
+        assert scaling["requested"] is True
+        assert scaling["valid"] is True
+        assert scaling["baseline_variant"] == "cpu.reference.f32.v1"
+        assert scaling["speedup_over_one_thread"] == 1.0
+        assert scaling["parallel_efficiency"] == 1.0
+
+        regret_output = pathlib.Path(temporary) / "regret.json"
+        run(
+            [
+                str(executable), "--m", "64", "--n", "64", "--k", "64",
+                "--planner-regret", "--warmup", "0", "--iterations", "1",
+                "--timer-floor-us", "1", "--guard", "--json-out",
+                str(regret_output),
+            ]
+        )
+        regret = json.loads(regret_output.read_text(encoding="utf-8"))["results"][0]["planner_regret"]
+        assert regret["requested"] is True
+        assert regret["valid"] is True
+        assert len(regret["candidates"]) == 8
+        assert regret["fastest_legal_variant"]
+        assert regret["regret"] >= 1.0
+
+        parallel_output = pathlib.Path(temporary) / "parallel avx2.json"
+        parallel = subprocess.run(
+            [
+                str(executable), "--m", "256", "--n", "128", "--k", "128",
+                "--variant", "cpu.native-parallel.avx2-fma.f32.v1",
+                "--threads", "2", "--compare-one-thread", "--warmup", "0",
+                "--iterations", "1", "--timer-floor-us", "1", "--guard",
+                "--json-out", str(parallel_output),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if parallel.returncode == 0:
+            parallel_result = json.loads(parallel_output.read_text(encoding="utf-8"))["results"][0]
+            assert parallel_result["actual_threads"] == 2
+            assert parallel_result["persistent_execution_context"] is True
+            assert parallel_result["shared_workspace_bytes"] > 0
+            assert parallel_result["per_worker_workspace_bytes"] > 0
+            assert parallel_result["correctness"] is True
+            assert parallel_result["scaling"]["valid"] is True
+            parallel_report = json.loads(parallel_output.read_text(encoding="utf-8"))
+            assert parallel_report["environment"]["execution_context_submissions"] >= 2
+        else:
+            assert (
+                "runtime-validated" in parallel.stderr
+                or "topology" in parallel.stderr
+                or "unavailable" in parallel.stderr
+            )
+
+        forced_variants = [
+            ("cpu.reference.f32.v1", (64, 64, 64), 1),
+            ("cpu.tiled.f32.v1", (64, 64, 64), 1),
+            ("cpu.compiler-vectorized.avx2-fma.f32.v1", (64, 64, 64), 1),
+            ("cpu.external.openblas.f32.v1", (64, 64, 64), 1),
+            ("cpu.native-packed.avx2-fma.f32.v1", (64, 64, 64), 1),
+            ("cpu.native-packed.avx512-fma.f32.v1", (64, 64, 64), 1),
+            ("cpu.native-parallel.avx2-fma.f32.v1", (256, 128, 128), 2),
+            ("cpu.native-parallel.avx512-fma.f32.v1", (256, 128, 128), 2),
+        ]
+        for variant, (m, n, k), threads in forced_variants:
+            forced_output = pathlib.Path(temporary) / f"forced-{variant}.json"
+            forced = subprocess.run(
+                [
+                    str(executable), "--m", str(m), "--n", str(n), "--k", str(k),
+                    "--variant", variant, "--threads", str(threads), "--warmup", "0",
+                    "--iterations", "1", "--timer-floor-us", "1", "--guard",
+                    "--json-out", str(forced_output),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if forced.returncode == 0:
+                forced_report = json.loads(forced_output.read_text(encoding="utf-8"))
+                forced_result = forced_report["results"][0]
+                assert forced_result["selected_variant"] == variant
+                assert forced_result["correctness"] is True
+                assert forced_result["planner_version"] == 3
+                if "native-parallel" in variant:
+                    assert forced_result["persistent_execution_context"] is True
+                    assert forced_report["environment"]["execution_context_submissions"] >= 1
+            else:
+                assert (
+                    "unavailable" in forced.stderr
+                    or "not runtime-validated" in forced.stderr
+                    or "topology" in forced.stderr
+                    or "not linked" in forced.stderr
+                ), (variant, forced.stderr)
     invalid_modes = run(
         [
             str(executable),
@@ -322,7 +450,7 @@ def main() -> int:
     )
     assert "not registered" in bad_variant.stderr
 
-    bad_threads = run(
+    explicit_single = run(
         [
             str(executable),
             "--m",
@@ -334,11 +462,43 @@ def main() -> int:
             "--threads",
             "2",
             "--variant",
-            "cpu.native-packed.avx2-fma.f32.v1",
+            "cpu.reference.f32.v1",
+        ],
+    )
+    assert "variant=cpu.reference.f32.v1" in explicit_single.stdout
+    assert "threads=1" in explicit_single.stdout
+
+    invalid_regret_variant = run(
+        [
+            str(executable), "--m", "2", "--n", "2", "--k", "2",
+            "--variant", "cpu.reference.f32.v1", "--planner-regret",
         ],
         expected=1,
     )
-    assert "native packed v1 is single-threaded" in bad_threads.stderr
+    assert "requires --variant auto" in invalid_regret_variant.stderr
+
+    unsupported_affinity = run(
+        [
+            str(executable), "--m", "64", "--n", "64", "--k", "64",
+            "--threads", "2", "--affinity", "compact",
+        ],
+        expected=1,
+    )
+    assert "worker-affinity policy is not implemented" in unsupported_affinity.stderr
+
+    with tempfile.TemporaryDirectory(prefix="matcore smt metadata ") as temporary:
+        smt_output = pathlib.Path(temporary) / "smt.json"
+        run(
+            [
+                str(executable), "--m", "64", "--n", "64", "--k", "64",
+                "--variant", "cpu.reference.f32.v1", "--allow-smt",
+                "--warmup", "0", "--iterations", "1", "--timer-floor-us", "1",
+                "--json-out", str(smt_output),
+            ]
+        )
+        smt_report = json.loads(smt_output.read_text(encoding="utf-8"))
+        assert smt_report["configuration"]["smt_policy"] == "allow-smt"
+        assert smt_report["results"][0]["smt_policy"] == "allow-smt"
 
     optional_openblas = subprocess.run(
         [
@@ -365,7 +525,7 @@ def main() -> int:
     if optional_openblas.returncode == 0:
         assert "variant=cpu.external.openblas.f32.v1" in optional_openblas.stdout
         assert "correctness=pass" in optional_openblas.stdout
-        excessive_openblas_threads = run(
+        capped_openblas_threads = run(
             [
                 str(executable),
                 "--m",
@@ -379,12 +539,9 @@ def main() -> int:
                 "--variant",
                 "cpu.external.openblas.f32.v1",
             ],
-            expected=1,
         )
-        assert (
-            "OpenBLAS requested thread count exceeds provider maximum"
-            in excessive_openblas_threads.stderr
-        )
+        assert "threads=2147483647" not in capped_openblas_threads.stdout
+        assert "variant=cpu.external.openblas.f32.v1" in capped_openblas_threads.stdout
     else:
         assert "OpenBLAS CBLAS adapter is not linked" in optional_openblas.stderr
 

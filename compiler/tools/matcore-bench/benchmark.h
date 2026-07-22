@@ -12,7 +12,7 @@
 
 namespace matcore::mdslc::bench {
 
-inline constexpr std::uint32_t kBenchmarkSchemaVersionV1 = 1;
+inline constexpr std::uint32_t kBenchmarkSchemaVersionV2 = 2;
 inline constexpr std::uint64_t kDefaultMaximumMemoryBytes =
     UINT64_C(2) * 1024 * 1024 * 1024;
 inline constexpr std::uint64_t kDefaultTimerFloorNanoseconds = 1'000'000;
@@ -28,6 +28,16 @@ enum class PackingModeV1 : std::uint8_t {
   prepack_b = 2,
 };
 enum class ProfileV1 : std::uint8_t { custom = 0, quick = 1, standard = 2, full = 3 };
+enum class SmtPolicyV2 : std::uint8_t {
+  physical_cores_only = 0,
+  allow_smt = 1,
+};
+enum class AffinityPolicyV2 : std::uint8_t {
+  none = 0,
+  compact = 1,
+  scatter = 2,
+  local_first = 3,
+};
 
 struct GemmShapeV1 {
   std::int64_t m = 0;
@@ -46,10 +56,14 @@ struct BenchmarkOptionsV1 {
   CacheModeV1 cache_mode = CacheModeV1::hot;
   AllocationModeV1 allocation_mode = AllocationModeV1::reuse_workspace;
   PackingModeV1 packing_mode = PackingModeV1::include;
+  SmtPolicyV2 smt_policy = SmtPolicyV2::physical_cores_only;
+  AffinityPolicyV2 affinity_policy = AffinityPolicyV2::none;
   std::uint64_t maximum_memory_bytes = kDefaultMaximumMemoryBytes;
   std::uint64_t timer_floor_nanoseconds = kDefaultTimerFloorNanoseconds;
   std::uint64_t seed = UINT64_C(0x4d4154434f524531);
   bool guard = false;
+  bool compare_one_thread = false;
+  bool planner_regret = false;
   std::string json_output;
 };
 
@@ -64,17 +78,40 @@ struct RunnerPlanV1 {
   std::string diagnostic;
   std::string timing_scope;
   bool complete_implementation_comparison = true;
+  std::uint32_t planner_version = 0;
   std::uint32_t actual_threads = 1;
   std::uint64_t workspace_bytes = 0;
+  std::uint64_t shared_workspace_bytes = 0;
+  std::uint64_t per_worker_workspace_bytes = 0;
   std::uint32_t workspace_alignment = 1;
   std::uint64_t prepacked_b_bytes = 0;
   bool packing_required = false;
   bool supports_prepacked_b = false;
+  bool persistent_execution_context = false;
+  std::string smt_policy;
+  std::string affinity_policy;
+  bool worker_affinity_applied = false;
+  std::string affinity_diagnostic;
   std::shared_ptr<const RunnerPlanStateV1> state;
 };
 
 struct RunnerEnvironmentV1 {
   std::string capability_record;
+  std::string capability_runtime_validation_source;
+  std::string topology_record;
+  std::uint32_t capability_record_version = 0;
+  std::uint32_t topology_record_version = 0;
+  bool topology_discovery_complete = false;
+  std::uint32_t logical_processors = 0;
+  std::uint32_t physical_cores = 0;
+  std::uint32_t numa_nodes = 0;
+  bool persistent_execution_context = false;
+  std::uint32_t execution_context_workers = 0;
+  std::uint64_t execution_context_workers_started = 0;
+  std::uint64_t execution_context_submissions = 0;
+  std::uint32_t available_processors = 0;
+  bool worker_affinity_applied = false;
+  std::string worker_affinity_source;
   std::string provider_name;
   std::string provider_version;
   std::string provider_config;
@@ -94,7 +131,11 @@ class GemmRunnerV1 {
                             std::uint32_t minimum_alignment,
                             std::uint32_t requested_threads,
                             std::string_view requested_variant,
-                            PackingModeV1 packing_mode) const = 0;
+                            PackingModeV1 packing_mode,
+                            SmtPolicyV2 smt_policy =
+                                SmtPolicyV2::physical_cores_only,
+                            AffinityPolicyV2 affinity_policy =
+                                AffinityPolicyV2::none) const = 0;
   virtual bool prepare(const RunnerPlanV1 &plan, const GemmShapeV1 &shape,
                        const float *lhs, const float *rhs,
                        std::span<std::byte> workspace,
@@ -129,6 +170,38 @@ struct CorrectnessResultV1 {
   std::string reason;
 };
 
+struct ScalingResultV2 {
+  bool requested = false;
+  bool valid = false;
+  std::string baseline_variant;
+  double one_thread_median_seconds = 0.0;
+  double speedup_over_one_thread = 0.0;
+  double parallel_efficiency = 0.0;
+  std::string reason;
+};
+
+struct RegretCandidateResultV2 {
+  std::string variant;
+  bool legal = false;
+  std::string reason;
+  bool complete_implementation_comparison = false;
+  bool timing_valid = false;
+  bool correctness_passed = false;
+  double median_seconds = 0.0;
+  std::string measurement_reason;
+};
+
+struct PlannerRegretResultV2 {
+  bool requested = false;
+  bool valid = false;
+  std::string fastest_legal_variant;
+  double fastest_legal_median_seconds = 0.0;
+  double selected_median_seconds = 0.0;
+  double regret = 0.0;
+  std::string reason;
+  std::vector<RegretCandidateResultV2> candidates;
+};
+
 struct BenchmarkResultV1 {
   GemmShapeV1 shape;
   std::string requested_variant;
@@ -140,6 +213,8 @@ struct BenchmarkResultV1 {
   TimingStatisticsV1 timing;
   CorrectnessResultV1 correctness;
   double gflops = 0.0;
+  ScalingResultV2 scaling;
+  PlannerRegretResultV2 planner_regret;
 };
 
 struct BenchmarkEnvironmentV1 {
@@ -162,7 +237,7 @@ struct BenchmarkEnvironmentV1 {
 };
 
 struct BenchmarkReportV1 {
-  std::uint32_t schema_version = kBenchmarkSchemaVersionV1;
+  std::uint32_t schema_version = kBenchmarkSchemaVersionV2;
   std::string operation = "matcore.gemm";
   std::string dtype = "f32";
   std::string accumulation_dtype = "f32";
@@ -198,6 +273,8 @@ std::string_view cache_mode_name_v1(CacheModeV1 mode) noexcept;
 std::string_view allocation_mode_name_v1(AllocationModeV1 mode) noexcept;
 std::string_view packing_mode_name_v1(PackingModeV1 mode) noexcept;
 std::string_view profile_name_v1(ProfileV1 profile) noexcept;
+std::string_view smt_policy_name_v2(SmtPolicyV2 policy) noexcept;
+std::string_view affinity_policy_name_v2(AffinityPolicyV2 policy) noexcept;
 
 }  // namespace matcore::mdslc::bench
 

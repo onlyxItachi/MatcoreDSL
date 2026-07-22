@@ -333,6 +333,19 @@ std::string_view profile_name_v1(ProfileV1 profile) noexcept {
   }
   return "unknown";
 }
+std::string_view smt_policy_name_v2(SmtPolicyV2 policy) noexcept {
+  return policy == SmtPolicyV2::allow_smt ? "allow-smt"
+                                          : "physical-cores-only";
+}
+std::string_view affinity_policy_name_v2(AffinityPolicyV2 policy) noexcept {
+  switch (policy) {
+    case AffinityPolicyV2::none: return "none";
+    case AffinityPolicyV2::compact: return "compact";
+    case AffinityPolicyV2::scatter: return "scatter";
+    case AffinityPolicyV2::local_first: return "local-first";
+  }
+  return "unknown";
+}
 
 std::vector<GemmShapeV1> quick_profile_v1() {
   return {{1, 1, 1},       {2, 3, 2},       {16, 16, 16},
@@ -412,6 +425,16 @@ bool validate_options_v1(BenchmarkOptionsV1 &options, std::string &error) {
   if (options.packing_mode == PackingModeV1::exclude &&
       options.allocation_mode == AllocationModeV1::include_allocation) {
     error = "packing-excluded compute diagnostics require reusable workspace";
+    return false;
+  }
+  if (options.planner_regret && options.requested_variant != "auto") {
+    error = "planner-regret measurement requires --variant auto";
+    return false;
+  }
+  if (options.planner_regret &&
+      options.packing_mode != PackingModeV1::include) {
+    error =
+        "planner-regret measurement requires complete include-packing calls";
     return false;
   }
   return true;
@@ -611,7 +634,8 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
     result.plan = runner.plan(shape, options.alignment_bytes,
                               options.requested_threads,
                               options.requested_variant,
-                              options.packing_mode);
+                              options.packing_mode, options.smt_policy,
+                              options.affinity_policy);
     if (!result.plan.legal) {
       error = "variant planning failed for " + std::to_string(shape.m) + "x" +
               std::to_string(shape.n) + "x" + std::to_string(shape.k) + ": " +
@@ -697,12 +721,19 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
           active_plan = runner.plan(shape, options.alignment_bytes,
                                     options.requested_threads,
                                     options.requested_variant,
-                                    options.packing_mode);
+                                    options.packing_mode, options.smt_policy,
+                                    options.affinity_policy);
           if (!active_plan.legal || active_plan.selected_variant !=
                                         result.plan.selected_variant ||
               active_plan.workspace_bytes != result.plan.workspace_bytes ||
+              active_plan.shared_workspace_bytes !=
+                  result.plan.shared_workspace_bytes ||
+              active_plan.per_worker_workspace_bytes !=
+                  result.plan.per_worker_workspace_bytes ||
               active_plan.workspace_alignment != result.plan.workspace_alignment ||
-              active_plan.prepacked_b_bytes != result.plan.prepacked_b_bytes) {
+              active_plan.prepacked_b_bytes != result.plan.prepacked_b_bytes ||
+              active_plan.actual_threads != result.plan.actual_threads ||
+              active_plan.planner_version != result.plan.planner_version) {
             error = "one-shot planning was not deterministic";
             return false;
           }
@@ -821,6 +852,157 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
       return false;
     }
   }
+
+  for (auto &result : report.results) {
+    if (options.compare_one_thread) {
+      result.scaling.requested = true;
+      if (!result.timing.valid) {
+        result.scaling.reason =
+            "selected timing is invalid, so scaling is not reportable";
+      } else if (result.plan.actual_threads == 1) {
+        result.scaling.valid = true;
+        result.scaling.baseline_variant = result.plan.selected_variant;
+        result.scaling.one_thread_median_seconds =
+            result.timing.median_seconds;
+        result.scaling.speedup_over_one_thread = 1.0;
+        result.scaling.parallel_efficiency = 1.0;
+        result.scaling.reason = "selected implementation already uses one thread";
+      } else {
+        std::string baseline_variant = result.plan.selected_variant;
+        if (baseline_variant == "cpu.native-parallel.avx2-fma.f32.v1") {
+          baseline_variant = "cpu.native-packed.avx2-fma.f32.v1";
+        } else if (baseline_variant ==
+                   "cpu.native-parallel.avx512-fma.f32.v1") {
+          baseline_variant = "cpu.native-packed.avx512-fma.f32.v1";
+        }
+        result.scaling.baseline_variant = baseline_variant;
+        const RunnerPlanV1 baseline_plan = runner.plan(
+            result.shape, options.alignment_bytes, 1, baseline_variant,
+            options.packing_mode, options.smt_policy,
+            options.affinity_policy);
+        if (!baseline_plan.legal) {
+          result.scaling.reason =
+              "one-thread family baseline is illegal: " +
+              baseline_plan.reason;
+        } else {
+          BenchmarkOptionsV1 comparison_options = options;
+          comparison_options.profile = ProfileV1::custom;
+          comparison_options.shapes = {result.shape};
+          comparison_options.requested_variant = baseline_variant;
+          comparison_options.requested_threads = 1;
+          comparison_options.compare_one_thread = false;
+          comparison_options.planner_regret = false;
+          comparison_options.json_output.clear();
+          BenchmarkReportV1 comparison_report;
+          std::string comparison_error;
+          if (!run_benchmarks_v1(comparison_options, runner,
+                                 comparison_report, comparison_error)) {
+            error = "one-thread comparison failed: " + comparison_error;
+            return false;
+          }
+          const auto &baseline = comparison_report.results.front();
+          if (!baseline.timing.valid || !baseline.correctness.passed) {
+            result.scaling.reason =
+                "one-thread baseline timing or correctness is invalid";
+          } else {
+            result.scaling.valid = true;
+            result.scaling.one_thread_median_seconds =
+                baseline.timing.median_seconds;
+            result.scaling.speedup_over_one_thread =
+                baseline.timing.median_seconds / result.timing.median_seconds;
+            result.scaling.parallel_efficiency =
+                result.scaling.speedup_over_one_thread /
+                static_cast<double>(result.plan.actual_threads);
+            result.scaling.reason =
+                "same timing scope and ISA family; persistent context creation "
+                "is outside both intervals";
+          }
+        }
+      }
+    }
+
+    if (options.planner_regret) {
+      result.planner_regret.requested = true;
+      result.planner_regret.selected_median_seconds =
+          result.timing.median_seconds;
+      double fastest = std::numeric_limits<double>::infinity();
+      for (const std::string &variant : runner.variant_ids()) {
+        RegretCandidateResultV2 candidate;
+        candidate.variant = variant;
+        const RunnerPlanV1 candidate_plan = runner.plan(
+            result.shape, options.alignment_bytes, options.requested_threads,
+            variant, options.packing_mode, options.smt_policy,
+            options.affinity_policy);
+        candidate.legal = candidate_plan.legal;
+        candidate.reason = candidate_plan.reason;
+        candidate.complete_implementation_comparison =
+            candidate_plan.complete_implementation_comparison;
+        if (!candidate_plan.legal ||
+            !candidate_plan.complete_implementation_comparison) {
+          result.planner_regret.candidates.push_back(std::move(candidate));
+          continue;
+        }
+
+        if (variant == result.plan.selected_variant) {
+          candidate.timing_valid = result.timing.valid;
+          candidate.correctness_passed = result.correctness.passed;
+          candidate.median_seconds = result.timing.median_seconds;
+          candidate.measurement_reason = result.timing.valid
+                                             ? result.correctness.reason
+                                             : result.timing.rejection_reason;
+        } else {
+          BenchmarkOptionsV1 comparison_options = options;
+          comparison_options.profile = ProfileV1::custom;
+          comparison_options.shapes = {result.shape};
+          comparison_options.requested_variant = variant;
+          comparison_options.compare_one_thread = false;
+          comparison_options.planner_regret = false;
+          comparison_options.json_output.clear();
+          BenchmarkReportV1 comparison_report;
+          std::string comparison_error;
+          if (!run_benchmarks_v1(comparison_options, runner,
+                                 comparison_report, comparison_error)) {
+            error = "planner-regret candidate failed for " + variant +
+                    ": " + comparison_error;
+            return false;
+          }
+          const auto &measured = comparison_report.results.front();
+          candidate.timing_valid = measured.timing.valid;
+          candidate.correctness_passed = measured.correctness.passed;
+          candidate.median_seconds = measured.timing.median_seconds;
+          candidate.measurement_reason = measured.timing.valid
+                                             ? measured.correctness.reason
+                                             : measured.timing.rejection_reason;
+        }
+        if (candidate.timing_valid && candidate.correctness_passed &&
+            candidate.median_seconds > 0.0 &&
+            candidate.median_seconds < fastest) {
+          fastest = candidate.median_seconds;
+          result.planner_regret.fastest_legal_variant = candidate.variant;
+        }
+        result.planner_regret.candidates.push_back(std::move(candidate));
+      }
+      if (!result.timing.valid || !result.correctness.passed) {
+        result.planner_regret.reason =
+            "selected result is invalid and is excluded from regret";
+      } else if (!std::isfinite(fastest) || fastest <= 0.0) {
+        result.planner_regret.reason =
+            "no legal complete-call candidate has a valid timing";
+      } else {
+        result.planner_regret.valid = true;
+        result.planner_regret.fastest_legal_median_seconds = fastest;
+        result.planner_regret.regret =
+            result.timing.median_seconds / fastest;
+        result.planner_regret.reason =
+            "selected median divided by fastest legal complete-call median; "
+            "candidate order is the stable planner-v3 registry order";
+      }
+    }
+  }
+  // Refresh runner-owned state after all primary and comparison submissions.
+  // The persistent execution context is created once by the runner, so these
+  // counters provide auditable evidence that measured repetitions reused it.
+  report.environment.runner = runner.environment();
   return true;
 }
 
@@ -860,6 +1042,37 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
          << "    \"timestamp_unix_seconds\": "
          << environment.timestamp_unix_seconds << ",\n";
   emit_environment("capability_record", environment.runner.capability_record);
+  emit_environment("capability_runtime_validation_source",
+                   environment.runner.capability_runtime_validation_source);
+  emit_environment("topology_record", environment.runner.topology_record);
+  output << "    \"capability_record_version\": "
+         << environment.runner.capability_record_version << ",\n"
+         << "    \"topology_record_version\": "
+         << environment.runner.topology_record_version << ",\n"
+         << "    \"topology_discovery_complete\": "
+         << (environment.runner.topology_discovery_complete ? "true" : "false")
+         << ",\n"
+         << "    \"logical_processors\": "
+         << environment.runner.logical_processors << ",\n"
+         << "    \"physical_cores\": "
+         << environment.runner.physical_cores << ",\n"
+         << "    \"numa_nodes\": " << environment.runner.numa_nodes << ",\n"
+         << "    \"persistent_execution_context\": "
+         << (environment.runner.persistent_execution_context ? "true" : "false")
+         << ",\n"
+         << "    \"execution_context_workers\": "
+         << environment.runner.execution_context_workers << ",\n"
+         << "    \"execution_context_workers_started\": "
+         << environment.runner.execution_context_workers_started << ",\n"
+         << "    \"execution_context_submissions\": "
+         << environment.runner.execution_context_submissions << ",\n"
+         << "    \"available_processors\": "
+         << environment.runner.available_processors << ",\n"
+         << "    \"worker_affinity_applied\": "
+         << (environment.runner.worker_affinity_applied ? "true" : "false")
+         << ",\n";
+  emit_environment("worker_affinity_source",
+                   environment.runner.worker_affinity_source);
   emit_environment("provider_name", environment.runner.provider_name);
   emit_environment("provider_version", environment.runner.provider_version);
   emit_environment("provider_config", environment.runner.provider_config, false);
@@ -876,9 +1089,17 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
   json_string(output, allocation_mode_name_v1(report.options.allocation_mode));
   output << ",\n    \"packing_mode\": ";
   json_string(output, packing_mode_name_v1(report.options.packing_mode));
+  output << ",\n    \"smt_policy\": ";
+  json_string(output, smt_policy_name_v2(report.options.smt_policy));
+  output << ",\n    \"affinity_policy\": ";
+  json_string(output, affinity_policy_name_v2(report.options.affinity_policy));
   output << ",\n    \"maximum_memory_bytes\": " << report.options.maximum_memory_bytes
          << ",\n    \"timer_floor_ns\": " << report.options.timer_floor_nanoseconds
-         << ",\n    \"seed\": " << report.options.seed << "\n  },\n"
+         << ",\n    \"seed\": " << report.options.seed
+         << ",\n    \"compare_one_thread\": "
+         << (report.options.compare_one_thread ? "true" : "false")
+         << ",\n    \"planner_regret\": "
+         << (report.options.planner_regret ? "true" : "false") << "\n  },\n"
          << "  \"results\": [\n";
   for (std::size_t index = 0; index < report.results.size(); ++index) {
     const auto &result = report.results[index];
@@ -899,15 +1120,30 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
     output << ",\n      \"planner_mode\": ";
     json_string(output,
                 result.requested_variant == "auto" ? "automatic" : "forced");
-    output << ",\n      \"actual_threads\": " << result.plan.actual_threads
+    output << ",\n      \"planner_version\": " << result.plan.planner_version
+           << ",\n      \"actual_threads\": " << result.plan.actual_threads
            << ",\n      \"workspace_bytes\": " << result.plan.workspace_bytes
+           << ",\n      \"shared_workspace_bytes\": "
+           << result.plan.shared_workspace_bytes
+           << ",\n      \"per_worker_workspace_bytes\": "
+           << result.plan.per_worker_workspace_bytes
            << ",\n      \"workspace_alignment\": " << result.plan.workspace_alignment
            << ",\n      \"prepacked_b_bytes\": " << result.plan.prepacked_b_bytes
            << ",\n      \"packing_required\": "
            << (result.plan.packing_required ? "true" : "false")
            << ",\n      \"supports_prepacked_b\": "
            << (result.plan.supports_prepacked_b ? "true" : "false")
-           << ",\n      \"alignment_bytes\": " << report.options.alignment_bytes
+           << ",\n      \"persistent_execution_context\": "
+           << (result.plan.persistent_execution_context ? "true" : "false")
+           << ",\n      \"smt_policy\": ";
+    json_string(output, result.plan.smt_policy);
+    output << ",\n      \"affinity_policy\": ";
+    json_string(output, result.plan.affinity_policy);
+    output << ",\n      \"worker_affinity_applied\": "
+           << (result.plan.worker_affinity_applied ? "true" : "false")
+           << ",\n      \"affinity_diagnostic\": ";
+    json_string(output, result.plan.affinity_diagnostic);
+    output << ",\n      \"alignment_bytes\": " << report.options.alignment_bytes
            << ",\n      \"lhs_stride\": " << result.shape.k
            << ",\n      \"rhs_stride\": " << result.shape.n
            << ",\n      \"output_stride\": " << result.shape.n
@@ -941,7 +1177,64 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
            << result.correctness.maximum_allowed_error
            << ",\n      \"correctness_reason\": ";
     json_string(output, result.correctness.reason);
-    output << "\n    }" << (index + 1 == report.results.size() ? "\n" : ",\n");
+    output << ",\n      \"scaling\": {\n"
+           << "        \"requested\": "
+           << (result.scaling.requested ? "true" : "false") << ",\n"
+           << "        \"valid\": "
+           << (result.scaling.valid ? "true" : "false") << ",\n"
+           << "        \"baseline_variant\": ";
+    json_string(output, result.scaling.baseline_variant);
+    output << ",\n        \"one_thread_median_seconds\": "
+           << result.scaling.one_thread_median_seconds
+           << ",\n        \"speedup_over_one_thread\": "
+           << result.scaling.speedup_over_one_thread
+           << ",\n        \"parallel_efficiency\": "
+           << result.scaling.parallel_efficiency
+           << ",\n        \"reason\": ";
+    json_string(output, result.scaling.reason);
+    output << "\n      },\n      \"planner_regret\": {\n"
+           << "        \"requested\": "
+           << (result.planner_regret.requested ? "true" : "false") << ",\n"
+           << "        \"valid\": "
+           << (result.planner_regret.valid ? "true" : "false") << ",\n"
+           << "        \"fastest_legal_variant\": ";
+    json_string(output, result.planner_regret.fastest_legal_variant);
+    output << ",\n        \"fastest_legal_median_seconds\": "
+           << result.planner_regret.fastest_legal_median_seconds
+           << ",\n        \"selected_median_seconds\": "
+           << result.planner_regret.selected_median_seconds
+           << ",\n        \"regret\": " << result.planner_regret.regret
+           << ",\n        \"reason\": ";
+    json_string(output, result.planner_regret.reason);
+    output << ",\n        \"candidates\": [\n";
+    for (std::size_t candidate_index = 0;
+         candidate_index < result.planner_regret.candidates.size();
+         ++candidate_index) {
+      const auto &candidate =
+          result.planner_regret.candidates[candidate_index];
+      output << "          {\"variant\": ";
+      json_string(output, candidate.variant);
+      output << ", \"legal\": " << (candidate.legal ? "true" : "false")
+             << ", \"reason\": ";
+      json_string(output, candidate.reason);
+      output << ", \"complete_implementation_comparison\": "
+             << (candidate.complete_implementation_comparison ? "true"
+                                                               : "false")
+             << ", \"timing_valid\": "
+             << (candidate.timing_valid ? "true" : "false")
+             << ", \"correctness\": "
+             << (candidate.correctness_passed ? "true" : "false")
+             << ", \"median_seconds\": " << candidate.median_seconds
+             << ", \"measurement_reason\": ";
+      json_string(output, candidate.measurement_reason);
+      output << "}"
+             << (candidate_index + 1 ==
+                         result.planner_regret.candidates.size()
+                     ? "\n"
+                     : ",\n");
+    }
+    output << "        ]\n      }\n    }"
+           << (index + 1 == report.results.size() ? "\n" : ",\n");
   }
   output << "  ]\n}\n";
 }

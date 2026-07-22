@@ -63,7 +63,7 @@ target_compile_definitions(matcore_benchmark_core_v1 PRIVATE
   "MATCORE_BENCH_SOURCE_COMMIT=\"${MATCORE_BENCH_SOURCE_COMMIT}\""
 )
 target_link_libraries(matcore_benchmark_core_v1
-  PUBLIC MatcoreDSL::CpuPlannerV1
+  PUBLIC MatcoreDSL::CpuPlannerV1 MatcoreDSL::CpuPlannerV3
   PRIVATE MatcoreDSL::CpuBackendsV1
 )
 
@@ -111,7 +111,7 @@ if(BUILD_TESTING)
         "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/benchmark/run_benchmark_cli_tests.py"
         --bench "$<TARGET_FILE:matcore-bench>"
         --schema
-          "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/benchmark/matcore-bench-v1.schema.json"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/benchmark/matcore-bench-v2.schema.json"
     )
   endif()
 endif()

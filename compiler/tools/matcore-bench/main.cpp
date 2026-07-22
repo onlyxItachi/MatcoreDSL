@@ -25,6 +25,9 @@ void usage(std::ostream &output) {
       "  --full                   opt-in profile including 4096 and 8192 squares\n"
       "  --variant ID             stable variant ID or auto (default: auto)\n"
       "  --threads N              requested implementation threads (default: 1)\n"
+      "  --physical-cores-only    cap planning to physical cores (default)\n"
+      "  --allow-smt              explicitly allow logical SMT workers\n"
+      "  --affinity POLICY        none|compact|scatter|local-first (default: none)\n"
       "  --alignment BYTES        exact minimum input/output alignment\n"
       "\n"
       "Measurement contract:\n"
@@ -41,7 +44,9 @@ void usage(std::ostream &output) {
       "  --max-memory-mib N       hard pre-allocation cap (default: 2048)\n"
       "  --seed N                 deterministic unsigned input seed\n"
       "  --guard                  reject any invalid timing or correctness result\n"
-      "  --json-out PATH          write schema-v1 JSON ('-' writes stdout)\n"
+      "  --compare-one-thread     add same-family one-thread speedup/efficiency\n"
+      "  --planner-regret         time every legal complete-call candidate; auto only\n"
+      "  --json-out PATH          write schema-v2 JSON ('-' writes stdout)\n"
       "  --list-variants          list the runner's registered stable IDs\n"
       "  --help                   show this help\n";
 }
@@ -82,6 +87,7 @@ std::optional<ParsedCommandLine> parse_command_line(int argc, char **argv) {
   bool cache_seen = false;
   bool packing_seen = false;
   bool allocation_seen = false;
+  bool smt_seen = false;
 
   for (int index = 1; index < argc; ++index) {
     const std::string_view argument(argv[index]);
@@ -149,12 +155,33 @@ std::optional<ParsedCommandLine> parse_command_line(int argc, char **argv) {
       parsed.options.guard = true;
       continue;
     }
+    if (argument == "--compare-one-thread") {
+      parsed.options.compare_one_thread = true;
+      continue;
+    }
+    if (argument == "--planner-regret") {
+      parsed.options.planner_regret = true;
+      continue;
+    }
+    if (argument == "--allow-smt" ||
+        argument == "--physical-cores-only") {
+      if (smt_seen) {
+        std::cerr << "matcore-bench: SMT policies are mutually exclusive\n";
+        return std::nullopt;
+      }
+      smt_seen = true;
+      parsed.options.smt_policy =
+          argument == "--allow-smt" ? bench::SmtPolicyV2::allow_smt
+                                     : bench::SmtPolicyV2::physical_cores_only;
+      continue;
+    }
 
     const bool takes_value =
         argument == "--m" || argument == "--n" || argument == "--k" ||
         argument == "--variant" || argument == "--threads" ||
         argument == "--warmup" || argument == "--iterations" ||
         argument == "--alignment" || argument == "--json-out" ||
+        argument == "--affinity" ||
         argument == "--max-memory-mib" || argument == "--timer-floor-us" ||
         argument == "--seed";
     if (!takes_value) {
@@ -195,6 +222,20 @@ std::optional<ParsedCommandLine> parse_command_line(int argc, char **argv) {
     } else if (argument == "--alignment") {
       if (!parse_integer(*value, parsed.options.alignment_bytes)) {
         std::cerr << "matcore-bench: alignment must be positive\n";
+        return std::nullopt;
+      }
+    } else if (argument == "--affinity") {
+      if (*value == "none") {
+        parsed.options.affinity_policy = bench::AffinityPolicyV2::none;
+      } else if (*value == "compact") {
+        parsed.options.affinity_policy = bench::AffinityPolicyV2::compact;
+      } else if (*value == "scatter") {
+        parsed.options.affinity_policy = bench::AffinityPolicyV2::scatter;
+      } else if (*value == "local-first") {
+        parsed.options.affinity_policy = bench::AffinityPolicyV2::local_first;
+      } else {
+        std::cerr << "matcore-bench: affinity must be none, compact, scatter, "
+                     "or local-first\n";
         return std::nullopt;
       }
     } else if (argument == "--json-out") {
@@ -261,7 +302,15 @@ int main(int argc, char **argv) {
               << " k=" << result.shape.k
               << " variant=" << result.plan.selected_variant
               << " threads=" << result.plan.actual_threads
+              << " smt_policy=" << result.plan.smt_policy
+              << " affinity_policy=" << result.plan.affinity_policy
+              << " worker_affinity_applied="
+              << (result.plan.worker_affinity_applied ? "true" : "false")
               << " workspace_bytes=" << result.plan.workspace_bytes
+              << " shared_workspace_bytes="
+              << result.plan.shared_workspace_bytes
+              << " per_worker_workspace_bytes="
+              << result.plan.per_worker_workspace_bytes
               << " comparison="
               << (result.plan.complete_implementation_comparison
                       ? "complete-implementation"
@@ -272,7 +321,20 @@ int main(int argc, char **argv) {
               << " gflops=" << result.gflops
               << " timing=" << (result.timing.valid ? "valid" : "rejected")
               << " correctness="
-                << (result.correctness.passed ? "pass" : "FAIL") << '\n';
+              << (result.correctness.passed ? "pass" : "FAIL");
+      if (result.scaling.requested) {
+        std::cout << " speedup=" << result.scaling.speedup_over_one_thread
+                  << " efficiency=" << result.scaling.parallel_efficiency
+                  << " scaling=" << (result.scaling.valid ? "valid" : "n/a");
+      }
+      if (result.planner_regret.requested) {
+        std::cout << " regret=" << result.planner_regret.regret
+                  << " fastest="
+                  << result.planner_regret.fastest_legal_variant
+                  << " regret_status="
+                  << (result.planner_regret.valid ? "valid" : "n/a");
+      }
+      std::cout << '\n';
     }
   }
 
@@ -297,7 +359,10 @@ int main(int argc, char **argv) {
   }
   if (parsed->options.guard) {
     for (const auto &result : report.results) {
-      if (!result.timing.valid || !result.correctness.passed) return 1;
+      if (!result.timing.valid || !result.correctness.passed ||
+          (parsed->options.compare_one_thread && !result.scaling.valid) ||
+          (parsed->options.planner_regret && !result.planner_regret.valid))
+        return 1;
     }
   }
   return 0;
