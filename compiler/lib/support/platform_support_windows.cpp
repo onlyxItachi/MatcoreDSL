@@ -673,7 +673,15 @@ bool prospective_output_path_supported_native_v1(
       stem.size() == 4 && (stem[0] == L'L' || stem[0] == L'l') &&
       (stem[1] == L'P' || stem[1] == L'p') &&
       (stem[2] == L'T' || stem[2] == L't');
-  if ((com_device || lpt_device) && stem[3] >= L'1' && stem[3] <= L'9') {
+  // Win32 also recognizes the ISO-8859-1 superscript digits 1, 2, and 3 in
+  // COM/LPT device names.  Reject them before any compiler or archiver can
+  // open the output path, rather than relying on the post-process regular-file
+  // check to notice that no file was created.
+  const bool reserved_device_digit =
+      stem.size() == 4 &&
+      ((stem[3] >= L'1' && stem[3] <= L'9') || stem[3] == L'\u00b9' ||
+       stem[3] == L'\u00b2' || stem[3] == L'\u00b3');
+  if ((com_device || lpt_device) && reserved_device_digit) {
     error = "Windows output name uses a reserved DOS device basename";
     return false;
   }

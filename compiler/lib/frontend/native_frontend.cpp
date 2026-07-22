@@ -151,6 +151,18 @@ bool makeToolArguments(const Options &options,
     if (argument == "-fsyntax-only" || argument == "-fno-color-diagnostics") {
       continue;
     }
+    if (argument == "-x") {
+      if (++index == options.compiler_arguments.size()) {
+        error = "-x requires a language argument";
+        return false;
+      }
+      if (options.compiler_arguments[index] != "c++") {
+        error = ".mdsl extraction requires the exact language selection "
+                "-x c++";
+        return false;
+      }
+      continue;
+    }
     const auto risk =
         support::classify_untrusted_compiler_argument_v1(argument, clang_cl);
     if (risk != support::CompilerArgumentRiskV1::none) {
@@ -174,13 +186,6 @@ bool makeToolArguments(const Options &options,
       }
       arguments.push_back(argument);
       arguments.push_back(options.compiler_arguments[index]);
-      continue;
-    }
-    if (argument == "-x") {
-      if (++index == options.compiler_arguments.size()) {
-        error = "-x requires a language argument";
-        return false;
-      }
       continue;
     }
     arguments.push_back(argument);

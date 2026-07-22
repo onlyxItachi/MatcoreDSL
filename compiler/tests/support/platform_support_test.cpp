@@ -317,6 +317,16 @@ void test_prospective_path_identity(const std::filesystem::path &directory) {
          "Windows reserved device output is rejected");
   error.clear();
   expect(!support::prospective_output_path_supported_v1(
+             directory / std::filesystem::path(L"COM\u00b9.lib"), error) &&
+             !error.empty(),
+         "Windows superscript COM device output is rejected");
+  error.clear();
+  expect(!support::prospective_output_path_supported_v1(
+             directory / std::filesystem::path(L"LPT\u00b2.obj"), error) &&
+             !error.empty(),
+         "Windows superscript LPT device output is rejected");
+  error.clear();
+  expect(!support::prospective_output_path_supported_v1(
              directory / "result.lib.", error) &&
              !error.empty(),
          "Windows trailing-dot output is rejected");

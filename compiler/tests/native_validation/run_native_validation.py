@@ -818,6 +818,7 @@ def core_suite(checks: Checks, extractor: Path, clang: Path) -> None:
         invalid_compiler_arguments = (
             ("unknown_clang_option", ("-fdefinitely-not-a-clang-option",)),
             ("invalid_language_standard", ("-std=c++99",)),
+            ("language_override", ("-x", "c")),
             ("missing_clang_config", ("--config=/definitely/missing.cfg",)),
             ("bare_clang_plugin", ("-fplugin", "/definitely/missing.so")),
             ("response_file", ("@/definitely/missing.rsp",)),
