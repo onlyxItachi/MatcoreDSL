@@ -48,7 +48,7 @@ def main() -> int:
     args = parser.parse_args()
     is_windows = os.name == "nt"
     executable_suffix = ".exe" if is_windows else ""
-    object_suffix = ".obj" if is_windows else ".o"
+    artifact_suffix = ".lib" if is_windows else ".o"
 
     test_root = Path(args.test_root).resolve()
     if test_root.exists():
@@ -211,9 +211,9 @@ def main() -> int:
     if untrusted_ir.exists():
         raise RuntimeError("untrusted checkout header produced Matcore IR")
 
-    override_output = test_root / f"override{object_suffix}"
+    override_output = test_root / f"override{artifact_suffix}"
     override_compile_options = (
-        ["/c", str(source / "consumer.mdsl"), f"/Fo{override_output}"]
+        ["/c", str(source / "consumer.mdsl"), "-o", str(override_output)]
         if is_windows
         else ["-c", str(source / "consumer.mdsl"), "-o", str(override_output)]
     )
@@ -258,14 +258,19 @@ def main() -> int:
     if "consumer-header=1" not in initial_run.stdout:
         raise RuntimeError(f"initial consumer header value is wrong:\n{initial_run.stdout}")
 
-    objects = list(
-        (build / "CMakeFiles" / "matcore_consumer.mdsl").glob(f"*{object_suffix}")
+    artifacts = list(
+        (build / "CMakeFiles" / "matcore_consumer.mdsl").glob(
+            f"*{artifact_suffix}"
+        )
     )
-    if len(objects) != 1:
-        raise RuntimeError(f"expected one generated MDSLC object, found {objects}")
+    if len(artifacts) != 1:
+        expected_kind = "static archive" if is_windows else "relocatable object"
+        raise RuntimeError(
+            f"expected one generated MDSLC {expected_kind}, found {artifacts}"
+        )
     depfiles = list(
         (build / "CMakeFiles" / "matcore_consumer.mdsl").glob(
-            f"*{object_suffix}.d"
+            f"*{artifact_suffix}.d"
         )
     )
     if len(depfiles) != 1:
@@ -305,7 +310,7 @@ def main() -> int:
         raise RuntimeError(
             f"depfile caused work immediately after a clean build:\n{initial_noop.stdout}"
         )
-    object_before = objects[0].stat().st_mtime_ns
+    artifact_before = artifacts[0].stat().st_mtime_ns
 
     mdsl_source = source / "consumer.mdsl"
     mdsl_source.write_text(
@@ -322,11 +327,11 @@ def main() -> int:
     ]
     if len(rebuild_steps) != 2 or "Linking CXX executable" not in rebuild_steps[1]:
         raise RuntimeError(
-            "editing one .mdsl should only regenerate its object and relink; "
+            "editing one .mdsl should only regenerate its artifact and relink; "
             f"observed:\n{rebuild.stdout}"
         )
-    if objects[0].stat().st_mtime_ns <= object_before:
-        raise RuntimeError("generated MDSLC object timestamp did not advance")
+    if artifacts[0].stat().st_mtime_ns <= artifact_before:
+        raise RuntimeError("generated MDSLC artifact timestamp did not advance")
     source_rebuilt_run = run(
         [str(executable)], capture=True, environment=installed_environment
     )
@@ -336,7 +341,7 @@ def main() -> int:
         )
 
     header = source / "consumer_value.h"
-    object_before_header = objects[0].stat().st_mtime_ns
+    artifact_before_header = artifacts[0].stat().st_mtime_ns
     header.write_text(
         "#pragma once\n\ninline constexpr int consumer_header_value = 2;\n",
         encoding="utf-8",
@@ -346,7 +351,7 @@ def main() -> int:
     )
     if "Compiling MDSLC source consumer.mdsl" not in header_rebuild.stdout:
         raise RuntimeError(
-            "editing an included header did not regenerate its MDSLC object:\n"
+            "editing an included header did not regenerate its MDSLC artifact:\n"
             f"{header_rebuild.stdout}"
         )
     header_rebuild_steps = [
@@ -357,11 +362,11 @@ def main() -> int:
         or "Linking CXX executable" not in header_rebuild_steps[1]
     ):
         raise RuntimeError(
-            "editing one included header should only regenerate its object and relink; "
+            "editing one included header should only regenerate its artifact and relink; "
             f"observed:\n{header_rebuild.stdout}"
         )
-    if objects[0].stat().st_mtime_ns <= object_before_header:
-        raise RuntimeError("included-header rebuild did not refresh the MDSLC object")
+    if artifacts[0].stat().st_mtime_ns <= artifact_before_header:
+        raise RuntimeError("included-header rebuild did not refresh the MDSLC artifact")
     header_rebuilt_run = run(
         [str(executable)], capture=True, environment=installed_environment
     )
@@ -372,7 +377,7 @@ def main() -> int:
         )
 
     installed_runtime_header = prefix / "include" / "matcore" / "runtime_c.h"
-    object_before_runtime_header = objects[0].stat().st_mtime_ns
+    artifact_before_runtime_header = artifacts[0].stat().st_mtime_ns
     installed_runtime_header.write_text(
         installed_runtime_header.read_text(encoding="utf-8")
         + "\n/* installed depfile rebuild probe */\n",
@@ -383,7 +388,7 @@ def main() -> int:
     )
     if "Compiling MDSLC source consumer.mdsl" not in runtime_header_rebuild.stdout:
         raise RuntimeError(
-            "editing installed runtime_c.h did not regenerate the MDSLC object:\n"
+            "editing installed runtime_c.h did not regenerate the MDSLC artifact:\n"
             f"{runtime_header_rebuild.stdout}"
         )
     runtime_header_steps = [
@@ -397,10 +402,10 @@ def main() -> int:
     ):
         raise RuntimeError(
             "editing installed runtime_c.h should only regenerate the MDSLC "
-            f"object and relink; observed:\n{runtime_header_rebuild.stdout}"
+            f"artifact and relink; observed:\n{runtime_header_rebuild.stdout}"
         )
-    if objects[0].stat().st_mtime_ns <= object_before_runtime_header:
-        raise RuntimeError("runtime_c.h rebuild did not refresh the MDSLC object")
+    if artifacts[0].stat().st_mtime_ns <= artifact_before_runtime_header:
+        raise RuntimeError("runtime_c.h rebuild did not refresh the MDSLC artifact")
     runtime_header_run = run(
         [str(executable)], capture=True, environment=installed_environment
     )

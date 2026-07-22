@@ -64,14 +64,19 @@ function(matcoredsl_add_executable target_name)
   set(mdsl_object_dir
       "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/${target_name}.mdsl")
   if(MSVC OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
-    set(mdsl_object_extension ".obj")
+    # One MDSLC translation unit produces host, stub, and backend objects.
+    # Windows has no safe analogue of the ELF partial link, so mdslc++ archives
+    # those ordinary COFF objects into one normal static .lib. Individual .obj
+    # files remain visible only through --save-temps/artifact validation.
+    set(mdsl_object_extension ".lib")
     set(mdsl_standard_option "/std:c++${MDSLC_CXX_STANDARD}")
     set(mdsl_compile_only_option "/c")
-    set(mdsl_output_option "/Fo${mdsl_object_dir}/${mdsl_stem}-${mdsl_source_hash}.obj")
+    set(mdsl_output_option -o
+      "${mdsl_object_dir}/${mdsl_stem}-${mdsl_source_hash}.lib")
     set(mdsl_dependency_options
       /clang:-MD
       /clang:-MF
-      "/clang:${mdsl_object_dir}/${mdsl_stem}-${mdsl_source_hash}.obj.d")
+      "/clang:${mdsl_object_dir}/${mdsl_stem}-${mdsl_source_hash}.lib.d")
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
       set(mdsl_runtime_option /MDd)
     else()

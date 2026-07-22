@@ -5,8 +5,9 @@
 The existing integration matrix intentionally authenticates ELF partial links,
 SONAME/rpath behavior and POSIX process details.  This test is the explicit
 Windows replacement: it exercises native LibTooling without the bootstrap
-frontend and, in pipeline mode, requires the driver to emit a normal COFF
-object that clang-cl links with the installed-style runtime import library.
+frontend and, in pipeline mode, requires the driver to archive its normal COFF
+objects into a static library that clang-cl links with the runtime import
+library.
 """
 
 from __future__ import annotations
@@ -171,7 +172,7 @@ def pipeline_suite(
 ) -> None:
     source = temporary / "MDSLC GEMM ünicode.mdsl"
     shutil.copy2(repository / "compiler" / "examples" / "gemm_v0.mdsl", source)
-    object_path = temporary / "MDSLC GEMM ünicode.obj"
+    archive_path = temporary / "MDSLC GEMM ünicode.lib"
     compiled = run(
         [
             str(driver),
@@ -185,18 +186,23 @@ def pipeline_suite(
             "/MD",
             "/c",
             str(source),
-            f"/Fo{object_path}",
+            "-o",
+            str(archive_path),
         ],
         cwd=temporary,
     )
-    require_success(compiled, "native .mdsl to COFF object pipeline")
-    if not object_path.is_file() or object_path.stat().st_size == 0:
-        raise RuntimeError("mdslc++ emitted no COFF object")
+    require_success(compiled, "native .mdsl to COFF static-library pipeline")
+    if not archive_path.is_file() or archive_path.stat().st_size == 0:
+        raise RuntimeError("mdslc++ emitted no COFF static library")
     if list(temporary.glob("*.o")):
         raise RuntimeError("Windows driver emitted a Unix .o artifact")
     for suffix in (".host.cpp", ".matcore.json", ".sites.h", ".stubs.cpp", ".backend.cpp"):
         if not list(temporary.glob(f"*{suffix}")):
             raise RuntimeError(f"--save-temps omitted {suffix}")
+    for suffix in (".host.obj", ".stubs.obj", ".backend.obj"):
+        objects = list(temporary.glob(f"*{suffix}"))
+        if len(objects) != 1 or objects[0].stat().st_size == 0:
+            raise RuntimeError(f"--save-temps omitted constituent COFF {suffix}")
 
     runtime_import_library = build_dir / "lib" / "matcore_runtime.lib"
     if not runtime_import_library.is_file():
@@ -208,7 +214,7 @@ def pipeline_suite(
             "/nologo",
             "/EHsc",
             "/MD",
-            str(object_path),
+            str(archive_path),
             str(runtime_import_library),
             f"/Fe{executable}",
             "/link",
