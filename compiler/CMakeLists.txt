@@ -93,12 +93,63 @@ if(MDSLC_ENABLE_NATIVE_FRONTEND)
       "MDSLC native frontend requires the audited LLVM/Clang 21.1.8 tuple; "
       "found LLVM ${LLVM_PACKAGE_VERSION}")
   endif()
+  if(WIN32 AND TARGET LLVMDebugInfoPDB)
+    set(MDSLC_DIAGUIDS_LIBRARY "" CACHE FILEPATH
+      "Coherent Visual Studio DIA SDK GUID library")
+    get_target_property(MDSLC_PDB_INTERFACE_LIBRARIES
+      LLVMDebugInfoPDB INTERFACE_LINK_LIBRARIES)
+    set(MDSLC_PDB_REBASED_INTERFACE_LIBRARIES)
+    set(MDSLC_REBASED_DIAGUIDS FALSE)
+    foreach(MDSLC_PDB_INTERFACE_LIBRARY IN LISTS
+        MDSLC_PDB_INTERFACE_LIBRARIES)
+      get_filename_component(MDSLC_PDB_INTERFACE_NAME
+        "${MDSLC_PDB_INTERFACE_LIBRARY}" NAME)
+      if(IS_ABSOLUTE "${MDSLC_PDB_INTERFACE_LIBRARY}" AND
+         MDSLC_PDB_INTERFACE_NAME STREQUAL "diaguids.lib")
+        if(NOT "${MDSLC_DIAGUIDS_LIBRARY}" STREQUAL "")
+          if(NOT IS_ABSOLUTE "${MDSLC_DIAGUIDS_LIBRARY}" OR
+             NOT EXISTS "${MDSLC_DIAGUIDS_LIBRARY}" OR
+             IS_DIRECTORY "${MDSLC_DIAGUIDS_LIBRARY}")
+            message(FATAL_ERROR
+              "MDSLC_DIAGUIDS_LIBRARY must be an existing absolute file")
+          endif()
+          get_filename_component(MDSLC_DIAGUIDS_NAME
+            "${MDSLC_DIAGUIDS_LIBRARY}" NAME)
+          if(NOT MDSLC_DIAGUIDS_NAME STREQUAL "diaguids.lib")
+            message(FATAL_ERROR
+              "MDSLC_DIAGUIDS_LIBRARY must name diaguids.lib")
+          endif()
+          list(APPEND MDSLC_PDB_REBASED_INTERFACE_LIBRARIES
+            "${MDSLC_DIAGUIDS_LIBRARY}")
+          set(MDSLC_REBASED_DIAGUIDS TRUE)
+        elseif(NOT EXISTS "${MDSLC_PDB_INTERFACE_LIBRARY}" OR
+               IS_DIRECTORY "${MDSLC_PDB_INTERFACE_LIBRARY}")
+          message(FATAL_ERROR
+            "LLVM 21.1.8 exports a missing build-host DIA SDK dependency "
+            "(${MDSLC_PDB_INTERFACE_LIBRARY}). Set "
+            "MDSLC_DIAGUIDS_LIBRARY to the coherent Visual Studio DIA SDK "
+            "amd64 diaguids.lib used by this build.")
+        else()
+          list(APPEND MDSLC_PDB_REBASED_INTERFACE_LIBRARIES
+            "${MDSLC_PDB_INTERFACE_LIBRARY}")
+        endif()
+      else()
+        list(APPEND MDSLC_PDB_REBASED_INTERFACE_LIBRARIES
+          "${MDSLC_PDB_INTERFACE_LIBRARY}")
+      endif()
+    endforeach()
+    if(MDSLC_REBASED_DIAGUIDS)
+      set_property(TARGET LLVMDebugInfoPDB PROPERTY INTERFACE_LINK_LIBRARIES
+        "${MDSLC_PDB_REBASED_INTERFACE_LIBRARIES}")
+      message(STATUS
+        "Rebased LLVM DIA SDK dependency to ${MDSLC_DIAGUIDS_LIBRARY}")
+    endif()
+  endif()
   if(TARGET clang-cpp)
     if(WIN32)
-      # The official LLVM 21.1.8 Windows package exports build-host-only DIA
-      # SDK paths through LLVM's interface.  clang-cpp and LLVM are shared
-      # imported targets, so consumers need their authenticated import
-      # libraries, not those stale private build dependencies.
+      # Some Windows LLVM packages provide shared clang-cpp/LLVM imported
+      # targets. Consumers need their authenticated import libraries, not
+      # private build-host dependencies carried by a faulty interface graph.
       set(MDSLC_CLANG_TOOLING_LIBRARIES
         "$<TARGET_LINKER_FILE:clang-cpp>")
       if(TARGET LLVM)
