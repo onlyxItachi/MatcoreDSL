@@ -48,6 +48,20 @@ in `context.md`.
 - Reference, tiled, and compiler-vectorized v1 execute with and report one
   actual thread even when the request permits more; native packed v1 requires
   exactly one requested thread. None is a parallel implementation.
+- Advanced CPU dispatch must distinguish hardware support, OS-enabled extended
+  state, compiler support, implementation availability, and physical runtime
+  validation. CPUID alone never authorizes AVX-512 or AMX execution. Keep ISA
+  requirements on isolated functions or translation units; never compile the
+  complete runtime with AVX2, AVX-512, or AMX enabled globally.
+- Persistent parallel variants use explicit execution contexts, bounded worker
+  counts, deterministic output-tile assignment, caller-visible per-worker
+  workspace, and mutually exclusive native/OpenBLAS pools. Do not create
+  workers per GEMM, hide nested provider threads, or infer physical NUMA
+  validation from synthetic topology tests.
+- BF16 and INT8 acceleration follows typed reference semantics. Optimized
+  variants may be advertised only when their exact instructions are present,
+  legality is fail-closed, and compatible physical hardware has executed the
+  correctness suite. Compile-only and synthetic status must remain explicit.
 - Platform diagnostics use the versioned Linux/Windows/Unknown record. Shared
   code must not acquire scattered POSIX-only process, path, dynamic-library,
   or object-format assumptions. A platform is supported only after its native
