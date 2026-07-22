@@ -1,5 +1,10 @@
 # MDSLC CPU performance preflight
 
+> Historical Milestone 4 pre-implementation snapshot. The dependency and host
+> inventory remains useful evidence, but the implementation blockers recorded
+> here were subsequently addressed by Milestones 4 and 5. Current acceptance
+> status belongs in `STATUS.md` and the final milestone reports.
+
 Audit date: 2026-07-22
 Repository checkpoint: `main` at
 `6a5b931baa6ec1136fb3c0471f515bd666a23981`
@@ -143,10 +148,12 @@ Raw runs belong beneath ignored `benchmark_reports/`. Only reviewed summaries
 may be committed to `docs/performance/cpu/`. Performance claims are limited to
 the declared host, build, affinity, provider, timing mode, and shape matrix.
 
-## Blockers
+## Blockers at the time of this audit
 
 There is no dependency blocker for the Linux Milestone 4 benchmark or optional
 OpenBLAS adapter. Current memory pressure makes low-parallelism builds (`-j2`)
-and explicit benchmark memory caps mandatory. AVX-512, BF16, persistent
-parallelism, topology-aware planning, and Windows runtime validation remain
-separate Milestone 5 or deferred Windows gates.
+and explicit benchmark memory caps mandatory. At the time of this preflight,
+AVX-512, BF16, persistent parallelism, topology-aware planning, and Windows
+runtime validation were separate Milestone 5 or deferred Windows gates. The
+Linux Milestone 5 implementation later addressed the first four; Windows
+runtime validation remains a separate focused phase.

@@ -62,7 +62,10 @@ An additive C ABI owns an opaque execution-context handle. The handle contains
 no public C++ ABI and exposes explicit creation, execution, diagnostics, and
 destruction operations. Creation fixes a maximum worker count and affinity
 policy. Workers persist across GEMM calls; execution never creates a thread per
-operation. Destruction is idempotence-safe for valid handles and joins workers.
+operation. The internal C++ context's `shutdown()` operation is repeat-safe and
+joins workers. The opaque public C handle is consumed exactly once by its
+destroy function and is invalid afterward; a dangling handle cannot be passed
+again safely.
 
 Each invocation reports requested and actual threads. Output macro-tiles are
 assigned deterministically. Per-worker workspace is caller-visible through a
