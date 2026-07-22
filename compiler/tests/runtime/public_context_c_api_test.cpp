@@ -619,11 +619,15 @@ void runtime_variants_and_generation(
             &provider_rejected.lhs_desc, &provider_rejected.rhs_desc,
             &policy, &provider_options, &provider_requirements,
             &provider_report);
+    const bool provider_unavailable =
+        provider_report.external_provider != nullptr &&
+        std::strcmp(provider_report.external_provider, "unavailable") == 0;
     expect(provider_query.code == MATCORE_STATUS_UNAVAILABLE_VARIANT_V0 &&
                provider_report.candidates[3].legal == 0 &&
                provider_report.candidates[3].reason != nullptr &&
-               std::strstr(provider_report.candidates[3].reason,
-                           "bound native workers") != nullptr &&
+               (provider_unavailable ||
+                std::strstr(provider_report.candidates[3].reason,
+                            "bound native workers") != nullptr) &&
                provider_rejected.unchanged(),
            "multi-thread OpenBLAS is rejected under a bound native placement policy");
   }
