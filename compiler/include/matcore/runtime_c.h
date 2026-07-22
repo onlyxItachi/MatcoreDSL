@@ -285,8 +285,11 @@ typedef struct matcore_gemm_prepacked_b_requirements_v1 {
 
 /*
  * Borrowed descriptor for caller-owned native packed-B storage. Both source
- * and packed storage must remain alive and unmodified through execution.
- * All fields are validated; callers must not synthesize this descriptor.
+ * and packed storage must remain alive and unmodified through execution. The
+ * rhs descriptor supplied to execute_prepacked_b_v1 must retain the exact
+ * source_data identity. Packed storage and this descriptor must not overlap
+ * any GEMM tensor or each other. All fields are validated; callers must not
+ * synthesize this descriptor.
  */
 typedef struct matcore_packed_b_desc_v1 {
   uint32_t abi_version;
@@ -372,7 +375,10 @@ MATCORE_RUNTIME_API matcore_status_v0 matcore_runtime_gemm_f32_prepack_b_v1(
     size_t packed_storage_bytes,
     matcore_packed_b_desc_v1 *packed_b) MATCORE_RUNTIME_NOEXCEPT;
 
-/* Execute the forced native packed candidate with a validated packed-B view. */
+/*
+ * Execute the forced native packed candidate with a validated packed-B view.
+ * The rhs pointer must match the source identity captured by prepack_b_v1.
+ */
 MATCORE_RUNTIME_API matcore_status_v0
 matcore_runtime_gemm_f32_execute_prepacked_b_v1(
     const matcore_tensor_desc_v0 *out,
