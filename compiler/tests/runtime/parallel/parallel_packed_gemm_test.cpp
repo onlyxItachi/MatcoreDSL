@@ -109,13 +109,19 @@ void run_parallel_correctness() {
   auto context = make_context();
 
   runtime::CpuParallelGemmWorkspaceRequirementsV1 requirements;
+  runtime::CpuPackedGemmWorkspaceRequirementsV1 packed_b_requirements;
+  expect(runtime::cpu_packed_avx2_prepacked_b_requirements_v1(
+             gemm_problem, &packed_b_requirements) ==
+             runtime::CpuPackedGemmStatusV1::success,
+         "shared packed-B requirement query succeeds");
   expect(runtime::cpu_parallel_packed_avx2_workspace_requirements_v1(
              gemm_problem, 4, &requirements) ==
              runtime::CpuParallelGemmStatusV1::success,
          "parallel workspace query succeeds");
   expect(requirements.execution_threads == 4 &&
              requirements.alignment_bytes == 64 &&
-             requirements.shared_packed_b_bytes != 0 &&
+             requirements.shared_packed_b_bytes ==
+                 packed_b_requirements.total_bytes &&
              requirements.worker_region_offset % 64 == 0 &&
              requirements.per_worker_bytes != 0 &&
              requirements.per_worker_stride_bytes % 64 == 0 &&
