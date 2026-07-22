@@ -4,6 +4,7 @@
 #include "platform_support.h"
 #include "mdslc_config.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -602,6 +603,18 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
     return std::nullopt;
   }
   if (isWindowsHost()) {
+    // The configured Windows compiler tuple is clang-cl/MSVC.  Direct
+    // extractor callers pass clang-cl spellings such as /TP and /I, but must
+    // not need to supply a mode-changing control argument themselves.  Record
+    // the already-authenticated driver flavor internally before LibTooling
+    // constructs its FixedCompilationDatabase.
+    if (std::find(command.frontend.compiler_arguments.begin(),
+                  command.frontend.compiler_arguments.end(),
+                  "--driver-mode=cl") ==
+        command.frontend.compiler_arguments.end()) {
+      command.frontend.compiler_arguments.insert(
+          command.frontend.compiler_arguments.begin(), "--driver-mode=cl");
+    }
     command.frontend.compiler_arguments.insert(
         command.frontend.compiler_arguments.begin(),
         {"/I", command.tool_include_directory});
