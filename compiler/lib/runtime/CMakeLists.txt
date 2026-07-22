@@ -239,6 +239,9 @@ if(BUILD_TESTING)
   add_test(NAME runtime.cpu.execution_context.v1
     COMMAND matcore_execution_context_test
   )
+  set_tests_properties(runtime.cpu.execution_context.v1 PROPERTIES
+    TIMEOUT 10
+  )
 
   add_executable(matcore_parallel_packed_gemm_test
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/parallel/parallel_packed_gemm_test.cpp"

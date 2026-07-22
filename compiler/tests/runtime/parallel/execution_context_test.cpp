@@ -48,6 +48,11 @@ struct ReentrantState {
   bool request_shutdown = false;
 };
 
+struct ConcurrentShutdownState {
+  runtime::CpuExecutionContextV1 *context = nullptr;
+  std::atomic<std::uint32_t> callbacks{0};
+};
+
 struct BorrowedStackState {
   std::uint64_t expected = 0;
   std::uint64_t observed = 0;
@@ -104,6 +109,14 @@ runtime::CpuExecutionStatusV1 reentrant_callback(
         1, 1, runtime::CpuProviderNestingPolicyV1::native_only,
         record_assignment, &nested_state);
   }
+  return runtime::CpuExecutionStatusV1::success;
+}
+
+runtime::CpuExecutionStatusV1 concurrent_shutdown_callback(
+    std::size_t, std::size_t, void *user_data) noexcept {
+  auto &state = *static_cast<ConcurrentShutdownState *>(user_data);
+  state.context->shutdown();
+  state.callbacks.fetch_add(1, std::memory_order_relaxed);
   return runtime::CpuExecutionStatusV1::success;
 }
 
@@ -428,6 +441,42 @@ void reentrant_operations_fail_or_stop_without_deadlock() {
   context->shutdown();
 }
 
+void multi_worker_shutdown_completes_active_barrier() {
+#if defined(__linux__)
+  // Make the wake-up order deterministic: with all workers inheriting one CPU,
+  // the first callback requests shutdown before the remaining workers can
+  // consume the epoch. They must still join the active submission barrier.
+  const auto inventory = platform::discover_current_thread_affinity_v1();
+  expect(inventory.discovery_complete &&
+             !inventory.allowed_logical_cpus.empty(),
+         "multi-worker shutdown test can select one allowed Linux CPU");
+  if (!inventory.discovery_complete || inventory.allowed_logical_cpus.empty())
+    return;
+  const auto binding = platform::apply_current_thread_affinity_v1(
+      inventory.allowed_logical_cpus.front());
+  expect(binding.status == platform::ThreadAffinityStatusV1::applied,
+         "multi-worker shutdown test binds its inherited worker mask");
+  if (binding.status != platform::ThreadAffinityStatusV1::applied) return;
+#endif
+
+  constexpr std::uint32_t worker_count = 16;
+  auto context = make_context(worker_count, worker_count);
+  if (context == nullptr) return;
+  ConcurrentShutdownState state{context.get()};
+  expect(context->run_tasks(
+             worker_count, worker_count,
+             runtime::CpuProviderNestingPolicyV1::native_only,
+             concurrent_shutdown_callback, &state) ==
+             runtime::CpuExecutionStatusV1::success,
+         "callback shutdown lets every active worker complete the barrier");
+  expect(state.callbacks.load(std::memory_order_relaxed) == worker_count,
+         "callback shutdown does not drop an active worker");
+  const auto info = context->info();
+  expect(info.completed_submissions == 1 && !info.accepting_work,
+         "multi-worker callback shutdown completes and stops the context");
+  context->shutdown();
+}
+
 }  // namespace
 
 int main() {
@@ -436,6 +485,7 @@ int main() {
   explicit_worker_affinity_is_strict_and_reported();
   independent_contexts_execute_concurrently();
   reentrant_operations_fail_or_stop_without_deadlock();
+  multi_worker_shutdown_completes_active_barrier();
   if (failures != 0) {
     std::cerr << failures << " execution-context checks failed\n";
     return 1;
