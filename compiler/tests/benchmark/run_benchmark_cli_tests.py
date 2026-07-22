@@ -369,12 +369,29 @@ def main() -> int:
                 str(regret_output),
             ]
         )
-        regret = json.loads(regret_output.read_text(encoding="utf-8"))["results"][0]["planner_regret"]
+        regret_result = json.loads(
+            regret_output.read_text(encoding="utf-8")
+        )["results"][0]
+        regret = regret_result["planner_regret"]
         assert regret["requested"] is True
         assert regret["valid"] is True
         assert len(regret["candidates"]) == 8
         assert regret["fastest_legal_variant"]
         assert regret["regret"] >= 1.0
+        assert "equal-weight arithmetic midpoint" in regret["reason"]
+        selected = next(
+            candidate
+            for candidate in regret["candidates"]
+            if candidate["variant"] == regret_result["selected_variant"]
+        )
+        assert regret["selected_median_seconds"] == selected["median_seconds"]
+        for candidate in regret["candidates"]:
+            if candidate["legal"] and candidate["complete_implementation_comparison"]:
+                assert candidate["timing_valid"] is True
+                assert candidate["correctness"] is True
+                assert "forward and reverse stable-registry-pass medians" in (
+                    candidate["measurement_reason"]
+                )
 
         parallel_output = pathlib.Path(temporary) / "parallel avx2.json"
         parallel = subprocess.run(
