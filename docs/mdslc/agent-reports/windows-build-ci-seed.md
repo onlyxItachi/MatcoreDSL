@@ -195,3 +195,57 @@ fail closed if neither is provided.
 
 No Windows performance, ISA-runtime, NUMA, packaging, or support claim is made
 by this seed.
+
+## CMake integration addendum
+
+Follow-up date: 2026-07-22
+
+Follow-up base: `3741511b72eea256cc759049e89f99a8fd4b57f4`
+
+Follow-up implementation: `8fb3a49ca787fc4d0fd3bd956509ff38a2193dc1`
+
+After the portable support and topology lanes were integrated, a CMake-only
+follow-up closed the remaining build-graph gap:
+
+- `lib/support` is added before the IR, frontend, driver, extractor, runtime,
+  planner, and benchmark consumers;
+- both `mdslc++` and `matcore-extract` link
+  `MatcoreDSL::PlatformSupportV1` explicitly;
+- the standalone frontend test project also adds support before its extractor;
+- `support.platform.v1` is now part of the root CTest surface;
+- support, platform, and benchmark warning policy now flows through
+  `MatcoreDSLCompilerOptions.cmake`, whose selection is based on the MSVC ABI
+  frontend variant and therefore handles clang-cl without GNU flag leakage;
+- standalone support and benchmark configurations load the same helper when a
+  parent project has not already provided it.
+
+The only direct MSVC/frontend-variant conditional remaining in the reviewed
+CMake surface is `MatcoreDSLCompile.cmake`'s installed-consumer artifact mode.
+That conditional is intentional: it selects clang-cl arguments and the normal
+Windows static `.lib` output. It still invokes:
+
+```text
+/c <source.mdsl> -o <generated-static-library>.lib
+```
+
+and retains constituent `.obj` files only for save-temps validation. No
+partial-link emulation or archive-as-object labeling was introduced.
+
+Fresh clean Linux Release validation after the follow-up used the same exact
+Clang/LLVM 21.1.8 and required OpenBLAS 0.3.32 configuration documented above:
+
+- configure: passed;
+- build: `95/95` actions passed;
+- CTest: `43/43` passed in `63.86` seconds;
+- `support.platform.v1` passed as test 9;
+- relocated consumer, package ABI, frontend, integration, CPU runtime,
+  planner, benchmark, and ISA artifact tests remained green.
+
+A second fresh build with native frontend enabled, bootstrap disabled, and
+OpenBLAS disabled completed all `93/93` actions. Its focused
+`support.platform.v1` execution passed. Repository hygiene and `git diff
+--check` also passed.
+
+This addendum is Linux regression evidence for the integrated CMake graph. It
+does not change the unvalidated Windows status above; only a native hosted
+Windows run can do that.
