@@ -1,4 +1,5 @@
 #include "cpu_planner.h"
+#include "platform.h"
 
 #include <charconv>
 #include <cstdint>
@@ -19,6 +20,7 @@ struct Options {
   std::uint32_t alignment = alignof(float);
   planner::CpuGemmRequestV1 request =
       planner::CpuGemmRequestV1::automatic;
+  bool platform_info = false;
 };
 
 void usage(std::ostream &output) {
@@ -28,6 +30,7 @@ void usage(std::ostream &output) {
             "  --alignment BYTES  minimum data alignment (default: 4)\n"
             "  --variant NAME     auto, reference, tiled, or "
             "compiler-vectorized\n"
+            "  --platform-info    print the versioned compile-platform record\n"
             "  --help             show this help\n";
 }
 
@@ -82,6 +85,8 @@ std::optional<Options> parseCommandLine(int argc, char **argv) {
     if (argument == "--help" || argument == "-h") {
       usage(std::cout);
       std::exit(0);
+    } else if (argument == "--platform-info") {
+      options.platform_info = true;
     } else if (argument == "--m" || argument == "--k" || argument == "--n" ||
                argument == "--alignment" || argument == "--variant") {
       value = takeValue(argc, argv, index, argument);
@@ -117,12 +122,14 @@ std::optional<Options> parseCommandLine(int argc, char **argv) {
       if (!setVariant(*value, options)) {
         return std::nullopt;
       }
-    } else if (argument != "--help" && argument != "-h") {
+    } else if (argument != "--help" && argument != "-h" &&
+               argument != "--platform-info") {
       std::cerr << "matcore-plan: unknown option: " << argument << '\n';
       return std::nullopt;
     }
   }
-  if (options.m == 0 || options.k == 0 || options.n == 0) {
+  if (!options.platform_info &&
+      (options.m == 0 || options.k == 0 || options.n == 0)) {
     std::cerr << "matcore-plan: --m, --k, and --n are required\n";
     return std::nullopt;
   }
@@ -136,6 +143,15 @@ int main(int argc, char **argv) {
   if (!options) {
     usage(std::cerr);
     return 2;
+  }
+  if (options->platform_info) {
+    const auto record =
+        matcore::mdslc::platform::discover_compile_platform_v1();
+    const auto validation =
+        matcore::mdslc::platform::validate_platform_record_v1(record);
+    std::cout << matcore::mdslc::platform::format_platform_record_v1(record)
+              << '\n';
+    return validation ? 0 : 1;
   }
 
   const planner::CpuGemmProblemV1 problem{
