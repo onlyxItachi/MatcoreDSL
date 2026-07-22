@@ -123,3 +123,46 @@ Clang 21/Windows SDK tuple and execute:
 
 Physical Windows NUMA performance and machines with multiple processor groups
 remain unvalidated. No such support is claimed.
+
+## Host-consumer integration follow-up
+
+Follow-up base: `3a28256f4fe094a0fea23d30a5bae08c24c7b0ea`
+
+Implementation commit: `0bb22a8d` (`feat(platform): route host topology
+through portable backend`)
+
+The execution-context C ABI, `matcore-plan`, and `matcore-bench` now obtain
+topology through `discover_host_cpu_topology_v1()`. Linux behavior is unchanged;
+Windows can consume the authenticated Win32 record; unknown hosts retain the
+capability architecture only for diagnostics while placement remains
+incomplete and fail-closed. There are no remaining direct
+`discover_linux_cpu_topology_v1()` calls in these runtime/tool consumers.
+
+Benchmark environment discovery also no longer includes an unused Linux system
+header, and its `/proc` and `/sys` readers are compiled only for Linux. This
+prevents clang-cl strict-warning builds from seeing unused internal Linux-only
+helpers. clang-cl is reported distinctly from the GNU-style Clang frontend.
+
+A fresh Release tree at
+`/home/hamza-usta/matcore-win-callers-build-agent-B5zP9W` was configured with
+Clang/LLVM 21.1.8, the native frontend enabled, bootstrap comparison enabled,
+and OpenBLAS disabled. The changed runtime, plan, and benchmark targets built
+successfully with `-j2`.
+
+Focused validation after committing the implementation:
+
+- runtime C ABI compatibility and GEMM v0: 2/2 passed;
+- planner CLI reference, automatic, registry, determinism, affinity, and
+  invalid-input tests: 7/7 passed;
+- benchmark contract, CLI JSON/guard, and provenance regeneration: 3/3 passed;
+- persistent execution context, parallel packed GEMM, planner resources, and
+  public context C ABI: 4/4 passed.
+
+The first benchmark CLI guard run correctly rejected the binary because its
+provenance recorded the then-uncommitted worktree. After the implementation
+commit and provenance rebuild, the exact 12-test runtime/plan/benchmark command
+passed 12/12. This was an expected integrity guard, not a product failure.
+
+This follow-up is Linux runtime-validated only. Real Windows compilation,
+linking, packaging, and execution remain assigned to the hosted Windows lane;
+the status and limitations above are unchanged.
