@@ -357,15 +357,19 @@ void populate_resource_metadata(
   if (decision == nullptr) return;
   switch (decision->variant) {
     case CpuGemmVariantV3::reference:
+      decision->runtime_validated =
+          resources.reference_f32_runtime_validated;
+      break;
     case CpuGemmVariantV3::tiled:
-      decision->runtime_validated = true;
+      decision->runtime_validated = resources.tiled_f32_runtime_validated;
       break;
     case CpuGemmVariantV3::compiler_vectorized:
       decision->runtime_validated =
-          resources.native_packed_avx2_fma_runtime_validated;
+          resources.compiler_vectorized_f32_runtime_validated;
       break;
     case CpuGemmVariantV3::external_openblas:
-      decision->runtime_validated = resources.baseline.openblas_linked;
+      decision->runtime_validated =
+          resources.external_openblas_f32_runtime_validated;
       break;
     case CpuGemmVariantV3::native_packed_avx2_fma:
       decision->runtime_validated =
@@ -393,7 +397,7 @@ void populate_resource_metadata(
       break;
     case CpuGemmVariantV3::native_parallel_avx2_fma:
       decision->runtime_validated =
-          resources.native_packed_avx2_fma_runtime_validated;
+          resources.native_parallel_avx2_fma_runtime_validated;
       if (resources.native_parallel_avx2_workspace_size_valid) {
         decision->shared_workspace_bytes =
             resources.native_parallel_avx2_shared_workspace_bytes;
@@ -405,7 +409,7 @@ void populate_resource_metadata(
       break;
     case CpuGemmVariantV3::native_parallel_avx512_fma:
       decision->runtime_validated =
-          resources.native_packed_avx512_fma_runtime_validated;
+          resources.native_parallel_avx512_fma_runtime_validated;
       if (resources.native_parallel_avx512_workspace_size_valid) {
         decision->shared_workspace_bytes =
             resources.native_parallel_avx512_shared_workspace_bytes;
@@ -808,9 +812,6 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
             decision.reason = "legal";
             decision.actual_threads = actual_threads;
             decision.required_workspace_bytes = total_workspace;
-            decision.required_workspace_alignment = alignment;
-            decision.shared_workspace_bytes = shared_workspace;
-            decision.per_worker_workspace_bytes = per_worker;
             decision.runtime_validated =
                 avx512
                     ? resources.native_parallel_avx512_fma_runtime_validated

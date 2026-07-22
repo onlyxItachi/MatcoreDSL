@@ -45,6 +45,7 @@ struct matcore_cpu_execution_context_v1 {
   // and placement use the process-affinity-restricted topology below.
   matcore::mdslc::platform::CpuTopologyV1 topology;
   matcore::mdslc::platform::CpuTopologyV1 available_topology;
+  matcore::mdslc::planner::CpuPlannerPlacementEvidenceV1 placement_evidence;
   bool process_affinity_discovery_complete = false;
   std::int32_t process_affinity_platform_error = 0;
   matcore_cpu_affinity_policy_v1 affinity_policy =
@@ -1451,6 +1452,64 @@ matcore_status_v0 select_context_placement_v1(
   return status(MATCORE_STATUS_OK_V0, "ok");
 }
 
+matcore::mdslc::planner::CpuPlannerPlacementEvidenceV1
+planner_placement_evidence_v1(
+    const matcore::mdslc::platform::CpuTopologyV1 &available_topology,
+    const matcore::mdslc::platform::CpuPlacementPlanV1 &placement,
+    matcore_cpu_numa_policy_v1 numa_policy, bool affinity_requested,
+    const matcore::mdslc::runtime::CpuWorkerAffinityReportV1
+        &affinity_report) noexcept {
+  namespace platform = matcore::mdslc::platform;
+  namespace planner = matcore::mdslc::planner;
+  planner::CpuPlannerPlacementEvidenceV1 evidence;
+  const auto topology_validation =
+      platform::validate_cpu_topology_v1(available_topology);
+  if (!topology_validation.valid || !available_topology.discovery_complete ||
+      placement.status != platform::CpuPlacementStatusV1::selected ||
+      placement.numa_nodes.empty() ||
+      placement.numa_nodes.size() > evidence.selected_numa_nodes.size()) {
+    return evidence;
+  }
+
+  evidence.affinity_requested = affinity_requested;
+  evidence.affinity_applied =
+      affinity_requested && affinity_report.complete &&
+      affinity_report.status ==
+          matcore::mdslc::runtime::CpuWorkerAffinityStatusV1::complete;
+  evidence.affinity = placement.affinity;
+  evidence.numa = numa_policy == MATCORE_CPU_NUMA_LOCAL_FIRST_V1
+                      ? planner::CpuPlannerNumaPolicyV1::local_first
+                      : planner::CpuPlannerNumaPolicyV1::single_node;
+  evidence.selected_numa_node_count =
+      static_cast<std::uint32_t>(placement.numa_nodes.size());
+  for (std::size_t index = 0; index < placement.numa_nodes.size(); ++index)
+    evidence.selected_numa_nodes[index] = placement.numa_nodes[index];
+  evidence.crosses_numa_nodes = placement.crosses_numa_nodes;
+  evidence.caller_first_touch_required =
+      placement.caller_first_touch_required;
+
+  const std::uint32_t local_node = evidence.selected_numa_nodes.front();
+  const auto node = std::find_if(
+      available_topology.numa_nodes.begin(),
+      available_topology.numa_nodes.end(),
+      [local_node](const platform::CpuNumaNodeV1 &candidate) {
+        return candidate.node_id == local_node;
+      });
+  if (node == available_topology.numa_nodes.end()) return {};
+  const auto local = platform::restrict_cpu_topology_v1(
+      available_topology, node->logical_cpus);
+  if (!local) return {};
+  evidence.local_logical_processor_capacity =
+      platform::logical_cpu_count_v1(local.topology);
+  evidence.local_physical_core_capacity =
+      platform::physical_core_count_v1(local.topology);
+  evidence.evidence_complete =
+      evidence.local_logical_processor_capacity != 0 &&
+      evidence.local_physical_core_capacity != 0 &&
+      (!affinity_requested || evidence.affinity_applied);
+  return evidence;
+}
+
 matcore_status_v0 validate_execution_options_v2(
     const matcore_cpu_gemm_execution_options_v2 *options,
     const matcore_cpu_execution_context_v1 &context,
@@ -1769,7 +1828,7 @@ AdvancedGemmPlanV3 make_advanced_gemm_plan_v3(
       context.worker_affinity_induced_by_numa_policy;
   auto plan = matcore::mdslc::planner::plan_cpu_gemm_v3(
       validated.problem, context.capabilities, context.available_topology,
-      thread_policy, resources, request);
+      thread_policy, resources, request, 0, context.placement_evidence);
   return {plan, resources};
 }
 
@@ -2308,6 +2367,15 @@ matcore_runtime_cpu_execution_context_create_v1(
                     matcore::mdslc::runtime::cpu_execution_status_message_v1(
                       worker_status));
     }
+    const auto placement_evidence = planner_placement_evidence_v1(
+        selected_placement.available_topology, selected_placement.plan,
+        options->numa_policy, !selected_placement.worker_cpu_ids.empty(),
+        worker_affinity);
+    if (!placement_evidence.evidence_complete) {
+      return status(
+          MATCORE_STATUS_UNSUPPORTED_CAPABILITY_V0,
+          "CPU execution context could not authenticate planner placement evidence");
+    }
     const auto validation_evidence =
         validate_exact_runtime_variants_v1(*workers);
     const std::uint64_t validation_submission_baseline =
@@ -2325,6 +2393,7 @@ matcore_runtime_cpu_execution_context_create_v1(
     created->topology = std::move(topology);
     created->available_topology =
         std::move(selected_placement.available_topology);
+    created->placement_evidence = placement_evidence;
     created->process_affinity_discovery_complete =
         process_affinity.discovery_complete;
     created->process_affinity_platform_error = process_affinity.platform_error;
