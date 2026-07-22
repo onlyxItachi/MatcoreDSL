@@ -48,16 +48,22 @@ struct CurrentLogicalCpuV1 {
   std::int32_t platform_error = 0;
 };
 
-// Applies a one-CPU affinity mask to the calling thread. Unsupported
-// platforms fail closed with `unavailable`; there is no no-op success path.
+// Applies a one-CPU affinity mask to the calling thread. Linux uses pthread
+// affinity. Windows uses SetThreadGroupAffinity after authenticating the
+// process mask; v1 deliberately rejects multi-group (>64 logical CPU) hosts.
+// Unsupported platforms fail closed with `unavailable`; there is no no-op
+// success path.
 ThreadAffinityApplicationV1 apply_current_thread_affinity_v1(
     std::uint32_t logical_cpu) noexcept;
 
-// Returns the calling thread's current scheduler-affinity mask. The list is
-// ordered and duplicate-free when discovery_complete is true.
+// Returns the calling thread's current scheduler-affinity mask. On Windows the
+// result is the intersection of GetProcessAffinityMask and
+// GetThreadGroupAffinity. The list is ordered and duplicate-free when
+// discovery_complete is true.
 ThreadAffinityInventoryV1 discover_current_thread_affinity_v1();
 
-// Returns the logical processor currently executing the calling thread.
+// Returns the logical processor currently executing the calling thread
+// (GetCurrentProcessorNumberEx on Windows).
 // Unsupported platforms and system failures are reported explicitly; callers
 // must not substitute an arbitrary processor when discovery is incomplete.
 CurrentLogicalCpuV1 discover_current_logical_cpu_v1() noexcept;

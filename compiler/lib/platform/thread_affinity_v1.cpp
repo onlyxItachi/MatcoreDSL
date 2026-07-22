@@ -1,3 +1,15 @@
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
+#endif
+
 #include "thread_affinity_v1.h"
 
 #if defined(__linux__)
@@ -5,6 +17,8 @@
 #include <pthread.h>
 #include <sched.h>
 #include <unistd.h>
+#elif defined(_WIN32)
+#include <windows.h>
 #endif
 
 namespace matcore::mdslc::platform {
@@ -31,6 +45,45 @@ ThreadAffinityApplicationV1 apply_current_thread_affinity_v1(
                         ? ThreadAffinityStatusV1::invalid_cpu_id
                         : ThreadAffinityStatusV1::system_error;
     result.platform_error = error;
+    return result;
+  }
+  result.status = ThreadAffinityStatusV1::applied;
+  return result;
+#elif defined(_WIN32)
+  if (::GetActiveProcessorGroupCount() != 1) {
+    result.status = ThreadAffinityStatusV1::unavailable;
+    result.platform_error = ERROR_NOT_SUPPORTED;
+    return result;
+  }
+  constexpr std::uint32_t kAffinityBits = sizeof(DWORD_PTR) * 8U;
+  if (logical_cpu >= kAffinityBits) {
+    result.status = ThreadAffinityStatusV1::invalid_cpu_id;
+    result.platform_error = ERROR_INVALID_PARAMETER;
+    return result;
+  }
+  DWORD_PTR process_mask = 0;
+  DWORD_PTR system_mask = 0;
+  if (::GetProcessAffinityMask(::GetCurrentProcess(), &process_mask,
+                               &system_mask) == FALSE) {
+    result.status = ThreadAffinityStatusV1::system_error;
+    result.platform_error = static_cast<std::int32_t>(::GetLastError());
+    return result;
+  }
+  const DWORD_PTR requested_mask =
+      static_cast<DWORD_PTR>(1) << logical_cpu;
+  if ((process_mask & requested_mask) == 0) {
+    result.status = ThreadAffinityStatusV1::invalid_cpu_id;
+    result.platform_error = ERROR_INVALID_PARAMETER;
+    return result;
+  }
+  GROUP_AFFINITY requested{};
+  requested.Group = 0;
+  requested.Mask = requested_mask;
+  GROUP_AFFINITY previous{};
+  if (::SetThreadGroupAffinity(::GetCurrentThread(), &requested, &previous) ==
+      FALSE) {
+    result.status = ThreadAffinityStatusV1::system_error;
+    result.platform_error = static_cast<std::int32_t>(::GetLastError());
     return result;
   }
   result.status = ThreadAffinityStatusV1::applied;
@@ -78,6 +131,46 @@ ThreadAffinityInventoryV1 discover_current_thread_affinity_v1() {
   }
   result.discovery_complete = !result.allowed_logical_cpus.empty();
   if (!result.discovery_complete) result.platform_error = ENODEV;
+#elif defined(_WIN32)
+  result.backend_available = true;
+  if (::GetActiveProcessorGroupCount() != 1) {
+    result.platform_error = ERROR_NOT_SUPPORTED;
+    return result;
+  }
+
+  DWORD_PTR process_mask = 0;
+  DWORD_PTR system_mask = 0;
+  if (::GetProcessAffinityMask(::GetCurrentProcess(), &process_mask,
+                               &system_mask) == FALSE) {
+    result.platform_error = static_cast<std::int32_t>(::GetLastError());
+    return result;
+  }
+  GROUP_AFFINITY thread_affinity{};
+  if (::GetThreadGroupAffinity(::GetCurrentThread(), &thread_affinity) ==
+          FALSE ||
+      thread_affinity.Group != 0) {
+    result.platform_error =
+        thread_affinity.Group != 0
+            ? ERROR_NOT_SUPPORTED
+            : static_cast<std::int32_t>(::GetLastError());
+    return result;
+  }
+  const DWORD_PTR allowed = process_mask & thread_affinity.Mask;
+  try {
+    constexpr std::uint32_t kAffinityBits = sizeof(DWORD_PTR) * 8U;
+    result.allowed_logical_cpus.reserve(kAffinityBits);
+    for (std::uint32_t cpu = 0; cpu < kAffinityBits; ++cpu) {
+      if ((allowed & (static_cast<DWORD_PTR>(1) << cpu)) != 0) {
+        result.allowed_logical_cpus.push_back(cpu);
+      }
+    }
+  } catch (...) {
+    result.allowed_logical_cpus.clear();
+    result.platform_error = ERROR_NOT_ENOUGH_MEMORY;
+    return result;
+  }
+  result.discovery_complete = !result.allowed_logical_cpus.empty();
+  if (!result.discovery_complete) result.platform_error = ERROR_NOT_FOUND;
 #endif
   return result;
 }
@@ -93,6 +186,20 @@ CurrentLogicalCpuV1 discover_current_logical_cpu_v1() noexcept {
     return result;
   }
   result.logical_cpu = static_cast<std::uint32_t>(logical_cpu);
+  result.discovery_complete = true;
+#elif defined(_WIN32)
+  result.backend_available = true;
+  if (::GetActiveProcessorGroupCount() != 1) {
+    result.platform_error = ERROR_NOT_SUPPORTED;
+    return result;
+  }
+  PROCESSOR_NUMBER processor{};
+  ::GetCurrentProcessorNumberEx(&processor);
+  if (processor.Group != 0 || processor.Number >= sizeof(DWORD_PTR) * 8U) {
+    result.platform_error = ERROR_NOT_SUPPORTED;
+    return result;
+  }
+  result.logical_cpu = processor.Number;
   result.discovery_complete = true;
 #endif
   return result;
