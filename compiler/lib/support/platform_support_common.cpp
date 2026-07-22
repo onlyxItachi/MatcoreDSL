@@ -422,6 +422,18 @@ bool same_file_identity_v1(const FileIdentityV1 &left,
   return left && right && left.kind == right.kind && left.words == right.words;
 }
 
+bool replace_file_atomically_v1(const std::filesystem::path &temporary,
+                                const std::filesystem::path &destination,
+                                std::string &error) {
+  error.clear();
+  if (temporary.empty() || destination.empty()) {
+    error = "atomic file replacement requires two non-empty paths";
+    return false;
+  }
+  return detail::replace_file_atomically_native_v1(temporary, destination,
+                                                    error);
+}
+
 std::string quote_windows_command_line_argument_v1(
     std::string_view argument) {
   const bool requires_quotes = argument.empty() ||

@@ -243,6 +243,28 @@ void test_file_snapshot(const std::filesystem::path &directory) {
          "invalid snapshot input fails closed without an identity");
 }
 
+void test_atomic_replacement(const std::filesystem::path &directory) {
+  const std::filesystem::path destination = directory / u8"published ü.txt";
+  const std::filesystem::path temporary = directory / u8"replacement ü.tmp";
+  {
+    std::ofstream output(destination, std::ios::binary);
+    output << "old";
+  }
+  {
+    std::ofstream output(temporary, std::ios::binary);
+    output << "new";
+  }
+  std::string error;
+  expect(support::replace_file_atomically_v1(temporary, destination, error) &&
+             error.empty(),
+         "atomic publication replaces an existing destination");
+  std::ifstream input(destination, std::ios::binary);
+  const std::string contents((std::istreambuf_iterator<char>(input)),
+                             std::istreambuf_iterator<char>());
+  expect(contents == "new" && !std::filesystem::exists(temporary),
+         "atomic publication exposes replacement bytes and consumes temp");
+}
+
 void test_process(const std::filesystem::path &directory,
                   const std::filesystem::path &self) {
   std::string error;
@@ -431,6 +453,7 @@ int support_test_main(int argc, char **argv) {
     test_response_files(removed_path);
     test_argument_files(removed_path);
     test_file_snapshot(removed_path);
+    test_atomic_replacement(removed_path);
     std::filesystem::path copied_self =
         removed_path / std::filesystem::path(u8"child executable ç");
     copied_self += self->extension();

@@ -153,6 +153,12 @@ FileSnapshotV1 capture_file_snapshot_v1(const std::filesystem::path &path,
 bool same_file_identity_v1(const FileIdentityV1 &left,
                            const FileIdentityV1 &right) noexcept;
 
+// Publishes a completed temporary file over destination without an
+// intermediate remove window. Both paths must name files on the same volume.
+bool replace_file_atomically_v1(const std::filesystem::path &temporary,
+                                const std::filesystem::path &destination,
+                                std::string &error);
+
 // Implements the CommandLineToArgvW-compatible quoting convention used for
 // CreateProcessW command lines. It is pure and tested on every host.
 std::string quote_windows_command_line_argument_v1(std::string_view argument);

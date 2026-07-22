@@ -18,6 +18,9 @@ FileIdentityV1 file_identity_native_v1(const std::filesystem::path &path,
                                        std::string &error);
 std::vector<PathComponentSnapshotV1> path_identity_chain_native_v1(
     const std::filesystem::path &path, std::string &error);
+bool replace_file_atomically_native_v1(
+    const std::filesystem::path &temporary,
+    const std::filesystem::path &destination, std::string &error);
 
 }  // namespace matcore::mdslc::support::detail
 

@@ -674,5 +674,17 @@ std::vector<PathComponentSnapshotV1> path_identity_chain_native_v1(
   return chain;
 }
 
+bool replace_file_atomically_native_v1(
+    const std::filesystem::path &temporary,
+    const std::filesystem::path &destination, std::string &error) {
+  if (!::MoveFileExW(temporary.c_str(), destination.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    error = "MoveFileExW failed while publishing file: " +
+            windows_error(::GetLastError());
+    return false;
+  }
+  return true;
+}
+
 }  // namespace detail
 }  // namespace matcore::mdslc::support
