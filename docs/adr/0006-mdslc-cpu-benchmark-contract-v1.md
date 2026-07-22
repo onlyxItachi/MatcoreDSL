@@ -111,12 +111,19 @@ versus reused execution are not interchangeable.
 
 ## Consequences
 
-The current planner-v1 adapter makes the benchmark immediately useful for the
-reference, tiled, and compiler-vectorized implementations. It deliberately
-rejects prepacked-B and thread counts greater than one because those facilities
-do not yet exist. OpenBLAS and native packed runners may enter only after their
-real legality, workspace, packing, provider, and thread behavior is connected
-to the same hook and tests.
+The accepted Milestone 4 implementation connects all five planner-v2
+candidates to this contract: reference, tiled, compiler-vectorized AVX2/FMA,
+optional OpenBLAS, and native packed AVX2/FMA. The packed runner exposes
+caller-owned workspace and both transient and caller-owned prepacked-B modes;
+the benchmark allocates those resources outside reused-workspace intervals.
+OpenBLAS uses authenticated LP64 CBLAS and process-local thread control. The
+single-thread native candidates reject thread counts greater than one instead
+of pretending to provide parallel execution.
+
+The validation-host calibration and its static planner rules are recorded in
+`docs/performance/cpu/milestone-4-single-thread-calibration-2026-07-22.md`.
+That evidence is deliberately host/provider-specific and does not authorize a
+general OpenBLAS-parity claim.
 
 The benchmark does not define runtime autotuning and does not authorize GPU,
-BLAS, AVX-512, BF16, INT8, AMX, topology, or NUMA support by itself.
+AVX-512, BF16, INT8, AMX, topology, NUMA, or parallel-native support by itself.
