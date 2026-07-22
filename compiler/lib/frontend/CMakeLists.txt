@@ -39,6 +39,6 @@ if(MDSLC_ENABLE_NATIVE_FRONTEND)
   target_compile_definitions(matcore_frontend_native PRIVATE ${LLVM_DEFINITIONS})
   target_link_libraries(matcore_frontend_native
     PUBLIC matcore_frontend_common
-    PRIVATE ${MDSLC_CLANG_TOOLING_LIBRARIES}
+    PRIVATE ${MDSLC_CLANG_TOOLING_LIBRARIES} MatcoreDSL::PlatformSupportV1
   )
 endif()
