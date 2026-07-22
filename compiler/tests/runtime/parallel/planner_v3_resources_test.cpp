@@ -127,13 +127,38 @@ int main() {
       const std::uint64_t before = bound->info().completed_submissions;
       const auto exact = runtime::validate_cpu_runtime_variants_v1(*bound);
       const std::uint64_t after = bound->info().completed_submissions;
+      // Reference, tiled, compiler-vectorized, and both serial packed probes
+      // are submitted unconditionally.  OpenBLAS is submitted only when the
+      // provider is linked, while each parallel packed path correctly fails
+      // closed before worker submission when its ISA is unavailable.
+      const bool openblas_linked =
+          runtime::openblas_provider_info_v1().linked;
+      const bool avx2_usable = runtime::cpu_packed_avx2_runtime_usable_v1();
+      const bool avx512_usable =
+          runtime::cpu_packed_avx512_runtime_usable_v1();
+      const bool compiler_vectorized_usable =
+          planner::plan_cpu_gemm_v1(
+              problem, planner::discover_cpu_capabilities_v1(),
+              planner::CpuGemmRequestV1::force_compiler_vectorized)
+              .status == planner::CpuPlanStatusV1::selected;
       const std::uint64_t expected_submissions =
-          runtime::openblas_provider_info_v1().linked ? 8U : 7U;
+          5U + static_cast<std::uint64_t>(openblas_linked) +
+          static_cast<std::uint64_t>(avx2_usable) +
+          static_cast<std::uint64_t>(avx512_usable);
       expect(exact.reference_f32_runtime_validated &&
                  exact.tiled_f32_runtime_validated &&
+                 exact.compiler_vectorized_f32_runtime_validated ==
+                     compiler_vectorized_usable &&
+                 exact.external_openblas_f32_runtime_validated ==
+                     openblas_linked &&
+                 exact.packed_avx2_f32_runtime_validated == avx2_usable &&
+                 exact.packed_avx512_f32_runtime_validated == avx512_usable &&
+                 exact.parallel_avx2_f32_runtime_validated == avx2_usable &&
+                 exact.parallel_avx512_f32_runtime_validated ==
+                     avx512_usable &&
                  after - before == expected_submissions,
-             "exact stable-variant validation dispatches every serial and "
-             "parallel probe through bound workers");
+             "exact stable-variant validation reports host-legal evidence and "
+             "dispatches every executable probe through bound workers");
     }
   }
 
