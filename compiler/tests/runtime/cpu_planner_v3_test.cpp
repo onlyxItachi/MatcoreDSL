@@ -244,9 +244,11 @@ void parallel_rejection_boundaries() {
       planner::CpuGemmRequestV3::force_native_parallel_avx2_fma,
       single_node_placement());
   expect(tiny.status == planner::CpuPlanStatusV1::forced_variant_illegal &&
+             tiny.candidates[6].runtime_validated &&
              tiny.candidates[6].reason ==
                  "parallel candidate requires at least two output macro-tiles and workers",
-         "tiny problem cannot select parallel execution");
+         "tiny problem cannot select parallel execution without erasing exact "
+         "runtime evidence");
 
   const auto low_work = planner::plan_cpu_gemm_v3(
       problem(256, 32, 32), avx2_capabilities(), topology(), policy(2),
@@ -407,6 +409,18 @@ void avx512_fail_closed_and_determinism() {
              parallel.status == planner::CpuPlanStatusV1::selected &&
              parallel.candidates[7].actual_threads == 8,
          "synthetic fully validated AVX-512 facts make exact variants legal");
+
+  auto invalid_workspace = avx512;
+  invalid_workspace.native_packed_avx512_workspace_size_valid = false;
+  const auto validated_but_illegal = planner::plan_cpu_gemm_v3(
+      large, avx2_capabilities(), topology(), policy(8), invalid_workspace,
+      planner::CpuGemmRequestV3::force_native_packed_avx512_fma);
+  expect(validated_but_illegal.status ==
+                 planner::CpuPlanStatusV1::forced_variant_illegal &&
+             validated_but_illegal.candidates[5].runtime_validated &&
+             validated_but_illegal.candidates[5].reason ==
+                 "native packed AVX-512 workspace requirement overflowed",
+         "contextual AVX-512 illegality preserves exact runtime evidence");
 
   const auto first = planner::plan_cpu_gemm_v3(
       large, avx2_capabilities(), topology(), policy(8), resources(),
