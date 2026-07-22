@@ -115,6 +115,18 @@ std::optional<std::string> environment_utf8_v1(std::string_view name,
 std::optional<std::filesystem::path> find_executable_v1(
     std::string_view name, std::string &error);
 
+// These are the only supported narrow-string boundary for filesystem paths.
+// UTF-8 is validated strictly before conversion; malformed UTF-8 and invalid
+// UTF-16 process arguments fail closed.
+std::optional<std::filesystem::path> path_from_utf8_v1(
+    std::string_view value, std::string &error);
+
+std::optional<std::string> path_to_utf8_v1(
+    const std::filesystem::path &path, std::string &error);
+
+std::optional<std::vector<std::string>> wide_arguments_to_utf8_v1(
+    int argc, wchar_t *const *argv, std::string &error);
+
 std::filesystem::path normalize_path_v1(const std::filesystem::path &path,
                                         bool resolve_existing,
                                         std::string &error);

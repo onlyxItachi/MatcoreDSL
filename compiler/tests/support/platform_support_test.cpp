@@ -24,8 +24,45 @@ void expect(bool condition, std::string_view message) {
 }
 
 std::string path_utf8(const std::filesystem::path &path) {
-  const std::u8string value = path.u8string();
-  return std::string(reinterpret_cast<const char *>(value.data()), value.size());
+  std::string error;
+  const std::optional<std::string> value =
+      support::path_to_utf8_v1(path, error);
+  return value.value_or(std::string());
+}
+
+void test_unicode_boundaries() {
+  std::string error;
+  const std::string valid = "folder with spaces/ü/çığ.mdsl";
+  const std::optional<std::filesystem::path> path =
+      support::path_from_utf8_v1(valid, error);
+  expect(path.has_value() && error.empty(),
+         "well-formed UTF-8 path converts to the native path type");
+  const std::optional<std::string> round_trip =
+      path ? support::path_to_utf8_v1(*path, error) : std::nullopt;
+  expect(round_trip == valid && error.empty(),
+         "native path round-trips through strict UTF-8");
+
+  const std::string malformed("bad-\xc0\xaf", 6);
+  expect(!support::path_from_utf8_v1(malformed, error) && !error.empty(),
+         "overlong UTF-8 path is rejected");
+  const std::string surrogate("bad-\xed\xa0\x80", 7);
+  expect(!support::path_from_utf8_v1(surrogate, error) && !error.empty(),
+         "UTF-8 surrogate path is rejected");
+
+  wchar_t first[] = L"tool.exe";
+  wchar_t second[] = L"path ü çığ";
+  wchar_t *arguments[] = {first, second};
+  const std::optional<std::vector<std::string>> converted =
+      support::wide_arguments_to_utf8_v1(2, arguments, error);
+  expect(converted && converted->size() == 2 &&
+             (*converted)[1] == "path ü çığ" && error.empty(),
+         "wide process arguments convert strictly to UTF-8");
+
+  wchar_t invalid[] = {static_cast<wchar_t>(0xd800), L'\0'};
+  wchar_t *invalid_arguments[] = {invalid};
+  expect(!support::wide_arguments_to_utf8_v1(1, invalid_arguments, error) &&
+             !error.empty(),
+         "unpaired wide surrogate is rejected");
 }
 
 int child_main(int argc, char **argv) {
@@ -281,6 +318,7 @@ int main(int argc, char **argv) {
     removed_path = temporary->path();
     expect(std::filesystem::is_directory(removed_path),
            "temporary directory exists while owned");
+    test_unicode_boundaries();
     test_windows_quoting();
     test_response_files(removed_path);
     test_file_snapshot(removed_path);

@@ -16,6 +16,79 @@ bool contains_nul(std::string_view text) {
   return text.find('\0') != std::string_view::npos;
 }
 
+bool decode_utf8_code_point(std::string_view value, std::size_t &offset,
+                            std::uint32_t &code_point) {
+  const auto byte = [&](std::size_t index) {
+    return static_cast<unsigned char>(value[index]);
+  };
+  const unsigned char first = byte(offset);
+  if (first <= 0x7f) {
+    code_point = first;
+    ++offset;
+    return true;
+  }
+
+  std::size_t length = 0;
+  std::uint32_t minimum = 0;
+  if (first >= 0xc2 && first <= 0xdf) {
+    length = 2;
+    minimum = 0x80;
+    code_point = first & 0x1f;
+  } else if (first >= 0xe0 && first <= 0xef) {
+    length = 3;
+    minimum = 0x800;
+    code_point = first & 0x0f;
+  } else if (first >= 0xf0 && first <= 0xf4) {
+    length = 4;
+    minimum = 0x10000;
+    code_point = first & 0x07;
+  } else {
+    return false;
+  }
+  if (offset + length > value.size()) return false;
+  for (std::size_t index = 1; index < length; ++index) {
+    const unsigned char continuation = byte(offset + index);
+    if ((continuation & 0xc0) != 0x80) return false;
+    code_point = (code_point << 6U) | (continuation & 0x3f);
+  }
+  if (code_point < minimum || code_point > 0x10ffff ||
+      (code_point >= 0xd800 && code_point <= 0xdfff)) {
+    return false;
+  }
+  offset += length;
+  return true;
+}
+
+bool valid_utf8(std::string_view value) {
+  std::size_t offset = 0;
+  while (offset < value.size()) {
+    std::uint32_t code_point = 0;
+    if (!decode_utf8_code_point(value, offset, code_point)) return false;
+  }
+  return true;
+}
+
+void append_utf8(std::uint32_t code_point, std::string &output) {
+  if (code_point <= 0x7f) {
+    output.push_back(static_cast<char>(code_point));
+  } else if (code_point <= 0x7ff) {
+    output.push_back(static_cast<char>(0xc0 | (code_point >> 6U)));
+    output.push_back(static_cast<char>(0x80 | (code_point & 0x3f)));
+  } else if (code_point <= 0xffff) {
+    output.push_back(static_cast<char>(0xe0 | (code_point >> 12U)));
+    output.push_back(
+        static_cast<char>(0x80 | ((code_point >> 6U) & 0x3f)));
+    output.push_back(static_cast<char>(0x80 | (code_point & 0x3f)));
+  } else {
+    output.push_back(static_cast<char>(0xf0 | (code_point >> 18U)));
+    output.push_back(
+        static_cast<char>(0x80 | ((code_point >> 12U) & 0x3f)));
+    output.push_back(
+        static_cast<char>(0x80 | ((code_point >> 6U) & 0x3f)));
+    output.push_back(static_cast<char>(0x80 | (code_point & 0x3f)));
+  }
+}
+
 bool response_argument_valid(std::string_view argument, std::string &error) {
   if (contains_nul(argument)) {
     error = "response-file arguments cannot contain NUL bytes";
@@ -144,6 +217,94 @@ std::optional<std::filesystem::path> find_executable_v1(
     return std::nullopt;
   }
   return detail::find_executable_native_v1(name, error);
+}
+
+std::optional<std::filesystem::path> path_from_utf8_v1(
+    std::string_view value, std::string &error) {
+  error.clear();
+  if (contains_nul(value)) {
+    error = "UTF-8 path contains NUL";
+    return std::nullopt;
+  }
+  if (!valid_utf8(value)) {
+    error = "path is not well-formed UTF-8";
+    return std::nullopt;
+  }
+  try {
+    const std::u8string encoded(
+        reinterpret_cast<const char8_t *>(value.data()), value.size());
+    return std::filesystem::path(encoded);
+  } catch (const std::filesystem::filesystem_error &exception) {
+    error = "cannot convert UTF-8 path: " + std::string(exception.what());
+    return std::nullopt;
+  }
+}
+
+std::optional<std::string> path_to_utf8_v1(
+    const std::filesystem::path &path, std::string &error) {
+  error.clear();
+  try {
+    const std::u8string encoded = path.u8string();
+    const std::string result(reinterpret_cast<const char *>(encoded.data()),
+                             encoded.size());
+    if (!valid_utf8(result)) {
+      error = "filesystem path cannot be represented as well-formed UTF-8";
+      return std::nullopt;
+    }
+    return result;
+  } catch (const std::filesystem::filesystem_error &exception) {
+    error = "cannot convert filesystem path to UTF-8: " +
+            std::string(exception.what());
+    return std::nullopt;
+  }
+}
+
+std::optional<std::vector<std::string>> wide_arguments_to_utf8_v1(
+    int argc, wchar_t *const *argv, std::string &error) {
+  error.clear();
+  if (argc < 0 || (argc != 0 && argv == nullptr)) {
+    error = "wide process argument vector is malformed";
+    return std::nullopt;
+  }
+  std::vector<std::string> result;
+  result.reserve(static_cast<std::size_t>(argc));
+  for (int argument_index = 0; argument_index < argc; ++argument_index) {
+    if (argv[argument_index] == nullptr) {
+      error = "wide process argument is null";
+      return std::nullopt;
+    }
+    std::string encoded;
+    for (std::size_t index = 0; argv[argument_index][index] != L'\0';
+         ++index) {
+      std::uint32_t code_point =
+          static_cast<std::uint32_t>(argv[argument_index][index]);
+      if constexpr (sizeof(wchar_t) == 2) {
+        if (code_point >= 0xd800 && code_point <= 0xdbff) {
+          const std::uint32_t trailing = static_cast<std::uint32_t>(
+              argv[argument_index][index + 1]);
+          if (trailing < 0xdc00 || trailing > 0xdfff) {
+            error = "process argument contains an unpaired UTF-16 surrogate";
+            return std::nullopt;
+          }
+          code_point = 0x10000 + ((code_point - 0xd800) << 10U) +
+                       (trailing - 0xdc00);
+          ++index;
+        } else if (code_point >= 0xdc00 && code_point <= 0xdfff) {
+          error = "process argument contains an unpaired UTF-16 surrogate";
+          return std::nullopt;
+        }
+      } else {
+        if (code_point > 0x10ffff ||
+            (code_point >= 0xd800 && code_point <= 0xdfff)) {
+          error = "process argument contains an invalid Unicode code point";
+          return std::nullopt;
+        }
+      }
+      append_utf8(code_point, encoded);
+    }
+    result.emplace_back(std::move(encoded));
+  }
+  return result;
 }
 
 std::filesystem::path normalize_path_v1(const std::filesystem::path &path,
