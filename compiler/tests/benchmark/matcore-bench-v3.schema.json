@@ -128,7 +128,8 @@
         "output_stride", "estimated_memory_bytes", "cache_mode",
         "allocation_mode", "packing_mode", "timing_valid",
         "timing_rejection_reason", "aggregate_repetitions",
-        "timing_aggregation_boundary", "minimum_seconds",
+        "timing_aggregation_boundary", "untimed_validation_placement",
+        "minimum_seconds",
         "median_seconds", "p95_seconds", "gflops", "checksum",
         "expected_checksum", "correctness", "oracle_mode", "checked_elements",
         "maximum_absolute_error", "maximum_allowed_error",
@@ -176,6 +177,9 @@
         "aggregate_repetitions": {"type": "integer", "minimum": 1},
         "timing_aggregation_boundary": {
           "const": "one-clock-pair-per-aggregate-repetition-block"
+        },
+        "untimed_validation_placement": {
+          "enum": ["after-timing", "before-timing"]
         },
         "minimum_seconds": {"type": "number", "minimum": 0},
         "median_seconds": {"type": "number", "minimum": 0},
@@ -230,6 +234,8 @@
         "forward_pass_median_seconds", "reverse_pass_median_seconds",
         "forward_pass_untimed_validation_executions_checked",
         "reverse_pass_untimed_validation_executions_checked",
+        "forward_pass_untimed_validation_placement",
+        "reverse_pass_untimed_validation_placement",
         "balanced_estimate_seconds",
         "measurement_reason"
       ],
@@ -263,6 +269,8 @@
         "reverse_pass_median_seconds": {"type": "number", "minimum": 0},
         "forward_pass_untimed_validation_executions_checked": {"type": "integer", "minimum": 0},
         "reverse_pass_untimed_validation_executions_checked": {"type": "integer", "minimum": 0},
+        "forward_pass_untimed_validation_placement": {"const": "after-timing"},
+        "reverse_pass_untimed_validation_placement": {"const": "before-timing"},
         "balanced_estimate_seconds": {"type": "number", "minimum": 0},
         "measurement_reason": {"type": "string"}
       }

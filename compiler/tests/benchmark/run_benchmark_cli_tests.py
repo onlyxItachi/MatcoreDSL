@@ -101,6 +101,7 @@ def main() -> int:
         assert result["timing_aggregation_boundary"] == (
             "one-clock-pair-per-aggregate-repetition-block"
         )
+        assert result["untimed_validation_placement"] == "after-timing"
         assert result["oracle_mode"] == "full-double"
         assert result["timing_valid"] is True
         assert result["aggregate_repetitions"] >= 1
@@ -141,6 +142,18 @@ def main() -> int:
         assert result["worker_affinity_policy_induced"] is True
         assert "one-logical-CPU-per-core" in result["affinity_diagnostic"]
         assert "user_requested=false" in result["affinity_diagnostic"]
+        if sys.platform.startswith("linux") and report["environment"]["physical_cores"] >= 2:
+            assert "benchmark caller scheduler affinity applied" in result[
+                "affinity_diagnostic"
+            ]
+            assert "caller_cpu_id=" in result["affinity_diagnostic"]
+            assert "dedicated_physical_core=true" in result["affinity_diagnostic"]
+            assert "benchmark caller scheduler affinity applied" in report[
+                "environment"
+            ]["worker_affinity_source"]
+            assert "benchmark_caller_affinity=" in report["environment"][
+                "topology_record"
+            ]
         assert "pinned persistent worker 0" in result["timing_scope"]
         assert result["scaling"]["requested"] is False
         assert result["planner_regret"]["requested"] is False
@@ -182,6 +195,15 @@ def main() -> int:
                 assert "numa_memory_placement=false" in affinity_result[
                     "affinity_diagnostic"
                 ]
+                caller_id = re.search(
+                    r"caller_cpu_id=([0-9]+)", affinity_result["affinity_diagnostic"]
+                )
+                if sys.platform.startswith("linux") and len(os.sched_getaffinity(0)) >= 3:
+                    assert caller_id is not None
+                    assert int(caller_id.group(1)) not in worker_ids
+                    assert "benchmark caller scheduler affinity applied" in (
+                        affinity_result["affinity_diagnostic"]
+                    )
                 assert affinity_report["environment"]["worker_affinity_applied"] is True
                 assert affinity_report["environment"][
                     "execution_context_workers_started"
@@ -424,6 +446,12 @@ def main() -> int:
                 assert candidate[
                     "reverse_pass_untimed_validation_executions_checked"
                 ] >= 1
+                assert candidate[
+                    "forward_pass_untimed_validation_placement"
+                ] == "after-timing"
+                assert candidate[
+                    "reverse_pass_untimed_validation_placement"
+                ] == "before-timing"
                 assert candidate["forward_pass_median_seconds"] > 0
                 assert candidate["reverse_pass_median_seconds"] > 0
                 assert math.isclose(
@@ -570,6 +598,15 @@ def main() -> int:
             assert f"scheduler mask [{cpu}]" in constrained_report["environment"][
                 "topology_record"
             ]
+            assert "benchmark caller isolation unavailable" in constrained_report[
+                "environment"
+            ]["worker_affinity_source"]
+            assert "no spare logical CPU" in constrained_report["results"][0][
+                "affinity_diagnostic"
+            ]
+            assert "caller_scheduler_affinity_applied=false" in constrained_report[
+                "results"
+            ][0]["affinity_diagnostic"]
 
             constrained_parallel = subprocess.run(
                 [
@@ -737,6 +774,12 @@ def main() -> int:
         assert "inherit the process mask" in smt_report["results"][0][
             "affinity_diagnostic"
         ]
+        assert "benchmark caller scheduler affinity not requested" in smt_report[
+            "results"
+        ][0]["affinity_diagnostic"]
+        assert "benchmark caller scheduler affinity not requested" in smt_report[
+            "environment"
+        ]["worker_affinity_source"]
 
     optional_openblas = subprocess.run(
         [

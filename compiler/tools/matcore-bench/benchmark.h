@@ -39,6 +39,10 @@ enum class AffinityPolicyV2 : std::uint8_t {
   scatter = 2,
   local_first = 3,
 };
+enum class UntimedValidationPlacementV3 : std::uint8_t {
+  after_timing = 0,
+  before_timing = 1,
+};
 
 struct GemmShapeV1 {
   std::int64_t m = 0;
@@ -59,6 +63,10 @@ struct BenchmarkOptionsV1 {
   PackingModeV1 packing_mode = PackingModeV1::include;
   SmtPolicyV2 smt_policy = SmtPolicyV2::physical_cores_only;
   AffinityPolicyV2 affinity_policy = AffinityPolicyV2::none;
+  // Internal scheduling control used to mirror candidate-validation cost in
+  // planner-regret passes. The public CLI intentionally keeps after-timing.
+  UntimedValidationPlacementV3 untimed_validation_placement =
+      UntimedValidationPlacementV3::after_timing;
   std::uint64_t maximum_memory_bytes = kDefaultMaximumMemoryBytes;
   std::uint64_t timer_floor_nanoseconds = kDefaultTimerFloorNanoseconds;
   std::uint64_t seed = UINT64_C(0x4d4154434f524531);
@@ -226,6 +234,10 @@ struct RegretCandidateResultV3 {
   double reverse_pass_median_seconds = 0.0;
   std::uint64_t forward_pass_untimed_validation_executions_checked = 0;
   std::uint64_t reverse_pass_untimed_validation_executions_checked = 0;
+  UntimedValidationPlacementV3 forward_pass_untimed_validation_placement =
+      UntimedValidationPlacementV3::after_timing;
+  UntimedValidationPlacementV3 reverse_pass_untimed_validation_placement =
+      UntimedValidationPlacementV3::before_timing;
   double balanced_estimate_seconds = 0.0;
   std::string measurement_reason;
 };
@@ -251,6 +263,8 @@ struct BenchmarkResultV1 {
   CacheModeV1 cache_mode = CacheModeV1::hot;
   AllocationModeV1 allocation_mode = AllocationModeV1::reuse_workspace;
   PackingModeV1 packing_mode = PackingModeV1::include;
+  UntimedValidationPlacementV3 untimed_validation_placement =
+      UntimedValidationPlacementV3::after_timing;
   TimingAggregationBoundaryV3 timing_aggregation_boundary =
       TimingAggregationBoundaryV3::one_clock_pair_per_aggregate_block;
   TimingStatisticsV1 timing;
@@ -322,6 +336,8 @@ std::string_view regret_aggregation_method_name_v3(
     RegretAggregationMethodV3 method) noexcept;
 std::string_view timing_aggregation_boundary_name_v3(
     TimingAggregationBoundaryV3 boundary) noexcept;
+std::string_view untimed_validation_placement_name_v3(
+    UntimedValidationPlacementV3 placement) noexcept;
 
 }  // namespace matcore::mdslc::bench
 

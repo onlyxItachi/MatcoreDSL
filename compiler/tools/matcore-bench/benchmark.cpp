@@ -284,10 +284,13 @@ void json_string(std::ostream &output, std::string_view value) {
 std::string regret_plan_mismatch(
     const RunnerPlanV1 &expected, const BenchmarkResultV1 &measured,
     std::string_view requested_variant,
-    PackingModeV1 expected_packing_mode) {
+    PackingModeV1 expected_packing_mode,
+    UntimedValidationPlacementV3 expected_validation_placement) {
   if (measured.requested_variant != requested_variant)
     return "requested_variant";
   if (measured.packing_mode != expected_packing_mode) return "packing_mode";
+  if (measured.untimed_validation_placement != expected_validation_placement)
+    return "untimed_validation_placement";
   const RunnerPlanV1 &actual = measured.plan;
   if (actual.legal != expected.legal) return "legal";
   if (actual.selected_variant != expected.selected_variant)
@@ -414,6 +417,15 @@ std::string_view timing_aggregation_boundary_name_v3(
   switch (boundary) {
     case TimingAggregationBoundaryV3::one_clock_pair_per_aggregate_block:
       return "one-clock-pair-per-aggregate-repetition-block";
+  }
+  return "unknown";
+}
+
+std::string_view untimed_validation_placement_name_v3(
+    UntimedValidationPlacementV3 placement) noexcept {
+  switch (placement) {
+    case UntimedValidationPlacementV3::after_timing: return "after-timing";
+    case UntimedValidationPlacementV3::before_timing: return "before-timing";
   }
   return "unknown";
 }
@@ -702,6 +714,8 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
     result.cache_mode = options.cache_mode;
     result.allocation_mode = options.allocation_mode;
     result.packing_mode = options.packing_mode;
+    result.untimed_validation_placement =
+        options.untimed_validation_placement;
     result.plan = runner.plan(shape, options.alignment_bytes,
                               options.requested_threads,
                               options.requested_variant,
@@ -889,6 +903,40 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
           repetitions *= 2;
       }
 
+      const auto active_output_data = [&]() -> const float * {
+        return options.allocation_mode == AllocationModeV1::include_allocation
+                   ? reinterpret_cast<const float *>(one_shot_output->data())
+                   : reinterpret_cast<const float *>(output.data());
+      };
+      const std::uint64_t validation_executions =
+          static_cast<std::uint64_t>(options.measured_iterations) * repetitions;
+      const auto run_untimed_validation = [&]() -> bool {
+        for (std::uint64_t validation = 0; validation < validation_executions;
+             ++validation) {
+          if (!invoke()) return false;
+          const CorrectnessResultV1 validation_result = verify_output(
+              shape, reinterpret_cast<const float *>(lhs.data()),
+              reinterpret_cast<const float *>(rhs.data()),
+              active_output_data());
+          if (!validation_result.passed) {
+            error = "untimed correctness validation failed for " +
+                    result.plan.selected_variant +
+                    " at validation execution " +
+                    std::to_string(validation) + " (placement=" +
+                    std::string(untimed_validation_placement_name_v3(
+                        options.untimed_validation_placement)) +
+                    "): " + validation_result.reason;
+            return false;
+          }
+        }
+        return true;
+      };
+
+      if (options.untimed_validation_placement ==
+              UntimedValidationPlacementV3::before_timing &&
+          !run_untimed_validation())
+        return false;
+
       std::vector<double> samples;
       samples.reserve(options.measured_iterations);
       for (std::uint32_t iteration = 0;
@@ -904,46 +952,35 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
         samples.push_back(aggregate_seconds / static_cast<double>(repetitions));
       }
 
-      const auto active_output_data = [&]() -> const float * {
-        return options.allocation_mode == AllocationModeV1::include_allocation
-                   ? reinterpret_cast<const float *>(one_shot_output->data())
-                   : reinterpret_cast<const float *>(output.data());
-      };
-      CorrectnessResultV1 last_correctness = verify_output(
+      CorrectnessResultV1 final_timed_correctness = verify_output(
           shape, reinterpret_cast<const float *>(lhs.data()),
           reinterpret_cast<const float *>(rhs.data()), active_output_data());
-      if (!last_correctness.passed) {
+      if (!final_timed_correctness.passed) {
         error = "final timed output correctness failed for " +
-                result.plan.selected_variant + ": " + last_correctness.reason;
+                result.plan.selected_variant + ": " +
+                final_timed_correctness.reason;
         return false;
       }
-      last_correctness.timed_final_output_authenticated = true;
 
-      const std::uint64_t validation_executions =
-          static_cast<std::uint64_t>(options.measured_iterations) * repetitions;
-      for (std::uint64_t validation = 0; validation < validation_executions;
-           ++validation) {
-        if (!invoke()) return false;
-        last_correctness = verify_output(
-            shape, reinterpret_cast<const float *>(lhs.data()),
-            reinterpret_cast<const float *>(rhs.data()), active_output_data());
-        if (!last_correctness.passed) {
-          error = "untimed correctness validation failed for " +
-                  result.plan.selected_variant + " at validation execution " +
-                  std::to_string(validation) + ": " + last_correctness.reason;
-          return false;
-        }
-      }
+      if (options.untimed_validation_placement ==
+              UntimedValidationPlacementV3::after_timing &&
+          !run_untimed_validation())
+        return false;
+
       result.timing = summarize_timings_v1(
           std::move(samples), repetitions, options.timer_floor_nanoseconds);
-      last_correctness.timed_final_output_authenticated = true;
-      last_correctness.untimed_validation_executions_checked =
+      final_timed_correctness.timed_final_output_authenticated = true;
+      final_timed_correctness.untimed_validation_executions_checked =
           validation_executions;
-      last_correctness.untimed_validation_scope =
+      final_timed_correctness.untimed_validation_scope =
           "separate untimed validation phase matched the timed execution "
           "cardinality and authenticated every invocation with an independent "
-          "oracle; the final timed output was authenticated first";
-      result.correctness = std::move(last_correctness);
+          "oracle; placement=" +
+          std::string(untimed_validation_placement_name_v3(
+              options.untimed_validation_placement)) +
+          "; the final timed output was authenticated immediately after "
+          "timing";
+      result.correctness = std::move(final_timed_correctness);
       if (result.timing.valid) {
         const long double operations =
             2.0L * static_cast<long double>(shape.m) *
@@ -1035,6 +1072,8 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
         bool correctness_passed = false;
         double median_seconds = 0.0;
         std::uint64_t untimed_validation_executions_checked = 0;
+        UntimedValidationPlacementV3 untimed_validation_placement =
+            UntimedValidationPlacementV3::after_timing;
         std::string reason;
       };
 
@@ -1094,6 +1133,7 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
       std::vector<RegretPassMeasurement> reverse(variants.size());
       const auto measure_candidate =
           [&](std::size_t candidate_index, std::string_view pass_name,
+              UntimedValidationPlacementV3 validation_placement,
               RegretPassMeasurement &measurement) -> bool {
         measurement.attempted = true;
         BenchmarkOptionsV1 comparison_options = options;
@@ -1102,6 +1142,8 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
         comparison_options.requested_variant = variants[candidate_index];
         comparison_options.compare_one_thread = false;
         comparison_options.planner_regret = false;
+        comparison_options.untimed_validation_placement =
+            validation_placement;
         comparison_options.json_output.clear();
         BenchmarkReportV1 comparison_report;
         std::string comparison_error;
@@ -1121,7 +1163,8 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
         const auto &measured = comparison_report.results.front();
         const std::string mismatch = regret_plan_mismatch(
             preflight_plans[candidate_index], measured,
-            variants[candidate_index], options.packing_mode);
+            variants[candidate_index], options.packing_mode,
+            validation_placement);
         if (!mismatch.empty()) {
           error = "planner-regret " + std::string(pass_name) +
                   " pass plan authentication failed for " +
@@ -1134,6 +1177,8 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
         measurement.median_seconds = measured.timing.median_seconds;
         measurement.untimed_validation_executions_checked =
             measured.correctness.untimed_validation_executions_checked;
+        measurement.untimed_validation_placement =
+            measured.untimed_validation_placement;
         if (!measured.timing.valid) {
           measurement.reason = measured.timing.rejection_reason;
         } else {
@@ -1149,14 +1194,18 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
       // same two-pass treatment.
       for (std::size_t index = 0; index < variants.size(); ++index) {
         if (measurable[index] &&
-            !measure_candidate(index, "forward", forward[index]))
+            !measure_candidate(
+                index, "forward",
+                UntimedValidationPlacementV3::after_timing, forward[index]))
           return false;
       }
       for (std::size_t index = variants.size(); index > 0; --index) {
         const std::size_t candidate_index = index - 1;
         if (measurable[candidate_index] &&
-            !measure_candidate(candidate_index, "reverse",
-                               reverse[candidate_index]))
+            !measure_candidate(
+                candidate_index, "reverse",
+                UntimedValidationPlacementV3::before_timing,
+                reverse[candidate_index]))
           return false;
       }
 
@@ -1180,6 +1229,10 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
             forward_measurement.untimed_validation_executions_checked;
         candidate.reverse_pass_untimed_validation_executions_checked =
             reverse_measurement.untimed_validation_executions_checked;
+        candidate.forward_pass_untimed_validation_placement =
+            forward_measurement.untimed_validation_placement;
+        candidate.reverse_pass_untimed_validation_placement =
+            reverse_measurement.untimed_validation_placement;
         candidate.timing_valid = forward_measurement.attempted &&
                                  reverse_measurement.attempted &&
                                  forward_measurement.timing_valid &&
@@ -1196,9 +1249,9 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
           candidate.measurement_reason =
               "balanced complete-call timing: equal-weight arithmetic "
               "midpoint of valid forward and reverse stable-registry-pass "
-              "medians; each pass authenticated its final timed output and "
-              "then every invocation in an equal-cardinality untimed "
-              "validation phase";
+              "medians; equal-cardinality untimed replay is mirrored after "
+              "forward timing and before reverse timing; each final timed "
+              "output is authenticated immediately after timing";
         } else {
           all_balanced_candidates_valid = false;
           candidate.measurement_reason =
@@ -1254,7 +1307,9 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
             "complete-call estimate; every comparable candidate was measured "
             "in deterministic forward and reverse stable planner-v3 registry "
             "passes, and each estimate is the equal-weight arithmetic mean "
-            "of its two explicitly reported pass medians";
+            "of its two explicitly reported pass medians; equal-cardinality "
+            "untimed replay was placed after forward timing and before "
+            "reverse timing";
       }
     }
   }
@@ -1431,8 +1486,10 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
            << ",\n      \"timing_aggregation_boundary\": ";
     json_string(output, timing_aggregation_boundary_name_v3(
                             result.timing_aggregation_boundary));
-    output
-           << ",\n      \"minimum_seconds\": " << result.timing.minimum_seconds
+    output << ",\n      \"untimed_validation_placement\": ";
+    json_string(output, untimed_validation_placement_name_v3(
+                            result.untimed_validation_placement));
+    output << ",\n      \"minimum_seconds\": " << result.timing.minimum_seconds
            << ",\n      \"median_seconds\": " << result.timing.median_seconds
            << ",\n      \"p95_seconds\": " << result.timing.p95_seconds
            << ",\n      \"gflops\": " << result.gflops
@@ -1550,6 +1607,15 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
              << candidate.forward_pass_untimed_validation_executions_checked
              << ", \"reverse_pass_untimed_validation_executions_checked\": "
              << candidate.reverse_pass_untimed_validation_executions_checked
+             << ", \"forward_pass_untimed_validation_placement\": ";
+      json_string(output, untimed_validation_placement_name_v3(
+                              candidate
+                                  .forward_pass_untimed_validation_placement));
+      output << ", \"reverse_pass_untimed_validation_placement\": ";
+      json_string(output, untimed_validation_placement_name_v3(
+                              candidate
+                                  .reverse_pass_untimed_validation_placement));
+      output
              << ", \"balanced_estimate_seconds\": "
              << candidate.balanced_estimate_seconds
              << ", \"measurement_reason\": ";

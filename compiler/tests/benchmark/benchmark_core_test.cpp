@@ -1,4 +1,5 @@
 #include "benchmark.h"
+#include "thread_affinity_v1.h"
 
 #include <algorithm>
 #include <array>
@@ -16,6 +17,7 @@
 namespace {
 
 namespace bench = matcore::mdslc::bench;
+namespace platform = matcore::mdslc::platform;
 int failures = 0;
 
 void expect(bool condition, std::string_view message) {
@@ -25,11 +27,38 @@ void expect(bool condition, std::string_view message) {
   }
 }
 
+std::vector<std::uint32_t> parse_cpu_ids(std::string_view diagnostic,
+                                         std::string_view label) {
+  std::vector<std::uint32_t> result;
+  const std::size_t begin = diagnostic.find(label);
+  if (begin == std::string_view::npos) return result;
+  const std::size_t values_begin = begin + label.size();
+  const std::size_t values_end = diagnostic.find(']', values_begin);
+  if (values_end == std::string_view::npos) return result;
+  std::size_t cursor = values_begin;
+  while (cursor < values_end) {
+    const std::size_t comma = diagnostic.find(',', cursor);
+    const std::size_t end = std::min(comma, values_end);
+    std::uint64_t value = 0;
+    if (end == cursor) return {};
+    for (std::size_t index = cursor; index < end; ++index) {
+      const char character = diagnostic[index];
+      if (character < '0' || character > '9') return {};
+      value = value * 10 + static_cast<unsigned>(character - '0');
+      if (value > std::numeric_limits<std::uint32_t>::max()) return {};
+    }
+    result.push_back(static_cast<std::uint32_t>(value));
+    if (comma == std::string_view::npos || comma >= values_end) break;
+    cursor = comma + 1;
+  }
+  return result;
+}
+
 class RecordingRunner final : public bench::GemmRunnerV1 {
  private:
   struct ExecutionState final : bench::RunnerPlanStateV1 {
     bool fail = false;
-    bool corrupt_intermediate_validation = false;
+    std::uint32_t corrupt_execution = 0;
     mutable std::uint32_t executions = 0;
   };
 
@@ -62,10 +91,12 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
 
   explicit RecordingRunner(bool fail_reverse_selected = false,
                            PlanDrift drift = PlanDrift::none,
-                           bool corrupt_intermediate_validation = false)
+                           bool corrupt_forward_validation = false,
+                           bool corrupt_reverse_validation = false)
       : fail_reverse_selected_(fail_reverse_selected),
         drift_(drift),
-        corrupt_intermediate_validation_(corrupt_intermediate_validation) {}
+        corrupt_forward_validation_(corrupt_forward_validation),
+        corrupt_reverse_validation_(corrupt_reverse_validation) {}
 
   bench::RunnerEnvironmentV1 environment() const override { return {}; }
 
@@ -147,8 +178,10 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
       }
       auto state = std::make_shared<ExecutionState>();
       state->fail = fail_reverse_selected_ && selected_plan_count_ == 3;
-      state->corrupt_intermediate_validation =
-          corrupt_intermediate_validation_ && selected_plan_count_ == 2;
+      if (corrupt_forward_validation_ && selected_plan_count_ == 2)
+        state->corrupt_execution = 6;
+      if (corrupt_reverse_validation_ && selected_plan_count_ == 3)
+        state->corrupt_execution = 3;
       result.state = std::move(state);
     }
     return result;
@@ -184,10 +217,12 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
     if (state != nullptr) {
       ++state->executions;
       // With no warmups, a one-nanosecond floor, and three samples, execution
-      // 1 is the probe, 2-4 are timed, and 5-7 are the separate untimed
-      // validation phase. Execution 6 is deliberately corrupt; execution 7
-      // would restore the correct output if the harness did not fail closed.
-      if (state->corrupt_intermediate_validation && state->executions == 6)
+      // 1 is the probe. Forward placement runs timing at 2-4 and validation at
+      // 5-7, so execution 6 is its second validation. Reverse placement runs
+      // validation at 2-4 and timing at 5-7, so execution 3 is its second
+      // validation. In either case a later invocation would restore output.
+      if (state->corrupt_execution != 0 &&
+          state->executions == state->corrupt_execution)
         output[0] += 100.0F;
     }
     return true;
@@ -202,7 +237,8 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
  private:
   bool fail_reverse_selected_ = false;
   PlanDrift drift_ = PlanDrift::none;
-  bool corrupt_intermediate_validation_ = false;
+  bool corrupt_forward_validation_ = false;
+  bool corrupt_reverse_validation_ = false;
   mutable std::uint32_t selected_plan_count_ = 0;
   mutable std::vector<std::string> plan_requests_;
 };
@@ -336,6 +372,7 @@ int main() {
                  "authenticated independently") != std::string::npos,
          "runner exposes versioned capability, topology, and validation-source metadata");
   if (runner_environment.physical_cores >= 2) {
+    std::string compact_affinity_diagnostic;
     for (const auto policy : {bench::AffinityPolicyV2::compact,
                               bench::AffinityPolicyV2::scatter,
                               bench::AffinityPolicyV2::local_first}) {
@@ -349,9 +386,51 @@ int main() {
                      std::string::npos &&
                  affinity_plan.affinity_diagnostic.find(
                      "numa_memory_placement=false") != std::string::npos,
-             "explicit affinity uses a strict persistent worker context and "
-             "does not claim NUMA memory placement");
+                 "explicit affinity uses a strict persistent worker context and "
+                 "does not claim NUMA memory placement");
+      if (policy == bench::AffinityPolicyV2::compact)
+        compact_affinity_diagnostic = affinity_plan.affinity_diagnostic;
     }
+#if defined(__linux__)
+    if (runner_environment.physical_cores >= 3) {
+      const auto caller_affinity =
+          platform::discover_current_thread_affinity_v1();
+      const auto worker_ids =
+          parse_cpu_ids(compact_affinity_diagnostic, "cpu_ids=[");
+      const auto caller_ids =
+          parse_cpu_ids(compact_affinity_diagnostic, "reserved_cpu_ids=[");
+      expect(caller_affinity.discovery_complete &&
+                 caller_affinity.allowed_logical_cpus.size() == 1 &&
+                 caller_ids.size() >= 1 &&
+                 std::find(caller_ids.begin(), caller_ids.end(),
+                           caller_affinity.allowed_logical_cpus.front()) !=
+                     caller_ids.end() &&
+                 std::find(worker_ids.begin(), worker_ids.end(),
+                           caller_affinity.allowed_logical_cpus.front()) ==
+                     worker_ids.end() &&
+                 std::none_of(caller_ids.begin(), caller_ids.end(),
+                              [&](std::uint32_t caller_cpu) {
+                                return std::find(worker_ids.begin(),
+                                                 worker_ids.end(), caller_cpu) !=
+                                       worker_ids.end();
+                              }) &&
+                 compact_affinity_diagnostic.find(
+                     "benchmark caller scheduler affinity applied") !=
+                     std::string::npos &&
+                 compact_affinity_diagnostic.find(
+                     "dedicated_physical_core=true") != std::string::npos,
+             "bound benchmark execution pins its caller to a dedicated spare "
+             "physical core outside the worker CPU set");
+      const auto refreshed_environment = runner->environment();
+      expect(refreshed_environment.worker_affinity_source.find(
+                 "benchmark caller scheduler affinity applied") !=
+                     std::string::npos &&
+                 refreshed_environment.topology_record.find(
+                     "benchmark_caller_affinity=") != std::string::npos,
+             "runner environment reports the authenticated benchmark caller "
+             "placement");
+    }
+#endif
     const auto affinity_serial_plan = runner->plan(
         {64, 64, 64}, 64, 2, "cpu.reference.f32.v1",
         bench::PackingModeV1::include,
@@ -482,8 +561,12 @@ int main() {
                      ->forward_pass_untimed_validation_executions_checked >= 1 &&
              selected_candidate
                      ->reverse_pass_untimed_validation_executions_checked >= 1 &&
+             selected_candidate->forward_pass_untimed_validation_placement ==
+                 bench::UntimedValidationPlacementV3::after_timing &&
+             selected_candidate->reverse_pass_untimed_validation_placement ==
+                 bench::UntimedValidationPlacementV3::before_timing &&
              selected_candidate->measurement_reason.find(
-                 "forward and reverse stable-registry-pass medians") !=
+                 "mirrored after forward timing and before reverse timing") !=
                  std::string::npos,
          "regret output keeps stable registry order and derives the selected "
          "timing from the same balanced passes as every alternative");
@@ -590,7 +673,7 @@ int main() {
   corruption_options.measured_iterations = 3;
   RecordingRunner corruption_runner(
       /*fail_reverse_selected=*/false, RecordingRunner::PlanDrift::none,
-      /*corrupt_intermediate_validation=*/true);
+      /*corrupt_forward_validation=*/true);
   bench::BenchmarkReportV1 corruption_report;
   std::string corruption_error;
   expect(!bench::run_benchmarks_v1(corruption_options, corruption_runner,
@@ -600,6 +683,24 @@ int main() {
                  "validation execution 1") != std::string::npos,
          "an intermediate corrupt validation execution is rejected before a "
          "later execution can overwrite it with a correct final output");
+
+  RecordingRunner reverse_corruption_runner(
+      /*fail_reverse_selected=*/false, RecordingRunner::PlanDrift::none,
+      /*corrupt_forward_validation=*/false,
+      /*corrupt_reverse_validation=*/true);
+  bench::BenchmarkReportV1 reverse_corruption_report;
+  std::string reverse_corruption_error;
+  expect(!bench::run_benchmarks_v1(
+             corruption_options, reverse_corruption_runner,
+             reverse_corruption_report, reverse_corruption_error) &&
+             reverse_corruption_error.find(
+                 "planner-regret reverse pass candidate failed for "
+                 "test.selected") != std::string::npos &&
+             reverse_corruption_error.find(
+                 "validation execution 1 (placement=before-timing)") !=
+                 std::string::npos,
+         "reverse candidate validation executes before timing and rejects an "
+         "intermediate corruption at its mirrored placement");
 
   const auto rejected_reference_compute = runner->plan(
       {16, 16, 16}, 64, 1, "cpu.reference.f32.v1",

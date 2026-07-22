@@ -23,11 +23,14 @@ not changed.
    and mismatched field in the diagnostic. Those authenticated preflight fields
    are emitted per candidate so provider/native comparability can be audited
    without borrowing metadata from the automatic plan.
-3. The final timed output is authenticated first. A separate untimed phase then
-   executes the same number of invocations as the timed phase and checks every
-   invocation with the independent double-precision oracle. The report records
-   the untimed validation count and scope. This prevents a later correct
-   validation invocation from overwriting evidence of earlier corruption.
+3. Every pass has a separate untimed phase that executes the same number of
+   invocations as the timed phase and checks every invocation with the
+   independent double-precision oracle. Forward candidate passes place replay
+   after timing; reverse candidate passes place replay before timing. This
+   mirrored placement prevents candidate-dependent replay cost from appearing
+   on only one side of the forward/reverse schedule. The final timed output is
+   always authenticated immediately after timing. Normal primary benchmarks
+   retain after-timing placement.
 
 Correctness verification remains outside timed intervals. Each timed sample
 uses exactly one clock pair around its full aggregate repetition block; no
@@ -43,10 +46,10 @@ threads, workspace sizes/alignment, prepacked storage, packing flags,
 persistent-context state, SMT/affinity policy, and worker-affinity fields. It
 also injects illegal and misattributed forced selections. Every case is rejected.
 
-A separate test corrupts the second invocation of the untimed validation phase
-and would restore the correct output on the following invocation. The benchmark
-rejects that intermediate corruption rather than accepting the eventual final
-output.
+Separate tests corrupt the second invocation of forward/after and
+reverse/before untimed validation. A following invocation would restore the
+correct output, but both placements reject the intermediate corruption. The
+reverse diagnostic proves that its replay ran before timing.
 
 ## Validation
 
