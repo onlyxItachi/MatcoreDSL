@@ -32,8 +32,10 @@ The external evidence directory is:
 /home/hamza-usta/archives/MDSLC-m4-calibration-20260722T162854
 ```
 
-It contains 368 non-build evidence files totaling 944,304 bytes. The complete
-SHA-256 inventory is `final-evidence.sha256`; its digest is:
+Excluding the checksum manifest itself, it contains 368 non-build evidence
+files totaling 879,322 bytes. Including the 68,276-byte manifest gives 369
+files and 947,598 bytes. The complete SHA-256 inventory is
+`final-evidence.sha256`; its digest is:
 
 ```text
 e956f05a8d8cf26e127f373d86a97c9b34599b5d415a06f5fe67de6044622378
