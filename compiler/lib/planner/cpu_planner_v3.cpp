@@ -9,6 +9,18 @@ namespace matcore::mdslc::planner {
 namespace {
 
 inline constexpr std::uint64_t kParallelMacroTileRowsV1 = 128;
+// Complete-call calibration on the declared Milestone 5 host found a narrow
+// gap in the inherited v2 cost model.  When a multi-worker native context is
+// explicitly bound, provider-owned multithreading is illegal and the
+// submission overhead makes the packed AVX2 implementation consistently win
+// in this small-work band.  Keep the correction bounded: smaller work retains
+// the reference/tiled policy, larger work retains the AVX-512/parallel model,
+// and unbound or single-thread provider policies are unchanged.
+inline constexpr std::uint64_t kBoundPackedAvx2MinimumWorkV1 =
+    UINT64_C(1) << 12;
+inline constexpr std::uint64_t kBoundPackedAvx2MaximumWorkV1 =
+    UINT64_C(1) << 15;
+inline constexpr std::int64_t kBoundPackedAvx2MinimumRowsV1 = 4;
 
 constexpr std::uint64_t feature(platform::CpuFeatureV2 value) noexcept {
   return platform::feature_bit(value);
@@ -351,6 +363,19 @@ std::uint64_t external_cost(const CpuGemmProblemV1 &problem,
       divide_round_up(detail::operation_count(problem), threads), 2000);
 }
 
+bool use_bound_packed_avx2_calibration(
+    const CpuGemmProblemV1 &problem,
+    const CpuThreadPolicyV1 &thread_policy) noexcept {
+  if (!thread_policy.worker_affinity_active ||
+      thread_policy.requested_threads <= 1 ||
+      problem.m < kBoundPackedAvx2MinimumRowsV1) {
+    return false;
+  }
+  const std::uint64_t work = detail::operation_count(problem);
+  return work >= kBoundPackedAvx2MinimumWorkV1 &&
+         work < kBoundPackedAvx2MaximumWorkV1;
+}
+
 void populate_resource_metadata(
     CpuCandidateDecisionV3 *decision,
     const CpuGemmImplementationResourcesV2 &resources) noexcept {
@@ -677,6 +702,12 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
               "native packed AVX2/FMA implementation is not runtime-validated";
           decision.estimated_cost = std::numeric_limits<std::uint64_t>::max();
         }
+      }
+      if (record.variant == CpuGemmVariantV3::native_packed_avx2_fma &&
+          decision.legal &&
+          use_bound_packed_avx2_calibration(problem, thread_policy)) {
+        decision.estimated_cost = std::min(
+            decision.estimated_cost, detail::operation_count(problem));
       }
       if (record.variant == CpuGemmVariantV3::external_openblas &&
           decision.legal) {

@@ -303,6 +303,41 @@ void parallel_rejection_boundaries() {
          "invalid thread policy fails before candidate selection");
 }
 
+void bound_context_crossover_calibration() {
+  const auto bound_policy = policy(4, 0, false, true);
+  const auto placement = single_node_placement(4, 4);
+
+  const auto below_band = planner::plan_cpu_gemm_v3(
+      problem(16, 16, 8), avx2_capabilities(), topology(), bound_policy,
+      resources(), planner::CpuGemmRequestV3::automatic, placement);
+  const auto lower_boundary = planner::plan_cpu_gemm_v3(
+      problem(16, 16, 16), avx2_capabilities(), topology(), bound_policy,
+      resources(), planner::CpuGemmRequestV3::automatic, placement);
+  const auto tail_shape = planner::plan_cpu_gemm_v3(
+      problem(64, 7, 19), avx2_capabilities(), topology(), bound_policy,
+      resources(), planner::CpuGemmRequestV3::automatic, placement);
+  expect(below_band.status == planner::CpuPlanStatusV1::selected &&
+             below_band.selected_id == "cpu.tiled.f32.v1" &&
+             lower_boundary.selected_id ==
+                 "cpu.native-packed.avx2-fma.f32.v1" &&
+             tail_shape.selected_id ==
+                 "cpu.native-packed.avx2-fma.f32.v1",
+         "bound-context calibration is limited to the measured small-work band");
+
+  const auto unbound = planner::plan_cpu_gemm_v3(
+      problem(16, 16, 16), avx2_capabilities(), topology(), policy(4),
+      resources(), planner::CpuGemmRequestV3::automatic,
+      single_node_placement());
+  const auto bound_single = planner::plan_cpu_gemm_v3(
+      problem(16, 16, 16), avx2_capabilities(), topology(),
+      policy(1, 0, false, true), resources(),
+      planner::CpuGemmRequestV3::automatic,
+      single_node_placement(1, 1));
+  expect(unbound.selected_id == "cpu.external.openblas.f32.v1" &&
+             bound_single.selected_id == "cpu.external.openblas.f32.v1",
+         "bound-context calibration does not override provider-permitted policies");
+}
+
 void numa_evidence_and_cost() {
   planner::CpuPlannerTopologyViewV1 two_node = topology();
   two_node.logical_processors = 16;
@@ -527,6 +562,7 @@ void versioned_capability_and_topology_projection() {
 int main() {
   registry_and_parallel_policy();
   parallel_rejection_boundaries();
+  bound_context_crossover_calibration();
   numa_evidence_and_cost();
   avx512_fail_closed_and_determinism();
   versioned_capability_and_topology_projection();
