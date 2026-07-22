@@ -271,6 +271,40 @@ typedef struct matcore_gemm_workspace_requirements_v1 {
   uint64_t reserved[4];
 } matcore_gemm_workspace_requirements_v1;
 
+typedef struct matcore_gemm_prepacked_b_requirements_v1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint64_t packed_b_bytes;
+  uint32_t packed_b_alignment;
+  uint32_t reserved0;
+  uint64_t execution_workspace_bytes;
+  uint32_t execution_workspace_alignment;
+  uint32_t reserved1;
+  uint64_t reserved[4];
+} matcore_gemm_prepacked_b_requirements_v1;
+
+/*
+ * Borrowed descriptor for caller-owned native packed-B storage. Both source
+ * and packed storage must remain alive and unmodified through execution.
+ * All fields are validated; callers must not synthesize this descriptor.
+ */
+typedef struct matcore_packed_b_desc_v1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  const void *source_data;
+  const void *packed_data;
+  uint64_t storage_bytes;
+  uint64_t packed_elements;
+  int64_t k;
+  int64_t n;
+  uint32_t kc;
+  uint32_t nc;
+  uint32_t nr;
+  uint32_t reserved0;
+  uint64_t provenance;
+  uint64_t reserved[4];
+} matcore_packed_b_desc_v1;
+
 /*
  * Validates the same descriptors and policy as matcore_runtime_gemm_f32_v0,
  * then returns the deterministic plan without executing or modifying output.
@@ -312,6 +346,41 @@ MATCORE_RUNTIME_API matcore_status_v0 matcore_runtime_gemm_f32_execute_v1(
     const matcore_tensor_desc_v0 *rhs,
     const matcore_policy_v0 *policy,
     const matcore_cpu_gemm_execution_options_v1 *options,
+    void *workspace,
+    size_t workspace_bytes,
+    matcore_cpu_gemm_plan_report_v2 *report) MATCORE_RUNTIME_NOEXCEPT;
+
+/* Query caller-owned persistent B storage and transient A workspace sizes. */
+MATCORE_RUNTIME_API matcore_status_v0
+matcore_runtime_gemm_f32_prepacked_b_size_v1(
+    const matcore_tensor_desc_v0 *out,
+    const matcore_tensor_desc_v0 *lhs,
+    const matcore_tensor_desc_v0 *rhs,
+    const matcore_policy_v0 *policy,
+    const matcore_cpu_gemm_execution_options_v1 *options,
+    matcore_gemm_prepacked_b_requirements_v1 *requirements)
+    MATCORE_RUNTIME_NOEXCEPT;
+
+/* Prepare persistent packed-B bytes without allocating or modifying output. */
+MATCORE_RUNTIME_API matcore_status_v0 matcore_runtime_gemm_f32_prepack_b_v1(
+    const matcore_tensor_desc_v0 *out,
+    const matcore_tensor_desc_v0 *lhs,
+    const matcore_tensor_desc_v0 *rhs,
+    const matcore_policy_v0 *policy,
+    const matcore_cpu_gemm_execution_options_v1 *options,
+    void *packed_storage,
+    size_t packed_storage_bytes,
+    matcore_packed_b_desc_v1 *packed_b) MATCORE_RUNTIME_NOEXCEPT;
+
+/* Execute the forced native packed candidate with a validated packed-B view. */
+MATCORE_RUNTIME_API matcore_status_v0
+matcore_runtime_gemm_f32_execute_prepacked_b_v1(
+    const matcore_tensor_desc_v0 *out,
+    const matcore_tensor_desc_v0 *lhs,
+    const matcore_tensor_desc_v0 *rhs,
+    const matcore_policy_v0 *policy,
+    const matcore_cpu_gemm_execution_options_v1 *options,
+    const matcore_packed_b_desc_v1 *packed_b,
     void *workspace,
     size_t workspace_bytes,
     matcore_cpu_gemm_plan_report_v2 *report) MATCORE_RUNTIME_NOEXCEPT;

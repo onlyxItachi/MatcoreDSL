@@ -19,6 +19,9 @@ static_assert(std::is_standard_layout_v<matcore_cpu_gemm_candidate_v2>);
 static_assert(std::is_standard_layout_v<matcore_cpu_gemm_plan_report_v2>);
 static_assert(
     std::is_standard_layout_v<matcore_gemm_workspace_requirements_v1>);
+static_assert(
+    std::is_standard_layout_v<matcore_gemm_prepacked_b_requirements_v1>);
+static_assert(std::is_standard_layout_v<matcore_packed_b_desc_v1>);
 
 #if INTPTR_MAX == INT64_MAX
 static_assert(sizeof(matcore_tensor_desc_v0) == 192);
@@ -30,6 +33,8 @@ static_assert(sizeof(matcore_cpu_gemm_execution_options_v1) == 56);
 static_assert(sizeof(matcore_cpu_gemm_candidate_v2) == 64);
 static_assert(sizeof(matcore_cpu_gemm_plan_report_v2) == 488);
 static_assert(sizeof(matcore_gemm_workspace_requirements_v1) == 64);
+static_assert(sizeof(matcore_gemm_prepacked_b_requirements_v1) == 72);
+static_assert(sizeof(matcore_packed_b_desc_v1) == 112);
 
 static_assert(offsetof(matcore_tensor_desc_v0, data) == 8);
 static_assert(offsetof(matcore_tensor_desc_v0, dims) == 24);
@@ -52,6 +57,10 @@ static_assert(offsetof(matcore_cpu_gemm_plan_report_v2, selected_stable_id) ==
 static_assert(
     offsetof(matcore_gemm_workspace_requirements_v1, selected_stable_id) ==
     24);
+static_assert(
+    offsetof(matcore_gemm_prepacked_b_requirements_v1,
+             execution_workspace_bytes) == 24);
+static_assert(offsetof(matcore_packed_b_desc_v1, provenance) == 72);
 #endif
 
 static_assert(MATCORE_STATUS_INVALID_ALIGNMENT_V0 == 16);

@@ -199,5 +199,79 @@ int main() {
               << '\n';
     return 1;
   }
+
+  matcore_gemm_prepacked_b_requirements_v1 prepacked_requirements{};
+  prepacked_requirements.abi_version =
+      MATCORE_RUNTIME_EXECUTION_ABI_VERSION_V1;
+  prepacked_requirements.struct_size = sizeof(prepacked_requirements);
+  result = matcore_runtime_gemm_f32_prepacked_b_size_v1(
+      &out_desc, &lhs_desc, &rhs_desc, &cpu_policy, &packed_options,
+      &prepacked_requirements);
+  if (result.code != MATCORE_STATUS_OK_V0 ||
+      prepacked_requirements.packed_b_bytes == 0 ||
+      prepacked_requirements.packed_b_alignment != 64 ||
+      prepacked_requirements.execution_workspace_bytes == 0 ||
+      prepacked_requirements.execution_workspace_alignment != 64) {
+    std::cerr << "prepacked-B requirement query failed\n";
+    return 1;
+  }
+  std::vector<std::byte> packed_storage_bytes(
+      static_cast<std::size_t>(prepacked_requirements.packed_b_bytes) + 63);
+  const auto packed_raw =
+      reinterpret_cast<std::uintptr_t>(packed_storage_bytes.data());
+  void *packed_storage =
+      reinterpret_cast<void *>((packed_raw + 63U) & ~uintptr_t{63U});
+  matcore_packed_b_desc_v1 packed_b{};
+  packed_b.abi_version = MATCORE_RUNTIME_EXECUTION_ABI_VERSION_V1;
+  packed_b.struct_size = sizeof(packed_b);
+  result = matcore_runtime_gemm_f32_prepack_b_v1(
+      &out_desc, &lhs_desc, &rhs_desc, &cpu_policy, &packed_options,
+      packed_storage,
+      static_cast<std::size_t>(prepacked_requirements.packed_b_bytes),
+      &packed_b);
+  if (result.code != MATCORE_STATUS_OK_V0 ||
+      packed_b.source_data != rhs.data() || packed_b.packed_data == nullptr ||
+      packed_b.provenance == 0) {
+    std::cerr << "prepacked-B preparation failed\n";
+    return 1;
+  }
+
+  std::vector<std::byte> prepacked_workspace_storage(
+      static_cast<std::size_t>(
+          prepacked_requirements.execution_workspace_bytes) +
+      63);
+  const auto prepacked_workspace_raw =
+      reinterpret_cast<std::uintptr_t>(prepacked_workspace_storage.data());
+  void *prepacked_workspace = reinterpret_cast<void *>(
+      (prepacked_workspace_raw + 63U) & ~uintptr_t{63U});
+  out.fill(-13.0F);
+  report = empty_report();
+  result = matcore_runtime_gemm_f32_execute_prepacked_b_v1(
+      &out_desc, &lhs_desc, &rhs_desc, &cpu_policy, &packed_options, &packed_b,
+      prepacked_workspace,
+      static_cast<std::size_t>(
+          prepacked_requirements.execution_workspace_bytes),
+      &report);
+  if (result.code != MATCORE_STATUS_OK_V0 || !correct(out) ||
+      report.selected_workspace_bytes !=
+          prepacked_requirements.execution_workspace_bytes) {
+    std::cerr << "prepacked-B execution failed: " << result.message << '\n';
+    return 1;
+  }
+
+  out.fill(-17.0F);
+  packed_b.provenance ^= UINT64_C(1);
+  report = empty_report();
+  result = matcore_runtime_gemm_f32_execute_prepacked_b_v1(
+      &out_desc, &lhs_desc, &rhs_desc, &cpu_policy, &packed_options, &packed_b,
+      prepacked_workspace,
+      static_cast<std::size_t>(
+          prepacked_requirements.execution_workspace_bytes),
+      &report);
+  if (result.code != MATCORE_STATUS_PREPACK_MISMATCH_V0 ||
+      out != std::array<float, 4>{-17.0F, -17.0F, -17.0F, -17.0F}) {
+    std::cerr << "corrupt prepacked-B descriptor was accepted or mutated output\n";
+    return 1;
+  }
   return 0;
 }
