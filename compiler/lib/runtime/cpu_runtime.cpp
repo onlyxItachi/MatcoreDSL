@@ -1,5 +1,6 @@
 #include "matcore/runtime_c.h"
 
+#include "cpu_backend_registry.h"
 #include "cpu_gemm_backend.h"
 #include "cpu_openblas.h"
 #include "cpu_planner.h"
@@ -523,35 +524,6 @@ bool forced_native_packed_request(
              force_native_packed_avx2_fma;
 }
 
-matcore::mdslc::planner::CpuGemmImplementationResourcesV1
-implementation_resources(
-    const matcore::mdslc::planner::CpuGemmProblemV1 &problem,
-    std::uint32_t requested_threads) noexcept {
-  const auto provider = matcore::mdslc::runtime::openblas_provider_info_v1();
-  matcore::mdslc::planner::CpuGemmImplementationResourcesV1 resources;
-  resources.openblas_linked = provider.linked;
-  resources.openblas_local_thread_control = provider.linked;
-  resources.native_packed_avx2_fma_compiled =
-      matcore::mdslc::runtime::cpu_packed_avx2_build_available_v1();
-  matcore::mdslc::runtime::CpuPackedGemmWorkspaceRequirementsV1 requirements;
-  const auto workspace_status =
-      matcore::mdslc::runtime::cpu_packed_avx2_workspace_requirements_v1(
-          problem,
-          matcore::mdslc::runtime::CpuPackedGemmWorkspaceModeV1::
-              transient_a_and_b,
-          &requirements);
-  resources.native_packed_workspace_size_valid =
-      workspace_status ==
-      matcore::mdslc::runtime::CpuPackedGemmStatusV1::success;
-  if (resources.native_packed_workspace_size_valid) {
-    resources.native_packed_workspace_bytes = requirements.total_bytes;
-    resources.native_packed_workspace_alignment =
-        static_cast<std::uint32_t>(requirements.alignment_bytes);
-  }
-  resources.requested_threads = requested_threads;
-  return resources;
-}
-
 matcore_status_v0 packed_execution_status(
     matcore::mdslc::runtime::CpuPackedGemmStatusV1 packed_status) noexcept {
   using PackedStatus = matcore::mdslc::runtime::CpuPackedGemmStatusV1;
@@ -727,7 +699,8 @@ matcore_runtime_gemm_f32_workspace_size_v1(
   result = validate_gemm_v0(out, lhs, rhs, policy, &validated);
   if (result.code != MATCORE_STATUS_OK_V0) return result;
   const auto resources =
-      implementation_resources(validated.problem, options->requested_threads);
+      matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
+          validated.problem, options->requested_threads);
   const auto capabilities =
       matcore::mdslc::planner::discover_cpu_capabilities_v1();
   const auto plan = matcore::mdslc::planner::plan_cpu_gemm_v2(
@@ -769,7 +742,8 @@ matcore_runtime_gemm_f32_execute_v1(
   result = validate_gemm_v0(out, lhs, rhs, policy, &validated);
   if (result.code != MATCORE_STATUS_OK_V0) return result;
   const auto resources =
-      implementation_resources(validated.problem, options->requested_threads);
+      matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
+          validated.problem, options->requested_threads);
   const auto capabilities =
       matcore::mdslc::planner::discover_cpu_capabilities_v1();
   const auto plan = matcore::mdslc::planner::plan_cpu_gemm_v2(
@@ -849,7 +823,8 @@ matcore_runtime_gemm_f32_prepacked_b_size_v1(
   result = validate_gemm_v0(out, lhs, rhs, policy, &validated);
   if (result.code != MATCORE_STATUS_OK_V0) return result;
   const auto resources =
-      implementation_resources(validated.problem, options->requested_threads);
+      matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
+          validated.problem, options->requested_threads);
   const auto plan = matcore::mdslc::planner::plan_cpu_gemm_v2(
       validated.problem,
       matcore::mdslc::planner::discover_cpu_capabilities_v1(), resources,
@@ -908,7 +883,8 @@ matcore_runtime_gemm_f32_prepack_b_v1(
   result = validate_gemm_v0(out, lhs, rhs, policy, &validated);
   if (result.code != MATCORE_STATUS_OK_V0) return result;
   const auto resources =
-      implementation_resources(validated.problem, options->requested_threads);
+      matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
+          validated.problem, options->requested_threads);
   const auto plan = matcore::mdslc::planner::plan_cpu_gemm_v2(
       validated.problem,
       matcore::mdslc::planner::discover_cpu_capabilities_v1(), resources,
@@ -968,7 +944,8 @@ matcore_runtime_gemm_f32_execute_prepacked_b_v1(
   result = validate_gemm_v0(out, lhs, rhs, policy, &validated);
   if (result.code != MATCORE_STATUS_OK_V0) return result;
   const auto resources =
-      implementation_resources(validated.problem, options->requested_threads);
+      matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
+          validated.problem, options->requested_threads);
   auto plan = matcore::mdslc::planner::plan_cpu_gemm_v2(
       validated.problem,
       matcore::mdslc::planner::discover_cpu_capabilities_v1(), resources,

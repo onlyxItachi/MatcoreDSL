@@ -79,12 +79,25 @@ if(MDSLC_BUILD_RUNTIME_BENCHMARKS)
   matcore_enable_debug_cpu_vectorization(matcore_cpu_planner_benchmark)
 endif()
 
-add_library(matcore_runtime SHARED
-  cpu_runtime.cpp
+add_library(matcore_cpu_backends_v1 STATIC
+  cpu_backend_registry.cpp
   cpu_openblas.cpp
   cpu_gemm_backend.cpp
   cpu_packed_avx2.cpp
 )
+add_library(MatcoreDSL::CpuBackendsV1 ALIAS matcore_cpu_backends_v1)
+target_compile_features(matcore_cpu_backends_v1 PUBLIC cxx_std_20)
+target_include_directories(matcore_cpu_backends_v1 PUBLIC
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
+)
+target_link_libraries(matcore_cpu_backends_v1
+  PUBLIC MatcoreDSL::CpuPlannerV1
+)
+set_target_properties(matcore_cpu_backends_v1 PROPERTIES
+  POSITION_INDEPENDENT_CODE ON
+)
+
+add_library(matcore_runtime SHARED cpu_runtime.cpp)
 add_library(MatcoreDSL::Runtime ALIAS matcore_runtime)
 set_property(TARGET matcore_runtime PROPERTY EXPORT_NAME Runtime)
 
@@ -92,16 +105,19 @@ target_compile_features(matcore_runtime PUBLIC cxx_std_20)
 target_compile_definitions(matcore_runtime PRIVATE MATCORE_RUNTIME_BUILD)
 target_link_libraries(matcore_runtime PRIVATE MatcoreDSL::CpuPlannerV1)
 if(MDSLC_HAS_OPENBLAS)
-  target_link_libraries(matcore_runtime PRIVATE PkgConfig::MDSLC_OPENBLAS)
-  target_compile_definitions(matcore_runtime PRIVATE
+  target_link_libraries(matcore_cpu_backends_v1
+    PRIVATE PkgConfig::MDSLC_OPENBLAS
+  )
+  target_compile_definitions(matcore_cpu_backends_v1 PUBLIC
     MATCORE_MDSLC_HAS_OPENBLAS=1
     "MATCORE_MDSLC_OPENBLAS_VERSION=\"${MDSLC_OPENBLAS_VERSION}\""
   )
 else()
-  target_compile_definitions(matcore_runtime PRIVATE
+  target_compile_definitions(matcore_cpu_backends_v1 PUBLIC
     MATCORE_MDSLC_HAS_OPENBLAS=0
   )
 endif()
+target_link_libraries(matcore_runtime PRIVATE MatcoreDSL::CpuBackendsV1)
 # The planner may select the AVX2/FMA implementation at runtime. Debug and an
 # unset single-config build type otherwise supply no optimization flag, which
 # would leave this candidate as a scalar loop. Preserve the configured level
@@ -123,15 +139,13 @@ set_target_properties(matcore_runtime PROPERTIES
 if(BUILD_TESTING)
   add_executable(matcore_packed_avx2_test
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/packed/packed_gemm_test.cpp"
-    cpu_gemm_backend.cpp
-    cpu_packed_avx2.cpp
   )
   target_compile_features(matcore_packed_avx2_test PRIVATE cxx_std_20)
   target_include_directories(matcore_packed_avx2_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
   )
   target_link_libraries(matcore_packed_avx2_test
-    PRIVATE MatcoreDSL::CpuPlannerV1
+    PRIVATE MatcoreDSL::CpuBackendsV1
   )
   target_compile_options(matcore_packed_avx2_test PRIVATE
     -Wall -Wextra -Wpedantic -Werror
@@ -153,26 +167,15 @@ if(BUILD_TESTING)
 
   add_executable(matcore_openblas_adapter_test
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/openblas_adapter_test.cpp"
-    cpu_openblas.cpp
   )
   target_compile_features(matcore_openblas_adapter_test PRIVATE cxx_std_20)
   target_include_directories(matcore_openblas_adapter_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/../planner"
   )
-  if(MDSLC_HAS_OPENBLAS)
-    target_link_libraries(matcore_openblas_adapter_test
-      PRIVATE PkgConfig::MDSLC_OPENBLAS
-    )
-    target_compile_definitions(matcore_openblas_adapter_test PRIVATE
-      MATCORE_MDSLC_HAS_OPENBLAS=1
-      "MATCORE_MDSLC_OPENBLAS_VERSION=\"${MDSLC_OPENBLAS_VERSION}\""
-    )
-  else()
-    target_compile_definitions(matcore_openblas_adapter_test PRIVATE
-      MATCORE_MDSLC_HAS_OPENBLAS=0
-    )
-  endif()
+  target_link_libraries(matcore_openblas_adapter_test
+    PRIVATE MatcoreDSL::CpuBackendsV1
+  )
   add_test(NAME runtime.cpu.openblas_adapter
     COMMAND matcore_openblas_adapter_test
   )
