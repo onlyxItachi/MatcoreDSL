@@ -1,4 +1,5 @@
 #include "frontend.h"
+#include "../support/platform_support.h"
 
 #include <clang/AST/ASTContext.h>
 #include <clang/AST/Attr.h>
@@ -44,28 +45,41 @@
 namespace matcore::mdslc::frontend {
 namespace {
 
+namespace support = matcore::mdslc::support;
+
 constexpr std::string_view kGemmName = "matcore::mdsl::gemm";
 constexpr std::string_view kOutName = "matcore::mdsl::out";
 constexpr std::string_view kGemmAnnotation = "matcore.op.gemm";
 constexpr std::string_view kOutAnnotation = "matcore.wrapper.out";
 
 std::string normalizeDisplayPath(const std::string &path) {
-  return std::filesystem::path(path).lexically_normal().generic_string();
+  std::string error;
+  const std::optional<std::filesystem::path> native =
+      support::path_from_utf8_v1(path, error);
+  if (!native) return path;
+  const std::optional<std::string> encoded =
+      support::path_to_utf8_v1(native->lexically_normal(), error);
+  return encoded.value_or(path);
 }
 
 std::string canonicalPath(const std::string &path) {
-  std::error_code error;
-  const std::filesystem::path absolute = std::filesystem::absolute(path, error);
-  const std::filesystem::path candidate = error ? std::filesystem::path(path)
-                                                 : absolute;
-  error.clear();
+  std::string error;
+  const std::optional<std::filesystem::path> native =
+      support::path_from_utf8_v1(path, error);
+  if (!native) return path;
   const std::filesystem::path canonical =
-      std::filesystem::weakly_canonical(candidate, error);
-  return (error ? candidate.lexically_normal() : canonical).generic_string();
+      support::normalize_path_v1(*native, true, error);
+  const std::optional<std::string> encoded = support::path_to_utf8_v1(
+      error.empty() ? canonical : native->lexically_normal(), error);
+  return encoded.value_or(path);
 }
 
 std::optional<std::string> readFile(const std::string &path) {
-  std::ifstream input(path, std::ios::binary);
+  std::string error;
+  const std::optional<std::filesystem::path> native =
+      support::path_from_utf8_v1(path, error);
+  if (!native) return std::nullopt;
+  std::ifstream input(*native, std::ios::binary);
   if (!input) {
     return std::nullopt;
   }
@@ -123,13 +137,69 @@ private:
 bool makeToolArguments(const Options &options,
                        std::vector<std::string> &arguments,
                        std::string &error) {
+  const bool clang_cl = std::find(options.compiler_arguments.begin(),
+                                  options.compiler_arguments.end(),
+                                  "--driver-mode=cl") !=
+                        options.compiler_arguments.end();
+  if (options.clang_resource_directory.empty()) {
+    error = "authenticated Clang resource directory is unavailable";
+    return false;
+  }
+  arguments.push_back("-resource-dir=" + options.clang_resource_directory);
   for (std::size_t index = 0; index < options.compiler_arguments.size();
        ++index) {
     const std::string &argument = options.compiler_arguments[index];
     if (argument == options.input_path ||
         (!argument.starts_with('-') &&
+         (!clang_cl || !argument.starts_with('/')) &&
          canonicalPath(argument) == canonicalPath(options.input_path))) {
       continue;
+    }
+    if (clang_cl && argument == "--driver-mode=cl") {
+      if (std::find(arguments.begin(), arguments.end(), argument) ==
+          arguments.end()) {
+        arguments.push_back(argument);
+      }
+      continue;
+    }
+    if (clang_cl &&
+        (argument == "/TP" || argument == "/Zs" ||
+         argument == "-fno-color-diagnostics")) {
+      continue;
+    }
+    if (clang_cl &&
+        (argument == "/I" || argument == "/D" || argument == "/U")) {
+      if (++index == options.compiler_arguments.size()) {
+        error = argument + " requires a value";
+        return false;
+      }
+      arguments.push_back(argument);
+      arguments.push_back(options.compiler_arguments[index]);
+      continue;
+    }
+    if (clang_cl &&
+        (argument == "/c" || argument == "/E" || argument == "/P" ||
+         argument == "/EP" || argument == "/link" ||
+         argument == "/TC" || argument.starts_with("/Tc") ||
+         argument == "/sourceDependencies" || argument.starts_with('@') ||
+         argument.starts_with("/Fo") || argument.starts_with("/Fe") ||
+         argument.starts_with("/Fd") || argument.starts_with("/Fp") ||
+         argument.starts_with("/Fi") || argument.starts_with("/Fa") ||
+         argument.starts_with("/clang:-ivfsoverlay") ||
+         argument.starts_with("/clang:-include-pch") ||
+         argument.starts_with("/clang:-fplugin"))) {
+      error = "unsafe or output-producing clang-cl argument for extraction: " +
+              argument;
+      return false;
+    }
+    if (clang_cl && argument.starts_with("/clang:")) {
+      const std::string forwarded = argument.substr(7);
+      if (forbiddenCompilerArgument(forwarded) || forwarded == "-c" ||
+          forwarded == "-resource-dir" ||
+          forwarded.starts_with("-resource-dir=")) {
+        error = "unsafe /clang: forwarding for extraction: " + argument;
+        return false;
+      }
     }
     if (argument == "-fsyntax-only" || argument == "-fno-color-diagnostics") {
       continue;
@@ -154,8 +224,17 @@ bool makeToolArguments(const Options &options,
     }
     arguments.push_back(argument);
   }
-  arguments.insert(arguments.end(), {"-x", "c++", "-fsyntax-only",
-                                     "-fno-color-diagnostics"});
+  if (clang_cl) {
+    if (std::find(arguments.begin(), arguments.end(), "--driver-mode=cl") ==
+        arguments.end()) {
+      arguments.insert(arguments.begin(), "--driver-mode=cl");
+    }
+    arguments.insert(arguments.end(),
+                     {"/TP", "/Zs", "-fno-color-diagnostics"});
+  } else {
+    arguments.insert(arguments.end(), {"-x", "c++", "-fsyntax-only",
+                                       "-fno-color-diagnostics"});
+  }
   return true;
 }
 
@@ -1306,8 +1385,19 @@ public:
       std::cerr << ' ' << shellQuoted(options.input_path) << '\n';
     }
 
-    clang::tooling::FixedCompilationDatabase compilations(
-        std::filesystem::current_path().string(), tool_arguments);
+    std::string current_path_error;
+    const std::optional<std::string> current_path =
+        support::path_to_utf8_v1(std::filesystem::current_path(),
+                                 current_path_error);
+    if (!current_path) {
+      result.diagnostics.push_back(
+          Diagnostic{.file = display_path,
+                     .message = "cannot encode frontend working directory as "
+                                "UTF-8: " + current_path_error});
+      return false;
+    }
+    clang::tooling::FixedCompilationDatabase compilations(*current_path,
+                                                           tool_arguments);
     clang::tooling::ClangTool tool(compilations, {options.input_path});
     tool.mapVirtualFile(options.input_path, *source);
     CountingDiagnosticConsumer clang_diagnostics;
