@@ -102,12 +102,18 @@ struct CpuExecutionContextV1::Impl {
           return;
         }
         observed_epoch = epoch;
-        current = submission;
+        // `submission` is borrowed from the submitter's stack. Only active
+        // workers participate in its lifetime barrier. Decide participation
+        // while holding state_mutex and never retain the pointer on an
+        // inactive worker: the submitter may return as soon as all active
+        // workers complete.
+        if (submission != nullptr &&
+            worker_index < submission->active_threads) {
+          current = submission;
+        }
       }
 
-      if (current == nullptr || worker_index >= current->active_threads) {
-        continue;
-      }
+      if (current == nullptr) continue;
 
       WorkerResultV1 &result = results[worker_index];
       for (std::size_t task_index = worker_index;
