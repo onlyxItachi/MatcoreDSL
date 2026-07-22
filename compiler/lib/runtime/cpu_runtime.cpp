@@ -1,5 +1,6 @@
 #include "matcore/runtime_c.h"
 
+#include "cpu_gemm_backend.h"
 #include "cpu_openblas.h"
 #include "cpu_planner.h"
 #include "cpu_planner_v2.h"
@@ -435,13 +436,66 @@ matcore_status_v0 validate_empty_workspace_requirements(
 }
 
 matcore::mdslc::planner::CpuGemmImplementationResourcesV1
-implementation_resources(std::uint32_t requested_threads) noexcept {
+implementation_resources(
+    const matcore::mdslc::planner::CpuGemmProblemV1 &problem,
+    std::uint32_t requested_threads) noexcept {
   const auto provider = matcore::mdslc::runtime::openblas_provider_info_v1();
   matcore::mdslc::planner::CpuGemmImplementationResourcesV1 resources;
   resources.openblas_linked = provider.linked;
   resources.openblas_local_thread_control = provider.linked;
+  resources.native_packed_avx2_fma_compiled =
+      matcore::mdslc::runtime::cpu_packed_avx2_build_available_v1();
+  matcore::mdslc::runtime::CpuPackedGemmWorkspaceRequirementsV1 requirements;
+  const auto workspace_status =
+      matcore::mdslc::runtime::cpu_packed_avx2_workspace_requirements_v1(
+          problem,
+          matcore::mdslc::runtime::CpuPackedGemmWorkspaceModeV1::
+              transient_a_and_b,
+          &requirements);
+  resources.native_packed_workspace_size_valid =
+      workspace_status ==
+      matcore::mdslc::runtime::CpuPackedGemmStatusV1::success;
+  if (resources.native_packed_workspace_size_valid) {
+    resources.native_packed_workspace_bytes = requirements.total_bytes;
+    resources.native_packed_workspace_alignment =
+        static_cast<std::uint32_t>(requirements.alignment_bytes);
+  }
   resources.requested_threads = requested_threads;
   return resources;
+}
+
+matcore_status_v0 packed_execution_status(
+    matcore::mdslc::runtime::CpuPackedGemmStatusV1 packed_status) noexcept {
+  using PackedStatus = matcore::mdslc::runtime::CpuPackedGemmStatusV1;
+  switch (packed_status) {
+    case PackedStatus::success:
+      return status(MATCORE_STATUS_OK_V0, "ok");
+    case PackedStatus::workspace_insufficient:
+      return status(MATCORE_STATUS_INSUFFICIENT_WORKSPACE_V0,
+                    "native packed GEMM workspace is too small");
+    case PackedStatus::workspace_misaligned:
+    case PackedStatus::invalid_pointer_alignment:
+      return status(MATCORE_STATUS_INVALID_ALIGNMENT_V0,
+                    "native packed GEMM alignment contract failed");
+    case PackedStatus::alias_violation:
+      return status(MATCORE_STATUS_ALIAS_VIOLATION_V0,
+                    "native packed GEMM buffers overlap illegally");
+    case PackedStatus::arithmetic_overflow:
+      return status(MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0,
+                    "native packed GEMM size arithmetic overflowed");
+    case PackedStatus::isa_unavailable:
+      return status(MATCORE_STATUS_UNAVAILABLE_VARIANT_V0,
+                    "native packed AVX2/FMA is unavailable on this CPU");
+    case PackedStatus::invalid_prepacked_b:
+      return status(MATCORE_STATUS_PREPACK_MISMATCH_V0,
+                    "native packed GEMM prepacked-B view is incompatible");
+    case PackedStatus::invalid_problem:
+    case PackedStatus::null_pointer:
+      return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
+                    "native packed GEMM received an invalid argument");
+  }
+  return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
+                "native packed GEMM returned an unknown status");
 }
 
 void populate_report_v2(
@@ -584,7 +638,8 @@ matcore_runtime_gemm_f32_workspace_size_v1(
   ValidatedGemmV0 validated;
   result = validate_gemm_v0(out, lhs, rhs, policy, &validated);
   if (result.code != MATCORE_STATUS_OK_V0) return result;
-  const auto resources = implementation_resources(options->requested_threads);
+  const auto resources =
+      implementation_resources(validated.problem, options->requested_threads);
   const auto capabilities =
       matcore::mdslc::planner::discover_cpu_capabilities_v1();
   const auto plan = matcore::mdslc::planner::plan_cpu_gemm_v2(
@@ -625,7 +680,8 @@ matcore_runtime_gemm_f32_execute_v1(
   ValidatedGemmV0 validated;
   result = validate_gemm_v0(out, lhs, rhs, policy, &validated);
   if (result.code != MATCORE_STATUS_OK_V0) return result;
-  const auto resources = implementation_resources(options->requested_threads);
+  const auto resources =
+      implementation_resources(validated.problem, options->requested_threads);
   const auto capabilities =
       matcore::mdslc::planner::discover_cpu_capabilities_v1();
   const auto plan = matcore::mdslc::planner::plan_cpu_gemm_v2(
@@ -669,8 +725,13 @@ matcore_runtime_gemm_f32_execute_v1(
       break;
     }
     case matcore::mdslc::planner::CpuGemmVariantV2::native_packed_avx2_fma:
-      return status(MATCORE_STATUS_UNAVAILABLE_VARIANT_V0,
-                    "native packed AVX2/FMA execution is not linked");
+      result = packed_execution_status(
+          matcore::mdslc::runtime::cpu_execute_packed_avx2_v1(
+              validated.problem, validated.lhs, validated.rhs, validated.out,
+              workspace, workspace_bytes));
+      if (result.code != MATCORE_STATUS_OK_V0) return result;
+      executed = true;
+      break;
   }
   if (!executed)
     return status(MATCORE_STATUS_UNAVAILABLE_VARIANT_V0,

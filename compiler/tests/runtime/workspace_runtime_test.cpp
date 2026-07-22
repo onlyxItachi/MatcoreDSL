@@ -1,10 +1,12 @@
 #include "matcore/runtime_c.h"
 
 #include <array>
+#include <cstddef>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <vector>
 
 namespace {
 
@@ -150,6 +152,51 @@ int main() {
     }
   } else if (result.code != MATCORE_STATUS_UNAVAILABLE_VARIANT_V0) {
     std::cerr << "unlinked OpenBLAS failed with the wrong status\n";
+    return 1;
+  }
+
+  auto packed_options = options(
+      MATCORE_CPU_GEMM_REQUEST_FORCE_NATIVE_PACKED_AVX2_FMA_V2);
+  requirements = empty_requirements();
+  report = empty_report();
+  result = matcore_runtime_gemm_f32_workspace_size_v1(
+      &out_desc, &lhs_desc, &rhs_desc, &cpu_policy, &packed_options,
+      &requirements, &report);
+  if (result.code != MATCORE_STATUS_OK_V0 ||
+      requirements.workspace_bytes == 0 ||
+      requirements.workspace_alignment != 64 ||
+      std::strcmp(requirements.selected_stable_id,
+                  "cpu.native-packed.avx2-fma.f32.v1") != 0) {
+    std::cerr << "native packed workspace query failed: " << result.message
+              << '\n';
+    return 1;
+  }
+  std::vector<std::byte> workspace_storage(
+      static_cast<std::size_t>(requirements.workspace_bytes) + 63);
+  const auto raw =
+      reinterpret_cast<std::uintptr_t>(workspace_storage.data());
+  void *workspace = reinterpret_cast<void *>((raw + 63U) & ~uintptr_t{63U});
+
+  out.fill(-11.0F);
+  report = empty_report();
+  result = matcore_runtime_gemm_f32_execute_v1(
+      &out_desc, &lhs_desc, &rhs_desc, &cpu_policy, &packed_options, workspace,
+      static_cast<std::size_t>(requirements.workspace_bytes - 1), &report);
+  if (result.code != MATCORE_STATUS_INSUFFICIENT_WORKSPACE_V0 ||
+      out != std::array<float, 4>{-11.0F, -11.0F, -11.0F, -11.0F}) {
+    std::cerr << "insufficient packed workspace mutated output\n";
+    return 1;
+  }
+
+  report = empty_report();
+  result = matcore_runtime_gemm_f32_execute_v1(
+      &out_desc, &lhs_desc, &rhs_desc, &cpu_policy, &packed_options, workspace,
+      static_cast<std::size_t>(requirements.workspace_bytes), &report);
+  if (result.code != MATCORE_STATUS_OK_V0 || !correct(out) ||
+      std::strcmp(report.selected_stable_id,
+                  "cpu.native-packed.avx2-fma.f32.v1") != 0) {
+    std::cerr << "workspace native packed execution failed: " << result.message
+              << '\n';
     return 1;
   }
   return 0;

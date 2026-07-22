@@ -79,7 +79,12 @@ if(MDSLC_BUILD_RUNTIME_BENCHMARKS)
   matcore_enable_debug_cpu_vectorization(matcore_cpu_planner_benchmark)
 endif()
 
-add_library(matcore_runtime SHARED cpu_runtime.cpp cpu_openblas.cpp)
+add_library(matcore_runtime SHARED
+  cpu_runtime.cpp
+  cpu_openblas.cpp
+  cpu_gemm_backend.cpp
+  cpu_packed_avx2.cpp
+)
 add_library(MatcoreDSL::Runtime ALIAS matcore_runtime)
 set_property(TARGET matcore_runtime PROPERTY EXPORT_NAME Runtime)
 
@@ -116,6 +121,25 @@ set_target_properties(matcore_runtime PROPERTIES
 )
 
 if(BUILD_TESTING)
+  add_executable(matcore_packed_avx2_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/packed/packed_gemm_test.cpp"
+    cpu_gemm_backend.cpp
+    cpu_packed_avx2.cpp
+  )
+  target_compile_features(matcore_packed_avx2_test PRIVATE cxx_std_20)
+  target_include_directories(matcore_packed_avx2_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+  target_link_libraries(matcore_packed_avx2_test
+    PRIVATE MatcoreDSL::CpuPlannerV1
+  )
+  target_compile_options(matcore_packed_avx2_test PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+  )
+  add_test(NAME runtime.cpu.packed_avx2
+    COMMAND matcore_packed_avx2_test
+  )
+
   add_executable(matcore_workspace_runtime_test
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/workspace_runtime_test.cpp"
   )
@@ -188,6 +212,16 @@ if(BUILD_TESTING)
     find_program(MDSLC_OBJDUMP_EXECUTABLE NAMES objdump)
     find_program(MDSLC_NM_EXECUTABLE NAMES nm llvm-nm-21)
     if(MDSLC_OBJDUMP_EXECUTABLE AND MDSLC_NM_EXECUTABLE)
+      add_test(
+        NAME runtime.cpu.packed_avx2_object
+        COMMAND
+          "${CMAKE_COMMAND}"
+          "-DMDSLC_OBJDUMP=${MDSLC_OBJDUMP_EXECUTABLE}"
+          "-DMDSLC_NM=${MDSLC_NM_EXECUTABLE}"
+          "-DMDSLC_PACKED_ARTIFACT=$<TARGET_FILE:matcore_runtime>"
+          -P
+          "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/cmake/expect_cpu_packed_avx2_microkernel.cmake"
+      )
       add_test(
         NAME runtime.cpu.vectorized_object
         COMMAND
