@@ -796,15 +796,22 @@ def pipeline_suite(
             cwd=temporary,
         )
         require_success(linked_by_driver, "driver-owned ASan PE final link")
+        expected_output_name = driver_linked.name.casefold()
         final_link_lines = [
             line
             for line in linked_by_driver.stderr.splitlines()
-            if str(driver_linked) in line
+            if line.startswith("mdslc++:")
+            and "/fsanitize=address" in line.casefold()
+            and "/fe:" in line.casefold()
+            and expected_output_name in line.casefold()
         ]
         if not final_link_lines:
-            raise RuntimeError("verbose driver output omitted the ASan final link")
+            raise RuntimeError(
+                "verbose driver output omitted the ASan final link:\n"
+                + linked_by_driver.stderr
+            )
         final_link = final_link_lines[-1]
-        if "/fsanitize=address" not in final_link or " /link " in final_link:
+        if " /link " in final_link.casefold():
             raise RuntimeError(
                 "ASan was not kept in clang-cl driver scope during final link:\n"
                 + final_link
