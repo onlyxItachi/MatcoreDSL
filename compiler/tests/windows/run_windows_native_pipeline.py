@@ -762,6 +762,7 @@ def pipeline_suite(
             str(runtime_import_library),
             f"/Fe{executable}",
             "/link",
+            f"/WHOLEARCHIVE:{archive_path}",
             "/subsystem:console",
         ],
         cwd=temporary,
