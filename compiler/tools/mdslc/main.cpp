@@ -1392,6 +1392,14 @@ ParseClangClCpuInvocation(const WrapperArguments &arguments) {
   const std::optional<fs::path> output_path =
       PathFromArgument(invocation.output, "output");
   if (!output_path) return std::nullopt;
+  const std::optional<fs::path> input_path =
+      PathFromArgument(invocation.input, "input");
+  if (!input_path) return std::nullopt;
+  if (PathsReferToSameLocation(*input_path, *output_path)) {
+    std::cerr << "mdslc++: output path must not overwrite the input .mdsl "
+                 "source\n";
+    return std::nullopt;
+  }
   if (invocation.compile_only &&
       !support::ascii_case_equal_v1(
           PathArgument(output_path->extension()), ".lib")) {
