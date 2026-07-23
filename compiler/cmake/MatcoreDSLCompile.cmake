@@ -127,6 +127,16 @@ function(matcoredsl_add_executable target_name)
   )
   add_executable("${target_name}" "${mdsl_object}")
   set_property(TARGET "${target_name}" PROPERTY LINKER_LANGUAGE CXX)
+  if(MSVC OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    # This archive is the complete output of one MDSLC translation unit.  In
+    # particular, it can contain the executable entry point.  link.exe cannot
+    # discover that entry point through the usual unresolved-symbol archive
+    # extraction cycle when no ordinary object precedes the archive, so retain
+    # every constituent COFF object explicitly.  The archive remains listed as
+    # a GENERATED source above to preserve the custom-command dependency.
+    target_link_options(
+      "${target_name}" PRIVATE "LINKER:/WHOLEARCHIVE:${mdsl_object}")
+  endif()
   # Linker-generated dependency files do not reliably escape whitespace in
   # imported shared-library paths. Imported package runtimes have no build
   # rule in the consumer project, so retain target-level ordering while
