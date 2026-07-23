@@ -14,6 +14,8 @@ namespace matcore::mdslc::platform {
 
 inline constexpr std::uint32_t kCpuTopologyVersionV1 = 1;
 inline constexpr std::uint32_t kCpuPlacementVersionV1 = 1;
+inline constexpr std::uint32_t kWindowsCpuTopologySnapshotVersionV1 = 1;
+inline constexpr std::uint32_t kWindowsProcessorGroupWidthV1 = 64;
 inline constexpr std::uint32_t kUnknownTopologyIdV1 =
     std::numeric_limits<std::uint32_t>::max();
 
@@ -60,6 +62,44 @@ struct CpuTopologyValidationV1 {
   std::string_view reason;
 
   constexpr explicit operator bool() const noexcept { return valid; }
+};
+
+// Portable input model for the Win32 topology collector.  Keeping the
+// normalization boundary free of Windows SDK types makes processor-group,
+// NUMA, cache, and malformed-record behavior testable on Linux CI.  V1 maps a
+// Windows PROCESSOR_NUMBER to its Number only and therefore deliberately
+// accepts exactly one active processor group.  Multi-group machines fail
+// closed until a future topology/affinity record carries a first-class group
+// coordinate through the planner and public diagnostics.
+struct WindowsProcessorNumberV1 {
+  std::uint16_t group = 0;
+  std::uint16_t number = 0;
+};
+
+struct WindowsLogicalProcessorRecordV1 {
+  WindowsProcessorNumberV1 processor;
+  std::uint32_t core_id = kUnknownTopologyIdV1;
+  std::uint32_t package_id = kUnknownTopologyIdV1;
+  std::uint32_t numa_node_id = kUnknownTopologyIdV1;
+  std::uint32_t thread_index = kUnknownTopologyIdV1;
+  bool online = false;
+};
+
+struct WindowsCacheRecordV1 {
+  std::uint32_t level = 0;
+  CpuCacheTypeV1 type = CpuCacheTypeV1::unknown;
+  std::uint64_t size_bytes = 0;
+  std::uint32_t line_size_bytes = 0;
+  std::vector<WindowsProcessorNumberV1> shared_processors;
+};
+
+struct WindowsCpuTopologySnapshotV1 {
+  std::uint32_t version = kWindowsCpuTopologySnapshotVersionV1;
+  ArchitectureKindV1 architecture = ArchitectureKindV1::unknown;
+  std::uint16_t active_processor_groups = 0;
+  bool relationship_discovery_complete = false;
+  std::vector<WindowsLogicalProcessorRecordV1> logical_processors;
+  std::vector<WindowsCacheRecordV1> cache_groups;
 };
 
 enum class CpuAffinityPolicyV1 : std::uint8_t {
@@ -140,6 +180,19 @@ CpuTopologyValidationV1 validate_cpu_topology_v1(
 CpuTopologyV1 discover_linux_cpu_topology_v1(
     const std::filesystem::path &sys_devices_root =
         "/sys/devices/system");
+
+CpuTopologyV1 normalize_windows_cpu_topology_v1(
+    const WindowsCpuTopologySnapshotV1 &snapshot);
+
+// Uses GetLogicalProcessorInformationEx with RelationProcessorCore,
+// RelationProcessorPackage, RelationCache, and RelationNumaNodeEx.  Unsupported
+// processor-group layouts and incomplete relationship data return a valid but
+// incomplete topology; they are never accepted by placement.
+CpuTopologyV1 discover_windows_cpu_topology_v1();
+
+// Selects the native collector without exposing OS preprocessor branches to
+// planner/runtime consumers.  Unknown platforms return an incomplete record.
+CpuTopologyV1 discover_host_cpu_topology_v1();
 
 CpuTopologyRestrictionV1 restrict_cpu_topology_v1(
     const CpuTopologyV1 &topology,

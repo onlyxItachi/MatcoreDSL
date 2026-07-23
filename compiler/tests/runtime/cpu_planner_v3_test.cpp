@@ -555,6 +555,49 @@ void versioned_capability_and_topology_projection() {
              rejected.candidates[5].reason ==
                  "native packed AVX-512 implementation is not runtime-validated",
          "capability projection cannot be bypassed by optimistic resources");
+
+  // Windows intentionally leaves AMX architectural-state permission unknown
+  // until a documented per-process mechanism is implemented. That unrelated
+  // uncertainty must not erase fully authenticated AVX2/FMA or AVX-512 facts
+  // when projecting the narrower v1 planner capability record.
+  auto windows_amx_unknown = capabilities;
+  const std::uint64_t amx_bits =
+      platform::feature_bit(platform::CpuFeatureV2::amx_tile) |
+      platform::feature_bit(platform::CpuFeatureV2::amx_bf16) |
+      platform::feature_bit(platform::CpuFeatureV2::amx_int8);
+  windows_amx_unknown.os_enabled.known &= ~amx_bits;
+  windows_amx_unknown.os_enabled.available &= ~amx_bits;
+  windows_amx_unknown.amx_permission_known = false;
+  windows_amx_unknown.amx_permission_granted = false;
+  const auto partial_projection =
+      planner::project_cpu_capabilities_v2_for_planner_v1(
+          windows_amx_unknown);
+  expect(platform::validate_cpu_capabilities_v2(windows_amx_unknown).valid &&
+             !platform::domain_complete_v2(
+                 windows_amx_unknown.os_enabled,
+                 windows_amx_unknown.architecture) &&
+             partial_projection.valid &&
+             partial_projection.baseline.detection_complete &&
+             partial_projection.baseline.usable_vector_bits == 512,
+         "unknown Windows AMX permission does not invalidate narrower AVX planner discovery");
+
+  const auto packed_avx2 = planner::plan_cpu_gemm_v3(
+      problem(256, 128, 128), windows_amx_unknown, machine_topology,
+      policy(1), available,
+      planner::CpuGemmRequestV3::force_native_packed_avx2_fma);
+  const auto packed_avx512 = planner::plan_cpu_gemm_v3(
+      problem(256, 128, 128), windows_amx_unknown, machine_topology,
+      policy(1), available,
+      planner::CpuGemmRequestV3::force_native_packed_avx512_fma);
+  const auto parallel_avx2 = planner::plan_cpu_gemm_v3(
+      problem(256, 128, 128), windows_amx_unknown, restricted.topology,
+      policy(2, 0, true), available,
+      planner::CpuGemmRequestV3::force_native_parallel_avx2_fma, 0,
+      single_node_placement(3, 3));
+  expect(packed_avx2.status == planner::CpuPlanStatusV1::selected &&
+             packed_avx512.status == planner::CpuPlanStatusV1::selected &&
+             parallel_avx2.status == planner::CpuPlanStatusV1::selected,
+         "authenticated AVX variants remain forceable when only AMX OS state is unknown");
 }
 
 }  // namespace

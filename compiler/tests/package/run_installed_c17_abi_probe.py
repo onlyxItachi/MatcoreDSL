@@ -62,6 +62,11 @@ def dynamic_undefined_symbols(executable: Path, nm: str) -> set[str]:
     return symbols
 
 
+def coff_imported_symbols(executable: Path, readobj: str) -> set[str]:
+    output = run([readobj, "--coff-imports", str(executable)], capture=True).stdout
+    return set(CALL_PATTERN.findall(output))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cmake", required=True)
@@ -69,11 +74,13 @@ def main() -> int:
     parser.add_argument("--test-root", required=True)
     parser.add_argument("--c-compiler", required=True)
     parser.add_argument("--nm", default="nm")
+    parser.add_argument("--readobj", default="llvm-readobj")
     args = parser.parse_args()
 
     source = Path(__file__).resolve().with_name("installed_c17_abi_probe.c")
     producer_build = Path(args.producer_build_dir).resolve()
     test_root = Path(args.test_root).resolve()
+    is_windows = os.name == "nt"
     if test_root.exists():
         shutil.rmtree(test_root)
     prefix = test_root / "relocated strict C prefix"
@@ -90,11 +97,21 @@ def main() -> int:
     )
 
     header = prefix / "include" / "matcore" / "runtime_c.h"
-    runtime = prefix / "lib" / "libmatcore_runtime.so"
-    if not header.is_file() or not runtime.is_file():
+    runtime = (
+        prefix / "bin" / "matcore_runtime.dll"
+        if is_windows
+        else prefix / "lib" / "libmatcore_runtime.so"
+    )
+    import_library = prefix / "lib" / "matcore_runtime.lib"
+    if (
+        not header.is_file()
+        or not runtime.is_file()
+        or (is_windows and not import_library.is_file())
+    ):
         raise RuntimeError(
             "installed runtime package is incomplete: "
-            f"header={header.is_file()} runtime={runtime.is_file()}"
+            f"header={header.is_file()} runtime={runtime.is_file()} "
+            f"import_library={import_library.is_file() if is_windows else 'n/a'}"
         )
 
     exports = exported_symbols(header)
@@ -106,31 +123,46 @@ def main() -> int:
             f"unknown calls={sorted(calls - exports)}"
         )
 
-    executable = test_root / "installed-c17-abi-probe"
-    run(
-        [
-            str(Path(args.c_compiler).resolve()),
-            "-std=c17",
-            "-pedantic-errors",
-            "-Wall",
-            "-Wextra",
-            "-Werror",
-            "-I",
-            str(prefix / "include"),
-            str(source),
-            "-L",
-            str(prefix / "lib"),
-            "-lmatcore_runtime",
-            "-Xlinker",
-            "-rpath",
-            "-Xlinker",
-            str(prefix / "lib"),
-            "-o",
-            str(executable),
-        ]
-    )
-
-    dynamic_symbols = dynamic_undefined_symbols(executable, args.nm)
+    executable = test_root / ("installed-c17-abi-probe.exe" if is_windows else "installed-c17-abi-probe")
+    if is_windows:
+        run(
+            [
+                str(Path(args.c_compiler).resolve()),
+                "/TC",
+                "/std:c17",
+                "/W4",
+                "/WX",
+                f"/I{prefix / 'include'}",
+                str(source),
+                str(import_library),
+                f"/Fe{executable}",
+            ]
+        )
+        dynamic_symbols = coff_imported_symbols(executable, args.readobj)
+    else:
+        run(
+            [
+                str(Path(args.c_compiler).resolve()),
+                "-std=c17",
+                "-pedantic-errors",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-I",
+                str(prefix / "include"),
+                str(source),
+                "-L",
+                str(prefix / "lib"),
+                "-lmatcore_runtime",
+                "-Xlinker",
+                "-rpath",
+                "-Xlinker",
+                str(prefix / "lib"),
+                "-o",
+                str(executable),
+            ]
+        )
+        dynamic_symbols = dynamic_undefined_symbols(executable, args.nm)
     missing_dynamic_references = exports - dynamic_symbols
     if missing_dynamic_references:
         raise RuntimeError(
@@ -139,10 +171,13 @@ def main() -> int:
         )
 
     environment = os.environ.copy()
-    prior_library_path = environment.get("LD_LIBRARY_PATH")
-    environment["LD_LIBRARY_PATH"] = str(prefix / "lib")
-    if prior_library_path:
-        environment["LD_LIBRARY_PATH"] += os.pathsep + prior_library_path
+    if is_windows:
+        environment["PATH"] = str(prefix / "bin") + os.pathsep + environment.get("PATH", "")
+    else:
+        prior_library_path = environment.get("LD_LIBRARY_PATH")
+        environment["LD_LIBRARY_PATH"] = str(prefix / "lib")
+        if prior_library_path:
+            environment["LD_LIBRARY_PATH"] += os.pathsep + prior_library_path
     execution = run([str(executable)], capture=True, environment=environment)
     if execution.stdout.strip() != "installed strict C17 ABI probe: PASS":
         raise RuntimeError(

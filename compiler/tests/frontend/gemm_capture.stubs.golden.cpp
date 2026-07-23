@@ -5,6 +5,14 @@
 #include <stdexcept>
 #include <string>
 
+#if defined(__clang__) || defined(__GNUC__)
+// Clang lowers this to ELF weak or COFF WeakExternal. The host,
+// stub, and backend objects must still be linked together.
+#define MATCORE_MDSLC_WEAK __attribute__((weak))
+#else
+#error "MDSLC generated weak sites require Clang/GNU attributes"
+#endif
+
 extern "C" matcore_status_v0 matcore_generated_backend_mc_3c5b6d5e7992fb7b249de44210c6415d_v0(const matcore_tensor_desc_v0 *, const matcore_tensor_desc_v0 *, const matcore_tensor_desc_v0 *, const matcore_policy_v0 *) noexcept;
 
 namespace {
@@ -67,7 +75,7 @@ void throw_on_error(const matcore_status_v0 &status,
 }
 } // namespace
 
-__attribute__((weak)) void __matcore_call_site_mc_3c5b6d5e7992fb7b249de44210c6415d(::matcore::mdsl::out_arg output, const ::matcore::mdsl::matrix_view &lhs, const ::matcore::mdsl::matrix_view &rhs, ::matcore::mdsl::policy execution_policy) {
+MATCORE_MDSLC_WEAK void __matcore_call_site_mc_3c5b6d5e7992fb7b249de44210c6415d(::matcore::mdsl::out_arg output, const ::matcore::mdsl::matrix_view &lhs, const ::matcore::mdsl::matrix_view &rhs, ::matcore::mdsl::policy execution_policy) {
   const ::matcore::mdsl::matrix_view empty_output{};
   const ::matcore::mdsl::matrix_view &output_view =
       output.value != nullptr ? *output.value : empty_output;
@@ -81,3 +89,5 @@ __attribute__((weak)) void __matcore_call_site_mc_3c5b6d5e7992fb7b249de44210c641
   const matcore_status_v0 status = matcore_generated_backend_mc_3c5b6d5e7992fb7b249de44210c6415d_v0(&output_descriptor, &lhs_descriptor, &rhs_descriptor, &runtime_policy);
   throw_on_error(status, "compiler/tests/frontend/gemm_capture.mdsl:21:3");
 }
+
+#undef MATCORE_MDSLC_WEAK

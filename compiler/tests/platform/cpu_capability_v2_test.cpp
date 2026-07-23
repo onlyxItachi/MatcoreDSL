@@ -75,6 +75,40 @@ int main() {
                 platform::CpuFeatureV2::amx_int8);
   static_assert(platform::kCpuFeatureOrderV2.size() == 12);
 
+  const auto clang_cl_compiler = platform::cpu_compiler_feature_domain_v2(
+      platform::ArchitectureKindV1::x86_64,
+      platform::CompilerFrontendV1::clang_cl, 21);
+  const auto clang_gnu_compiler = platform::cpu_compiler_feature_domain_v2(
+      platform::ArchitectureKindV1::x86_64,
+      platform::CompilerFrontendV1::clang_gnu, 21);
+  expect(clang_cl_compiler.known == clang_gnu_compiler.known &&
+             clang_cl_compiler.available == clang_gnu_compiler.available &&
+             platform::feature_available(clang_cl_compiler,
+                                         platform::CpuFeatureV2::avx2) &&
+             platform::feature_available(clang_cl_compiler,
+                                         platform::CpuFeatureV2::avx512f),
+         "clang-cl normalizes to Clang ISA support without losing its MSVC ABI identity");
+  const auto native_msvc_compiler =
+      platform::cpu_compiler_feature_domain_v2(
+          platform::ArchitectureKindV1::x86_64,
+          platform::CompilerFrontendV1::msvc, 1944);
+  expect(platform::feature_known(native_msvc_compiler,
+                                 platform::CpuFeatureV2::avx2) &&
+             !platform::feature_available(native_msvc_compiler,
+                                          platform::CpuFeatureV2::avx2),
+         "unvalidated native MSVC ISA code generation fails closed");
+  const auto unknown_compiler = platform::cpu_compiler_feature_domain_v2(
+      platform::ArchitectureKindV1::x86_64,
+      platform::CompilerFrontendV1::unknown, 0);
+  expect(!platform::feature_known(unknown_compiler,
+                                  platform::CpuFeatureV2::avx2),
+         "unknown compiler family cannot claim x86 ISA support");
+  const auto invalid_compiler = platform::cpu_compiler_feature_domain_v2(
+      platform::ArchitectureKindV1::x86_64,
+      static_cast<platform::CompilerFrontendV1>(255), 21);
+  expect(invalid_compiler.known == 0 && invalid_compiler.available == 0,
+         "invalid compiler family fails closed without portable claims");
+
   const auto aarch64 = synthetic_aarch64();
   expect(platform::validate_cpu_capabilities_v2(aarch64).valid,
          "synthetic AArch64 portable record validates");
@@ -198,6 +232,23 @@ int main() {
                                        platform::CpuFeatureV2::avx2),
            "host AVX2 hardware is OS-enabled before usability");
   }
+#if defined(_WIN32)
+  const bool has_amx_hardware =
+      platform::feature_available(detected.hardware,
+                                  platform::CpuFeatureV2::amx_tile) ||
+      platform::feature_available(detected.hardware,
+                                  platform::CpuFeatureV2::amx_bf16) ||
+      platform::feature_available(detected.hardware,
+                                  platform::CpuFeatureV2::amx_int8);
+  if (has_amx_hardware) {
+    expect(!detected.amx_permission_known &&
+               !platform::feature_known(detected.os_enabled,
+                                        platform::CpuFeatureV2::amx_tile) &&
+               !platform::feature_available(
+                   detected.os_enabled, platform::CpuFeatureV2::amx_tile),
+           "Windows AMX remains unusable without a validated per-process permission mechanism");
+  }
+#endif
 #endif
 
   const std::string first = platform::format_cpu_capabilities_v2(detected);

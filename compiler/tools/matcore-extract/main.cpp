@@ -1,16 +1,19 @@
 #include "../../lib/frontend/frontend.h"
 #include "../../lib/codegen/codegen.h"
 #include "../../lib/ir/matcore_ir_v1.h"
+#include "platform_support.h"
 #include "mdslc_config.h"
 
-#include <unistd.h>
-
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <cstdlib>
-#include <cstdint>
 #include <iostream>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -25,6 +28,8 @@
 
 namespace {
 
+namespace support = matcore::mdslc::support;
+
 struct CommandLine {
   matcore::mdslc::frontend::Options frontend;
   std::string frontend_name = "native";
@@ -35,30 +40,60 @@ struct CommandLine {
   std::string stubs_output;
   std::string backend_output;
   std::string verify_ir;
+  std::string compiler_arguments_file;
   std::uint32_t ir_version = matcore::mdslc::ir::kMatcoreIrVersion;
   bool compiler_was_explicit = false;
   bool ir_version_was_explicit = false;
 };
 
-std::filesystem::path normalizedPath(const std::filesystem::path &path) {
-  std::error_code error;
-  std::filesystem::path absolute = std::filesystem::absolute(path, error);
-  if (error) {
-    absolute = path;
+bool isWindowsHost() {
+  return support::process_launch_backend_v1() ==
+         support::ProcessLaunchBackendV1::windows_create_process_w;
+}
+
+std::optional<std::filesystem::path> pathFromUtf8(std::string_view value,
+                                                  std::string_view role) {
+  std::string error;
+  std::optional<std::filesystem::path> path =
+      support::path_from_utf8_v1(value, error);
+  if (!path) {
+    std::cerr << "matcore-extract: invalid UTF-8 " << role << " path: "
+              << error << '\n';
   }
-  error.clear();
+  return path;
+}
+
+std::optional<std::string> pathToUtf8(const std::filesystem::path &path,
+                                      std::string_view role) {
+  std::string error;
+  std::optional<std::string> encoded =
+      support::path_to_utf8_v1(path, error);
+  if (!encoded) {
+    std::cerr << "matcore-extract: cannot represent " << role
+              << " path as UTF-8: " << error << '\n';
+  }
+  return encoded;
+}
+
+std::filesystem::path normalizedPath(const std::filesystem::path &path) {
+  std::string error;
   const std::filesystem::path normalized =
-      std::filesystem::weakly_canonical(absolute, error);
-  return error ? absolute.lexically_normal() : normalized;
+      support::normalize_path_v1(path, true, error);
+  return error.empty() ? normalized : path.lexically_normal();
 }
 
 bool pathsReferToSameLocation(const std::filesystem::path &left,
                               const std::filesystem::path &right) {
-  std::error_code error;
-  if (std::filesystem::equivalent(left, right, error) && !error) {
+  std::string error;
+  const bool same =
+      support::paths_refer_to_same_location_v1(left, right, error);
+  if (!error.empty()) {
+    std::cerr << "matcore-extract: cannot authenticate prospective path "
+                 "identity: "
+              << error << '\n';
     return true;
   }
-  return normalizedPath(left) == normalizedPath(right);
+  return same;
 }
 
 std::optional<std::filesystem::path>
@@ -116,20 +151,31 @@ bool validateOutputPaths(const CommandLine &command) {
     if (encoded_path.empty() || encoded_path == "-") {
       continue;
     }
-    const std::filesystem::path path(encoded_path);
-    if (pathsReferToSameLocation(command.frontend.input_path, path)) {
+    const std::optional<std::filesystem::path> path =
+        pathFromUtf8(encoded_path, "output");
+    const std::optional<std::filesystem::path> input =
+        pathFromUtf8(command.frontend.input_path, "input");
+    if (!path || !input) return false;
+    std::string output_error;
+    if (!support::prospective_output_path_supported_v1(*path, output_error)) {
+      std::cerr << "matcore-extract: " << option
+                << " is not a supported output path: " << output_error
+                << '\n';
+      return false;
+    }
+    if (pathsReferToSameLocation(*input, *path)) {
       std::cerr << "matcore-extract: " << option
                 << " must not overwrite or alias the input .mdsl file\n";
       return false;
     }
     for (const auto &[prior_option, prior_path] : validated) {
-      if (pathsReferToSameLocation(prior_path, path)) {
+      if (pathsReferToSameLocation(prior_path, *path)) {
         std::cerr << "matcore-extract: " << option << " and " << prior_option
                   << " must refer to distinct output files\n";
         return false;
       }
     }
-    validated.emplace_back(option, path);
+    validated.emplace_back(option, *path);
   }
   return true;
 }
@@ -137,7 +183,7 @@ bool validateOutputPaths(const CommandLine &command) {
 void usage(std::ostream &output) {
   output
       << "usage: matcore-extract --input FILE.mdsl --ir-out FILE.json [options] "
-         "-- [clang++-placeholder] COMPILE_ARGS\n"
+         "-- [clang-driver-placeholder] COMPILE_ARGS\n"
       << "\n"
       << "Frontend selection:\n"
       << "  --frontend=native             supported Clang LibTooling frontend "
@@ -145,8 +191,7 @@ void usage(std::ostream &output) {
       << "  --frontend=ast-json-bootstrap compatibility/differential frontend\n"
       << "\n"
       << "Frontend options:\n"
-      << "  --clang PATH          Clang executable (default: "
-         "/usr/bin/clang++-21)\n"
+      << "  --clang PATH          exact coherent Clang 21.1.8 executable\n"
       << "  --ast-byte-limit N    maximum captured AST JSON bytes\n"
       << "  --verbose             print the exact Clang command\n"
       << "  --rewrite-out FILE    rewritten host C++ (requires all outputs)\n"
@@ -156,6 +201,8 @@ void usage(std::ostream &output) {
       << "  --ir-version N        emit Matcore IR 0 (default) or typed IR 1\n"
       << "  --verify-ir FILE      verify serialized Matcore IR v0/v1 and exit\n"
       << "  --frontend-info       describe the built frontend modes\n"
+      << "  --compiler-arguments-file FILE\n"
+         "                         bounded v1 argv transport used by mdslc++\n"
       << "\n"
       << "A bare clang++ token after -- is a command-shape placeholder; the "
          "configured\n"
@@ -187,16 +234,138 @@ bool setIrVersion(CommandLine &command, std::string_view value) {
   return true;
 }
 
+struct ConfiguredCompiler {
+  std::filesystem::path invocation_path;
+  std::filesystem::path resource_directory;
+};
+
+std::optional<ConfiguredCompiler>
+discoverConfiguredCompiler(std::string_view requested_compiler,
+                           bool require_prefix_coherence) {
+  std::string error;
+  const std::string_view requested = requested_compiler.empty()
+                                         ? (isWindowsHost()
+                                                ? std::string_view("clang-cl.exe")
+                                                : std::string_view(
+                                                      MDSLC_DEFAULT_CLANGXX))
+                                         : requested_compiler;
+  const std::optional<std::filesystem::path> discovered =
+      support::find_executable_v1(requested, error);
+  if (!discovered) {
+    std::cerr << "matcore-extract: cannot locate the configured Clang driver: "
+              << error << '\n';
+    return std::nullopt;
+  }
+  std::filesystem::path compiler = *discovered;
+  const std::optional<std::string> compiler_utf8 =
+      pathToUtf8(compiler, "compiler");
+  if (!compiler_utf8) return std::nullopt;
+  support::ProcessRequestV1 request;
+  request.argv = {*compiler_utf8};
+  if (isWindowsHost()) request.argv.emplace_back("--no-default-config");
+  request.argv.emplace_back("--version");
+  request.environment = support::compiler_environment_sanitization_v1();
+  const support::ProcessResultV1 result = support::run_process_v1(request);
+  if (!result.launched || !result.error.empty() || result.exit_code != 0 ||
+      (result.stdout_text + result.stderr_text)
+              .find("clang version 21.1.8") == std::string::npos) {
+    std::cerr << "matcore-extract: compiler must be the coherent Clang "
+                 "21.1.8 driver: "
+              << compiler << '\n';
+    return std::nullopt;
+  }
+  support::ProcessRequestV1 resource_request;
+  resource_request.argv = {*compiler_utf8};
+  if (isWindowsHost()) {
+    resource_request.argv.emplace_back("--no-default-config");
+  }
+  resource_request.argv.emplace_back("-print-resource-dir");
+  resource_request.environment =
+      support::compiler_environment_sanitization_v1();
+  const support::ProcessResultV1 resource_result =
+      support::run_process_v1(resource_request);
+  if (!resource_result.launched || !resource_result.error.empty() ||
+      resource_result.exit_code != 0) {
+    std::cerr << "matcore-extract: cannot query the Clang 21.1.8 resource "
+                 "directory\n";
+    return std::nullopt;
+  }
+  std::string resource_text = resource_result.stdout_text;
+  while (!resource_text.empty() &&
+         (resource_text.back() == '\r' || resource_text.back() == '\n' ||
+          resource_text.back() == ' ' || resource_text.back() == '\t')) {
+    resource_text.pop_back();
+  }
+  const std::optional<std::filesystem::path> resource_input =
+      pathFromUtf8(resource_text, "Clang resource");
+  if (!resource_input) return std::nullopt;
+  const std::filesystem::path resource_directory =
+      support::normalize_path_v1(*resource_input, true, error);
+  if (!error.empty() || !std::filesystem::is_regular_file(
+                            resource_directory / "include" / "stddef.h")) {
+    std::cerr << "matcore-extract: coherent Clang resource headers are "
+                 "unavailable at "
+              << resource_directory << '\n';
+    return std::nullopt;
+  }
+  const std::filesystem::path compiler_prefix = normalizedPath(
+      compiler.parent_path().parent_path());
+  std::error_code relative_error;
+  const std::filesystem::path relative_resource = std::filesystem::relative(
+      resource_directory, compiler_prefix, relative_error);
+  if (require_prefix_coherence &&
+      (relative_error || relative_resource.empty() ||
+       relative_resource.is_absolute() || *relative_resource.begin() == "..")) {
+    std::cerr << "matcore-extract: Clang resource directory is outside the "
+                 "selected 21.1.8 toolchain prefix\n";
+    return std::nullopt;
+  }
+  return ConfiguredCompiler{compiler, resource_directory};
+}
+
+bool selectCompilerArgument(CommandLine &command) {
+  if (command.frontend.compiler_arguments.empty() ||
+      command.frontend.compiler_arguments.front().starts_with("-") ||
+      (isWindowsHost() &&
+       command.frontend.compiler_arguments.front().starts_with("/"))) {
+    return true;
+  }
+  const std::optional<std::filesystem::path> candidate = pathFromUtf8(
+      command.frontend.compiler_arguments.front(), "compiler");
+  if (!candidate) return false;
+  const std::optional<std::string> filename_utf8 =
+      pathToUtf8(candidate->filename(), "compiler filename");
+  if (!filename_utf8) return false;
+  const std::string &filename = *filename_utf8;
+  if (filename.starts_with("clang")) {
+    if (command.compiler_was_explicit) {
+      std::cerr << "matcore-extract: specify the compiler either with "
+                   "--clang or after --, not both\n";
+      return false;
+    }
+    const bool canonical_placeholder =
+        (!isWindowsHost() && filename == "clang++") ||
+        (isWindowsHost() &&
+         (filename == "clang-cl" || filename == "clang-cl.exe"));
+    if (candidate->has_parent_path() || !canonical_placeholder) {
+      command.frontend.clang_path =
+          command.frontend.compiler_arguments.front();
+      command.compiler_was_explicit = true;
+    }
+    command.frontend.compiler_arguments.erase(
+        command.frontend.compiler_arguments.begin());
+    return true;
+  }
+  if (filename.starts_with("g++") || filename.starts_with("c++")) {
+    std::cerr << "matcore-extract: MDSLC extraction requires Clang; "
+                 "use --clang with a compatible clang++ executable\n";
+    return false;
+  }
+  return true;
+}
+
 std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
   CommandLine command;
-  std::error_code executable_error;
-  const std::filesystem::path executable =
-      std::filesystem::canonical("/proc/self/exe", executable_error);
-  if (!executable_error) {
-    if (const auto include_directory = discoverToolIncludeDirectory(executable)) {
-      command.tool_include_directory = include_directory->string();
-    }
-  }
   bool after_separator = false;
   for (int index = 1; index < argc; ++index) {
     const std::string argument = argv[index];
@@ -237,6 +406,11 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
       if (!takeValue(argc, argv, index, command.verify_ir, "--verify-ir")) {
         return std::nullopt;
       }
+    } else if (argument == "--compiler-arguments-file") {
+      if (!takeValue(argc, argv, index, command.compiler_arguments_file,
+                     "--compiler-arguments-file")) {
+        return std::nullopt;
+      }
     } else if (argument == "--ir-version") {
       std::string value;
       if (!takeValue(argc, argv, index, value, "--ir-version") ||
@@ -252,6 +426,14 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
     } else if (argument == "--clang") {
       if (!takeValue(argc, argv, index, command.frontend.clang_path,
                      "--clang")) {
+        return std::nullopt;
+      }
+      command.compiler_was_explicit = true;
+    } else if (argument.starts_with("--clang=")) {
+      command.frontend.clang_path =
+          argument.substr(std::string("--clang=").size());
+      if (command.frontend.clang_path.empty()) {
+        std::cerr << "matcore-extract: --clang requires a non-empty path\n";
         return std::nullopt;
       }
       command.compiler_was_explicit = true;
@@ -288,8 +470,12 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
       std::cout << "native [not built]\n";
 #endif
 #if MDSLC_HAS_BOOTSTRAP_FRONTEND
-      std::cout << "ast-json-bootstrap [built, compatibility-only]: "
-                   "clang-ast-json-bootstrap-v0\n";
+      if (isWindowsHost()) {
+        std::cout << "ast-json-bootstrap [unavailable on Windows]\n";
+      } else {
+        std::cout << "ast-json-bootstrap [built, compatibility-only]: "
+                     "clang-ast-json-bootstrap-v0\n";
+      }
 #else
       std::cout << "ast-json-bootstrap [not built]\n";
 #endif
@@ -305,6 +491,7 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
     if (!command.frontend.input_path.empty() || !command.ir_output.empty() ||
         !command.rewrite_output.empty() || !command.sites_output.empty() ||
         !command.stubs_output.empty() || !command.backend_output.empty() ||
+        !command.compiler_arguments_file.empty() ||
         !command.frontend.compiler_arguments.empty() ||
         command.ir_version_was_explicit) {
       std::cerr << "matcore-extract: --verify-ir cannot be combined with "
@@ -319,13 +506,74 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
               << command.frontend_name << '\n';
     return std::nullopt;
   }
+  if (!command.compiler_arguments_file.empty()) {
+    if (!command.frontend.compiler_arguments.empty()) {
+      std::cerr << "matcore-extract: --compiler-arguments-file cannot be "
+                   "combined with arguments after --\n";
+      return std::nullopt;
+    }
+    const std::optional<std::filesystem::path> argument_path = pathFromUtf8(
+        command.compiler_arguments_file, "compiler arguments");
+    if (!argument_path) return std::nullopt;
+    std::string argument_error;
+    const std::optional<std::vector<std::string>> arguments =
+        support::read_argument_file_v1(*argument_path, argument_error);
+    if (!arguments) {
+      std::cerr << "matcore-extract: cannot read compiler arguments file: "
+                << argument_error << '\n';
+      return std::nullopt;
+    }
+    command.frontend.compiler_arguments = *arguments;
+  }
+  if (isWindowsHost() && command.frontend_name == "ast-json-bootstrap") {
+    std::cerr << "matcore-extract: the AST-JSON bootstrap frontend is not "
+                 "available on Windows; use native LibTooling\n";
+    return std::nullopt;
+  }
   if (command.frontend.input_path.empty() || command.ir_output.empty()) {
     std::cerr << "matcore-extract: --input and --ir-out are required\n";
     return std::nullopt;
   }
+  if (!selectCompilerArgument(command)) return std::nullopt;
+  // Verification and --frontend-info deliberately do not require an external
+  // Clang installation. Discover the compiler/resource/header tuple only for
+  // a real extraction.
+  const std::optional<ConfiguredCompiler> configured_compiler =
+      discoverConfiguredCompiler(command.compiler_was_explicit
+                                     ? command.frontend.clang_path
+                                     : std::string_view{},
+                                 command.frontend_name == "native");
+  if (!configured_compiler) return std::nullopt;
+  const std::optional<std::string> configured_compiler_utf8 =
+      pathToUtf8(configured_compiler->invocation_path, "compiler");
+  if (!configured_compiler_utf8) return std::nullopt;
+  if (!command.compiler_was_explicit) {
+    command.frontend.clang_path = *configured_compiler_utf8;
+  }
+  const std::optional<std::string> configured_resource_utf8 = pathToUtf8(
+      configured_compiler->resource_directory, "Clang resource");
+  if (!configured_resource_utf8) return std::nullopt;
+  command.frontend.clang_resource_directory = *configured_resource_utf8;
+
+  std::string executable_error;
+  const std::optional<std::filesystem::path> executable =
+      support::current_executable_path_v1(executable_error);
+  if (!executable) {
+    std::cerr << "matcore-extract: cannot locate the running extractor: "
+              << executable_error << '\n';
+    return std::nullopt;
+  }
+  if (const auto include_directory = discoverToolIncludeDirectory(*executable)) {
+    const std::optional<std::string> encoded =
+        pathToUtf8(*include_directory, "tool include");
+    if (!encoded) return std::nullopt;
+    command.tool_include_directory = *encoded;
+  }
+  const std::optional<std::filesystem::path> tool_include_directory =
+      pathFromUtf8(command.tool_include_directory, "tool include");
+  if (!tool_include_directory) return std::nullopt;
   const std::filesystem::path tool_public_header =
-      std::filesystem::path(command.tool_include_directory) / "matcore" /
-      "mdsl.h";
+      *tool_include_directory / "matcore" / "mdsl.h";
   std::error_code header_error;
   if (command.tool_include_directory.empty() ||
       !std::filesystem::is_regular_file(tool_public_header, header_error)) {
@@ -333,7 +581,10 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
                  "<matcore/mdsl.h> beside the executable\n";
     return std::nullopt;
   }
-  command.frontend.trusted_public_headers.push_back(tool_public_header.string());
+  const std::optional<std::string> tool_public_header_utf8 =
+      pathToUtf8(tool_public_header, "trusted public header");
+  if (!tool_public_header_utf8) return std::nullopt;
+  command.frontend.trusted_public_headers.push_back(*tool_public_header_utf8);
   const unsigned generated_output_count =
       static_cast<unsigned>(!command.rewrite_output.empty()) +
       static_cast<unsigned>(!command.sites_output.empty()) +
@@ -358,41 +609,39 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
       }
     }
   }
-  if (!command.frontend.compiler_arguments.empty() &&
-      !command.frontend.compiler_arguments.front().starts_with("-")) {
-    const std::filesystem::path candidate(
-        command.frontend.compiler_arguments.front());
-    const std::string filename = candidate.filename().string();
-    if (filename.starts_with("clang")) {
-      if (command.compiler_was_explicit) {
-        std::cerr << "matcore-extract: specify the compiler either with "
-                     "--clang or after --, not both\n";
-        return std::nullopt;
-      }
-      if (candidate.has_parent_path() || filename != "clang++") {
-        command.frontend.clang_path =
-            command.frontend.compiler_arguments.front();
-      }
-      command.frontend.compiler_arguments.erase(
-          command.frontend.compiler_arguments.begin());
-    } else if (filename.starts_with("g++") || filename.starts_with("c++")) {
-      std::cerr << "matcore-extract: MDSLC extraction requires Clang; "
-                   "use --clang with a compatible clang++ executable\n";
-      return std::nullopt;
-    }
-  }
+  const std::optional<std::filesystem::path> selected_compiler =
+      pathFromUtf8(command.frontend.clang_path, "compiler");
+  if (!selected_compiler) return std::nullopt;
   if (command.frontend_name == "native" &&
-      !pathsReferToSameLocation(command.frontend.clang_path,
-                                MDSLC_DEFAULT_CLANGXX)) {
+      !pathsReferToSameLocation(*selected_compiler,
+                                configured_compiler->invocation_path)) {
     std::cerr << "matcore-extract: native frontend is linked to the configured "
                  "Clang 21.1.8 tuple and cannot honor a different --clang "
                  "executable: "
               << command.frontend.clang_path << '\n';
     return std::nullopt;
   }
-  command.frontend.compiler_arguments.insert(
-      command.frontend.compiler_arguments.begin(),
-      "-I" + command.tool_include_directory);
+  if (isWindowsHost()) {
+    // The configured Windows compiler tuple is clang-cl/MSVC.  Direct
+    // extractor callers pass clang-cl spellings such as /TP and /I, but must
+    // not need to supply a mode-changing control argument themselves.  Record
+    // the already-authenticated driver flavor internally before LibTooling
+    // constructs its FixedCompilationDatabase.
+    if (std::find(command.frontend.compiler_arguments.begin(),
+                  command.frontend.compiler_arguments.end(),
+                  "--driver-mode=cl") ==
+        command.frontend.compiler_arguments.end()) {
+      command.frontend.compiler_arguments.insert(
+          command.frontend.compiler_arguments.begin(), "--driver-mode=cl");
+    }
+    command.frontend.compiler_arguments.insert(
+        command.frontend.compiler_arguments.begin(),
+        {"/I", command.tool_include_directory});
+  } else {
+    command.frontend.compiler_arguments.insert(
+        command.frontend.compiler_arguments.begin(),
+        "-I" + command.tool_include_directory);
+  }
   return command;
 }
 
@@ -412,8 +661,18 @@ bool writeAtomically(const std::string &path, std::string_view contents) {
     std::cout << contents;
     return static_cast<bool>(std::cout);
   }
-  const std::string temporary =
-      path + ".tmp." + std::to_string(static_cast<long long>(::getpid()));
+  const std::optional<std::filesystem::path> destination =
+      pathFromUtf8(path, "output");
+  if (!destination) return false;
+  static std::atomic<std::uint64_t> sequence{0};
+  std::random_device entropy;
+  const std::uint64_t nonce =
+      (static_cast<std::uint64_t>(entropy()) << 32U) ^ entropy() ^
+      static_cast<std::uint64_t>(
+          std::chrono::steady_clock::now().time_since_epoch().count()) ^
+      sequence.fetch_add(1, std::memory_order_relaxed);
+  std::filesystem::path temporary = *destination;
+  temporary += ".tmp." + std::to_string(nonce);
   {
     std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
     if (!output || !output.write(contents.data(), contents.size())) {
@@ -424,19 +683,23 @@ bool writeAtomically(const std::string &path, std::string_view contents) {
       return false;
     }
   }
-  std::error_code error;
-  std::filesystem::rename(temporary, path, error);
-  if (error) {
+  std::string publish_error;
+  if (!support::replace_file_atomically_v1(temporary, *destination,
+                                           publish_error)) {
     std::cerr << "matcore-extract: failed to publish IR file " << path << ": "
-              << error.message() << '\n';
-    std::filesystem::remove(temporary, error);
+              << publish_error << '\n';
+    std::error_code ignored;
+    std::filesystem::remove(temporary, ignored);
     return false;
   }
   return true;
 }
 
 std::optional<std::string> readFile(const std::string &path) {
-  std::ifstream input(path, std::ios::binary);
+  const std::optional<std::filesystem::path> native_path =
+      pathFromUtf8(path, "input");
+  if (!native_path) return std::nullopt;
+  std::ifstream input(*native_path, std::ios::binary);
   if (!input) {
     return std::nullopt;
   }
@@ -444,9 +707,21 @@ std::optional<std::string> readFile(const std::string &path) {
                      std::istreambuf_iterator<char>());
 }
 
-} // namespace
-
-int main(int argc, char **argv) {
+int ExtractorMain(int argc, char **argv) {
+  std::string environment_error;
+  const std::optional<std::string> poisoned_environment =
+      support::poisoned_compiler_environment_v1(environment_error);
+  if (!environment_error.empty()) {
+    std::cerr << "matcore-extract: " << environment_error << '\n';
+    return 2;
+  }
+  if (poisoned_environment) {
+    std::cerr << "matcore-extract: inherited compiler control variable "
+              << *poisoned_environment
+              << " is set; unset it before invoking the in-process frontend"
+              << '\n';
+    return 2;
+  }
   const std::optional<CommandLine> command = parseCommandLine(argc, argv);
   if (!command) {
     usage(std::cerr);
@@ -551,12 +826,16 @@ int main(int argc, char **argv) {
     return writeAtomically(command->ir_output, json) ? 0 : 1;
   }
 
-  const std::string sites_include =
-      std::filesystem::path(command->sites_output).filename().string();
+  const std::optional<std::filesystem::path> sites_path =
+      pathFromUtf8(command->sites_output, "sites output");
+  if (!sites_path) return 1;
+  const std::optional<std::string> sites_include =
+      pathToUtf8(sites_path->filename(), "sites include");
+  if (!sites_include) return 1;
   matcore::mdslc::codegen::Artifacts artifacts;
   std::string generation_error;
   if (!matcore::mdslc::codegen::generate(
-          projected_module, result.source_snapshot, sites_include, artifacts,
+          projected_module, result.source_snapshot, *sites_include, artifacts,
           generation_error)) {
     std::cerr << command->frontend.input_path
               << ": error: generated artifact validation failed: "
@@ -580,3 +859,27 @@ int main(int argc, char **argv) {
   }
   return 0;
 }
+
+} // namespace
+
+#if defined(_WIN32)
+int wmain(int argc, wchar_t **argv) {
+  std::string error;
+  const std::optional<std::vector<std::string>> utf8_arguments =
+      support::wide_arguments_to_utf8_v1(argc, argv, error);
+  if (!utf8_arguments) {
+    std::cerr << "matcore-extract: cannot decode Windows process arguments: "
+              << error << '\n';
+    return 2;
+  }
+  std::vector<char *> narrow_arguments;
+  narrow_arguments.reserve(utf8_arguments->size());
+  for (const std::string &argument : *utf8_arguments) {
+    narrow_arguments.push_back(const_cast<char *>(argument.c_str()));
+  }
+  return ExtractorMain(static_cast<int>(narrow_arguments.size()),
+                       narrow_arguments.data());
+}
+#else
+int main(int argc, char **argv) { return ExtractorMain(argc, argv); }
+#endif

@@ -818,6 +818,7 @@ def core_suite(checks: Checks, extractor: Path, clang: Path) -> None:
         invalid_compiler_arguments = (
             ("unknown_clang_option", ("-fdefinitely-not-a-clang-option",)),
             ("invalid_language_standard", ("-std=c++99",)),
+            ("language_override", ("-x", "c")),
             ("missing_clang_config", ("--config=/definitely/missing.cfg",)),
             ("bare_clang_plugin", ("-fplugin", "/definitely/missing.so")),
             ("response_file", ("@/definitely/missing.rsp",)),
@@ -1158,6 +1159,38 @@ def driver_suite(checks: Checks, extractor: Path, driver: Path, clang: Path) -> 
         checks.require(
             not missing_output.exists(),
             "driver emitted object after semantic flag failure",
+        )
+
+        dedicated_depfile = temporary / "dedicated-public.d"
+        overridden_depfile = temporary / "legacy-override.d"
+        dependency_output = temporary / "dependency-conflict.o"
+        dependency_conflict = run(
+            [
+                str(driver),
+                "--frontend=native",
+                "--matcore-target=cpu",
+                f"--matcore-depfile={dedicated_depfile}",
+                "-MD",
+                "-MF",
+                str(overridden_depfile),
+                "-std=c++20",
+                "-DMDSLC_NATIVE_VALIDATION_FLAG=17",
+                "-c",
+                source_argument(source),
+                "-o",
+                str(dependency_output),
+            ]
+        )
+        checks.require(
+            dependency_conflict.returncode != 0
+            and "cannot be combined" in dependency_conflict.stderr,
+            "dedicated MDSLC depfile was silently overridden by legacy flags",
+        )
+        checks.require(
+            not dedicated_depfile.exists()
+            and not overridden_depfile.exists()
+            and not dependency_output.exists(),
+            "rejected dependency-output conflict left a published artifact",
         )
 
         driver_overlay = temporary / "driver-header-replacement.yaml"
@@ -1726,8 +1759,16 @@ def driver_suite(checks: Checks, extractor: Path, driver: Path, clang: Path) -> 
             "generated host source mutation still produced a final executable",
         )
         expected_host_artifact = temporary / "host-artifact-race.host.cpp"
+        host_artifact_diagnostic = host_artifact_race.stderr.lower()
+        host_artifact_change_reported = (
+            "dependency changed" in host_artifact_diagnostic
+            or (
+                "dependency consistency check failed" in host_artifact_diagnostic
+                and "changed while it was being read" in host_artifact_diagnostic
+            )
+        )
         checks.require(
-            "dependency changed" in host_artifact_race.stderr.lower()
+            host_artifact_change_reported
             and str(expected_host_artifact) in host_artifact_race.stderr,
             f"generated host mutation diagnostic was unclear:\n{host_artifact_race.stderr}",
         )

@@ -42,6 +42,13 @@ int main() {
   expect(context_status == runtime::CpuExecutionStatusV1::success &&
              context != nullptr,
          "resource fixture creates a topology-capped context");
+  if (context != nullptr) {
+    const auto direct_validation =
+        runtime::validate_cpu_runtime_variants_v1(*context);
+    expect(direct_validation.reference_f32_runtime_validated &&
+               direct_validation.tiled_f32_runtime_validated,
+           "runtime validation uses bounded stack and validates portable variants");
+  }
 
   runtime::CpuRuntimeValidationEvidenceV1 validation;
   validation.reference_f32_runtime_validated = true;

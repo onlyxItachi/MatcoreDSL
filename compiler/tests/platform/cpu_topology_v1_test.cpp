@@ -1,12 +1,29 @@
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
+#endif
+
 #include "cpu_topology_v1.h"
 
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 namespace platform = matcore::mdslc::platform;
 
@@ -43,6 +60,28 @@ platform::CpuTopologyV1 synthetic_topology() {
   return record;
 }
 
+platform::WindowsCpuTopologySnapshotV1 synthetic_windows_snapshot() {
+  platform::WindowsCpuTopologySnapshotV1 snapshot;
+  snapshot.architecture = platform::ArchitectureKindV1::x86_64;
+  snapshot.active_processor_groups = 1;
+  snapshot.relationship_discovery_complete = true;
+  snapshot.logical_processors = {
+      {{0, 0}, 0, 0, 0, 0, true},
+      {{0, 1}, 1, 0, 0, 0, true},
+      {{0, 2}, 0, 0, 0, 1, true},
+      {{0, 3}, 1, 0, 0, 1, true},
+  };
+  snapshot.cache_groups = {
+      {1, platform::CpuCacheTypeV1::data, 32768, 64,
+       {{0, 0}, {0, 2}}},
+      {1, platform::CpuCacheTypeV1::data, 32768, 64,
+       {{0, 1}, {0, 3}}},
+      {3, platform::CpuCacheTypeV1::unified, 8388608, 64,
+       {{0, 0}, {0, 1}, {0, 2}, {0, 3}}},
+  };
+  return snapshot;
+}
+
 void write_file(const std::filesystem::path &path, std::string_view value) {
   std::filesystem::create_directories(path.parent_path());
   std::ofstream output(path);
@@ -50,9 +89,12 @@ void write_file(const std::filesystem::path &path, std::string_view value) {
 }
 
 std::filesystem::path make_synthetic_sysfs() {
+  const std::size_t build_identity =
+      std::hash<std::string>{}(std::filesystem::current_path().string());
   const std::filesystem::path root =
       std::filesystem::temp_directory_path() /
-      "matcore-cpu-topology-v1-synthetic";
+      ("matcore-cpu-topology-v1-synthetic-" +
+       std::to_string(build_identity));
   std::error_code error;
   std::filesystem::remove_all(root, error);
   write_file(root / "cpu/online", "0-3\n");
@@ -90,6 +132,44 @@ int main() {
          "synthetic topology reports two sockets");
   expect(platform::numa_node_count_v1(synthetic) == 2,
          "synthetic topology reports two NUMA nodes");
+
+  const auto windows_snapshot = synthetic_windows_snapshot();
+  const auto normalized_windows =
+      platform::normalize_windows_cpu_topology_v1(windows_snapshot);
+  expect(normalized_windows.discovery_complete &&
+             platform::validate_cpu_topology_v1(normalized_windows).valid &&
+             platform::logical_cpu_count_v1(normalized_windows) == 4 &&
+             platform::physical_core_count_v1(normalized_windows) == 2 &&
+             platform::socket_count_v1(normalized_windows) == 1 &&
+             platform::numa_node_count_v1(normalized_windows) == 1,
+         "synthetic Windows relationship records normalize deterministically");
+  expect(normalized_windows.logical_processors[2].logical_cpu == 2 &&
+             normalized_windows.logical_processors[2].core_id == 0 &&
+             normalized_windows.logical_processors[2].thread_index == 1,
+         "Windows PROCESSOR_NUMBER mapping preserves deterministic SMT identity");
+
+  auto multi_group_windows = windows_snapshot;
+  multi_group_windows.active_processor_groups = 2;
+  const auto rejected_multi_group =
+      platform::normalize_windows_cpu_topology_v1(multi_group_windows);
+  expect(!rejected_multi_group.discovery_complete &&
+             rejected_multi_group.logical_processors.empty() &&
+             platform::validate_cpu_topology_v1(rejected_multi_group).valid,
+         "Windows v1 topology fails closed instead of aliasing processor groups");
+
+  auto incomplete_windows = windows_snapshot;
+  incomplete_windows.logical_processors[0].numa_node_id =
+      platform::kUnknownTopologyIdV1;
+  expect(!platform::normalize_windows_cpu_topology_v1(incomplete_windows)
+              .discovery_complete,
+         "incomplete Windows NUMA relationships fail closed");
+
+  auto duplicate_windows_cache = windows_snapshot;
+  duplicate_windows_cache.cache_groups[0].shared_processors.push_back({0, 0});
+  expect(!platform::normalize_windows_cpu_topology_v1(
+              duplicate_windows_cache)
+              .discovery_complete,
+         "malformed Windows cache affinity fails closed");
 
   const auto sibling_restriction =
       platform::restrict_cpu_topology_v1(synthetic, {0, 4});
@@ -286,6 +366,22 @@ int main() {
          "host topology exposes physical cores");
   expect(platform::numa_node_count_v1(host) > 0,
          "host topology exposes at least one NUMA node");
+  std::cout << platform::format_cpu_topology_v1(host) << '\n';
+#elif defined(_WIN32)
+  const platform::CpuTopologyV1 host =
+      platform::discover_windows_cpu_topology_v1();
+  expect(platform::validate_cpu_topology_v1(host).valid,
+         "host Windows topology record remains well formed");
+  if (::GetActiveProcessorGroupCount() == 1) {
+    expect(host.discovery_complete &&
+               platform::logical_cpu_count_v1(host) > 0 &&
+               platform::physical_core_count_v1(host) > 0 &&
+               platform::numa_node_count_v1(host) > 0,
+           "single-group Windows host exposes complete physical topology");
+  } else {
+    expect(!host.discovery_complete,
+           "multi-group Windows host is rejected by the v1 affinity model");
+  }
   std::cout << platform::format_cpu_topology_v1(host) << '\n';
 #endif
 

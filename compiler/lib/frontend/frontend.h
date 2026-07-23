@@ -20,6 +20,9 @@ struct Diagnostic {
 struct Options {
   std::string input_path;
   std::string clang_path = "/usr/bin/clang++-21";
+  // Authenticated Clang builtin-header directory. It is an implementation
+  // input, not part of the source-level compilation identity.
+  std::string clang_resource_directory;
   std::vector<std::string> compiler_arguments;
   std::vector<std::string> trusted_public_headers;
   std::size_t maximum_ast_bytes = 512U * 1024U * 1024U;

@@ -6,6 +6,17 @@
 
 int main() {
   namespace planner = matcore::mdslc::planner;
+  const planner::CpuCapabilitiesV1 discovered =
+      planner::discover_cpu_capabilities_v1();
+#if defined(__clang__) && defined(_MSC_VER) && defined(_M_X64)
+  if (discovered.architecture != planner::CpuArchitectureV1::x86_64 ||
+      !discovered.detection_complete ||
+      (planner::has_feature(discovered, planner::CpuFeatureV1::avx2) &&
+       discovered.usable_vector_bits < 256)) {
+    std::cerr << "clang-cl v1 CPU capability discovery failed closed incorrectly\n";
+    return 1;
+  }
+#endif
   const planner::CpuGemmProblemV1 problem{
       128, 128, 128, planner::CpuScalarTypeV1::f32,
       planner::CpuScalarTypeV1::f32,

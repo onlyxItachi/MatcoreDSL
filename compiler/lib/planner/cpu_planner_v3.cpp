@@ -475,14 +475,23 @@ CpuPlannerCapabilityProjectionV1 project_cpu_capabilities_v2_for_planner_v1(
       result.baseline.architecture = CpuArchitectureV1::unknown;
       break;
   }
+  // CpuCapabilitiesV1 models only portable scalar F32 plus AVX2/FMA. Its
+  // detection-complete bit must therefore describe those projected features,
+  // not every feature in the wider v2 vocabulary. In particular, an unknown
+  // AMX permission state must not invalidate independently authenticated
+  // AVX2/FMA or AVX-512 state. AVX-512 legality remains guarded below by its
+  // explicit hardware, OS, compiler, implementation, and runtime domains.
+  const auto discovery_knows = [&capabilities](platform::CpuFeatureV2 feature) {
+    return platform::feature_known(capabilities.hardware, feature) &&
+           platform::feature_known(capabilities.os_enabled, feature) &&
+           platform::feature_known(capabilities.compiler, feature);
+  };
   result.baseline.detection_complete =
       capabilities.architecture != platform::ArchitectureKindV1::unknown &&
-      platform::domain_complete_v2(capabilities.hardware,
-                                   capabilities.architecture) &&
-      platform::domain_complete_v2(capabilities.os_enabled,
-                                   capabilities.architecture) &&
-      platform::domain_complete_v2(capabilities.compiler,
-                                   capabilities.architecture);
+      discovery_knows(platform::CpuFeatureV2::portable_scalar_f32) &&
+      (capabilities.architecture != platform::ArchitectureKindV1::x86_64 ||
+       (discovery_knows(platform::CpuFeatureV2::avx2) &&
+        discovery_knows(platform::CpuFeatureV2::fma)));
   result.baseline.features = 0;
   if (platform::has_usable_feature_v2(
           capabilities, platform::CpuFeatureV2::portable_scalar_f32)) {

@@ -654,6 +654,85 @@ def execute_case(context: Context, case: dict[str, object], work: Path) -> None:
         require(not conflicting_depfile.exists(), "depfile collision overwrote a saved artifact")
         return
 
+    if mode == "driver_dependency_mutation_guard":
+        fixture = context.repository / source_argument(context, case)
+        source = work / "guard.mdsl"
+        output = work / "result.o"
+        depfile = work / "result.d"
+        generated = work / "result.host.cpp"
+        scenario = str(case["scenario"])
+        sentinel_bytes = b"#pragma once\n#define MDSLC_DEPENDENCY_SENTINEL 1\n"
+
+        if scenario == "output":
+            dependency = output
+        elif scenario == "depfile":
+            dependency = depfile
+        elif scenario == "generated":
+            dependency = generated
+        elif scenario == "generated_hardlink":
+            dependency = work / "included-dependency.h"
+        else:
+            raise ValidationFailure(f"unknown dependency mutation scenario: {scenario}")
+
+        dependency.write_bytes(sentinel_bytes)
+        if scenario == "generated_hardlink":
+            generated.hardlink_to(dependency)
+        source.write_text(
+            f'#include "{dependency.name}"\n' + fixture.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+        command = [
+            str(context.driver),
+            "--matcore-target=cpu",
+            "-std=c++20",
+            "-c",
+            str(source),
+            "-o",
+            str(output),
+        ]
+        if scenario in {"generated", "generated_hardlink"}:
+            command.insert(2, "--save-temps")
+        if scenario == "depfile":
+            command[2:2] = ["-MD", "-MF", str(depfile)]
+
+        completed = run(command, work)
+        require(completed.returncode != 0, "dependency mutation collision was accepted")
+        require(
+            str(case["diagnostic"]) in completed.stderr,
+            f"dependency mutation diagnostic missing: {completed.stderr}",
+        )
+        require(
+            dependency.read_bytes() == sentinel_bytes,
+            f"{scenario} dependency sentinel was modified",
+        )
+        if scenario == "generated_hardlink":
+            require(
+                generated.read_bytes() == sentinel_bytes,
+                "hard-link dependency sentinel was modified",
+            )
+
+        mutation_paths = [
+            output,
+            depfile,
+            work / "result.host.cpp",
+            work / "result.host-overlay.yaml",
+            work / "result.matcore.json",
+            work / "result.sites.h",
+            work / "result.stubs.cpp",
+            work / "result.backend.cpp",
+            work / "result.host.o",
+            work / "result.stubs.o",
+            work / "result.backend.o",
+        ]
+        preserved = {dependency}
+        if scenario == "generated_hardlink":
+            preserved.add(generated)
+        for path in mutation_paths:
+            if path not in preserved:
+                require(not path.exists(), f"rejection published mutation path: {path}")
+        return
+
     if mode == "driver_shadow_header":
         source = source_argument(context, case)
         trusted_header = context.repository / "compiler/include/matcore/mdsl.h"

@@ -31,6 +31,14 @@ declare -a ignore_sentinels=(
   "hygiene.sites.h"
   "hygiene.stubs.cpp"
   "hygiene.backend.cpp"
+  "hygiene.obj"
+  "hygiene.lib"
+  "hygiene.exe"
+  "hygiene.exp"
+  "hygiene.pdb"
+  "hygiene.ilk"
+  "hygiene.rsp"
+  "hygiene.zip"
   ".pytest_cache/hygiene"
 )
 
@@ -60,7 +68,8 @@ while IFS= read -r path; do
     CTestTestfile.cmake | */CTestTestfile.cmake | Testing/* | */Testing/* | \
     .deps/* | */.deps/* | .matcore_debug/* | */.matcore_debug/* | \
     .matcore_ir_dump/* | */.matcore_ir_dump/* | \
-    *.o | *.a | *.so | *.so.* | *.dylib | *.dll | *.bin | *.cubin | \
+    *.o | *.a | *.so | *.so.* | *.dylib | *.dll | *.exe | *.obj | \
+    *.lib | *.exp | *.pdb | *.ilk | *.rsp | *.zip | *.bin | *.cubin | \
     *.fatbin | *.ptx | *.pyc | *.pyo | *.log)
       violations+=("$path (forbidden generated path)")
       ;;

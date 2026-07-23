@@ -2,11 +2,14 @@
 
 Status date: 2026-07-22
 
-- Canonical `main` and completed Milestone 4 merge:
-  `e4dc0affff6c540a65435ba25c5cefa4d69cb562`
-- Current Milestone 5 integration branch: `mdslc/cpu-isa-parallel-v1`
-- Milestone 5 GitHub milestone: `#3`, open
-- Milestone 5 umbrella issue: `#9`, open
+- Canonical `main` and completed Milestone 5 merge:
+  `091d74072a710389b4a8e9d51f696ad9773021e6`
+- Focused Windows validation branch: `mdslc/windows-x64-v1`
+- Milestone 5 GitHub milestone / umbrella issue: `#3` / `#9`
+- Milestone 5 pull request: `#11`, merged normally
+- Focused Windows validation pull request: `#12`, hosted checks and
+  independent review passed at `216c81210e2dcbc4599b384e99ceb90a91aab4ba`
+- Milestone 5 immutable tag: `mdslc-cpu-backend-v2`
 - Milestone 4 pull request: `#10`, merged normally
 - Milestone 4 GitHub milestone/issue: `#2` / `#8`, closed
 - Milestone 4 immutable tag: `mdslc-cpu-performance-foundation-v1`
@@ -20,10 +23,11 @@ Status date: 2026-07-22
 
 ## Milestone 5 advanced CPU backend
 
-**Milestone 5 passes the local acceptance gate for the validated Linux host
-scope. Publication still requires hosted checks, a normal merge, and the
-immutable `mdslc-cpu-backend-v2` tag. Windows remains a separate, unvalidated
-compatibility phase and is not implied by this Linux verdict.**
+**Milestone 5 is published for the validated Linux host scope. PR #11 passed
+hosted checks, merged normally into `main` at `091d740`, and is anchored by the
+immutable `mdslc-cpu-backend-v2` tag. The separately bounded Windows x64
+compatibility candidate on PR #12 passed its hosted compiler, runtime,
+package, sanitizer, artifact, and independent-review gates.**
 
 Planner v3 evaluates the five Milestone 4 candidates plus three advanced native
 implementations, for eight stable F32 variants:
@@ -87,10 +91,31 @@ provider-absence, install, ABI, and path-leak checks. It found no unresolved
 high- or medium-severity issue. The validated production and test tree is
 unchanged by the later evidence-only commits.
 
-Windows remains deferred and unvalidated: no clang-cl frontend run, COFF/PE
-artifact, runtime DLL/import library, external consumer, hosted Windows job, or
-distribution ZIP is claimed. Linux completion will be reported independently
-from the later focused Windows compatibility phase.
+The focused Windows x64 compatibility phase is validated on GitHub-hosted
+Windows Server 2025 with clang-cl/LLVM 21.1.8, MSVC tools 14.51.36231, Windows
+SDK 10.0.26100.0, and lld-link. The native LibTooling frontend, valid-C++
+`.mdsl` pipeline, COFF objects, PE executables, runtime DLL/import library,
+installed package, and external consumer all passed with space- and
+Unicode-bearing paths. Release passed 35 tests with one intentional AVX-512
+hardware skip; focused Debug passed 26 with the same explicit skip. The
+runtime DLL and generated host/stub/backend pipeline also executed under the
+supported focused clang-cl AddressSanitizer scope. The packaged LLVM Tooling
+executables are not claimed ASan-instrumented because the authenticated LLVM
+archive's allocator conflicts with the Windows static ASan allocator thunk;
+Windows UBSan is not claimed.
+
+The hosted CPU has two physical cores, four logical CPUs, one socket, and one
+NUMA node. Reference, tiled, compiler-vectorized AVX2/FMA, native packed
+AVX2/FMA, and persistent parallel AVX2/FMA variants are runtime-validated.
+AVX-512 packed and parallel functions are compile/disassembly-validated only:
+the host exposes no OS-usable AVX-512 and forced execution fails closed.
+OpenBLAS was deliberately omitted from the Windows package. Multi-node NUMA is
+synthetic-only, and the Microsoft Visual C++ 2015--2022 x64 Redistributable is
+an explicit external prerequisite; a clean-machine installer experience was
+not validated. The CI distribution ZIP contains 17 installed files, exposes
+15 C ABI functions, passed recursive import and absolute-path-leak checks, and
+has SHA-256
+`b2c633192d3084585198f24eedba3957a85552c5d483d3b656bfdeda60480cd2`.
 
 ## Milestone 4 CPU performance foundation
 
@@ -406,24 +431,26 @@ and all accelerator compiler paths were not attempted.
 
 ## Known limitations
 
-- Linux, Ninja, Clang/LLVM 21.1.8, one `.mdsl` input, and synchronous
-  host-resident rank-2 row-major contiguous GEMM remain the validated compiler
-  and optimized-runtime scope.
+- Linux and hosted Windows x64, Clang/LLVM 21.1.8, one `.mdsl` input, and
+  synchronous host-resident rank-2 row-major contiguous GEMM are the validated
+  compiler/runtime scope. Linux remains the only performance-calibration host.
 - `matrix_view` is a minimal host f32 view, not a general tensor framework.
 - Driver-managed shared/static/PIE modes and opaque response/linker option
   forms remain rejected; emit `-c` and perform an ordinary explicit final link.
 - Bootstrap remains compatibility-only and is not the semantic authority.
-- AVX-512F/FMA F32 and persistent native parallel execution are implemented and
-  physically exercised only on the declared Linux host. BF16/F32 and I8/I32
-  have typed reference semantics only; accelerated BF16, VNNI, and AMX variants
-  are not implemented.
-- One-node topology discovery is physically validated. Multi-node NUMA policy
-  is synthetic-only, with no runtime page placement or migration.
-- Windows runtime/frontend/package validation, GEMV, GEVM, ReLU-GEMM, MLIR
-  lowering, CUDA/cuBLAS, HIP, Metal, NPU placement, fusion, and autotuning are
-  not implemented or claimed.
+- AVX-512F/FMA F32 and persistent native parallel AVX-512 execution are
+  physically exercised only on the declared Linux host. Windows AVX-512 is
+  compile/disassembly-only because hosted hardware lacks OS-usable AVX-512.
+  BF16/F32 and I8/I32 have typed reference semantics only; accelerated BF16,
+  VNNI, and AMX variants are not implemented.
+- One-node topology discovery is physically validated on Linux and hosted
+  Windows. Multi-node NUMA policy is synthetic-only, with no runtime page
+  placement or migration.
+- Windows OpenBLAS, a clean-machine installer test, GEMV, GEVM, ReLU-GEMM,
+  MLIR lowering, CUDA/cuBLAS, HIP, Metal, NPU placement, fusion, and autotuning
+  are not implemented or claimed.
 
-The standalone native CPU architecture proof and Milestone 4 performance
-foundation remain passed. Milestone 5 is an implementation-complete candidate;
-its final acceptance, publication, and focused Windows compatibility gates are
-still open.
+The standalone native CPU architecture proof, Milestone 4 performance
+foundation, published Linux Milestone 5 backend, and focused hosted Windows
+x64 compiler/runtime/package validation remain passed. Performance evidence
+and unavailable-hardware status remain platform-specific.

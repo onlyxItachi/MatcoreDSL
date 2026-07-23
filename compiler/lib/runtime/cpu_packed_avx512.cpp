@@ -1,4 +1,5 @@
 #include "cpu_packed_avx512.h"
+#include "cpu_capability_v2.h"
 
 #include <algorithm>
 #include <array>
@@ -8,11 +9,6 @@
 
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
-#if defined(_MSC_VER)
-#include <intrin.h>
-#else
-#include <cpuid.h>
-#endif
 #endif
 
 #if (defined(__x86_64__) || defined(_M_X64)) && \
@@ -37,44 +33,6 @@ struct ByteSpan {
   std::uintptr_t begin = 0;
   std::uintptr_t end = 0;
 };
-
-bool avx512_os_state_enabled() noexcept {
-#if MATCORE_MDSLC_PACKED_AVX512_COMPILED
-  constexpr std::uint64_t kRequiredXcr0State =
-      (UINT64_C(1) << 1U) |  // SSE state
-      (UINT64_C(1) << 2U) |  // YMM state
-      (UINT64_C(1) << 5U) |  // AVX-512 opmask state
-      (UINT64_C(1) << 6U) |  // upper 256 bits of ZMM0-15
-      (UINT64_C(1) << 7U);   // ZMM16-31
-#if defined(_MSC_VER)
-  int registers[4]{};
-  __cpuid(registers, 1);
-  if ((static_cast<std::uint32_t>(registers[2]) & (UINT32_C(1) << 27U)) == 0)
-    return false;
-  const std::uint64_t xcr0 = _xgetbv(0);
-#else
-  unsigned int eax = 0;
-  unsigned int ebx = 0;
-  unsigned int ecx = 0;
-  unsigned int edx = 0;
-  if (__get_cpuid(1, &eax, &ebx, &ecx, &edx) == 0 ||
-      (ecx & (UINT32_C(1) << 27U)) == 0) {
-    return false;
-  }
-  unsigned int xcr0_low = 0;
-  unsigned int xcr0_high = 0;
-  __asm__ volatile("xgetbv"
-                   : "=a"(xcr0_low), "=d"(xcr0_high)
-                   : "c"(0));
-  const std::uint64_t xcr0 =
-      static_cast<std::uint64_t>(xcr0_low) |
-      (static_cast<std::uint64_t>(xcr0_high) << 32U);
-#endif
-  return (xcr0 & kRequiredXcr0State) == kRequiredXcr0State;
-#else
-  return false;
-#endif
-}
 
 bool checked_multiply(std::size_t lhs, std::size_t rhs,
                       std::size_t *result) noexcept {
@@ -332,14 +290,22 @@ bool cpu_packed_avx512_build_available_v1() noexcept {
 }
 
 bool cpu_packed_avx512_runtime_usable_v1() noexcept {
-#if MATCORE_MDSLC_PACKED_AVX512_COMPILED && \
-    defined(__has_builtin) && __has_builtin(__builtin_cpu_supports)
-  __builtin_cpu_init();
-  // Capability model v2 remains the authoritative planner gate. This explicit
-  // OSXSAVE/XCR0 check is a second fail-closed guard against a direct backend
-  // call bypassing that planner.
-  return __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("fma") &&
-         avx512_os_state_enabled();
+#if MATCORE_MDSLC_PACKED_AVX512_COMPILED
+  // Capability model v2 performs the CPUID and OSXSAVE/XCR0 checks on both
+  // GNU-style Clang and clang-cl. Reusing it here keeps direct backend calls
+  // fail-closed without relying on compiler-runtime __cpu_model symbols that
+  // are unavailable under the MSVC ABI.
+  const auto capabilities =
+      platform::discover_cpu_capabilities_v2();
+  if (!platform::validate_cpu_capabilities_v2(capabilities)) return false;
+  const auto execution_safe = [&capabilities](platform::CpuFeatureV2 feature) {
+    return platform::feature_available(capabilities.hardware, feature) &&
+           platform::feature_available(capabilities.os_enabled, feature) &&
+           platform::feature_available(capabilities.compiler, feature);
+  };
+  return capabilities.architecture == platform::ArchitectureKindV1::x86_64 &&
+         execution_safe(platform::CpuFeatureV2::avx512f) &&
+         execution_safe(platform::CpuFeatureV2::fma);
 #else
   return false;
 #endif

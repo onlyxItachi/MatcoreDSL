@@ -36,6 +36,12 @@ htmlcov/
 *.so.*
 *.dylib
 *.dll
+*.exe
+*.obj
+*.lib
+*.exp
+*.pdb
+*.ilk
 *.o
 *.a
 *.bin
@@ -43,6 +49,8 @@ htmlcov/
 *.fatbin
 *.ptx
 *.log
+*.rsp
+*.zip
 
 # MDSLC --save-temps output.
 *.host.cpp

@@ -2,6 +2,7 @@ add_library(matcore_platform_v1 STATIC
   platform.cpp
   cpu_capability_v2.cpp
   cpu_topology_v1.cpp
+  windows_cpu_topology_v1.cpp
   thread_affinity_v1.cpp
 )
 add_library(MatcoreDSL::PlatformV1 ALIAS matcore_platform_v1)
@@ -11,6 +12,8 @@ target_include_directories(
   matcore_platform_v1
   PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
 )
+
+mdslc_target_enable_warnings(matcore_platform_v1 WERROR)
 
 if(BUILD_TESTING)
   add_executable(
@@ -26,9 +29,7 @@ if(BUILD_TESTING)
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/platform/cpu_capability_v2_test.cpp"
   )
   target_compile_features(matcore_cpu_capability_v2_test PRIVATE cxx_std_20)
-  target_compile_options(matcore_cpu_capability_v2_test PRIVATE
-    -Wall -Wextra -Wpedantic -Werror
-  )
+  mdslc_target_enable_warnings(matcore_cpu_capability_v2_test WERROR)
   target_link_libraries(matcore_cpu_capability_v2_test
     PRIVATE MatcoreDSL::PlatformV1
   )
@@ -41,9 +42,7 @@ if(BUILD_TESTING)
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/platform/cpu_topology_v1_test.cpp"
   )
   target_compile_features(matcore_cpu_topology_v1_test PRIVATE cxx_std_20)
-  target_compile_options(matcore_cpu_topology_v1_test PRIVATE
-    -Wall -Wextra -Wpedantic -Werror
-  )
+  mdslc_target_enable_warnings(matcore_cpu_topology_v1_test WERROR)
   target_link_libraries(matcore_cpu_topology_v1_test
     PRIVATE MatcoreDSL::PlatformV1
   )
@@ -56,9 +55,7 @@ if(BUILD_TESTING)
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/platform/thread_affinity_v1_test.cpp"
   )
   target_compile_features(matcore_thread_affinity_v1_test PRIVATE cxx_std_20)
-  target_compile_options(matcore_thread_affinity_v1_test PRIVATE
-    -Wall -Wextra -Wpedantic -Werror
-  )
+  mdslc_target_enable_warnings(matcore_thread_affinity_v1_test WERROR)
   target_link_libraries(matcore_thread_affinity_v1_test
     PRIVATE MatcoreDSL::PlatformV1
   )

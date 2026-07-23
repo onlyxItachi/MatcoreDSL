@@ -27,8 +27,9 @@ void expect(bool condition, std::string_view message) {
   }
 }
 
+#if defined(__linux__)
 std::vector<std::uint32_t> parse_cpu_ids(std::string_view diagnostic,
-                                         std::string_view label) {
+                                        std::string_view label) {
   std::vector<std::uint32_t> result;
   const std::size_t begin = diagnostic.find(label);
   if (begin == std::string_view::npos) return result;
@@ -53,6 +54,7 @@ std::vector<std::uint32_t> parse_cpu_ids(std::string_view diagnostic,
   }
   return result;
 }
+#endif
 
 class RecordingRunner final : public bench::GemmRunnerV1 {
  private:

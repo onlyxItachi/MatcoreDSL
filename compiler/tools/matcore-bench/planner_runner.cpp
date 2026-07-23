@@ -262,14 +262,12 @@ platform::CpuImplementationAvailabilityV2 benchmark_implementation_evidence() no
 
 platform::CpuTopologyV1 discover_benchmark_topology(
     platform::ArchitectureKindV1 architecture) {
-#if defined(__linux__)
-  (void)architecture;
-  return platform::discover_linux_cpu_topology_v1();
-#else
-  platform::CpuTopologyV1 result;
-  result.architecture = architecture;
+  auto result = platform::discover_host_cpu_topology_v1();
+  // Preserve the diagnostic architecture on unsupported hosts while leaving
+  // the record incomplete so placement remains fail closed.
+  if (result.architecture == platform::ArchitectureKindV1::unknown)
+    result.architecture = architecture;
   return result;
-#endif
 }
 
 std::string format_cpu_ids(const std::vector<std::uint32_t> &cpu_ids) {

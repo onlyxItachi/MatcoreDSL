@@ -1,30 +1,54 @@
 #include "mdslc_config.h"
+#include "platform_support.h"
 
 #include <algorithm>
-#include <cerrno>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
-#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
 #include <utility>
 #include <vector>
 
 namespace {
 
 namespace fs = std::filesystem;
+namespace support = matcore::mdslc::support;
+
+bool IsWindowsHost();
+
+bool WindowsCompilerOptionEquals(std::string_view argument,
+                                 std::string_view name) noexcept {
+  return support::windows_option_body_v1(argument) == name;
+}
+
+bool WindowsCompilerOptionStartsWith(std::string_view argument,
+                                     std::string_view prefix) noexcept {
+  return support::windows_option_body_v1(argument).starts_with(prefix);
+}
+
+bool CompilerOptionConsumesNextArgument(std::string_view argument) noexcept;
+
+bool UnsafeConsumedCompilerValue(std::string_view value) noexcept {
+  return !support::compiler_consumed_value_is_safe_v1(value);
+}
 
 enum class FrontendMode { Native, AstJsonBootstrap };
+enum class CompilerFlavor { ClangGnu, ClangCl };
+
+struct CompilerToolchain {
+  CompilerFlavor flavor = CompilerFlavor::ClangGnu;
+  fs::path compiler;
+  fs::path archiver;
+  fs::path resource_directory;
+};
 
 struct WrapperArguments {
   bool verbose = false;
@@ -33,6 +57,7 @@ struct WrapperArguments {
   bool frontend_was_explicit = false;
   FrontendMode frontend = FrontendMode::Native;
   std::optional<fs::path> tool_prefix_for_testing;
+  std::optional<std::string> dependency_file;
   std::vector<std::string> compiler_arguments;
 };
 
@@ -53,6 +78,7 @@ struct ToolLayout {
   fs::path include_directory;
   fs::path runtime_directory;
   fs::path runtime_library;
+  fs::path runtime_binary;
 };
 
 struct GeneratedArtifacts {
@@ -68,29 +94,13 @@ struct GeneratedArtifacts {
 };
 
 struct SourceSnapshot {
-  dev_t device = 0;
-  ino_t inode = 0;
-  off_t size = 0;
-  timespec modified{};
-  timespec changed{};
+  support::FileSnapshotV1 metadata;
   std::string contents;
-};
-
-struct PathComponentSnapshot {
-  fs::path path;
-  dev_t device = 0;
-  ino_t inode = 0;
-  mode_t type = 0;
-  off_t size = 0;
-  timespec modified{};
-  timespec changed{};
-  std::string symlink_target;
 };
 
 struct DependencySnapshot {
   fs::path path;
   SourceSnapshot snapshot;
-  std::vector<PathComponentSnapshot> path_identity;
 };
 
 class ScopedDirectoryCleanup {
@@ -114,22 +124,21 @@ private:
 };
 
 fs::path NormalizedPath(const fs::path &path) {
-  std::error_code error;
-  fs::path absolute = fs::absolute(path, error);
-  if (error) {
-    absolute = path;
-  }
-  error.clear();
-  const fs::path normalized = fs::weakly_canonical(absolute, error);
-  return error ? absolute.lexically_normal() : normalized;
+  std::string error;
+  const fs::path normalized = support::normalize_path_v1(path, true, error);
+  return error.empty() ? normalized : path.lexically_normal();
 }
 
 bool PathsReferToSameLocation(const fs::path &left, const fs::path &right) {
-  std::error_code error;
-  if (fs::equivalent(left, right, error) && !error) {
+  std::string error;
+  const bool same =
+      support::paths_refer_to_same_location_v1(left, right, error);
+  if (!error.empty()) {
+    std::cerr << "mdslc++: cannot authenticate prospective path identity: "
+              << error << '\n';
     return true;
   }
-  return NormalizedPath(left) == NormalizedPath(right);
+  return same;
 }
 
 std::string_view FrontendName(FrontendMode frontend) {
@@ -155,190 +164,57 @@ std::optional<FrontendMode> ParseFrontend(std::string_view name) {
   return std::nullopt;
 }
 
-bool SameTimespec(const timespec &left, const timespec &right) {
-  return left.tv_sec == right.tv_sec && left.tv_nsec == right.tv_nsec;
-}
-
-bool SameFileMetadata(const struct stat &left, const struct stat &right) {
-  return left.st_dev == right.st_dev && left.st_ino == right.st_ino &&
-         left.st_size == right.st_size &&
-         SameTimespec(left.st_mtim, right.st_mtim) &&
-         SameTimespec(left.st_ctim, right.st_ctim);
-}
-
-std::optional<std::string> ReadSymlinkTarget(const fs::path &path,
-                                             off_t expected_size,
-                                             std::string &error_message) {
-  std::size_t capacity = expected_size > 0
-                             ? static_cast<std::size_t>(expected_size) + 1
-                             : 256;
-  constexpr std::size_t maximum_capacity = 1024 * 1024;
-  while (capacity <= maximum_capacity) {
-    std::string target(capacity, '\0');
-    const ssize_t count = ::readlink(path.c_str(), target.data(), target.size());
-    if (count < 0) {
-      error_message = "cannot read symlink identity: " +
-                      std::string(std::strerror(errno));
-      return std::nullopt;
-    }
-    if (static_cast<std::size_t>(count) < target.size()) {
-      target.resize(static_cast<std::size_t>(count));
-      return target;
-    }
-    capacity *= 2;
-  }
-  error_message = "symlink target is too large to snapshot safely";
-  return std::nullopt;
-}
-
-std::optional<std::vector<PathComponentSnapshot>>
-ReadPathIdentity(const fs::path &absolute_path, std::string &error_message) {
-  std::vector<PathComponentSnapshot> identity;
-  fs::path current = absolute_path.root_path();
-  for (const fs::path &component : absolute_path.relative_path()) {
-    if (component == ".") {
-      continue;
-    }
-    current /= component;
-    struct stat before {};
-    if (::lstat(current.c_str(), &before) != 0) {
-      error_message = "cannot inspect dependency path identity: " +
-                      std::string(std::strerror(errno));
-      return std::nullopt;
-    }
-    PathComponentSnapshot snapshot{
-        .path = current,
-        .device = before.st_dev,
-        .inode = before.st_ino,
-        .type = static_cast<mode_t>(before.st_mode & S_IFMT),
-        .size = before.st_size,
-        .modified = before.st_mtim,
-        .changed = before.st_ctim,
-        .symlink_target = {}};
-    if (S_ISLNK(before.st_mode)) {
-      std::optional<std::string> target =
-          ReadSymlinkTarget(current, before.st_size, error_message);
-      if (!target) {
-        return std::nullopt;
-      }
-      struct stat after {};
-      if (::lstat(current.c_str(), &after) != 0 ||
-          !SameFileMetadata(before, after)) {
-        error_message = "dependency symlink changed while it was being read";
-        return std::nullopt;
-      }
-      snapshot.symlink_target = std::move(*target);
-    }
-    identity.emplace_back(std::move(snapshot));
-  }
-  return identity;
-}
-
-bool PathIdentityMatches(const std::vector<PathComponentSnapshot> &expected,
-                         std::string &error_message) {
-  for (const PathComponentSnapshot &component : expected) {
-    struct stat current {};
-    if (::lstat(component.path.c_str(), &current) != 0) {
-      error_message = "cannot inspect dependency path identity: " +
-                      std::string(std::strerror(errno));
-      return false;
-    }
-    if (current.st_dev != component.device ||
-        current.st_ino != component.inode ||
-        (current.st_mode & S_IFMT) != component.type) {
-      error_message = "dependency path identity changed";
-      return false;
-    }
-    if (S_ISLNK(current.st_mode)) {
-      if (current.st_size != component.size ||
-          !SameTimespec(current.st_mtim, component.modified) ||
-          !SameTimespec(current.st_ctim, component.changed)) {
-        error_message = "dependency symlink identity changed";
-        return false;
-      }
-      std::optional<std::string> target =
-          ReadSymlinkTarget(component.path, current.st_size, error_message);
-      if (!target || *target != component.symlink_target) {
-        if (target) {
-          error_message = "dependency symlink target changed";
-        }
-        return false;
-      }
-    }
-  }
-  return true;
+bool SameFileSnapshot(const support::FileSnapshotV1 &left,
+                      const support::FileSnapshotV1 &right) {
+  return left.version == right.version && left.exists == right.exists &&
+         left.regular_file == right.regular_file &&
+         left.size_bytes == right.size_bytes &&
+         left.last_write_time_ticks == right.last_write_time_ticks &&
+         left.normalized_path == right.normalized_path &&
+         support::same_file_identity_v1(left.identity, right.identity) &&
+         left.path_identity_chain == right.path_identity_chain;
 }
 
 std::optional<SourceSnapshot> ReadSourceSnapshot(const fs::path &source,
                                                  std::string &error_message) {
-  const int descriptor = ::open(source.c_str(), O_RDONLY | O_CLOEXEC);
-  if (descriptor < 0) {
-    error_message = "cannot open source: " + std::string(std::strerror(errno));
+  const support::FileSnapshotV1 before =
+      support::capture_file_snapshot_v1(source, error_message);
+  if (!error_message.empty()) {
     return std::nullopt;
   }
-
-  struct stat before {};
-  if (::fstat(descriptor, &before) != 0) {
-    error_message = "cannot inspect source: " +
-                    std::string(std::strerror(errno));
-    ::close(descriptor);
-    return std::nullopt;
-  }
-  if (!S_ISREG(before.st_mode)) {
+  if (!before.exists || !before.regular_file || !before.identity) {
     error_message = "source is not a regular file";
-    ::close(descriptor);
     return std::nullopt;
   }
 
-  std::string contents;
-  if (before.st_size > 0) {
-    if (static_cast<std::uintmax_t>(before.st_size) > contents.max_size()) {
-      error_message = "source is too large to snapshot safely";
-      ::close(descriptor);
-      return std::nullopt;
-    }
-    contents.reserve(static_cast<std::size_t>(before.st_size));
-  }
-  char buffer[16384];
-  for (;;) {
-    const ssize_t count = ::read(descriptor, buffer, sizeof(buffer));
-    if (count > 0) {
-      contents.append(buffer, static_cast<std::size_t>(count));
-      continue;
-    }
-    if (count == 0) {
-      break;
-    }
-    if (errno == EINTR) {
-      continue;
-    }
-    error_message = "cannot read source: " + std::string(std::strerror(errno));
-    ::close(descriptor);
+  std::ifstream input(before.normalized_path, std::ios::binary);
+  if (!input) {
+    error_message = "cannot open source";
     return std::nullopt;
   }
-
-  struct stat after_descriptor {};
-  const bool descriptor_stat_ok = ::fstat(descriptor, &after_descriptor) == 0;
-  const int close_result = ::close(descriptor);
-  struct stat after_path {};
-  const bool path_stat_ok = ::stat(source.c_str(), &after_path) == 0;
-  if (!descriptor_stat_ok || close_result != 0 || !path_stat_ok) {
-    error_message = "cannot verify source after reading: " +
-                    std::string(std::strerror(errno));
+  std::string contents((std::istreambuf_iterator<char>(input)),
+                       std::istreambuf_iterator<char>());
+  if (!input.eof() && input.fail()) {
+    error_message = "cannot read source";
     return std::nullopt;
   }
-  if (!SameFileMetadata(before, after_descriptor) ||
-      !SameFileMetadata(after_descriptor, after_path) ||
-      static_cast<off_t>(contents.size()) != after_descriptor.st_size) {
+  if (static_cast<std::uint64_t>(contents.size()) != before.size_bytes) {
+    error_message = "source size changed while it was being read";
+    return std::nullopt;
+  }
+  std::string after_error;
+  const support::FileSnapshotV1 after =
+      support::capture_file_snapshot_v1(source, after_error);
+  if (!after_error.empty()) {
+    error_message = "cannot verify source after reading: " + after_error;
+    return std::nullopt;
+  }
+  if (!SameFileSnapshot(before, after)) {
     error_message = "source changed while it was being read";
     return std::nullopt;
   }
 
-  return SourceSnapshot{.device = after_descriptor.st_dev,
-                        .inode = after_descriptor.st_ino,
-                        .size = after_descriptor.st_size,
-                        .modified = after_descriptor.st_mtim,
-                        .changed = after_descriptor.st_ctim,
+  return SourceSnapshot{.metadata = after,
                         .contents = std::move(contents)};
 }
 
@@ -353,10 +229,7 @@ bool SourceMatchesSnapshot(const fs::path &source,
               << ": " << source << ": " << error_message << '\n';
     return false;
   }
-  if (current->device != expected.device || current->inode != expected.inode ||
-      current->size != expected.size ||
-      !SameTimespec(current->modified, expected.modified) ||
-      !SameTimespec(current->changed, expected.changed) ||
+  if (!SameFileSnapshot(current->metadata, expected.metadata) ||
       current->contents != expected.contents) {
     std::cerr << "mdslc++: source changed during compilation after " << phase
               << ": " << source
@@ -411,9 +284,19 @@ ReadMakeDependencyPaths(const fs::path &dependency_file,
 
   std::vector<fs::path> paths;
   std::string token;
+  bool token_failed = false;
   const auto finish_token = [&]() {
     if (!token.empty()) {
-      paths.emplace_back(std::move(token));
+      std::string conversion_error;
+      std::optional<fs::path> path =
+          support::path_from_utf8_v1(token, conversion_error);
+      if (!path) {
+        error_message = "dependency path is not valid UTF-8: " +
+                        conversion_error;
+        token_failed = true;
+      } else {
+        paths.emplace_back(std::move(*path));
+      }
       token.clear();
     }
   };
@@ -450,11 +333,13 @@ ReadMakeDependencyPaths(const fs::path &dependency_file,
     }
     if (character == '\n' || character == '\r' || character == '#') {
       finish_token();
+      if (token_failed) return std::nullopt;
       break;
     }
     token += character;
   }
   finish_token();
+  if (token_failed) return std::nullopt;
   if (paths.empty()) {
     error_message = "dependency scan output contains no input files";
     return std::nullopt;
@@ -487,14 +372,6 @@ CaptureDependencyPaths(const std::vector<fs::path> &dependencies,
         captured_paths.end()) {
       continue;
     }
-    std::string identity_error;
-    std::optional<std::vector<PathComponentSnapshot>> path_identity =
-        ReadPathIdentity(absolute, identity_error);
-    if (!path_identity) {
-      error_message = "cannot snapshot dependency path " + absolute.string() +
-                      ": " + identity_error;
-      return std::nullopt;
-    }
     std::string snapshot_error;
     std::optional<SourceSnapshot> snapshot =
         ReadSourceSnapshot(absolute, snapshot_error);
@@ -504,8 +381,7 @@ CaptureDependencyPaths(const std::vector<fs::path> &dependencies,
       return std::nullopt;
     }
     captured_paths.emplace_back(absolute);
-    closure.push_back(DependencySnapshot{absolute, std::move(*snapshot),
-                                         std::move(*path_identity)});
+    closure.push_back(DependencySnapshot{absolute, std::move(*snapshot)});
   }
   return closure;
 }
@@ -639,14 +515,6 @@ bool DependencyClosureMatches(
     const std::vector<DependencySnapshot> &expected,
     std::string_view phase) {
   for (const DependencySnapshot &dependency : expected) {
-    std::string identity_error;
-    if (!PathIdentityMatches(dependency.path_identity, identity_error)) {
-      std::cerr << "mdslc++: dependency changed during compilation after "
-                << phase << ": " << dependency.path << ": "
-                << identity_error
-                << "; refusing to emit an object from stale generated code\n";
-      return false;
-    }
     std::string error_message;
     const std::optional<SourceSnapshot> current =
         ReadSourceSnapshot(dependency.path, error_message);
@@ -657,14 +525,12 @@ bool DependencyClosureMatches(
       return false;
     }
     const SourceSnapshot &snapshot = dependency.snapshot;
-    if (current->device != snapshot.device ||
-        current->inode != snapshot.inode || current->size != snapshot.size ||
-        !SameTimespec(current->modified, snapshot.modified) ||
-        !SameTimespec(current->changed, snapshot.changed) ||
+    if (!SameFileSnapshot(current->metadata, snapshot.metadata) ||
         current->contents != snapshot.contents) {
       std::cerr << "mdslc++: dependency changed during compilation after "
                 << phase << ": " << dependency.path
-                << "; refusing to emit an object from stale generated code\n";
+                << "; content or path identity changed; refusing to emit an "
+                   "object from stale generated code\n";
       return false;
     }
   }
@@ -677,6 +543,24 @@ bool CompilationInputsMatch(
     std::string_view phase) {
   return SourceMatchesSnapshot(source, source_snapshot, phase) &&
          DependencyClosureMatches(dependencies, phase);
+}
+
+bool RequireMutationPathsDisjointFromDependencies(
+    const std::vector<DependencySnapshot> &dependencies,
+    const std::vector<std::pair<std::string_view, const fs::path *>>
+        &mutation_paths) {
+  for (const auto &[role, mutation_path] : mutation_paths) {
+    for (const DependencySnapshot &dependency : dependencies) {
+      if (PathsReferToSameLocation(*mutation_path, dependency.path)) {
+        std::cerr << "mdslc++: " << role
+                  << " must not overwrite or alias an authenticated input "
+                     "dependency: "
+                  << dependency.path << '\n';
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 bool HasMdslExtension(std::string_view argument) {
@@ -699,7 +583,13 @@ bool OptionConsumesNextArgument(std::string_view argument) {
          argument == "-MF" || argument == "-MT" || argument == "-MQ" ||
          argument == "-Xclang" || argument == "-Xlinker" ||
          argument == "-Xassembler" || argument == "-Xpreprocessor" ||
-         argument == "-mllvm";
+         argument == "-mllvm" || argument == "/I" || argument == "/D" ||
+         argument == "/U" || argument == "/Fo" || argument == "/Fe";
+}
+
+bool CompilerOptionConsumesNextArgument(std::string_view argument) noexcept {
+  return IsWindowsHost() ? support::clang_cl_option_consumes_next_v1(argument)
+                         : OptionConsumesNextArgument(argument);
 }
 
 bool IsCompileAndLinkOptionWithValue(std::string_view argument) {
@@ -746,7 +636,9 @@ bool IsExtractionIncompatibleArgument(std::string_view argument) {
          argument.starts_with("-include-pth") ||
          argument.starts_with("-fmodule-file") ||
          argument.starts_with("-fprebuilt-module-path") ||
-         argument.starts_with("-fplugin=");
+         argument.starts_with("-fplugin=") ||
+         argument == "-resource-dir" ||
+         argument.starts_with("-resource-dir=");
 }
 
 bool IsUnsupportedFinalLinkMode(std::string_view argument) {
@@ -774,6 +666,10 @@ bool IsAttachedLinkOption(std::string_view argument) {
 }
 
 std::string QuoteForDisplay(std::string_view argument) {
+  if (support::process_launch_backend_v1() ==
+      support::ProcessLaunchBackendV1::windows_create_process_w) {
+    return support::quote_windows_command_line_argument_v1(argument);
+  }
   std::string quoted{"'"};
   for (char character : argument) {
     if (character == '\'') {
@@ -786,7 +682,9 @@ std::string QuoteForDisplay(std::string_view argument) {
   return quoted;
 }
 
-int RunCommand(std::vector<std::string> command, bool verbose) {
+int RunCommand(
+    std::vector<std::string> command, bool verbose,
+    std::vector<support::EnvironmentOverrideV1> environment = {}) {
   if (command.empty() || command.front().empty()) {
     std::cerr << "mdslc++: refusing to execute an empty command\n";
     return 1;
@@ -800,57 +698,310 @@ int RunCommand(std::vector<std::string> command, bool verbose) {
     std::cerr.flush();
   }
 
-  std::vector<char *> arguments;
-  arguments.reserve(command.size() + 1);
-  for (std::string &argument : command) {
-    arguments.push_back(argument.data());
-  }
-  arguments.push_back(nullptr);
-
-  const pid_t child = fork();
-  if (child < 0) {
-    std::cerr << "mdslc++: failed to start " << command.front() << ": "
-              << std::strerror(errno) << '\n';
+  support::ProcessRequestV1 request;
+  request.argv = std::move(command);
+  request.environment = std::move(environment);
+  request.capture_stdout = false;
+  request.capture_stderr = false;
+  const support::ProcessResultV1 result = support::run_process_v1(request);
+  if (!result.launched) {
+    std::cerr << "mdslc++: failed to start " << request.argv.front() << ": "
+              << result.error << '\n';
     return 1;
   }
-
-  if (child == 0) {
-    execv(arguments.front(), arguments.data());
-    std::cerr << "mdslc++: failed to execute " << command.front() << ": "
-              << std::strerror(errno) << '\n';
-    _exit(127);
+  if (!result.error.empty()) {
+    std::cerr << "mdslc++: process execution failed: " << result.error << '\n';
+    return 1;
   }
+  return static_cast<int>(result.exit_code);
+}
 
-  int status = 0;
-  while (waitpid(child, &status, 0) < 0) {
-    if (errno == EINTR) {
-      continue;
+std::vector<support::EnvironmentOverrideV1> CompilerChildEnvironment(
+    std::vector<support::EnvironmentOverrideV1> additions = {}) {
+  std::vector<support::EnvironmentOverrideV1> sanitized =
+      support::compiler_environment_sanitization_v1();
+  additions.insert(additions.end(),
+                   std::make_move_iterator(sanitized.begin()),
+                   std::make_move_iterator(sanitized.end()));
+  return additions;
+}
+
+std::optional<support::ProcessResultV1>
+RunCapturedCommand(
+    std::vector<std::string> command, bool verbose,
+    std::vector<support::EnvironmentOverrideV1> environment = {}) {
+  if (command.empty() || command.front().empty()) {
+    std::cerr << "mdslc++: refusing to execute an empty command\n";
+    return std::nullopt;
+  }
+  if (verbose) {
+    std::cerr << "mdslc++:";
+    for (const std::string &argument : command) {
+      std::cerr << ' ' << QuoteForDisplay(argument);
     }
-    std::cerr << "mdslc++: failed while waiting for " << command.front()
-              << ": " << std::strerror(errno) << '\n';
+    std::cerr << '\n';
+  }
+  support::ProcessRequestV1 request;
+  request.argv = std::move(command);
+  request.environment = std::move(environment);
+  const support::ProcessResultV1 result = support::run_process_v1(request);
+  if (!result.launched || !result.error.empty()) {
+    std::cerr << "mdslc++: failed to execute " << request.argv.front() << ": "
+              << result.error << '\n';
+    return std::nullopt;
+  }
+  return result;
+}
+
+std::string PathArgument(const fs::path &path) {
+  std::string error;
+  const std::optional<std::string> encoded =
+      support::path_to_utf8_v1(path, error);
+  if (!encoded) {
+    std::cerr << "mdslc++: cannot represent path as UTF-8: " << error << '\n';
+    return {};
+  }
+  return *encoded;
+}
+
+std::optional<fs::path> PathFromArgument(std::string_view value,
+                                         std::string_view role) {
+  std::string error;
+  std::optional<fs::path> path = support::path_from_utf8_v1(value, error);
+  if (!path) {
+    std::cerr << "mdslc++: invalid UTF-8 " << role << " path: " << error
+              << '\n';
+  }
+  return path;
+}
+
+bool IsWindowsHost() {
+  return support::process_launch_backend_v1() ==
+         support::ProcessLaunchBackendV1::windows_create_process_w;
+}
+
+std::optional<CompilerToolchain> DiscoverCompilerToolchain(
+    bool require_archiver) {
+  std::string error;
+  std::optional<fs::path> compiler;
+  CompilerFlavor flavor = CompilerFlavor::ClangGnu;
+  if (IsWindowsHost()) {
+    flavor = CompilerFlavor::ClangCl;
+    compiler = support::find_executable_v1("clang-cl.exe", error);
+  } else {
+    // Preserve the configured clang++ spelling for invocation. Resolving its
+    // symlink to `clang` would change C++ standard-library link behavior.
+    const std::optional<fs::path> resolved =
+        support::find_executable_v1(MDSLC_DEFAULT_CLANGXX, error);
+    if (resolved) compiler = fs::path(MDSLC_DEFAULT_CLANGXX);
+  }
+  if (!compiler) {
+    std::cerr << "mdslc++: cannot locate the configured Clang driver: "
+              << error << '\n';
+    return std::nullopt;
+  }
+  std::vector<std::string> version_command{PathArgument(*compiler)};
+  if (flavor == CompilerFlavor::ClangCl) {
+    version_command.emplace_back("--no-default-config");
+  }
+  version_command.emplace_back("--version");
+  const std::optional<support::ProcessResultV1> version = RunCapturedCommand(
+      std::move(version_command), false, CompilerChildEnvironment());
+  if (!version || version->exit_code != 0 ||
+      (version->stdout_text + version->stderr_text)
+              .find("clang version 21.1.8") == std::string::npos) {
+    std::cerr << "mdslc++: compiler must be the coherent Clang 21.1.8 "
+                 "driver: "
+              << *compiler << '\n';
+    return std::nullopt;
+  }
+
+  std::vector<std::string> resource_command{PathArgument(*compiler)};
+  if (flavor == CompilerFlavor::ClangCl) {
+    resource_command.emplace_back("--no-default-config");
+  }
+  resource_command.emplace_back("-print-resource-dir");
+  const std::optional<support::ProcessResultV1> resource_result =
+      RunCapturedCommand(std::move(resource_command), false,
+                         CompilerChildEnvironment());
+  if (!resource_result || resource_result->exit_code != 0) {
+    std::cerr << "mdslc++: cannot query the coherent Clang 21.1.8 resource "
+                 "directory\n";
+    return std::nullopt;
+  }
+  std::string resource_text = resource_result->stdout_text;
+  while (!resource_text.empty() &&
+         (resource_text.back() == '\r' || resource_text.back() == '\n' ||
+          resource_text.back() == ' ' || resource_text.back() == '\t')) {
+    resource_text.pop_back();
+  }
+  std::string resource_error;
+  const std::optional<fs::path> resource_input =
+      support::path_from_utf8_v1(resource_text, resource_error);
+  if (!resource_input) {
+    std::cerr << "mdslc++: Clang returned an invalid UTF-8 resource path: "
+              << resource_error << '\n';
+    return std::nullopt;
+  }
+  const fs::path resource_directory =
+      support::normalize_path_v1(*resource_input, true, resource_error);
+  if (!resource_error.empty() ||
+      !fs::is_regular_file(resource_directory / "include" / "stddef.h")) {
+    std::cerr << "mdslc++: coherent Clang resource headers are unavailable at "
+              << resource_directory << '\n';
+    return std::nullopt;
+  }
+  const fs::path compiler_prefix =
+      NormalizedPath(compiler->parent_path().parent_path());
+  std::error_code relative_error;
+  const fs::path relative_resource =
+      fs::relative(resource_directory, compiler_prefix, relative_error);
+  if (relative_error || relative_resource.empty() ||
+      relative_resource.is_absolute() ||
+      *relative_resource.begin() == "..") {
+    std::cerr << "mdslc++: Clang resource directory is outside the selected "
+                 "21.1.8 toolchain prefix: "
+              << resource_directory << '\n';
+    return std::nullopt;
+  }
+
+  fs::path archiver;
+  if (require_archiver) {
+    const fs::path adjacent_archiver = compiler->parent_path() / "llvm-lib.exe";
+    const std::optional<fs::path> discovered = support::find_executable_v1(
+        PathArgument(adjacent_archiver), error);
+    if (!discovered) {
+      std::cerr << "mdslc++: Windows compile-only output requires llvm-lib "
+                   "from the same LLVM 21.1.8 tool directory as clang-cl: "
+                << error << '\n';
+      return std::nullopt;
+    }
+    // llvm-lib intentionally has no --version interface.  Same-directory
+    // discovery authenticates it against the already version-checked
+    // clang-cl distribution.  When llvm-config is shipped, require its exact
+    // version as an additional coherence check.
+    const fs::path adjacent_config = compiler->parent_path() / "llvm-config.exe";
+    std::string config_error;
+    if (const std::optional<fs::path> config = support::find_executable_v1(
+            PathArgument(adjacent_config), config_error)) {
+      const std::optional<support::ProcessResultV1> archive_version =
+          RunCapturedCommand({PathArgument(*config), "--version"}, false,
+                             CompilerChildEnvironment());
+      if (!archive_version || archive_version->exit_code != 0 ||
+          archive_version->stdout_text.find("21.1.8") == std::string::npos) {
+        std::cerr << "mdslc++: llvm-lib tool directory does not match LLVM "
+                     "21.1.8\n";
+        return std::nullopt;
+      }
+    }
+    archiver = *discovered;
+  }
+  return CompilerToolchain{flavor, *compiler, archiver,
+                           resource_directory};
+}
+
+int RunCompilerCommand(std::vector<std::string> command, bool verbose) {
+  if (!IsWindowsHost()) {
+    return RunCommand(std::move(command), verbose,
+                      CompilerChildEnvironment());
+  }
+  if (command.empty()) {
+    return RunCommand(std::move(command), verbose,
+                      CompilerChildEnvironment());
+  }
+
+  if (verbose) {
+    std::cerr << "mdslc++:";
+    for (const std::string &argument : command) {
+      std::cerr << ' ' << QuoteForDisplay(argument);
+    }
+    std::cerr << '\n';
+  }
+  std::string error;
+  std::optional<support::TempDirectoryV1> temporary =
+      support::create_temp_directory_v1("mdslc-response", error);
+  if (!temporary) {
+    std::cerr << "mdslc++: cannot create response-file directory: " << error
+              << '\n';
     return 1;
   }
-
-  if (WIFEXITED(status)) {
-    return WEXITSTATUS(status);
+  const fs::path response = temporary->path() / "arguments.rsp";
+  const std::vector<std::string> arguments(command.begin() + 1, command.end());
+  if (!support::write_response_file_utf8_v1(
+          response, arguments, support::ResponseFileSyntaxV1::windows,
+          error)) {
+    std::cerr << "mdslc++: cannot write compiler response file: " << error
+              << '\n';
+    return 1;
   }
-  if (WIFSIGNALED(status)) {
-    return 128 + WTERMSIG(status);
-  }
+  return RunCommand({command.front(), "@" + PathArgument(response)}, false,
+                    CompilerChildEnvironment());
+}
 
-  std::cerr << "mdslc++: child process terminated with an unknown status\n";
-  return 1;
+std::optional<support::ProcessResultV1>
+RunCompilerCommandCaptured(
+    std::vector<std::string> command, bool verbose,
+    std::vector<support::EnvironmentOverrideV1> environment = {}) {
+  if (!IsWindowsHost()) {
+    return RunCapturedCommand(std::move(command), verbose,
+                              CompilerChildEnvironment(
+                                  std::move(environment)));
+  }
+  if (command.empty()) return std::nullopt;
+  if (verbose) {
+    std::cerr << "mdslc++:";
+    for (const std::string &argument : command) {
+      std::cerr << ' ' << QuoteForDisplay(argument);
+    }
+    std::cerr << '\n';
+  }
+  std::string error;
+  std::optional<support::TempDirectoryV1> temporary =
+      support::create_temp_directory_v1("mdslc-response", error);
+  if (!temporary) {
+    std::cerr << "mdslc++: cannot create response-file directory: " << error
+              << '\n';
+    return std::nullopt;
+  }
+  const fs::path response = temporary->path() / "arguments.rsp";
+  const std::vector<std::string> arguments(command.begin() + 1, command.end());
+  if (!support::write_response_file_utf8_v1(
+          response, arguments, support::ResponseFileSyntaxV1::windows,
+          error)) {
+    std::cerr << "mdslc++: cannot write compiler response file: " << error
+              << '\n';
+    return std::nullopt;
+  }
+  return RunCapturedCommand(
+      {command.front(), "@" + PathArgument(response)}, false,
+      CompilerChildEnvironment(std::move(environment)));
 }
 
 std::optional<WrapperArguments> ParseWrapperArguments(int argc, char **argv) {
   WrapperArguments parsed;
   bool after_option_terminator = false;
+  bool after_windows_link = false;
   bool previous_option_consumes_argument = false;
 
   for (int index = 1; index < argc; ++index) {
     const std::string_view argument = argv[index];
+    if (IsWindowsHost() && argument.starts_with('@')) {
+      std::cerr << "mdslc++: user response files are forbidden; pass explicit "
+                   "compiler arguments so the driver can validate them\n";
+      return std::nullopt;
+    }
+    if (after_windows_link) {
+      parsed.compiler_arguments.emplace_back(argument);
+      continue;
+    }
     if (after_option_terminator) {
       parsed.compiler_arguments.emplace_back(argument);
+      continue;
+    }
+    if (IsWindowsHost() && !previous_option_consumes_argument &&
+        support::windows_option_equals_v1(argument, "link")) {
+      parsed.compiler_arguments.emplace_back(argument);
+      after_windows_link = true;
       continue;
     }
     if (!previous_option_consumes_argument && argument == "--") {
@@ -865,6 +1016,29 @@ std::optional<WrapperArguments> ParseWrapperArguments(int argc, char **argv) {
     if (!previous_option_consumes_argument && argument == "--save-temps") {
       parsed.save_temps = true;
       continue;
+    }
+    if (IsWindowsHost() && !previous_option_consumes_argument &&
+        (WindowsCompilerOptionEquals(argument, "TC") ||
+         (support::windows_option_body_v1(argument).size() > 2 &&
+          (WindowsCompilerOptionStartsWith(argument, "Tc") ||
+           WindowsCompilerOptionStartsWith(argument, "Tp"))))) {
+      std::cerr << "mdslc++: .mdsl inputs are valid C++ and cannot be compiled "
+                   "with clang-cl C-language mode "
+                << argument << '\n';
+      return std::nullopt;
+    }
+    if (IsWindowsHost() && !previous_option_consumes_argument &&
+        support::windows_option_starts_with_v1(argument, "clang:")) {
+      std::cerr << "mdslc++: opaque /clang: forwarding is forbidden; use an "
+                   "audited driver option directly\n";
+      return std::nullopt;
+    }
+    if (IsWindowsHost() && !previous_option_consumes_argument &&
+        (argument == "--driver-mode" ||
+         argument.starts_with("--driver-mode="))) {
+      std::cerr << "mdslc++: compiler driver mode is fixed to clang-cl and "
+                   "cannot be overridden\n";
+      return std::nullopt;
     }
     if (!previous_option_consumes_argument &&
         argument.starts_with("--frontend=")) {
@@ -895,14 +1069,16 @@ std::optional<WrapperArguments> ParseWrapperArguments(int argc, char **argv) {
                      "once\n";
         return std::nullopt;
       }
-      const fs::path prefix(argument.substr(
-          std::string_view("--tool-prefix-for-testing=").size()));
-      if (prefix.empty() || !prefix.is_absolute()) {
+      const std::optional<fs::path> prefix = PathFromArgument(
+          argument.substr(
+              std::string_view("--tool-prefix-for-testing=").size()),
+          "tool-prefix");
+      if (!prefix || prefix->empty() || !prefix->is_absolute()) {
         std::cerr << "mdslc++: --tool-prefix-for-testing requires an absolute "
                      "test fixture prefix\n";
         return std::nullopt;
       }
-      parsed.tool_prefix_for_testing = prefix;
+      parsed.tool_prefix_for_testing = *prefix;
       continue;
 #else
       std::cerr << "mdslc++: --tool-prefix-for-testing is unavailable in this "
@@ -938,12 +1114,34 @@ std::optional<WrapperArguments> ParseWrapperArguments(int argc, char **argv) {
       std::cerr << "mdslc++: use --matcore-target=cpu\n";
       return std::nullopt;
     }
+    if (!previous_option_consumes_argument &&
+        argument.starts_with("--matcore-depfile=")) {
+      if (parsed.dependency_file) {
+        std::cerr << "mdslc++: --matcore-depfile may be specified only once\n";
+        return std::nullopt;
+      }
+      const std::string_view value =
+          argument.substr(std::string_view("--matcore-depfile=").size());
+      if (value.empty() || value == "-" || UnsafeConsumedCompilerValue(value)) {
+        std::cerr << "mdslc++: --matcore-depfile requires a non-response file "
+                     "path\n";
+        return std::nullopt;
+      }
+      parsed.dependency_file = std::string(value);
+      continue;
+    }
+    if (!previous_option_consumes_argument &&
+        argument == "--matcore-depfile") {
+      std::cerr << "mdslc++: use --matcore-depfile=<path>\n";
+      return std::nullopt;
+    }
 
     parsed.compiler_arguments.emplace_back(argument);
     if (previous_option_consumes_argument) {
       previous_option_consumes_argument = false;
     } else {
-      previous_option_consumes_argument = OptionConsumesNextArgument(argument);
+      previous_option_consumes_argument =
+          CompilerOptionConsumesNextArgument(argument);
     }
   }
 
@@ -961,11 +1159,32 @@ std::optional<WrapperArguments> ParseWrapperArguments(int argc, char **argv) {
                  "--matcore-target=cpu\n";
     return std::nullopt;
   }
+  if (!parsed.cpu_pipeline && parsed.dependency_file) {
+    std::cerr << "mdslc++: --matcore-depfile requires --matcore-target=cpu\n";
+    return std::nullopt;
+  }
   return parsed;
 }
 
-std::vector<std::string> BuildDirectCommand(const WrapperArguments &arguments) {
-  std::vector<std::string> command{MDSLC_DEFAULT_CLANGXX};
+std::vector<std::string> BuildDirectCommand(
+    const WrapperArguments &arguments, const CompilerToolchain &toolchain) {
+  std::vector<std::string> command{PathArgument(toolchain.compiler)};
+  if (toolchain.flavor == CompilerFlavor::ClangCl) {
+    command.emplace_back("--driver-mode=cl");
+    command.emplace_back("--no-default-config");
+    if (arguments.save_temps) {
+      command.emplace_back("/clang:-save-temps=obj");
+    }
+    const bool has_cpp_mode =
+        std::any_of(arguments.compiler_arguments.begin(),
+                    arguments.compiler_arguments.end(), [](const auto &arg) {
+                      return WindowsCompilerOptionEquals(arg, "TP");
+                    });
+    if (!has_cpp_mode) command.emplace_back("/TP");
+    command.insert(command.end(), arguments.compiler_arguments.begin(),
+                   arguments.compiler_arguments.end());
+    return command;
+  }
   if (arguments.save_temps) {
     command.emplace_back("-save-temps=obj");
   }
@@ -1028,6 +1247,187 @@ std::vector<std::string> BuildDirectCommand(const WrapperArguments &arguments) {
   return command;
 }
 
+bool RecordMdslInput(CpuInvocation &invocation, std::string_view input);
+
+std::optional<CpuInvocation>
+ParseClangClCpuInvocation(const WrapperArguments &arguments) {
+  CpuInvocation invocation;
+  if (arguments.dependency_file) {
+    invocation.dependency_mode = "-MD";
+    invocation.dependency_file = *arguments.dependency_file;
+  }
+  for (std::size_t index = 0; index < arguments.compiler_arguments.size();
+       ++index) {
+    const std::string &argument = arguments.compiler_arguments[index];
+    if (support::windows_option_equals_v1(argument, "link")) {
+      if (invocation.compile_only) {
+        std::cerr << "mdslc++: /link arguments are invalid with /c\n";
+      } else {
+        std::cerr << "mdslc++: user /link arguments are not supported by the "
+                     "validated CPU pipeline; compile with /c and perform "
+                     "the final link explicitly\n";
+      }
+      return std::nullopt;
+    }
+    if (WindowsCompilerOptionEquals(argument, "c")) {
+      invocation.compile_only = true;
+      continue;
+    }
+    const auto set_output = [&](std::string value) {
+      if (!invocation.output.empty()) {
+        std::cerr << "mdslc++: CPU pipeline accepts one output option\n";
+        return false;
+      }
+      invocation.output = std::move(value);
+      return true;
+    };
+    if (WindowsCompilerOptionEquals(argument, "Fo") ||
+        WindowsCompilerOptionEquals(argument, "Fe") ||
+        argument == "-o") {
+      if (++index == arguments.compiler_arguments.size()) {
+        std::cerr << "mdslc++: " << argument << " requires an output path\n";
+        return std::nullopt;
+      }
+      if (!set_output(arguments.compiler_arguments[index])) {
+        return std::nullopt;
+      }
+      continue;
+    }
+    const bool conventional_dash_output =
+        argument.size() > 3 && argument.front() == '-' &&
+        argument[1] == 'F';
+    if (((argument.front() == '/' &&
+          (WindowsCompilerOptionStartsWith(argument, "Fo") ||
+           WindowsCompilerOptionStartsWith(argument, "Fe"))) ||
+         (conventional_dash_output &&
+          (WindowsCompilerOptionStartsWith(argument, "Fo") ||
+           WindowsCompilerOptionStartsWith(argument, "Fe")))) &&
+        support::windows_option_body_v1(argument).size() > 2) {
+      std::string value = argument.substr(3);
+      if (value.starts_with(':')) value.erase(value.begin());
+      if (value.empty()) {
+        std::cerr << "mdslc++: " << argument.substr(0, 3)
+                  << " requires an output path\n";
+        return std::nullopt;
+      }
+      if (!set_output(std::move(value))) return std::nullopt;
+      continue;
+    }
+    if (WindowsCompilerOptionEquals(argument, "TP") ||
+        argument == "--driver-mode=cl")
+      continue;
+    if (WindowsCompilerOptionEquals(argument, "TC") ||
+        WindowsCompilerOptionStartsWith(argument, "Tc") ||
+        WindowsCompilerOptionStartsWith(argument, "Tp")) {
+      std::cerr << "mdslc++: .mdsl inputs require clang-cl C++ mode; "
+                << argument << " is forbidden\n";
+      return std::nullopt;
+    }
+    if (WindowsCompilerOptionEquals(argument, "LD") ||
+        WindowsCompilerOptionEquals(argument, "LDd") ||
+        argument.starts_with('@') ||
+        WindowsCompilerOptionEquals(argument, "E") ||
+        WindowsCompilerOptionEquals(argument, "P") ||
+        WindowsCompilerOptionEquals(argument, "EP") ||
+        WindowsCompilerOptionStartsWith(argument, "sourceDependencies")) {
+      std::cerr << "mdslc++: compiler argument is incompatible with the CPU "
+                   "extraction pipeline: "
+                << argument << '\n';
+      return std::nullopt;
+    }
+    if (support::clang_cl_option_consumes_next_v1(argument)) {
+      if (++index == arguments.compiler_arguments.size()) {
+        std::cerr << "mdslc++: clang-cl option requires a value: " << argument
+                  << '\n';
+        return std::nullopt;
+      }
+      if (UnsafeConsumedCompilerValue(arguments.compiler_arguments[index])) {
+        std::cerr << "mdslc++: nested response-file expansion is forbidden "
+                     "in the value for "
+                  << argument << '\n';
+        return std::nullopt;
+      }
+      invocation.compile_arguments.push_back(argument);
+      invocation.compile_arguments.push_back(arguments.compiler_arguments[index]);
+      if (support::clang_cl_option_is_link_context_v1(argument)) {
+        invocation.link_context_arguments.push_back(argument);
+        invocation.link_context_arguments.push_back(
+            arguments.compiler_arguments[index]);
+      }
+      continue;
+    }
+    const auto compiler_argument_risk =
+        support::classify_untrusted_compiler_argument_v1(argument, true);
+    if (compiler_argument_risk != support::CompilerArgumentRiskV1::none) {
+      std::cerr << "mdslc++: "
+                << support::compiler_argument_risk_message_v1(
+                       compiler_argument_risk)
+                << ": " << argument << '\n';
+      return std::nullopt;
+    }
+    if (argument.starts_with('/') || argument.starts_with('-')) {
+      invocation.compile_arguments.push_back(argument);
+      if (argument.starts_with("/fsanitize=") ||
+          argument.starts_with("-fsanitize=")) {
+        invocation.link_context_arguments.push_back(argument);
+      }
+      if (support::clang_cl_option_is_link_context_v1(argument) ||
+          argument.starts_with("--target=") || argument == "-m32" ||
+          argument == "-m64" || argument == "/MD" ||
+          argument == "/MDd" || argument == "-MD" ||
+          argument == "-MDd" || argument == "/MT" ||
+          argument == "/MTd" || argument == "-MT" ||
+          argument == "-MTd") {
+        invocation.link_context_arguments.push_back(argument);
+      }
+      continue;
+    }
+    if (!RecordMdslInput(invocation, argument)) return std::nullopt;
+  }
+
+  if (invocation.input.empty()) {
+    std::cerr << "mdslc++: --matcore-target=cpu requires one .mdsl input\n";
+    return std::nullopt;
+  }
+  if (invocation.output.empty()) {
+    std::cerr << "mdslc++: CPU pipeline requires an explicit /Fo, /Fe, or -o "
+                 "output\n";
+    return std::nullopt;
+  }
+  if (!invocation.dependency_mode.empty() &&
+      invocation.dependency_file.empty()) {
+    const std::optional<fs::path> output_path =
+        PathFromArgument(invocation.output, "output");
+    if (!output_path) return std::nullopt;
+    fs::path dependency(*output_path);
+    dependency.replace_extension(".d");
+    invocation.dependency_file = PathArgument(dependency);
+  }
+  if (invocation.compile_only && invocation.has_link_only_arguments) {
+    std::cerr << "mdslc++: /link arguments are invalid with /c\n";
+    return std::nullopt;
+  }
+  const std::optional<fs::path> output_path =
+      PathFromArgument(invocation.output, "output");
+  if (!output_path) return std::nullopt;
+  const std::optional<fs::path> input_path =
+      PathFromArgument(invocation.input, "input");
+  if (!input_path) return std::nullopt;
+  if (PathsReferToSameLocation(*input_path, *output_path)) {
+    std::cerr << "mdslc++: output path must not overwrite the input .mdsl "
+                 "source\n";
+    return std::nullopt;
+  }
+  if (invocation.compile_only &&
+      !support::ascii_case_equal_v1(
+          PathArgument(output_path->extension()), ".lib")) {
+    std::cerr << "mdslc++: Windows /c mode emits a static library containing "
+                 "the generated COFF objects; output must use .lib\n";
+    return std::nullopt;
+  }
+  return invocation;
+}
+
 bool RecordMdslInput(CpuInvocation &invocation, std::string_view input) {
   if (!HasMdslExtension(input)) {
     std::cerr << "mdslc++: CPU pipeline v0 accepts one .mdsl input and no "
@@ -1045,7 +1445,12 @@ bool RecordMdslInput(CpuInvocation &invocation, std::string_view input) {
 
 std::optional<CpuInvocation>
 ParseCpuInvocation(const WrapperArguments &arguments) {
+  if (IsWindowsHost()) return ParseClangClCpuInvocation(arguments);
   CpuInvocation invocation;
+  if (arguments.dependency_file) {
+    invocation.dependency_mode = "-MD";
+    invocation.dependency_file = *arguments.dependency_file;
+  }
   bool after_option_terminator = false;
 
   for (std::size_t index = 0; index < arguments.compiler_arguments.size();
@@ -1086,10 +1491,19 @@ ParseCpuInvocation(const WrapperArguments &arguments) {
       continue;
     }
     if (argument == "-MD" || argument == "-MMD") {
+      if (arguments.dependency_file) {
+        std::cerr << "mdslc++: --matcore-depfile cannot be combined with "
+                  << argument << "\n";
+        return std::nullopt;
+      }
       invocation.dependency_mode = argument;
       continue;
     }
     if (argument == "-MF") {
+      if (arguments.dependency_file) {
+        std::cerr << "mdslc++: --matcore-depfile cannot be combined with -MF\n";
+        return std::nullopt;
+      }
       if (++index == arguments.compiler_arguments.size()) {
         std::cerr << "mdslc++: -MF requires a dependency-file path\n";
         return std::nullopt;
@@ -1098,6 +1512,10 @@ ParseCpuInvocation(const WrapperArguments &arguments) {
       continue;
     }
     if (argument.starts_with("-MF") && argument.size() > 3) {
+      if (arguments.dependency_file) {
+        std::cerr << "mdslc++: --matcore-depfile cannot be combined with -MF\n";
+        return std::nullopt;
+      }
       invocation.dependency_file = argument.substr(3);
       continue;
     }
@@ -1194,9 +1612,12 @@ ParseCpuInvocation(const WrapperArguments &arguments) {
   }
   if (!invocation.dependency_mode.empty() &&
       invocation.dependency_file.empty()) {
-    fs::path dependency(invocation.output);
+    const std::optional<fs::path> output_path =
+        PathFromArgument(invocation.output, "output");
+    if (!output_path) return std::nullopt;
+    fs::path dependency(*output_path);
     dependency.replace_extension(".d");
-    invocation.dependency_file = dependency.string();
+    invocation.dependency_file = PathArgument(dependency);
   }
   if (invocation.dependency_file == "-") {
     std::cerr << "mdslc++: CPU pipeline dependency output must be a file, not "
@@ -1269,11 +1690,21 @@ std::optional<ToolLayout> LayoutUnderPrefix(const fs::path &prefix,
       (normalized_prefix / includedir).lexically_normal();
   const fs::path runtime_directory =
       (normalized_prefix / libdir).lexically_normal();
+  if (IsWindowsHost()) {
+    return ToolLayout{.extractor = binary_directory / "matcore-extract.exe",
+                      .include_directory = include_directory,
+                      .runtime_directory = runtime_directory,
+                      .runtime_library =
+                          runtime_directory / "matcore_runtime.lib",
+                      .runtime_binary =
+                          binary_directory / "matcore_runtime.dll"};
+  }
+  const fs::path runtime = runtime_directory / "libmatcore_runtime.so";
   return ToolLayout{.extractor = binary_directory / "matcore-extract",
                     .include_directory = include_directory,
                     .runtime_directory = runtime_directory,
-                    .runtime_library =
-                        runtime_directory / "libmatcore_runtime.so"};
+                    .runtime_library = runtime,
+                    .runtime_binary = runtime};
 }
 
 bool SameLayout(const ToolLayout &left, const ToolLayout &right) {
@@ -1281,15 +1712,23 @@ bool SameLayout(const ToolLayout &left, const ToolLayout &right) {
          NormalizedPath(left.include_directory) ==
              NormalizedPath(right.include_directory) &&
          NormalizedPath(left.runtime_directory) ==
-             NormalizedPath(right.runtime_directory);
+             NormalizedPath(right.runtime_directory) &&
+         NormalizedPath(left.runtime_library) ==
+             NormalizedPath(right.runtime_library) &&
+         NormalizedPath(left.runtime_binary) ==
+             NormalizedPath(right.runtime_binary);
 }
 
 bool IsUsableLayout(const ToolLayout &layout) {
-  return ::access(layout.extractor.c_str(), X_OK) == 0 &&
+  std::string executable_error;
+  const std::optional<fs::path> extractor = support::find_executable_v1(
+      PathArgument(layout.extractor), executable_error);
+  return extractor.has_value() &&
          fs::is_regular_file(layout.include_directory / "matcore" / "mdsl.h") &&
          fs::is_regular_file(layout.include_directory / "matcore" /
                              "runtime_c.h") &&
-         fs::is_regular_file(layout.runtime_library);
+         fs::is_regular_file(layout.runtime_library) &&
+         fs::is_regular_file(layout.runtime_binary);
 }
 
 void AppendUniqueLayout(std::vector<ToolLayout> &layouts,
@@ -1307,13 +1746,15 @@ void AppendUniqueLayout(std::vector<ToolLayout> &layouts,
 
 std::optional<ToolLayout>
 DiscoverToolLayout(const std::optional<fs::path> &tool_prefix_for_testing) {
-  std::error_code error;
-  const fs::path executable = fs::canonical("/proc/self/exe", error);
-  if (error) {
+  std::string executable_error;
+  const std::optional<fs::path> running_executable =
+      support::current_executable_path_v1(executable_error);
+  if (!running_executable) {
     std::cerr << "mdslc++: cannot resolve the running driver: "
-              << error.message() << '\n';
+              << executable_error << '\n';
     return std::nullopt;
   }
+  const fs::path &executable = *running_executable;
 
   const fs::path configured_bindir(MDSLC_INSTALL_BINDIR);
   const fs::path configured_includedir(MDSLC_INSTALL_INCLUDEDIR);
@@ -1360,41 +1801,36 @@ DiscoverToolLayout(const std::optional<fs::path> &tool_prefix_for_testing) {
             << (tool_prefix_for_testing ? NormalizedPath(*tool_prefix_for_testing)
                                         : executable)
             << "; expected an executable matcore-extract, public headers, and "
-               "libmatcore_runtime.so in one build or install prefix\n";
+               "the platform runtime binary/import library in one build or "
+               "install prefix\n";
   return std::nullopt;
 }
 
 std::optional<fs::path> CreateTemporaryDirectory() {
-  std::error_code error;
-  const fs::path base = fs::temp_directory_path(error);
-  if (error) {
-    std::cerr << "mdslc++: cannot locate a temporary directory: "
-              << error.message() << '\n';
+  std::string error;
+  std::optional<support::TempDirectoryV1> temporary =
+      support::create_temp_directory_v1("mdslc", error);
+  if (!temporary) {
+    std::cerr << "mdslc++: cannot create a temporary directory: " << error
+              << '\n';
     return std::nullopt;
   }
-  std::string pattern = (base / "mdslc-XXXXXX").string();
-  std::vector<char> writable(pattern.begin(), pattern.end());
-  writable.push_back('\0');
-  char *created = ::mkdtemp(writable.data());
-  if (created == nullptr) {
-    std::cerr << "mdslc++: mkdtemp failed: " << std::strerror(errno) << '\n';
-    return std::nullopt;
-  }
-  return fs::path(created);
+  return temporary->release();
 }
 
 GeneratedArtifacts MakeArtifactPaths(const fs::path &directory,
                                      std::string_view stem) {
   const std::string prefix(stem);
+  const std::string object_suffix = IsWindowsHost() ? ".obj" : ".o";
   return {.host_source = directory / (prefix + ".host.cpp"),
           .host_overlay = directory / (prefix + ".host-overlay.yaml"),
           .ir = directory / (prefix + ".matcore.json"),
           .sites_header = directory / (prefix + ".sites.h"),
           .stubs_source = directory / (prefix + ".stubs.cpp"),
           .backend_source = directory / (prefix + ".backend.cpp"),
-          .host_object = directory / (prefix + ".host.o"),
-          .stubs_object = directory / (prefix + ".stubs.o"),
-          .backend_object = directory / (prefix + ".backend.o")};
+          .host_object = directory / (prefix + ".host" + object_suffix),
+          .stubs_object = directory / (prefix + ".stubs" + object_suffix),
+          .backend_object = directory / (prefix + ".backend" + object_suffix)};
 }
 
 std::string JsonString(std::string_view value) {
@@ -1455,11 +1891,11 @@ bool WriteHostOverlay(const fs::path &overlay,
             "    {\n"
             "      \"type\": \"file\",\n"
             "      \"name\": "
-         << JsonString(virtual_source.string())
+         << JsonString(PathArgument(virtual_source))
          << ",\n"
             "      \"use-external-name\": false,\n"
             "      \"external-contents\": "
-         << JsonString(rewritten_source.string())
+         << JsonString(PathArgument(rewritten_source))
          << "\n"
             "    }\n"
             "  ]\n"
@@ -1475,20 +1911,42 @@ bool WriteHostOverlay(const fs::path &overlay,
 void AppendCompileEnvironment(std::vector<std::string> &command,
                               const CpuInvocation &invocation,
                               const ToolLayout &layout,
-                              const fs::path &source_directory) {
+                              const fs::path &source_directory,
+                              const CompilerToolchain &toolchain,
+                              bool include_resource_directory = true) {
   bool has_language_standard = false;
   for (const std::string &argument : invocation.compile_arguments) {
-    if (argument.starts_with("-std=")) {
+    if (argument.starts_with("-std=") || argument.starts_with("/std:")) {
       has_language_standard = true;
       break;
     }
   }
+  if (toolchain.flavor == CompilerFlavor::ClangCl) {
+    command.emplace_back("--driver-mode=cl");
+    command.emplace_back("--no-default-config");
+    if (!has_language_standard) command.emplace_back("/std:c++20");
+    if (include_resource_directory) {
+      command.emplace_back("-resource-dir=" +
+                           PathArgument(toolchain.resource_directory));
+    }
+    command.emplace_back("/I");
+    command.emplace_back(PathArgument(layout.include_directory));
+    command.emplace_back("/I");
+    command.emplace_back(PathArgument(source_directory));
+    command.insert(command.end(), invocation.compile_arguments.begin(),
+                   invocation.compile_arguments.end());
+    return;
+  }
   if (!has_language_standard) {
     command.emplace_back("-std=c++20");
   }
-  command.emplace_back("-I" + layout.include_directory.string());
+  if (include_resource_directory) {
+    command.emplace_back("-resource-dir=" +
+                         PathArgument(toolchain.resource_directory));
+  }
+  command.emplace_back("-I" + PathArgument(layout.include_directory));
   command.emplace_back("-iquote");
-  command.emplace_back(source_directory.string());
+  command.emplace_back(PathArgument(source_directory));
   command.insert(command.end(), invocation.compile_arguments.begin(),
                  invocation.compile_arguments.end());
 }
@@ -1496,12 +1954,19 @@ void AppendCompileEnvironment(std::vector<std::string> &command,
 int CompileGeneratedSource(const fs::path &source, const fs::path &object,
                            const CpuInvocation &invocation,
                            const ToolLayout &layout,
-                           const fs::path &source_directory, bool verbose) {
-  std::vector<std::string> command{MDSLC_DEFAULT_CLANGXX};
-  AppendCompileEnvironment(command, invocation, layout, source_directory);
-  command.insert(command.end(), {"-x", "c++", "-c", source.string(), "-o",
-                                 object.string()});
-  return RunCommand(std::move(command), verbose);
+                           const fs::path &source_directory,
+                           const CompilerToolchain &toolchain, bool verbose) {
+  std::vector<std::string> command{PathArgument(toolchain.compiler)};
+  AppendCompileEnvironment(command, invocation, layout, source_directory,
+                           toolchain);
+  if (toolchain.flavor == CompilerFlavor::ClangCl) {
+    command.insert(command.end(), {"/TP", "/c", PathArgument(source),
+                                   "/Fo" + PathArgument(object)});
+  } else {
+    command.insert(command.end(), {"-x", "c++", "-c", PathArgument(source),
+                                   "-o", PathArgument(object)});
+  }
+  return RunCompilerCommand(std::move(command), verbose);
 }
 
 int CompileRewrittenHost(const fs::path &virtual_source,
@@ -1509,13 +1974,82 @@ int CompileRewrittenHost(const fs::path &virtual_source,
                          const fs::path &object,
                          const CpuInvocation &invocation,
                          const ToolLayout &layout,
-                         const fs::path &source_directory, bool verbose) {
-  std::vector<std::string> command{MDSLC_DEFAULT_CLANGXX};
-  AppendCompileEnvironment(command, invocation, layout, source_directory);
+                         const fs::path &source_directory,
+                         const CompilerToolchain &toolchain, bool verbose) {
+  std::vector<std::string> command{PathArgument(toolchain.compiler)};
+  AppendCompileEnvironment(command, invocation, layout, source_directory,
+                           toolchain);
+  if (toolchain.flavor == CompilerFlavor::ClangCl) {
+    command.insert(command.end(),
+                   {"-Xclang", "-ivfsoverlay", "-Xclang",
+                    PathArgument(overlay), "/TP", "/c",
+                    PathArgument(virtual_source),
+                    "/Fo" + PathArgument(object)});
+  } else {
+    command.insert(command.end(),
+                   {"-ivfsoverlay", PathArgument(overlay), "-x", "c++", "-c",
+                    PathArgument(virtual_source), "-o", PathArgument(object)});
+  }
+  return RunCompilerCommand(std::move(command), verbose);
+}
+
+std::string EscapeMakePath(std::string_view path);
+
+int GenerateClangClDependencyFile(
+    std::vector<std::string> command, const fs::path &source,
+    const fs::path &object_target, const fs::path &dependency_output,
+    bool verbose) {
   command.insert(command.end(),
-                 {"-ivfsoverlay", overlay.string(), "-x", "c++", "-c",
-                  virtual_source.string(), "-o", object.string()});
-  return RunCommand(std::move(command), verbose);
+                 {"/TP", "/Zs", "/showIncludes", PathArgument(source)});
+  const std::optional<support::ProcessResultV1> result =
+      RunCompilerCommandCaptured(
+          std::move(command), verbose,
+          {{"VSLANG", std::optional<std::string>("1033")}});
+  if (!result) return 1;
+
+  constexpr std::string_view prefix = "Note: including file:";
+  std::vector<std::string> dependencies{PathArgument(source)};
+  std::string ordinary_stdout;
+  std::size_t begin = 0;
+  while (begin <= result->stdout_text.size()) {
+    const std::size_t end = result->stdout_text.find('\n', begin);
+    std::string_view line(result->stdout_text.data() + begin,
+                          (end == std::string::npos
+                               ? result->stdout_text.size()
+                               : end) - begin);
+    if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+    if (line.starts_with(prefix)) {
+      line.remove_prefix(prefix.size());
+      while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) {
+        line.remove_prefix(1);
+      }
+      if (!line.empty()) dependencies.emplace_back(line);
+    } else if (!line.empty()) {
+      ordinary_stdout.append(line);
+      ordinary_stdout.push_back('\n');
+    }
+    if (end == std::string::npos) break;
+    begin = end + 1;
+  }
+  if (!ordinary_stdout.empty()) std::cout << ordinary_stdout;
+  if (!result->stderr_text.empty()) std::cerr << result->stderr_text;
+  if (result->exit_code != 0) return static_cast<int>(result->exit_code);
+
+  std::sort(dependencies.begin(), dependencies.end());
+  dependencies.erase(std::unique(dependencies.begin(), dependencies.end()),
+                     dependencies.end());
+  std::ofstream output(dependency_output, std::ios::binary | std::ios::trunc);
+  if (!output) {
+    std::cerr << "mdslc++: cannot create clang-cl dependency output: "
+              << dependency_output << '\n';
+    return 1;
+  }
+  output << EscapeMakePath(PathArgument(object_target)) << ':';
+  for (const std::string &dependency : dependencies) {
+    output << " \\\n  " << EscapeMakePath(dependency);
+  }
+  output << '\n';
+  return output ? 0 : 1;
 }
 
 int GenerateDependencyFile(const CpuInvocation &invocation,
@@ -1524,14 +2058,22 @@ int GenerateDependencyFile(const CpuInvocation &invocation,
                            const fs::path &source_directory,
                            const fs::path &source,
                            const fs::path &object_target,
-                           const fs::path &dependency_output, bool verbose) {
-  std::vector<std::string> command{MDSLC_DEFAULT_CLANGXX};
-  AppendCompileEnvironment(command, invocation, layout, source_directory);
+                           const fs::path &dependency_output,
+                           const CompilerToolchain &toolchain, bool verbose) {
+  std::vector<std::string> command{PathArgument(toolchain.compiler)};
+  AppendCompileEnvironment(command, invocation, layout, source_directory,
+                           toolchain);
+  if (toolchain.flavor == CompilerFlavor::ClangCl) {
+    (void)dependency_mode;
+    return GenerateClangClDependencyFile(
+        std::move(command), source, object_target, dependency_output, verbose);
+  }
   command.insert(command.end(),
                  {"-x", "c++", std::string(dependency_mode), "-MF",
-                  dependency_output.string(), "-MQ", object_target.string(),
-                  "-fsyntax-only", source.string()});
-  return RunCommand(std::move(command), verbose);
+                  PathArgument(dependency_output), "-MQ",
+                  PathArgument(object_target), "-fsyntax-only",
+                  PathArgument(source)});
+  return RunCompilerCommand(std::move(command), verbose);
 }
 
 int GenerateRewrittenHostDependencyFile(
@@ -1539,15 +2081,26 @@ int GenerateRewrittenHostDependencyFile(
     const ToolLayout &layout, const fs::path &source_directory,
     const fs::path &virtual_source, const fs::path &overlay,
     const fs::path &object_target, const fs::path &dependency_output,
-    bool verbose) {
-  std::vector<std::string> command{MDSLC_DEFAULT_CLANGXX};
-  AppendCompileEnvironment(command, invocation, layout, source_directory);
+    const CompilerToolchain &toolchain, bool verbose) {
+  std::vector<std::string> command{PathArgument(toolchain.compiler)};
+  AppendCompileEnvironment(command, invocation, layout, source_directory,
+                           toolchain);
+  if (toolchain.flavor == CompilerFlavor::ClangCl) {
+    (void)dependency_mode;
+    command.insert(command.end(),
+                   {"-Xclang", "-ivfsoverlay", "-Xclang",
+                    PathArgument(overlay)});
+    return GenerateClangClDependencyFile(std::move(command), virtual_source,
+                                         object_target, dependency_output,
+                                         verbose);
+  }
   command.insert(command.end(),
-                 {"-ivfsoverlay", overlay.string(), "-x", "c++",
+                 {"-ivfsoverlay", PathArgument(overlay), "-x", "c++",
                   std::string(dependency_mode), "-MF",
-                  dependency_output.string(), "-MQ", object_target.string(),
-                  "-fsyntax-only", virtual_source.string()});
-  return RunCommand(std::move(command), verbose);
+                  PathArgument(dependency_output), "-MQ",
+                  PathArgument(object_target), "-fsyntax-only",
+                  PathArgument(virtual_source)});
+  return RunCompilerCommand(std::move(command), verbose);
 }
 
 std::string EscapeMakePath(std::string_view path) {
@@ -1620,9 +2173,9 @@ bool MergeDependencyFiles(const std::vector<fs::path> &dependency_files,
               << '\n';
     return false;
   }
-  merged << EscapeMakePath(object_target.string()) << ':';
+  merged << EscapeMakePath(PathArgument(object_target)) << ':';
   for (const fs::path &dependency : dependencies) {
-    merged << " \\\n  " << EscapeMakePath(dependency.string());
+    merged << " \\\n  " << EscapeMakePath(PathArgument(dependency));
   }
   merged << '\n';
   if (!merged) {
@@ -1640,8 +2193,15 @@ bool PublishFileAtomically(const fs::path &source,
     std::cerr << "mdslc++: dependency scan did not produce " << source << '\n';
     return false;
   }
-  const fs::path temporary =
-      destination.string() + ".tmp." + std::to_string(::getpid());
+  static std::atomic<std::uint64_t> sequence{0};
+  std::random_device entropy;
+  const std::uint64_t nonce =
+      (static_cast<std::uint64_t>(entropy()) << 32U) ^ entropy() ^
+      static_cast<std::uint64_t>(
+          std::chrono::steady_clock::now().time_since_epoch().count()) ^
+      sequence.fetch_add(1, std::memory_order_relaxed);
+  fs::path temporary = destination;
+  temporary += ".tmp." + std::to_string(nonce);
   {
     std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
     output << input.rdbuf();
@@ -1653,12 +2213,13 @@ bool PublishFileAtomically(const fs::path &source,
       return false;
     }
   }
-  std::error_code error;
-  fs::rename(temporary, destination, error);
-  if (error) {
+  std::string publish_error;
+  if (!support::replace_file_atomically_v1(temporary, destination,
+                                           publish_error)) {
     std::cerr << "mdslc++: failed to publish dependency file " << destination
-              << ": " << error.message() << '\n';
-    fs::remove(temporary, error);
+              << ": " << publish_error << '\n';
+    std::error_code ignored;
+    fs::remove(temporary, ignored);
     return false;
   }
   return true;
@@ -1675,6 +2236,15 @@ bool RequireGeneratedFile(const fs::path &path) {
 
 int RunCpuPipeline(const WrapperArguments &wrapper,
                    const CpuInvocation &invocation) {
+  if (IsWindowsHost() && wrapper.frontend == FrontendMode::AstJsonBootstrap) {
+    std::cerr << "mdslc++: the AST-JSON bootstrap frontend is unavailable "
+                 "on Windows; use the native LibTooling frontend\n";
+    return 2;
+  }
+  const std::optional<CompilerToolchain> toolchain =
+      DiscoverCompilerToolchain(IsWindowsHost() && invocation.compile_only);
+  if (!toolchain) return 1;
+
   const std::optional<ToolLayout> layout =
       DiscoverToolLayout(wrapper.tool_prefix_for_testing);
   if (!layout) {
@@ -1682,9 +2252,19 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   }
 
   std::error_code error;
-  const fs::path output = fs::absolute(invocation.output, error);
+  const std::optional<fs::path> requested_output =
+      PathFromArgument(invocation.output, "output");
+  if (!requested_output) return 2;
+  const fs::path output = fs::absolute(*requested_output, error);
   if (error || output.filename().empty()) {
     std::cerr << "mdslc++: invalid output path: " << invocation.output << '\n';
+    return 2;
+  }
+  std::string output_path_error;
+  if (!support::prospective_output_path_supported_v1(output,
+                                                     output_path_error)) {
+    std::cerr << "mdslc++: unsupported output path: " << output_path_error
+              << ": " << output << '\n';
     return 2;
   }
   if (!fs::is_directory(output.parent_path())) {
@@ -1711,12 +2291,15 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   }
   ScopedDirectoryCleanup dependency_cleanup(*dependency_workspace, true);
 
-  std::string stem = output.stem().string();
+  std::string stem = PathArgument(output.stem());
   if (stem.empty()) {
-    stem = output.filename().string();
+    stem = PathArgument(output.filename());
   }
   const GeneratedArtifacts artifacts = MakeArtifactPaths(workspace, stem);
-  const fs::path source_absolute = fs::absolute(invocation.input, error);
+  const std::optional<fs::path> requested_input =
+      PathFromArgument(invocation.input, "input");
+  if (!requested_input) return 2;
+  const fs::path source_absolute = fs::absolute(*requested_input, error);
   if (error) {
     std::cerr << "mdslc++: invalid input path: " << invocation.input << '\n';
     return 2;
@@ -1743,11 +2326,21 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   const fs::path merged_public_dependency =
       *dependency_workspace / "public-combined.d";
   if (!invocation.dependency_mode.empty()) {
-    dependency_output = fs::absolute(invocation.dependency_file, error);
+    const std::optional<fs::path> requested_dependency =
+        PathFromArgument(invocation.dependency_file, "dependency output");
+    if (!requested_dependency) return 2;
+    dependency_output = fs::absolute(*requested_dependency, error);
     if (error || dependency_output.filename().empty() ||
         !fs::is_directory(dependency_output.parent_path())) {
       std::cerr << "mdslc++: invalid dependency-file path: "
                 << invocation.dependency_file << '\n';
+      return 2;
+    }
+    std::string dependency_path_error;
+    if (!support::prospective_output_path_supported_v1(
+            dependency_output, dependency_path_error)) {
+      std::cerr << "mdslc++: unsupported dependency-file path: "
+                << dependency_path_error << ": " << dependency_output << '\n';
       return 2;
     }
     if (PathsReferToSameLocation(source_absolute, dependency_output) ||
@@ -1775,27 +2368,11 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
               << '\n';
     return 2;
   }
-  error.clear();
-  fs::remove(output, error);
-  if (error) {
-    std::cerr << "mdslc++: cannot clear the requested output before "
-                 "compilation: "
-              << output << ": " << error.message() << '\n';
-    return 2;
-  }
   if (!invocation.dependency_mode.empty()) {
     error.clear();
     if (fs::is_directory(dependency_output, error) && !error) {
       std::cerr << "mdslc++: requested dependency output is a directory: "
                 << dependency_output << '\n';
-      return 2;
-    }
-    error.clear();
-    fs::remove(dependency_output, error);
-    if (error) {
-      std::cerr << "mdslc++: cannot clear the requested dependency output "
-                   "before compilation: "
-                << dependency_output << ": " << error.message() << '\n';
       return 2;
     }
   }
@@ -1805,7 +2382,7 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   // -isystem header cannot change between extraction and compilation.
   int result = GenerateDependencyFile(
       invocation, "-MD", *layout, source_directory, source_absolute, output,
-      private_source_dependency, wrapper.verbose);
+      private_source_dependency, *toolchain, wrapper.verbose);
   if (!SourceMatchesSnapshot(source_absolute, *source_snapshot,
                              "dependency scanning")) {
     return 1;
@@ -1829,11 +2406,56 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     return 1;
   }
 
+  std::vector<std::pair<std::string_view, const fs::path *>> mutation_paths{
+      {"requested output", &output},
+      {"generated host source", &artifacts.host_source},
+      {"generated host overlay", &artifacts.host_overlay},
+      {"generated Matcore IR", &artifacts.ir},
+      {"generated sites header", &artifacts.sites_header},
+      {"generated stubs source", &artifacts.stubs_source},
+      {"generated backend source", &artifacts.backend_source},
+      {"generated host object", &artifacts.host_object},
+      {"generated stubs object", &artifacts.stubs_object},
+      {"generated backend object", &artifacts.backend_object},
+  };
+  if (!invocation.dependency_mode.empty()) {
+    mutation_paths.emplace_back("requested dependency output",
+                                &dependency_output);
+  }
+  if (!RequireMutationPathsDisjointFromDependencies(dependency_closure,
+                                                     mutation_paths)) {
+    return 2;
+  }
+
+  // Only clear user-visible destinations after the compiler-authenticated
+  // dependency closure proves that none of them is an input to this
+  // translation unit. This ordering protects included files (and aliases of
+  // them) from destructive output or --save-temps collisions.
+  error.clear();
+  fs::remove(output, error);
+  if (error) {
+    std::cerr << "mdslc++: cannot clear the requested output before "
+                 "compilation: "
+              << output << ": " << error.message() << '\n';
+    return 2;
+  }
+  if (!invocation.dependency_mode.empty()) {
+    error.clear();
+    fs::remove(dependency_output, error);
+    if (error) {
+      std::cerr << "mdslc++: cannot clear the requested dependency output "
+                   "before compilation: "
+                << dependency_output << ": " << error.message() << '\n';
+      return 2;
+    }
+  }
+
   std::vector<fs::path> public_dependency_files;
   if (!invocation.dependency_mode.empty()) {
     result = GenerateDependencyFile(
         invocation, invocation.dependency_mode, *layout, source_directory,
-        source_absolute, output, public_source_dependency, wrapper.verbose);
+        source_absolute, output, public_source_dependency, *toolchain,
+        wrapper.verbose);
     if (!CompilationInputsMatch(source_absolute, *source_snapshot,
                                 dependency_closure,
                                 "public dependency scanning")) {
@@ -1846,31 +2468,50 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   }
 
   std::vector<std::string> extract_command{
-      layout->extractor.string(),
+      PathArgument(layout->extractor),
       "--frontend=" + std::string(FrontendName(wrapper.frontend)),
       "--input",
-      invocation.input,
+      PathArgument(source_absolute),
       "--ir-version=1",
       "--ir-out",
-      artifacts.ir.string(),
+      PathArgument(artifacts.ir),
       "--rewrite-out",
-      artifacts.host_source.string(),
+      PathArgument(artifacts.host_source),
       "--sites-out",
-      artifacts.sites_header.string(),
+      PathArgument(artifacts.sites_header),
       "--stubs-out",
-      artifacts.stubs_source.string(),
+      PathArgument(artifacts.stubs_source),
       "--backend-out",
-      artifacts.backend_source.string()};
+      PathArgument(artifacts.backend_source)};
   if (wrapper.verbose) {
     extract_command.emplace_back("--verbose");
   }
-  extract_command.emplace_back("--");
-  extract_command.emplace_back(MDSLC_DEFAULT_CLANGXX);
-  AppendCompileEnvironment(extract_command, invocation, *layout,
-                           source_directory);
-  extract_command.emplace_back(invocation.input);
+  std::vector<std::string> frontend_arguments{
+      PathArgument(toolchain->compiler)};
+  AppendCompileEnvironment(frontend_arguments, invocation, *layout,
+                           source_directory, *toolchain, false);
+  frontend_arguments.emplace_back(PathArgument(source_absolute));
+  if (IsWindowsHost()) {
+    const fs::path compiler_arguments_file =
+        *dependency_workspace / "compiler-arguments.v1";
+    std::string argument_file_error;
+    if (!support::write_argument_file_v1(compiler_arguments_file,
+                                         frontend_arguments,
+                                         argument_file_error)) {
+      std::cerr << "mdslc++: cannot write bounded frontend argument file: "
+                << argument_file_error << '\n';
+      return 1;
+    }
+    extract_command.emplace_back("--compiler-arguments-file");
+    extract_command.emplace_back(PathArgument(compiler_arguments_file));
+  } else {
+    extract_command.emplace_back("--");
+    extract_command.insert(extract_command.end(), frontend_arguments.begin(),
+                           frontend_arguments.end());
+  }
 
-  result = RunCommand(std::move(extract_command), wrapper.verbose);
+  result = RunCommand(std::move(extract_command), wrapper.verbose,
+                      CompilerChildEnvironment());
   if (!CompilationInputsMatch(source_absolute, *source_snapshot,
                               dependency_closure, "frontend extraction")) {
     return 1;
@@ -1964,7 +2605,7 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   result = GenerateRewrittenHostDependencyFile(
       invocation, "-MD", *layout, source_directory, source_absolute,
       artifacts.host_overlay, output, private_host_dependency,
-      wrapper.verbose);
+      *toolchain, wrapper.verbose);
   if (result != 0) {
     return result;
   }
@@ -1977,7 +2618,8 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
                                            std::string_view phase) {
     const int scan_result = GenerateRewrittenHostDependencyFile(
         invocation, "-MD", *layout, source_directory, source_absolute,
-        artifacts.host_overlay, output, depfile, wrapper.verbose);
+        artifacts.host_overlay, output, depfile, *toolchain,
+        wrapper.verbose);
     if (!CompilationInputsMatch(source_absolute, *source_snapshot,
                                 dependency_closure, phase)) {
       return 1;
@@ -1996,7 +2638,7 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
           std::string_view comparison) {
         const int scan_result = GenerateDependencyFile(
             invocation, "-MD", *layout, source_directory, source, output,
-            rescan_depfile, wrapper.verbose);
+            rescan_depfile, *toolchain, wrapper.verbose);
         if (!CompilationInputsMatch(source_absolute, *source_snapshot,
                                     dependency_closure, phase)) {
           return 1;
@@ -2023,7 +2665,7 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   }
   result = GenerateDependencyFile(
       invocation, "-MD", *layout, source_directory, artifacts.stubs_source,
-      output, private_stubs_dependency, wrapper.verbose);
+      output, private_stubs_dependency, *toolchain, wrapper.verbose);
   if (result != 0 ||
       !capture_generated_closure(private_stubs_dependency,
                                  "generated stub dependency scanning")) {
@@ -2036,7 +2678,7 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   }
   result = GenerateDependencyFile(
       invocation, "-MD", *layout, source_directory, artifacts.backend_source,
-      output, private_backend_dependency, wrapper.verbose);
+      output, private_backend_dependency, *toolchain, wrapper.verbose);
   if (result != 0 ||
       !capture_generated_closure(private_backend_dependency,
                                  "generated backend dependency scanning")) {
@@ -2057,11 +2699,11 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
               ? GenerateRewrittenHostDependencyFile(
                     invocation, invocation.dependency_mode, *layout,
                     source_directory, source_absolute, artifacts.host_overlay,
-                    output, depfile, wrapper.verbose)
+                    output, depfile, *toolchain, wrapper.verbose)
               : GenerateDependencyFile(
                     invocation, invocation.dependency_mode, *layout,
                     source_directory, source, output, depfile,
-                    wrapper.verbose);
+                    *toolchain, wrapper.verbose);
       if (!CompilationInputsMatch(source_absolute, *source_snapshot,
                                   dependency_closure,
                                   "public generated dependency scanning")) {
@@ -2096,7 +2738,8 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   }
   result = CompileRewrittenHost(source_absolute, artifacts.host_overlay,
                                 artifacts.host_object, invocation, *layout,
-                                source_directory, wrapper.verbose);
+                                source_directory, *toolchain,
+                                wrapper.verbose);
   if (!CompilationInputsMatch(source_absolute, *source_snapshot,
                               dependency_closure,
                               "generated host compilation")) {
@@ -2118,7 +2761,8 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   }
   result = CompileGeneratedSource(artifacts.stubs_source,
                                   artifacts.stubs_object, invocation, *layout,
-                                  source_directory, wrapper.verbose);
+                                  source_directory, *toolchain,
+                                  wrapper.verbose);
   if (!CompilationInputsMatch(source_absolute, *source_snapshot,
                               dependency_closure,
                               "generated stub compilation")) {
@@ -2143,7 +2787,8 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   }
   result = CompileGeneratedSource(artifacts.backend_source,
                                   artifacts.backend_object, invocation,
-                                  *layout, source_directory, wrapper.verbose);
+                                  *layout, source_directory, *toolchain,
+                                  wrapper.verbose);
   if (!CompilationInputsMatch(source_absolute, *source_snapshot,
                               dependency_closure,
                               "generated backend compilation")) {
@@ -2162,34 +2807,59 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     return result;
   }
 
-  std::vector<std::string> link_command{MDSLC_DEFAULT_CLANGXX};
-  link_command.insert(link_command.end(),
-                      invocation.link_context_arguments.begin(),
-                      invocation.link_context_arguments.end());
-  link_command.insert(link_command.end(),
-                      {artifacts.host_object.string(),
-                       artifacts.stubs_object.string(),
-                       artifacts.backend_object.string()});
-  if (invocation.compile_only) {
-    link_command.insert(link_command.end(),
-                        {"-r", "-o", output.string()});
+  std::vector<std::string> link_command;
+  if (toolchain->flavor == CompilerFlavor::ClangCl &&
+      invocation.compile_only) {
+    link_command = {PathArgument(toolchain->archiver),
+                    "/OUT:" + PathArgument(output),
+                    PathArgument(artifacts.host_object),
+                    PathArgument(artifacts.stubs_object),
+                    PathArgument(artifacts.backend_object)};
   } else {
-    link_command.insert(link_command.end(), invocation.link_arguments.begin(),
-                        invocation.link_arguments.end());
-    link_command.emplace_back("-L" + layout->runtime_directory.string());
-    link_command.emplace_back("-Xlinker");
-    link_command.emplace_back("-rpath");
-    link_command.emplace_back("-Xlinker");
-    link_command.emplace_back(layout->runtime_directory.string());
-    link_command.emplace_back("-lmatcore_runtime");
-    link_command.emplace_back("-o");
-    link_command.emplace_back(output.string());
+    link_command = {PathArgument(toolchain->compiler)};
+    if (toolchain->flavor == CompilerFlavor::ClangCl) {
+      link_command.emplace_back("--driver-mode=cl");
+      link_command.emplace_back("--no-default-config");
+    }
+    link_command.insert(link_command.end(),
+                        invocation.link_context_arguments.begin(),
+                        invocation.link_context_arguments.end());
+    link_command.insert(link_command.end(),
+                        {PathArgument(artifacts.host_object),
+                         PathArgument(artifacts.stubs_object),
+                         PathArgument(artifacts.backend_object)});
+    if (invocation.compile_only) {
+      link_command.insert(link_command.end(),
+                          {"-r", "-o", PathArgument(output)});
+    } else if (toolchain->flavor == CompilerFlavor::ClangCl) {
+      link_command.emplace_back(PathArgument(layout->runtime_library));
+      link_command.emplace_back("/Fe:" + PathArgument(output));
+      if (!invocation.link_arguments.empty()) {
+        link_command.emplace_back("/link");
+        link_command.insert(link_command.end(),
+                            invocation.link_arguments.begin(),
+                            invocation.link_arguments.end());
+      }
+    } else {
+      link_command.insert(link_command.end(),
+                          invocation.link_arguments.begin(),
+                          invocation.link_arguments.end());
+      link_command.emplace_back("-L" +
+                                PathArgument(layout->runtime_directory));
+      link_command.emplace_back("-Xlinker");
+      link_command.emplace_back("-rpath");
+      link_command.emplace_back("-Xlinker");
+      link_command.emplace_back(PathArgument(layout->runtime_directory));
+      link_command.emplace_back("-lmatcore_runtime");
+      link_command.emplace_back("-o");
+      link_command.emplace_back(PathArgument(output));
+    }
   }
   if (!CompilationInputsMatch(source_absolute, *source_snapshot,
                               dependency_closure, "before linking")) {
     return 1;
   }
-  result = RunCommand(std::move(link_command), wrapper.verbose);
+  result = RunCompilerCommand(std::move(link_command), wrapper.verbose);
   if (!CompilationInputsMatch(source_absolute, *source_snapshot,
                               dependency_closure, "linking")) {
     fs::remove(output, error);
@@ -2198,6 +2868,16 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   if (result != 0) {
     fs::remove(output, error);
     return result;
+  }
+  error.clear();
+  if (!fs::is_regular_file(output, error) || error) {
+    std::cerr << "mdslc++: compiler/linker reported success but did not "
+                 "produce the requested regular output file: "
+              << output;
+    if (error) std::cerr << ": " << error.message();
+    std::cerr << '\n';
+    fs::remove(output, error);
+    return 1;
   }
   result = recheck_host_resolution(private_host_final_dependency,
                                    "final host dependency scanning");
@@ -2258,16 +2938,18 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   return 0;
 }
 
-} // namespace
-
-int main(int argc, char **argv) {
+int MdslcMain(int argc, char **argv) {
   const std::optional<WrapperArguments> wrapper =
       ParseWrapperArguments(argc, argv);
   if (!wrapper) {
     return 2;
   }
   if (!wrapper->cpu_pipeline) {
-    return RunCommand(BuildDirectCommand(*wrapper), wrapper->verbose);
+    const std::optional<CompilerToolchain> toolchain =
+        DiscoverCompilerToolchain(false);
+    if (!toolchain) return 1;
+    return RunCompilerCommand(BuildDirectCommand(*wrapper, *toolchain),
+                              wrapper->verbose);
   }
 
   const std::optional<CpuInvocation> invocation =
@@ -2277,3 +2959,27 @@ int main(int argc, char **argv) {
   }
   return RunCpuPipeline(*wrapper, *invocation);
 }
+
+} // namespace
+
+#if defined(_WIN32)
+int wmain(int argc, wchar_t **argv) {
+  std::string error;
+  const std::optional<std::vector<std::string>> utf8_arguments =
+      support::wide_arguments_to_utf8_v1(argc, argv, error);
+  if (!utf8_arguments) {
+    std::cerr << "mdslc++: cannot decode Windows process arguments: " << error
+              << '\n';
+    return 2;
+  }
+  std::vector<char *> narrow_arguments;
+  narrow_arguments.reserve(utf8_arguments->size());
+  for (const std::string &argument : *utf8_arguments) {
+    narrow_arguments.push_back(const_cast<char *>(argument.c_str()));
+  }
+  return MdslcMain(static_cast<int>(narrow_arguments.size()),
+                   narrow_arguments.data());
+}
+#else
+int main(int argc, char **argv) { return MdslcMain(argc, argv); }
+#endif

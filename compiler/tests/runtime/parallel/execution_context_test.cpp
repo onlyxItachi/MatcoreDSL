@@ -68,7 +68,7 @@ runtime::CpuExecutionStatusV1 observe_borrowed_stack_state(
   return runtime::CpuExecutionStatusV1::success;
 }
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(_WIN32)
 struct AffinityObservationState {
   explicit AffinityObservationState(std::uint32_t workers)
       : observed_cpus(workers,
@@ -274,10 +274,31 @@ void inactive_workers_do_not_retain_borrowed_submissions() {
 
 void explicit_worker_affinity_is_strict_and_reported() {
   const auto inventory = platform::discover_current_thread_affinity_v1();
-#if defined(__linux__)
+#if defined(__linux__) || defined(_WIN32)
+#if defined(_WIN32)
+  if (!inventory.discovery_complete) {
+    expect(inventory.backend_available && inventory.platform_error != 0 &&
+               inventory.allowed_logical_cpus.empty(),
+           "unsupported Windows processor-group affinity fails closed");
+    runtime::CpuExecutionContextConfigV1 unavailable;
+    unavailable.worker_cpu_ids = {0};
+    runtime::CpuExecutionStatusV1 unavailable_status{};
+    runtime::CpuWorkerAffinityReportV1 unavailable_report;
+    auto unavailable_context = runtime::CpuExecutionContextV1::create(
+        unavailable, &unavailable_status, &unavailable_report);
+    expect(unavailable_context == nullptr &&
+               unavailable_status ==
+                   runtime::CpuExecutionStatusV1::affinity_unavailable &&
+               unavailable_report.status ==
+                   runtime::CpuWorkerAffinityStatusV1::unavailable &&
+               !unavailable_report.complete,
+           "explicit affinity rejects unsupported Windows processor groups");
+    return;
+  }
+#endif
   expect(inventory.backend_available && inventory.discovery_complete &&
              !inventory.allowed_logical_cpus.empty(),
-         "execution-context affinity test has a complete Linux CPU mask");
+         "execution-context affinity test has a complete host CPU mask");
   if (!inventory.discovery_complete ||
       inventory.allowed_logical_cpus.empty()) {
     return;
@@ -381,7 +402,7 @@ void explicit_worker_affinity_is_strict_and_reported() {
              status == runtime::CpuExecutionStatusV1::affinity_unavailable &&
              report.status == runtime::CpuWorkerAffinityStatusV1::unavailable &&
              !report.complete,
-         "non-Linux explicit affinity fails closed during context creation");
+         "unsupported-platform explicit affinity fails closed during context creation");
 #endif
 }
 

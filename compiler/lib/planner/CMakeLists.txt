@@ -36,9 +36,7 @@ if(BUILD_TESTING)
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/cpu_planner_v3_test.cpp"
   )
   target_compile_features(matcore_cpu_planner_v3_test PRIVATE cxx_std_20)
-  target_compile_options(matcore_cpu_planner_v3_test PRIVATE
-    -Wall -Wextra -Wpedantic -Werror
-  )
+  mdslc_target_enable_warnings(matcore_cpu_planner_v3_test WERROR)
   target_link_libraries(matcore_cpu_planner_v3_test
     PRIVATE MatcoreDSL::CpuPlannerV3
   )

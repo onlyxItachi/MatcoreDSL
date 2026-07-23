@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.24)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   project(MatcoreRuntimeV0 LANGUAGES CXX)
   include(CTest)
+  include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/MatcoreDSLCompilerOptions.cmake")
 endif()
 
 option(
@@ -11,16 +12,26 @@ option(
   OFF
 )
 
+set(MDSLC_OPENBLAS_DEFAULT ON)
+if(WIN32)
+  set(MDSLC_OPENBLAS_DEFAULT OFF)
+endif()
 option(
   MDSLC_ENABLE_OPENBLAS
   "Enable the optional authenticated OpenBLAS/CBLAS CPU variant"
-  ON
+  ${MDSLC_OPENBLAS_DEFAULT}
 )
 option(
   MDSLC_REQUIRE_OPENBLAS
   "Fail configuration when the optional OpenBLAS development surface is absent"
   OFF
 )
+
+if(WIN32 AND MDSLC_ENABLE_OPENBLAS)
+  message(FATAL_ERROR
+    "The Windows MDSLC lane has no authenticated CBLAS provider; configure "
+    "with MDSLC_ENABLE_OPENBLAS=OFF")
+endif()
 
 set(MDSLC_HAS_OPENBLAS OFF)
 if(MDSLC_ENABLE_OPENBLAS)
@@ -51,16 +62,6 @@ if(NOT MDSLC_HAS_OPENBLAS)
   message(STATUS "MDSLC OpenBLAS variant: unavailable (optional)")
 endif()
 
-function(matcore_enable_debug_cpu_vectorization target_name)
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    if(CMAKE_CONFIGURATION_TYPES)
-      target_compile_options(${target_name} PRIVATE "$<$<CONFIG:Debug>:-O2>")
-    elseif(CMAKE_BUILD_TYPE STREQUAL "Debug" OR CMAKE_BUILD_TYPE STREQUAL "")
-      target_compile_options(${target_name} PRIVATE -O2)
-    endif()
-  endif()
-endfunction()
-
 if(NOT TARGET matcore_cpu_planner_v1)
   add_subdirectory(
     "${CMAKE_CURRENT_SOURCE_DIR}/../planner"
@@ -78,7 +79,7 @@ if(MDSLC_BUILD_RUNTIME_BENCHMARKS)
   target_link_libraries(matcore_cpu_planner_benchmark
     PRIVATE MatcoreDSL::CpuPlannerV1
   )
-  matcore_enable_debug_cpu_vectorization(matcore_cpu_planner_benchmark)
+  mdslc_target_enable_debug_optimization(matcore_cpu_planner_benchmark)
 endif()
 
 add_library(matcore_cpu_backends_v1 STATIC
@@ -140,7 +141,7 @@ endif()
 # unset single-config build type otherwise supply no optimization flag, which
 # would leave this candidate as a scalar loop. Preserve the configured level
 # for Release, RelWithDebInfo, and MinSizeRel.
-matcore_enable_debug_cpu_vectorization(matcore_runtime)
+mdslc_target_enable_debug_optimization(matcore_runtime)
 target_include_directories(matcore_runtime
   PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../include>"
@@ -153,6 +154,15 @@ set_target_properties(matcore_runtime PROPERTIES
   SOVERSION 0
   VERSION 0.0.0
 )
+if(WIN32)
+  # MATCORE_RUNTIME_API provides the only exported DLL surface.  CMake places
+  # the DLL in bin/ and its import library in lib/ through the global output
+  # directories and the root install(TARGETS) contract.
+  set_target_properties(matcore_runtime PROPERTIES
+    WINDOWS_EXPORT_ALL_SYMBOLS OFF
+    PREFIX ""
+  )
+endif()
 
 if(BUILD_TESTING)
   add_executable(matcore_numeric_reference_test
@@ -165,9 +175,7 @@ if(BUILD_TESTING)
   target_link_libraries(matcore_numeric_reference_test
     PRIVATE MatcoreDSL::CpuBackendsV1
   )
-  target_compile_options(matcore_numeric_reference_test PRIVATE
-    -Wall -Wextra -Wpedantic -Werror
-  )
+  mdslc_target_enable_warnings(matcore_numeric_reference_test WERROR)
   add_test(NAME runtime.cpu.reference_types
     COMMAND matcore_numeric_reference_test
   )
@@ -179,9 +187,7 @@ if(BUILD_TESTING)
   target_link_libraries(matcore_typed_runtime_c_api_test
     PRIVATE MatcoreDSL::Runtime
   )
-  target_compile_options(matcore_typed_runtime_c_api_test PRIVATE
-    -Wall -Wextra -Wpedantic -Werror
-  )
+  mdslc_target_enable_warnings(matcore_typed_runtime_c_api_test WERROR)
   add_test(NAME runtime.c_abi.typed_reference_v1
     COMMAND matcore_typed_runtime_c_api_test
   )
@@ -196,9 +202,7 @@ if(BUILD_TESTING)
   target_link_libraries(matcore_packed_avx2_test
     PRIVATE MatcoreDSL::CpuBackendsV1
   )
-  target_compile_options(matcore_packed_avx2_test PRIVATE
-    -Wall -Wextra -Wpedantic -Werror
-  )
+  mdslc_target_enable_warnings(matcore_packed_avx2_test WERROR)
   add_test(NAME runtime.cpu.packed_avx2
     COMMAND matcore_packed_avx2_test
   )
@@ -213,9 +217,7 @@ if(BUILD_TESTING)
   target_link_libraries(matcore_packed_avx512_test
     PRIVATE MatcoreDSL::CpuBackendsV1
   )
-  target_compile_options(matcore_packed_avx512_test PRIVATE
-    -Wall -Wextra -Wpedantic -Werror
-  )
+  mdslc_target_enable_warnings(matcore_packed_avx512_test WERROR)
   add_test(NAME runtime.cpu.packed_avx512
     COMMAND matcore_packed_avx512_test
   )
@@ -230,9 +232,7 @@ if(BUILD_TESTING)
   target_include_directories(matcore_execution_context_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
   )
-  target_compile_options(matcore_execution_context_test PRIVATE
-    -Wall -Wextra -Wpedantic -Werror
-  )
+  mdslc_target_enable_warnings(matcore_execution_context_test WERROR)
   target_link_libraries(matcore_execution_context_test
     PRIVATE MatcoreDSL::CpuBackendsV1 MatcoreDSL::PlatformV1
   )
@@ -250,9 +250,7 @@ if(BUILD_TESTING)
   target_include_directories(matcore_parallel_packed_gemm_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
   )
-  target_compile_options(matcore_parallel_packed_gemm_test PRIVATE
-    -Wall -Wextra -Wpedantic -Werror
-  )
+  mdslc_target_enable_warnings(matcore_parallel_packed_gemm_test WERROR)
   target_link_libraries(matcore_parallel_packed_gemm_test
     PRIVATE MatcoreDSL::CpuBackendsV1
   )
@@ -267,9 +265,7 @@ if(BUILD_TESTING)
   target_include_directories(matcore_planner_v3_resources_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
   )
-  target_compile_options(matcore_planner_v3_resources_test PRIVATE
-    -Wall -Wextra -Wpedantic -Werror
-  )
+  mdslc_target_enable_warnings(matcore_planner_v3_resources_test WERROR)
   target_link_libraries(matcore_planner_v3_resources_test
     PRIVATE MatcoreDSL::CpuBackendsV1 MatcoreDSL::PlatformV1
   )
@@ -321,9 +317,7 @@ if(BUILD_TESTING)
   target_link_libraries(matcore_public_context_c_api_test
     PRIVATE MatcoreDSL::Runtime
   )
-  target_compile_options(matcore_public_context_c_api_test PRIVATE
-    -Wall -Wextra -Wpedantic -Werror
-  )
+  mdslc_target_enable_warnings(matcore_public_context_c_api_test WERROR)
   add_test(NAME runtime.c_abi.public_context_v1
     COMMAND matcore_public_context_c_api_test
   )
@@ -343,10 +337,10 @@ if(BUILD_TESTING)
   target_link_libraries(matcore_runtime_cpu_test
     PRIVATE MatcoreDSL::Runtime MatcoreDSL::CpuPlannerV1
   )
-  matcore_enable_debug_cpu_vectorization(matcore_runtime_cpu_test)
+  mdslc_target_enable_debug_optimization(matcore_runtime_cpu_test)
   add_test(NAME runtime.cpu.gemm_v0 COMMAND matcore_runtime_cpu_test)
 
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU" AND
+  if(NOT WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU" AND
      NOT CMAKE_CXX_FLAGS MATCHES "fsanitize" AND
      CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
     find_program(MDSLC_OBJDUMP_EXECUTABLE NAMES objdump)

@@ -2,13 +2,10 @@
 
 #include <sstream>
 
-#if (defined(__x86_64__) || defined(_M_X64)) && \
-    (defined(__clang__) || defined(__GNUC__))
-#include <cpuid.h>
-#endif
-
 #if defined(_MSC_VER) && defined(_M_X64)
 #include <intrin.h>
+#elif defined(__x86_64__) && (defined(__clang__) || defined(__GNUC__))
+#include <cpuid.h>
 #endif
 
 #if defined(__linux__) && defined(__x86_64__)
@@ -85,18 +82,7 @@ struct CpuidResult {
 bool read_cpuid(std::uint32_t leaf, std::uint32_t subleaf,
                 CpuidResult *output) noexcept {
   if (output == nullptr) return false;
-#if (defined(__x86_64__) || defined(_M_X64)) && \
-    (defined(__clang__) || defined(__GNUC__))
-  const unsigned int maximum = __get_cpuid_max(0, nullptr);
-  if (leaf > maximum) return false;
-  unsigned int eax = 0;
-  unsigned int ebx = 0;
-  unsigned int ecx = 0;
-  unsigned int edx = 0;
-  __cpuid_count(leaf, subleaf, eax, ebx, ecx, edx);
-  *output = {eax, ebx, ecx, edx};
-  return true;
-#elif defined(_MSC_VER) && defined(_M_X64)
+#if defined(_MSC_VER) && defined(_M_X64)
   int maximum[4]{};
   __cpuidex(maximum, 0, 0);
   if (leaf > static_cast<std::uint32_t>(maximum[0])) return false;
@@ -107,6 +93,16 @@ bool read_cpuid(std::uint32_t leaf, std::uint32_t subleaf,
              static_cast<std::uint32_t>(registers[2]),
              static_cast<std::uint32_t>(registers[3])};
   return true;
+#elif defined(__x86_64__) && (defined(__clang__) || defined(__GNUC__))
+  const unsigned int maximum = __get_cpuid_max(0, nullptr);
+  if (leaf > maximum) return false;
+  unsigned int eax = 0;
+  unsigned int ebx = 0;
+  unsigned int ecx = 0;
+  unsigned int edx = 0;
+  __cpuid_count(leaf, subleaf, eax, ebx, ecx, edx);
+  *output = {eax, ebx, ecx, edx};
+  return true;
 #else
   (void)leaf;
   (void)subleaf;
@@ -116,14 +112,14 @@ bool read_cpuid(std::uint32_t leaf, std::uint32_t subleaf,
 
 bool read_xcr0(std::uint64_t *output) noexcept {
   if (output == nullptr) return false;
-#if defined(__x86_64__) && (defined(__clang__) || defined(__GNUC__))
+#if defined(_MSC_VER) && defined(_M_X64)
+  *output = _xgetbv(0);
+  return true;
+#elif defined(__x86_64__) && (defined(__clang__) || defined(__GNUC__))
   std::uint32_t eax = 0;
   std::uint32_t edx = 0;
   __asm__ volatile("xgetbv" : "=a"(eax), "=d"(edx) : "c"(0));
   *output = (static_cast<std::uint64_t>(edx) << 32U) | eax;
-  return true;
-#elif defined(_MSC_VER) && defined(_M_X64)
-  *output = _xgetbv(0);
   return true;
 #else
   return false;
@@ -145,41 +141,30 @@ bool read_amx_permission(bool *granted) noexcept {
 #endif
 }
 
-CpuFeatureDomainV2 discover_compiler_domain(
-    ArchitectureKindV1 architecture) noexcept {
-  CpuFeatureDomainV2 result;
-  mark_available(result, CpuFeatureV2::portable_scalar_f32);
-  if (architecture != ArchitectureKindV1::x86_64) return result;
-
-  mark_known(result, kX86CpuFeatureBitsV2);
-#if defined(__clang__)
-  // The selected Clang 21 tuple supports isolated target attributes and the
-  // intrinsic/instruction families represented by this v2 vocabulary.
-#if __clang_major__ >= 14
-  result.available |= kX86CpuFeatureBitsV2;
+CompilerFrontendV1 compile_frontend() noexcept {
+#if defined(__clang__) && defined(_MSC_VER)
+  return CompilerFrontendV1::clang_cl;
+#elif defined(__clang__)
+  return CompilerFrontendV1::clang_gnu;
+#elif defined(_MSC_VER)
+  return CompilerFrontendV1::msvc;
+#elif defined(__GNUC__)
+  return CompilerFrontendV1::gcc;
 #else
-  result.available |= feature_bit(CpuFeatureV2::avx2) |
-                      feature_bit(CpuFeatureV2::fma) |
-                      feature_bit(CpuFeatureV2::avx512f) |
-                      feature_bit(CpuFeatureV2::avx512dq) |
-                      feature_bit(CpuFeatureV2::avx512bw) |
-                      feature_bit(CpuFeatureV2::avx512vl) |
-                      feature_bit(CpuFeatureV2::avx512vnni);
+  return CompilerFrontendV1::unknown;
 #endif
+}
+
+std::uint32_t compile_frontend_major_version() noexcept {
+#if defined(__clang__)
+  return __clang_major__;
 #elif defined(__GNUC__) && !defined(_MSC_VER)
-#if __GNUC__ >= 12
-  result.available |= kX86CpuFeatureBitsV2;
-#elif __GNUC__ >= 8
-  result.available |= feature_bit(CpuFeatureV2::avx2) |
-                      feature_bit(CpuFeatureV2::fma) |
-                      feature_bit(CpuFeatureV2::avx512f) |
-                      feature_bit(CpuFeatureV2::avx512dq) |
-                      feature_bit(CpuFeatureV2::avx512bw) |
-                      feature_bit(CpuFeatureV2::avx512vl) |
-                      feature_bit(CpuFeatureV2::avx512vnni);
+  return __GNUC__;
+#elif defined(_MSC_VER)
+  return _MSC_VER;
+#else
+  return 0;
 #endif
-#endif
-  return result;
 }
 
 std::uint16_t derive_usable_vector_bits(
@@ -289,6 +274,64 @@ unknown_cpu_implementation_availability_v2() noexcept {
   return {};
 }
 
+CpuFeatureDomainV2 cpu_compiler_feature_domain_v2(
+    ArchitectureKindV1 architecture, CompilerFrontendV1 frontend,
+    std::uint32_t compiler_major_version) noexcept {
+  CpuFeatureDomainV2 result;
+  if (!known(architecture) || !known(frontend) ||
+      architecture == ArchitectureKindV1::unknown ||
+      frontend == CompilerFrontendV1::unknown) {
+    return result;
+  }
+
+  mark_available(result, CpuFeatureV2::portable_scalar_f32);
+  if (architecture != ArchitectureKindV1::x86_64) return result;
+
+  // The ISA-specific compiler vocabulary is known only for compiler families
+  // whose isolated-function strategy is part of this build.  clang-cl is
+  // intentionally normalized with Clang rather than falling through the
+  // `_MSC_VER` ABI compatibility macro.
+  switch (frontend) {
+    case CompilerFrontendV1::clang_gnu:
+    case CompilerFrontendV1::clang_cl:
+      mark_known(result, kX86CpuFeatureBitsV2);
+      if (compiler_major_version >= 14) {
+        result.available |= kX86CpuFeatureBitsV2;
+      } else if (compiler_major_version != 0) {
+        result.available |= feature_bit(CpuFeatureV2::avx2) |
+                            feature_bit(CpuFeatureV2::fma) |
+                            feature_bit(CpuFeatureV2::avx512f) |
+                            feature_bit(CpuFeatureV2::avx512dq) |
+                            feature_bit(CpuFeatureV2::avx512bw) |
+                            feature_bit(CpuFeatureV2::avx512vl) |
+                            feature_bit(CpuFeatureV2::avx512vnni);
+      }
+      break;
+    case CompilerFrontendV1::gcc:
+      mark_known(result, kX86CpuFeatureBitsV2);
+      if (compiler_major_version >= 12) {
+        result.available |= kX86CpuFeatureBitsV2;
+      } else if (compiler_major_version >= 8) {
+        result.available |= feature_bit(CpuFeatureV2::avx2) |
+                            feature_bit(CpuFeatureV2::fma) |
+                            feature_bit(CpuFeatureV2::avx512f) |
+                            feature_bit(CpuFeatureV2::avx512dq) |
+                            feature_bit(CpuFeatureV2::avx512bw) |
+                            feature_bit(CpuFeatureV2::avx512vl) |
+                            feature_bit(CpuFeatureV2::avx512vnni);
+      }
+      break;
+    case CompilerFrontendV1::msvc:
+      // The MSVC ABI is supported through clang-cl.  Native MSVC has no
+      // validated isolated ISA implementation in this milestone.
+      mark_known(result, kX86CpuFeatureBitsV2);
+      break;
+    case CompilerFrontendV1::unknown:
+      return {};
+  }
+  return result;
+}
+
 CpuCapabilitiesV2 discover_cpu_capabilities_v2(
     const CpuImplementationAvailabilityV2 &implementation) noexcept {
   CpuCapabilitiesV2 result;
@@ -302,7 +345,9 @@ CpuCapabilitiesV2 discover_cpu_capabilities_v2(
 
   mark_available(result.hardware, CpuFeatureV2::portable_scalar_f32);
   mark_available(result.os_enabled, CpuFeatureV2::portable_scalar_f32);
-  result.compiler = discover_compiler_domain(result.architecture);
+  result.compiler = cpu_compiler_feature_domain_v2(
+      result.architecture, compile_frontend(),
+      compile_frontend_major_version());
 
   if (implementation.version == kCpuImplementationAvailabilityVersionV2 &&
       domain_well_formed(implementation.compiled) &&

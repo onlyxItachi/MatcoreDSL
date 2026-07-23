@@ -1,4 +1,5 @@
 #include "frontend.h"
+#include "../support/platform_support.h"
 
 #include <clang/AST/ASTContext.h>
 #include <clang/AST/Attr.h>
@@ -44,55 +45,46 @@
 namespace matcore::mdslc::frontend {
 namespace {
 
+namespace support = matcore::mdslc::support;
+
 constexpr std::string_view kGemmName = "matcore::mdsl::gemm";
 constexpr std::string_view kOutName = "matcore::mdsl::out";
 constexpr std::string_view kGemmAnnotation = "matcore.op.gemm";
 constexpr std::string_view kOutAnnotation = "matcore.wrapper.out";
 
 std::string normalizeDisplayPath(const std::string &path) {
-  return std::filesystem::path(path).lexically_normal().generic_string();
+  std::string error;
+  const std::optional<std::filesystem::path> native =
+      support::path_from_utf8_v1(path, error);
+  if (!native) return path;
+  const std::optional<std::string> encoded =
+      support::path_to_utf8_v1(native->lexically_normal(), error);
+  return encoded.value_or(path);
 }
 
 std::string canonicalPath(const std::string &path) {
-  std::error_code error;
-  const std::filesystem::path absolute = std::filesystem::absolute(path, error);
-  const std::filesystem::path candidate = error ? std::filesystem::path(path)
-                                                 : absolute;
-  error.clear();
+  std::string error;
+  const std::optional<std::filesystem::path> native =
+      support::path_from_utf8_v1(path, error);
+  if (!native) return path;
   const std::filesystem::path canonical =
-      std::filesystem::weakly_canonical(candidate, error);
-  return (error ? candidate.lexically_normal() : canonical).generic_string();
+      support::normalize_path_v1(*native, true, error);
+  const std::optional<std::string> encoded = support::path_to_utf8_v1(
+      error.empty() ? canonical : native->lexically_normal(), error);
+  return encoded.value_or(path);
 }
 
 std::optional<std::string> readFile(const std::string &path) {
-  std::ifstream input(path, std::ios::binary);
+  std::string error;
+  const std::optional<std::filesystem::path> native =
+      support::path_from_utf8_v1(path, error);
+  if (!native) return std::nullopt;
+  std::ifstream input(*native, std::ios::binary);
   if (!input) {
     return std::nullopt;
   }
   return std::string(std::istreambuf_iterator<char>(input),
                      std::istreambuf_iterator<char>());
-}
-
-bool forbiddenCompilerArgument(const std::string &argument) {
-  return argument == "-c" || argument == "-S" ||
-         argument == "-emit-llvm" || argument == "-save-temps" ||
-         argument == "--save-temps" || argument == "-E" ||
-         argument == "-M" || argument == "-MM" || argument == "-MD" ||
-         argument == "-MMD" || argument == "-MJ" || argument == "-MF" ||
-         argument == "-MT" || argument == "-MQ" || argument == "-Xclang" ||
-         argument == "-load" || argument == "-###" ||
-         argument == "-fplugin" || argument == "--config" ||
-         argument.starts_with("--config=") || argument.starts_with('@') ||
-         argument == "-ivfsoverlay" || argument.starts_with("-ivfsoverlay") ||
-         argument == "-vfsoverlay" || argument.starts_with("-vfsoverlay") ||
-         argument.starts_with("-include-pch") ||
-         argument.starts_with("-include-pth") ||
-         argument.starts_with("-fmodule-file") ||
-         argument.starts_with("-fprebuilt-module-path") ||
-         argument.starts_with("-fplugin=") ||
-         (argument.starts_with("-o") && argument.size() > 2) ||
-         (argument.starts_with("-MF") && argument.size() > 3) ||
-         (argument.starts_with("-MJ") && argument.size() > 3);
 }
 
 class CountingDiagnosticConsumer final : public clang::DiagnosticConsumer {
@@ -123,12 +115,37 @@ private:
 bool makeToolArguments(const Options &options,
                        std::vector<std::string> &arguments,
                        std::string &error) {
+  const bool clang_cl = std::find(options.compiler_arguments.begin(),
+                                  options.compiler_arguments.end(),
+                                  "--driver-mode=cl") !=
+                        options.compiler_arguments.end();
+  if (options.clang_resource_directory.empty()) {
+    error = "authenticated Clang resource directory is unavailable";
+    return false;
+  }
+  arguments.push_back("-resource-dir=" + options.clang_resource_directory);
   for (std::size_t index = 0; index < options.compiler_arguments.size();
        ++index) {
     const std::string &argument = options.compiler_arguments[index];
     if (argument == options.input_path ||
         (!argument.starts_with('-') &&
+         (!clang_cl || !argument.starts_with('/')) &&
          canonicalPath(argument) == canonicalPath(options.input_path))) {
+      continue;
+    }
+    if (clang_cl && argument == "--driver-mode=cl") {
+      if (std::find(arguments.begin(), arguments.end(), argument) ==
+          arguments.end()) {
+        arguments.push_back(argument);
+      }
+      continue;
+    }
+    if (clang_cl && argument == "--no-default-config") {
+      continue;
+    }
+    if (clang_cl &&
+        (support::windows_option_body_v1(argument) == "TP" ||
+         argument == "-fno-color-diagnostics")) {
       continue;
     }
     if (argument == "-fsyntax-only" || argument == "-fno-color-diagnostics") {
@@ -139,23 +156,52 @@ bool makeToolArguments(const Options &options,
         error = "-x requires a language argument";
         return false;
       }
+      if (options.compiler_arguments[index] != "c++") {
+        error = ".mdsl extraction requires the exact language selection "
+                "-x c++";
+        return false;
+      }
       continue;
     }
-    if (argument == "-o" || argument == "-MF" || argument == "-MT" ||
-        argument == "-MQ" || argument == "-MJ") {
-      error = "output-producing compiler argument is not valid for extraction: " +
-              argument;
+    const auto risk =
+        support::classify_untrusted_compiler_argument_v1(argument, clang_cl);
+    if (risk != support::CompilerArgumentRiskV1::none) {
+      error = std::string(support::compiler_argument_risk_message_v1(risk)) +
+              " is not valid for extraction: " + argument;
       return false;
     }
-    if (forbiddenCompilerArgument(argument)) {
-      error = "unsafe or conflicting compiler argument for extraction: " +
-              argument;
-      return false;
+    const bool clang_cl_value_option =
+        clang_cl && support::clang_cl_option_consumes_next_v1(argument);
+    if (clang_cl_value_option) {
+      if (++index == options.compiler_arguments.size()) {
+        error = argument + " requires a value";
+        return false;
+      }
+      if (!support::compiler_consumed_value_is_safe_v1(
+              options.compiler_arguments[index])) {
+        error = "nested response-file expansion is forbidden in the value "
+                "for " +
+                argument;
+        return false;
+      }
+      arguments.push_back(argument);
+      arguments.push_back(options.compiler_arguments[index]);
+      continue;
     }
     arguments.push_back(argument);
   }
-  arguments.insert(arguments.end(), {"-x", "c++", "-fsyntax-only",
-                                     "-fno-color-diagnostics"});
+  if (clang_cl) {
+    if (std::find(arguments.begin(), arguments.end(), "--driver-mode=cl") ==
+        arguments.end()) {
+      arguments.insert(arguments.begin(), "--driver-mode=cl");
+    }
+    arguments.insert(arguments.begin(), "--no-default-config");
+    arguments.insert(arguments.end(),
+                     {"/TP", "/Zs", "-fno-color-diagnostics"});
+  } else {
+    arguments.insert(arguments.end(), {"-x", "c++", "-fsyntax-only",
+                                       "-fno-color-diagnostics"});
+  }
   return true;
 }
 
@@ -1306,8 +1352,19 @@ public:
       std::cerr << ' ' << shellQuoted(options.input_path) << '\n';
     }
 
-    clang::tooling::FixedCompilationDatabase compilations(
-        std::filesystem::current_path().string(), tool_arguments);
+    std::string current_path_error;
+    const std::optional<std::string> current_path =
+        support::path_to_utf8_v1(std::filesystem::current_path(),
+                                 current_path_error);
+    if (!current_path) {
+      result.diagnostics.push_back(
+          Diagnostic{.file = display_path,
+                     .message = "cannot encode frontend working directory as "
+                                "UTF-8: " + current_path_error});
+      return false;
+    }
+    clang::tooling::FixedCompilationDatabase compilations(*current_path,
+                                                           tool_arguments);
     clang::tooling::ClangTool tool(compilations, {options.input_path});
     tool.mapVirtualFile(options.input_path, *source);
     CountingDiagnosticConsumer clang_diagnostics;

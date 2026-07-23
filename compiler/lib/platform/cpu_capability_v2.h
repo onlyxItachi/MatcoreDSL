@@ -150,6 +150,15 @@ CpuCapabilitiesValidationV2 validate_cpu_capabilities_v2(
 CpuImplementationAvailabilityV2
 unknown_cpu_implementation_availability_v2() noexcept;
 
+// Normalizes compiler feature support independently from the host that runs
+// discovery.  This keeps clang-cl in the Clang capability family while
+// retaining the MSVC ABI identity recorded by PlatformRecordV1.  Unknown and
+// native MSVC frontends fail closed for ISA-specific code generation; the
+// runtime implementation domain remains a separate, mandatory legality gate.
+CpuFeatureDomainV2 cpu_compiler_feature_domain_v2(
+    ArchitectureKindV1 architecture, CompilerFrontendV1 frontend,
+    std::uint32_t compiler_major_version) noexcept;
+
 CpuCapabilitiesV2 discover_cpu_capabilities_v2(
     const CpuImplementationAvailabilityV2 &implementation =
         unknown_cpu_implementation_availability_v2()) noexcept;

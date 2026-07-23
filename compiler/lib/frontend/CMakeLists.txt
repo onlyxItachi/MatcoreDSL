@@ -2,7 +2,7 @@
 set_source_files_properties(
   ast_json_frontend.cpp
   PROPERTIES COMPILE_OPTIONS
-    "-fno-sanitize=pointer-overflow;${MDSLC_RAPIDJSON_COMPAT_COMPILE_OPTIONS}"
+    "${MDSLC_RAPIDJSON_NO_POINTER_OVERFLOW_OPTION};${MDSLC_RAPIDJSON_COMPAT_COMPILE_OPTIONS}"
 )
 
 add_library(matcore_frontend_common STATIC frontend_common.cpp)
@@ -39,6 +39,6 @@ if(MDSLC_ENABLE_NATIVE_FRONTEND)
   target_compile_definitions(matcore_frontend_native PRIVATE ${LLVM_DEFINITIONS})
   target_link_libraries(matcore_frontend_native
     PUBLIC matcore_frontend_common
-    PRIVATE clang-cpp LLVM
+    PRIVATE ${MDSLC_CLANG_TOOLING_LIBRARIES} MatcoreDSL::PlatformSupportV1
   )
 endif()

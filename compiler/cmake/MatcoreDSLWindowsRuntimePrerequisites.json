@@ -1,0 +1,30 @@
+{
+  "schema": "matcore-windows-runtime-prerequisites-v1",
+  "target": "x86_64-pc-windows-msvc",
+  "release_runtime_model": "dynamic-msvc-runtime",
+  "external_prerequisites": [
+    {
+      "id": "microsoft-visual-cpp-2015-2022-redistributable-x64",
+      "display_name": "Microsoft Visual C++ Redistributable for Visual Studio 2015-2022 (x64)",
+      "provider": "Microsoft",
+      "architecture": "x64",
+      "distribution_status": "not-bundled",
+      "installation_responsibility": "user-or-deployer",
+      "required_import_families": [
+        "vcruntime140*.dll",
+        "msvcp140*.dll",
+        "concrt140.dll",
+        "vcomp140.dll"
+      ]
+    }
+  ],
+  "windows_components": {
+    "api_sets": "operating-system-provided",
+    "ucrtbase.dll": "operating-system-provided-on-supported-windows"
+  },
+  "validation": {
+    "release_only": true,
+    "debug_crt_allowed_in_distribution": false,
+    "clean_machine_installation_not_performed_by_manifest": true
+  }
+}

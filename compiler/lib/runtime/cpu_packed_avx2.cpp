@@ -1,4 +1,5 @@
 #include "cpu_gemm_backend.h"
+#include "cpu_capability_v2.h"
 
 #include <algorithm>
 #include <array>
@@ -287,10 +288,18 @@ bool cpu_packed_avx2_build_available_v1() noexcept {
 }
 
 bool cpu_packed_avx2_runtime_usable_v1() noexcept {
-#if MATCORE_MDSLC_PACKED_AVX2_COMPILED && \
-    defined(__has_builtin) && __has_builtin(__builtin_cpu_supports)
-  __builtin_cpu_init();
-  return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+#if MATCORE_MDSLC_PACKED_AVX2_COMPILED
+  const auto capabilities =
+      platform::discover_cpu_capabilities_v2();
+  if (!platform::validate_cpu_capabilities_v2(capabilities)) return false;
+  const auto execution_safe = [&capabilities](platform::CpuFeatureV2 feature) {
+    return platform::feature_available(capabilities.hardware, feature) &&
+           platform::feature_available(capabilities.os_enabled, feature) &&
+           platform::feature_available(capabilities.compiler, feature);
+  };
+  return capabilities.architecture == platform::ArchitectureKindV1::x86_64 &&
+         execution_safe(platform::CpuFeatureV2::avx2) &&
+         execution_safe(platform::CpuFeatureV2::fma);
 #else
   return false;
 #endif

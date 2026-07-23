@@ -1,6 +1,6 @@
 add_executable(matcore-plan main.cpp)
 target_compile_features(matcore-plan PRIVATE cxx_std_20)
-target_compile_options(matcore-plan PRIVATE -Wall -Wextra -Wpedantic -Werror)
+mdslc_target_enable_warnings(matcore-plan WERROR)
 target_link_libraries(matcore-plan PRIVATE
   MatcoreDSL::CpuBackendsV1
   MatcoreDSL::PlatformV1
