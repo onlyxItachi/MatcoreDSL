@@ -432,6 +432,8 @@ jobs:
           $build = Join-Path $env:RUNNER_TEMP "MDSLC Windows ASan"
           cmake -S compiler -B $build -G Ninja `
             -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+            -DCMAKE_TRY_COMPILE_CONFIGURATION=RelWithDebInfo `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL `
             "-DCMAKE_C_COMPILER:FILEPATH=$env:LLVM_ROOT\bin\clang-cl.exe" `
             "-DCMAKE_CXX_COMPILER:FILEPATH=$env:LLVM_ROOT\bin\clang-cl.exe" `
             "-DCMAKE_LINKER:FILEPATH=$env:LLVM_ROOT\bin\lld-link.exe" `
