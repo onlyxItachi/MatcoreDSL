@@ -1,7 +1,7 @@
 # ADR-0008: MDSLC Advanced CPU Backend v2
 
-Status: Accepted and locally validated for the declared Linux host scope;
-hosted publication and Windows validation pending
+Status: Accepted and published for the declared Linux host scope; focused
+Windows x64 compiler/runtime/package validation passed
 
 Date: 2026-07-22
 
@@ -134,14 +134,27 @@ surface to exactly 15 exported C functions.
 | Topology/NUMA | One physical Linux NUMA node is discovered and exercised; multi-node planning is synthetic-only and performs no page placement or migration. |
 | BF16 and I8 | BF16-to-F32 and I8-to-I32 typed reference semantics, IR contracts, oracles, and C entry points are implemented. |
 | Accelerated low precision | AVX-512 BF16, AVX-512 VNNI, AMX-BF16, and AMX-INT8 are not implemented or runtime-validated. The host exposes no AMX. |
-| Windows | Frontend, COFF/PE artifacts, runtime DLL/import library, planner, package/consumer, and ZIP are unvalidated and unproduced. |
+| Windows | Hosted Windows Server 2025 with clang-cl/LLVM 21.1.8 validates the native frontend, COFF/PE artifacts, runtime DLL/import library, planner, runtime AVX2 variants, package/consumer with space and Unicode paths, focused runtime/generated-code ASan, and a CI ZIP. AVX-512 is compile/disassembly-only on this host, OpenBLAS is omitted, and multi-node NUMA is synthetic-only. |
 
-This table records an implementation-complete Linux candidate and focused
-evidence, not final milestone acceptance. Fresh exact-tip Release/Debug and
-sanitizer gates, the whole-diff independent review, hosted checks, normal merge,
-issue closure, and the immutable tag remain required. The public opaque handle
-is still destroyed exactly once; only the internal C++ `shutdown()` operation
-is repeat-safe.
+This table records the accepted Linux implementation and the separately
+bounded hosted Windows evidence. Linux passed fresh Release/Debug, sanitizers,
+whole-diff review, hosted checks, normal merge, and the immutable
+`mdslc-cpu-backend-v2` tag. The focused Windows candidate passed Release (35
+passed plus one explicit AVX-512 hardware skip), Debug (26 passed plus the same
+skip), package relocation, external consumer, exact artifact inspection, and
+independent review. The public opaque handle is still destroyed exactly once;
+only the internal C++ `shutdown()` operation is repeat-safe.
+
+Windows AddressSanitizer evidence is intentionally narrower than Linux. The
+runtime DLL and generated host/stub/backend translation units are instrumented
+and executed. The native LibTooling executables use the already validated
+Release tools because the authenticated LLVM archive's LLVMSupport allocator
+conflicts with the Windows static ASan allocator thunk. Windows UBSan is not
+claimed. The distribution records the Microsoft Visual C++ 2015--2022 x64
+Redistributable as an external prerequisite; a clean-machine installation was
+not performed. The Windows ZIP contains 17 installed files, passed recursive
+import and absolute-path-leak checks, and has SHA-256
+`b2c633192d3084585198f24eedba3957a85552c5d483d3b656bfdeda60480cd2`.
 
 ## Rejected alternatives
 

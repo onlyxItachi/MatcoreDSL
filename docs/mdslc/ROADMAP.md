@@ -45,19 +45,31 @@ correctness, and passes its declared acceptance suite.
     The optional OpenBLAS baseline, explicit workspace/prepacked-B ABI, native
     packed AVX2/FMA engine, five-variant planner v2, reproducible benchmark
     contract, host-specific static calibration, packaging, sanitizers, and
-    independent review pass. Windows remains a portability seed, not a
-    runtime-validated platform.
+    independent review pass.
+11. **Advanced CPU backend — complete for the validated Linux host.**
+    Capability record v2, guarded packed AVX-512 F32, persistent parallel
+    AVX2/AVX-512 execution, topology/affinity policy, synthetic multi-node
+    NUMA planning, typed BF16/F32 and I8/I32 reference semantics, packaging,
+    sanitizers, calibrated planner v3, hosted checks, normal merge, and the
+    immutable `mdslc-cpu-backend-v2` checkpoint pass.
+12. **Windows x64 compiler/runtime distribution — validated on the hosted
+    scope.** clang-cl/LLVM 21.1.8, the MSVC ABI, COFF/PE generation, runtime
+    DLL/import library, native LibTooling frontend, deterministic planner,
+    runtime-validated AVX2 variants, install/relocation/external consumer,
+    focused runtime/generated-code ASan, exact ISA artifact checks, and the CI
+    ZIP candidate pass. AVX-512 runtime remains unavailable on the hosted CPU,
+    Windows OpenBLAS is omitted, multi-node NUMA is synthetic-only, and the VC
+    Redistributable remains an external prerequisite.
 
 The architecture verdict is **passed for the standalone native CPU
 frontend/runtime vertical slice**. The AST-JSON producer remains an explicitly
 selected compatibility oracle only; it is never a fallback from native.
 
-## Milestone 5 local Linux gate
+## Milestone 5 published Linux gate and focused Windows validation
 
-The advanced Linux CPU implementation on `mdslc/cpu-isa-parallel-v1` passes
-its local acceptance and independent-review gates for the declared validation
-host. Hosted publication and the separately reported Windows compatibility
-phase remain open. The accepted Linux candidate includes:
+The advanced Linux CPU implementation passed its local, independent-review,
+hosted, normal-merge, and immutable-tag gates for the declared validation
+host. The accepted implementation includes:
 
 - capability record v2 with separate hardware, OS state, compiler,
   implementation, and physical runtime-validation domains;
@@ -71,25 +83,28 @@ phase remain open. The accepted Linux candidate includes:
   points; and
 - synthetic multi-node NUMA planning without hidden page placement.
 
-The candidate does **not** include accelerated BF16/VNNI/AMX, physical
-multi-node NUMA validation, or Windows validation. Hosted Linux checks, normal
-merge, the immutable tag, and the focused Windows phase remain open gates.
+The implementation does **not** include accelerated BF16/VNNI/AMX or physical
+multi-node NUMA validation. The subsequent focused Windows x64 phase also
+validated the native frontend, COFF/PE artifact model, runtime DLL/import
+library, deterministic planner, AVX2 native variants, package relocation,
+external consumer, and ZIP distribution candidate. Windows AVX-512 remains
+compile/disassembly-only, OpenBLAS is omitted, and no Windows performance claim
+is inferred from Linux evidence.
 
 ## Next three exact engineering tasks
 
-1. **Publish the validated Linux Milestone 5 backend normally.** Push the
-   reviewed branch, pass hosted Linux checks, merge normally into `main`,
-   update issue #9 with the Linux verdict, and create the immutable
-   `mdslc-cpu-backend-v2` tag at the merge commit. Keep the tracker open until
-   its focused Windows checkbox is resolved.
-2. **Run the focused Windows x64 compatibility phase.** Validate clang-cl,
-   LibTooling, COFF/PE, the runtime DLL/import library, planner/native variants,
-   paths containing spaces, install/consumer, and a CI ZIP artifact. Report
-   unavailable ISA/topology paths separately and do not begin GPU work.
-3. **Publish bounded cross-platform status.** Keep Linux performance evidence,
-   Windows compiler/runtime/package evidence, compile-only ISA status, and
-   synthetic topology status separate; do not turn a hosted portability result
-   into an unsupported hardware claim.
+1. **Broaden CPU hardware validation without changing support claims.** Run the
+   existing gates on a physical multi-node host and on a Windows host with
+   OS-usable AVX-512 before promoting either status beyond synthetic or
+   compile-only evidence.
+2. **Harden Windows distribution operations.** Validate the ZIP on a clean
+   machine with the declared VC Redistributable prerequisite, then decide
+   whether signing and an installer format belong in a separate release
+   milestone. Keep OpenBLAS optional and provider-authenticated.
+3. **Choose the next semantic operation deliberately.** Add `gemv` first only
+   with a typed IR contract, legality, planner variants, stable C ABI,
+   diagnostics, package tests, and bounded Linux/Windows execution evidence.
+   Do not begin GPU work implicitly.
 
 ## Later operation and lowering milestones
 
