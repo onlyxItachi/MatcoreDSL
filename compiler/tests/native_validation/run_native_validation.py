@@ -1759,8 +1759,16 @@ def driver_suite(checks: Checks, extractor: Path, driver: Path, clang: Path) -> 
             "generated host source mutation still produced a final executable",
         )
         expected_host_artifact = temporary / "host-artifact-race.host.cpp"
+        host_artifact_diagnostic = host_artifact_race.stderr.lower()
+        host_artifact_change_reported = (
+            "dependency changed" in host_artifact_diagnostic
+            or (
+                "dependency consistency check failed" in host_artifact_diagnostic
+                and "changed while it was being read" in host_artifact_diagnostic
+            )
+        )
         checks.require(
-            "dependency changed" in host_artifact_race.stderr.lower()
+            host_artifact_change_reported
             and str(expected_host_artifact) in host_artifact_race.stderr,
             f"generated host mutation diagnostic was unclear:\n{host_artifact_race.stderr}",
         )

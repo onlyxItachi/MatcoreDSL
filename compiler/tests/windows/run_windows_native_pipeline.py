@@ -541,11 +541,16 @@ def pipeline_suite(
     ]
     for label, controls in compiler_control_cases:
         control_output = temporary / f"{label}.lib"
+        expected_words = (
+            ("overridden", "driver mode")
+            if label == "driver-mode-override"
+            else ("output-producing", "unsafe", "opaque", "forbidden")
+        )
         reject_driver(
             label,
             [*common, "/c", str(source), "-o", str(control_output), *controls],
             control_output,
-            ("output-producing", "unsafe", "opaque", "forbidden"),
+            expected_words,
         )
         if source.read_bytes() != overwrite_bytes:
             raise RuntimeError(f"Windows driver guard {label} modified its source")
@@ -582,6 +587,117 @@ def pipeline_suite(
                 f"{label} prospective depfile/output alias was accepted:\n"
                 f"{rejected_dep_alias.stderr}"
             )
+
+    # Every user-visible destination is authenticated against the compiler's
+    # dependency closure before the driver removes or publishes anything.
+    # The save-temps case deliberately differs only by filename case so the
+    # hosted NTFS run proves Windows path identity rather than textual matching.
+    collision_root = temporary / "dependency-collision"
+    collision_root.mkdir()
+    collision_sentinel = b"#pragma once\r\n#define MDSLC_WINDOWS_SENTINEL 1\r\n"
+
+    def collision_source(name: str, dependency: Path) -> Path:
+        candidate = collision_root / f"{name}.mdsl"
+        candidate.write_text(
+            f'#include "{dependency.name}"\n' + source.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        return candidate
+
+    generated_dependency = collision_root / "Collision.host.cpp"
+    generated_dependency.write_bytes(collision_sentinel)
+    generated_source = collision_source("generated-collision", generated_dependency)
+    generated_output = collision_root / "collision.lib"
+    rejected_generated = run(
+        [
+            str(driver),
+            "--save-temps",
+            *common,
+            "/EHsc",
+            "/MD",
+            "/c",
+            str(generated_source),
+            "-o",
+            str(generated_output),
+        ],
+        cwd=collision_root,
+    )
+    generated_diagnostic = (rejected_generated.stdout + rejected_generated.stderr).lower()
+    if rejected_generated.returncode == 0 or "authenticated input dependency" not in generated_diagnostic:
+        raise RuntimeError(
+            "case-insensitive generated/dependency collision was accepted or unclear:\n"
+            + rejected_generated.stderr
+        )
+    if generated_dependency.read_bytes() != collision_sentinel:
+        raise RuntimeError("generated/dependency collision modified sentinel bytes")
+    if generated_output.exists():
+        raise RuntimeError("generated/dependency collision published an archive")
+    for suffix in (
+        ".host-overlay.yaml",
+        ".matcore.json",
+        ".sites.h",
+        ".stubs.cpp",
+        ".backend.cpp",
+        ".host.obj",
+        ".stubs.obj",
+        ".backend.obj",
+    ):
+        if (collision_root / f"collision{suffix}").exists():
+            raise RuntimeError(f"generated/dependency rejection published collision{suffix}")
+
+    output_dependency = collision_root / "output-dependency.lib"
+    output_dependency.write_bytes(collision_sentinel)
+    output_source = collision_source("output-collision", output_dependency)
+    rejected_output = run(
+        [
+            str(driver),
+            *common,
+            "/EHsc",
+            "/MD",
+            "/c",
+            str(output_source),
+            "-o",
+            str(output_dependency),
+        ],
+        cwd=collision_root,
+    )
+    output_diagnostic = (rejected_output.stdout + rejected_output.stderr).lower()
+    if rejected_output.returncode == 0 or "authenticated input dependency" not in output_diagnostic:
+        raise RuntimeError(
+            "output/dependency collision was accepted or unclear:\n"
+            + rejected_output.stderr
+        )
+    if output_dependency.read_bytes() != collision_sentinel:
+        raise RuntimeError("output/dependency collision modified sentinel bytes")
+
+    depfile_dependency = collision_root / "requested-dependency.d"
+    depfile_dependency.write_bytes(collision_sentinel)
+    depfile_source = collision_source("depfile-collision", depfile_dependency)
+    depfile_output = collision_root / "depfile-collision.lib"
+    rejected_depfile = run(
+        [
+            str(driver),
+            *common,
+            "/EHsc",
+            "/MD",
+            "/c",
+            f"--matcore-depfile={depfile_dependency}",
+            str(depfile_source),
+            "-o",
+            str(depfile_output),
+        ],
+        cwd=collision_root,
+    )
+    depfile_diagnostic = (rejected_depfile.stdout + rejected_depfile.stderr).lower()
+    if rejected_depfile.returncode == 0 or "authenticated input dependency" not in depfile_diagnostic:
+        raise RuntimeError(
+            "depfile/dependency collision was accepted or unclear:\n"
+            + rejected_depfile.stderr
+        )
+    if depfile_dependency.read_bytes() != collision_sentinel:
+        raise RuntimeError("depfile/dependency collision modified sentinel bytes")
+    if depfile_output.exists():
+        raise RuntimeError("depfile/dependency collision published an archive")
 
     # Exercise the driver's authenticated snapshot checks using an observable
     # phase boundary, not a private test hook. A large comment makes the
