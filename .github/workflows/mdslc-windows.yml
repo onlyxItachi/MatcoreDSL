@@ -307,7 +307,13 @@ jobs:
           $licenseRoot = Join-Path $prefix "share\licenses"
           New-Item -ItemType Directory -Force -Path (Join-Path $licenseRoot "llvm") | Out-Null
           New-Item -ItemType Directory -Force -Path (Join-Path $licenseRoot "rapidjson") | Out-Null
-          Copy-Item "$env:LLVM_ROOT\LICENSE.TXT" (Join-Path $licenseRoot "llvm\LICENSE.TXT")
+          $llvmLicenseRelative = "include\llvm\Support\LICENSE.TXT"
+          $llvmLicenseSource = Join-Path $env:LLVM_ROOT $llvmLicenseRelative
+          if (-not (Test-Path $llvmLicenseSource -PathType Leaf)) {
+            throw "authenticated LLVM archive lacks $llvmLicenseRelative"
+          }
+          $llvmLicenseHash = (Get-FileHash -Algorithm SHA256 $llvmLicenseSource).Hash.ToLowerInvariant()
+          Copy-Item $llvmLicenseSource (Join-Path $licenseRoot "llvm\LICENSE.TXT")
           foreach ($notice in @("ThirdPartyNotices.txt", "NOTICE.txt", "NOTICE")) {
             $noticePath = Join-Path $env:LLVM_ROOT $notice
             if (Test-Path $noticePath -PathType Leaf) {
@@ -335,6 +341,10 @@ jobs:
             version = $env:LLVM_VERSION
             archive = $env:LLVM_ARCHIVE_NAME
             archive_sha256 = $env:LLVM_ARCHIVE_SHA256
+            license = [ordered]@{
+              archive_path = $llvmLicenseRelative
+              sha256 = $llvmLicenseHash
+            }
             files = @($authenticatedDlls)
             external_prerequisites = @(
               [ordered]@{
