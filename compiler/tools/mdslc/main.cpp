@@ -2211,7 +2211,7 @@ bool RequireGeneratedFile(const fs::path &path) {
 int RunCpuPipeline(const WrapperArguments &wrapper,
                    const CpuInvocation &invocation) {
   if (IsWindowsHost() && wrapper.frontend == FrontendMode::AstJsonBootstrap) {
-    std::cerr << "mdslc++: the AST-JSON bootstrap frontend is not available "
+    std::cerr << "mdslc++: the AST-JSON bootstrap frontend is unavailable "
                  "on Windows; use the native LibTooling frontend\n";
     return 2;
   }
