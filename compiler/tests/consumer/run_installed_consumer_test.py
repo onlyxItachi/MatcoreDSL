@@ -526,20 +526,23 @@ def main() -> int:
             f"{production_override.stderr}"
         )
 
-    run(
-        [
-            args.cmake,
-            "-S",
-            str(source),
-            "-B",
-            str(build),
-            "-G",
-            "Ninja",
-            f"-DCMAKE_PREFIX_PATH={prefix}",
-            f"-DCMAKE_CXX_COMPILER={test_compiler}",
-        ],
-        environment=build_environment,
-    )
+    configure_command = [
+        args.cmake,
+        "-S",
+        str(source),
+        "-B",
+        str(build),
+        "-G",
+        "Ninja",
+        f"-DCMAKE_PREFIX_PATH={prefix}",
+        f"-DCMAKE_CXX_COMPILER={test_compiler}",
+    ]
+    if is_windows:
+        # This test validates the redistributable Release package and rejects
+        # every Debug CRT import.  Ninja has no portable implicit default
+        # configuration, so make the consumer's runtime model explicit.
+        configure_command.append("-DCMAKE_BUILD_TYPE=Release")
+    run(configure_command, environment=build_environment)
     run(
         [args.cmake, "--build", str(build), "--parallel", "2"],
         environment=build_environment,
