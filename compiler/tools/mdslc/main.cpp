@@ -545,6 +545,24 @@ bool CompilationInputsMatch(
          DependencyClosureMatches(dependencies, phase);
 }
 
+bool RequireMutationPathsDisjointFromDependencies(
+    const std::vector<DependencySnapshot> &dependencies,
+    const std::vector<std::pair<std::string_view, const fs::path *>>
+        &mutation_paths) {
+  for (const auto &[role, mutation_path] : mutation_paths) {
+    for (const DependencySnapshot &dependency : dependencies) {
+      if (PathsReferToSameLocation(*mutation_path, dependency.path)) {
+        std::cerr << "mdslc++: " << role
+                  << " must not overwrite or alias an authenticated input "
+                     "dependency: "
+                  << dependency.path << '\n';
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 bool HasMdslExtension(std::string_view argument) {
   constexpr std::string_view extension = ".mdsl";
   return argument.size() >= extension.size() &&
@@ -2350,27 +2368,11 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
               << '\n';
     return 2;
   }
-  error.clear();
-  fs::remove(output, error);
-  if (error) {
-    std::cerr << "mdslc++: cannot clear the requested output before "
-                 "compilation: "
-              << output << ": " << error.message() << '\n';
-    return 2;
-  }
   if (!invocation.dependency_mode.empty()) {
     error.clear();
     if (fs::is_directory(dependency_output, error) && !error) {
       std::cerr << "mdslc++: requested dependency output is a directory: "
                 << dependency_output << '\n';
-      return 2;
-    }
-    error.clear();
-    fs::remove(dependency_output, error);
-    if (error) {
-      std::cerr << "mdslc++: cannot clear the requested dependency output "
-                   "before compilation: "
-                << dependency_output << ": " << error.message() << '\n';
       return 2;
     }
   }
@@ -2402,6 +2404,50 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
                               dependency_closure,
                               "dependency snapshotting")) {
     return 1;
+  }
+
+  std::vector<std::pair<std::string_view, const fs::path *>> mutation_paths{
+      {"requested output", &output},
+      {"generated host source", &artifacts.host_source},
+      {"generated host overlay", &artifacts.host_overlay},
+      {"generated Matcore IR", &artifacts.ir},
+      {"generated sites header", &artifacts.sites_header},
+      {"generated stubs source", &artifacts.stubs_source},
+      {"generated backend source", &artifacts.backend_source},
+      {"generated host object", &artifacts.host_object},
+      {"generated stubs object", &artifacts.stubs_object},
+      {"generated backend object", &artifacts.backend_object},
+  };
+  if (!invocation.dependency_mode.empty()) {
+    mutation_paths.emplace_back("requested dependency output",
+                                &dependency_output);
+  }
+  if (!RequireMutationPathsDisjointFromDependencies(dependency_closure,
+                                                     mutation_paths)) {
+    return 2;
+  }
+
+  // Only clear user-visible destinations after the compiler-authenticated
+  // dependency closure proves that none of them is an input to this
+  // translation unit. This ordering protects included files (and aliases of
+  // them) from destructive output or --save-temps collisions.
+  error.clear();
+  fs::remove(output, error);
+  if (error) {
+    std::cerr << "mdslc++: cannot clear the requested output before "
+                 "compilation: "
+              << output << ": " << error.message() << '\n';
+    return 2;
+  }
+  if (!invocation.dependency_mode.empty()) {
+    error.clear();
+    fs::remove(dependency_output, error);
+    if (error) {
+      std::cerr << "mdslc++: cannot clear the requested dependency output "
+                   "before compilation: "
+                << dependency_output << ": " << error.message() << '\n';
+      return 2;
+    }
   }
 
   std::vector<fs::path> public_dependency_files;
