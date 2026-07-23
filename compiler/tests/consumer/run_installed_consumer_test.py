@@ -54,6 +54,21 @@ def make_depfile_paths(path: Path) -> tuple[str, ...]:
     return tuple({encode(str(path)), encode(path.as_posix())})
 
 
+def depfile_mentions_path(depfile_text: str, path: Path) -> bool:
+    spellings = make_depfile_paths(path)
+    if any(spelling in depfile_text for spelling in spellings):
+        return True
+    # clang-cl can preserve a forward slash from an include spelling while
+    # escaping the resolved Windows directory prefix with doubled
+    # backslashes. Normalize only those escaped separators; leave Makefile
+    # escapes for spaces, colons, hashes, and dollars intact.
+    normalized_text = depfile_text.replace("\\\\", "/")
+    return any(
+        spelling.replace("\\\\", "/") in normalized_text
+        for spelling in spellings
+    )
+
+
 def is_beneath(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())
@@ -593,10 +608,7 @@ def main() -> int:
         source / "consumer_value.h",
         prefix / "include" / "matcore" / "runtime_c.h",
     ):
-        if not any(
-            spelling in depfile_text
-            for spelling in make_depfile_paths(expected_dependency)
-        ):
+        if not depfile_mentions_path(depfile_text, expected_dependency):
             raise RuntimeError(
                 f"MDSLC depfile does not track {expected_dependency}:\n{depfile_text}"
             )
