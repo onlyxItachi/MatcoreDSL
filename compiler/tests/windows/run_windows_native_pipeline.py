@@ -342,6 +342,8 @@ def pipeline_suite(
             "--matcore-target=cpu",
             "/TP",
             "/std:c++20",
+            "/EHsc",
+            "/MD",
             *sanitizer_compile_options,
             "/c",
             str(metachar_source),
