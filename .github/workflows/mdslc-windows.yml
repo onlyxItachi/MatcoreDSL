@@ -430,7 +430,7 @@ jobs:
           $asanDynamic = Get-ChildItem $env:LLVM_ROOT -Recurse -File `
             -Filter "clang_rt.asan_dynamic-x86_64.lib" | Select-Object -First 1
           $asanThunk = Get-ChildItem $env:LLVM_ROOT -Recurse -File `
-            -Filter "clang_rt.asan_dynamic_runtime_thunk-x86_64.lib" |
+            -Filter "clang_rt.asan_static_runtime_thunk-x86_64.lib" |
             Select-Object -First 1
           if (-not $asanRuntime -or -not $asanDynamic -or -not $asanThunk) {
             throw "audited clang-cl archive lacks the x64 dynamic AddressSanitizer runtime surface"
@@ -439,24 +439,24 @@ jobs:
               $asanRuntime.DirectoryName -ne $asanThunk.DirectoryName) {
             throw "AddressSanitizer runtime and import libraries have inconsistent providers"
           }
-          # CMake's MSVC platform invokes lld-link directly. The sanitizer
-          # spelling is a clang-cl driver option, so reproduce the exact
-          # dynamic-runtime linkage selected by clang-cl instead of passing
-          # /fsanitize=address to lld-link as though it were a linker flag.
+          # CMake's MSVC platform invokes lld-link directly, and LLVMConfig
+          # selects the static MSVC CRT for the imported Tooling libraries.
+          # Reproduce clang-cl's exact /MT sanitizer linkage instead of
+          # passing /fsanitize=address to lld-link as a linker flag.
           $asanDynamicPath = $asanDynamic.FullName.Replace('\', '/')
           $asanThunkPath = $asanThunk.FullName.Replace('\', '/')
-          $asanLinkFlags = "$asanDynamicPath /include:__asan_seh_interceptor /wholearchive:$asanThunkPath"
+          $asanLinkFlags = "`"$asanDynamicPath`" /wholearchive:`"$asanThunkPath`""
           $build = Join-Path $env:RUNNER_TEMP "MDSLC Windows ASan"
           cmake -S compiler -B $build -G Ninja `
             -DCMAKE_BUILD_TYPE=RelWithDebInfo `
             -DCMAKE_TRY_COMPILE_CONFIGURATION=RelWithDebInfo `
-            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
             "-DCMAKE_C_COMPILER:FILEPATH=$env:LLVM_ROOT\bin\clang-cl.exe" `
             "-DCMAKE_CXX_COMPILER:FILEPATH=$env:LLVM_ROOT\bin\clang-cl.exe" `
             "-DCMAKE_LINKER:FILEPATH=$env:LLVM_ROOT\bin\lld-link.exe" `
             "-DCMAKE_AR:FILEPATH=$env:LLVM_ROOT\bin\llvm-lib.exe" `
             "-DCMAKE_C_FLAGS:STRING=/fsanitize=address /Oy-" `
-            "-DCMAKE_CXX_FLAGS:STRING=/fsanitize=address /Oy-" `
+            "-DCMAKE_CXX_FLAGS:STRING=/fsanitize=address /Oy- /EHsc" `
             "-DCMAKE_EXE_LINKER_FLAGS:STRING=$asanLinkFlags" `
             "-DCMAKE_SHARED_LINKER_FLAGS:STRING=$asanLinkFlags" `
             "-DCMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO:STRING=/debug /incremental:no" `
