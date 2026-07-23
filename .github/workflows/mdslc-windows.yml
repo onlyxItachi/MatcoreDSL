@@ -470,16 +470,20 @@ jobs:
             "-DLLVM_DIR:PATH=$env:LLVM_ROOT\lib\cmake\llvm" `
             "-DClang_DIR:PATH=$env:LLVM_ROOT\lib\cmake\clang" `
             "-DMDSLC_DIAGUIDS_LIBRARY:FILEPATH=$env:MDSLC_DIAGUIDS_LIBRARY"
-          cmake --build $build --parallel 2 --target `
-            matcore_runtime_cpu_test mdslc_driver
+          # The authenticated LLVM Tooling archive's LLVMSupport library
+          # exports rpmalloc, which conflicts with the Windows ASan allocator
+          # thunk if the extractor itself is instrumented. Keep the already
+          # validated Release compiler tools as orchestration processes and
+          # instrument the MDSLC runtime plus every generated translation unit.
+          cmake --build $build --parallel 2 --target matcore_runtime_cpu_test
           $env:PATH = "$($asanRuntime.DirectoryName);$env:PATH"
           ctest --test-dir $build `
             -R "^runtime\.cpu\.gemm_v0$" `
             --output-on-failure -j1
           python compiler/tests/windows/run_windows_native_pipeline.py `
             --suite pipeline `
-            --extractor (Join-Path $build "bin\matcore-extract.exe") `
-            --driver (Join-Path $build "bin\mdslc++.exe") `
+            --extractor (Join-Path $env:MDSLC_WINDOWS_RELEASE_BUILD "bin\matcore-extract.exe") `
+            --driver (Join-Path $env:MDSLC_WINDOWS_RELEASE_BUILD "bin\mdslc++.exe") `
             --clang "$env:LLVM_ROOT\bin\clang-cl.exe" `
             --build-dir $build `
             --asan
