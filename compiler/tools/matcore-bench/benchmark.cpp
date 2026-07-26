@@ -1020,21 +1020,45 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
         if (!invoke_sequence()) return false;
       }
 
-      if (options.cache_mode == CacheModeV1::cold) evict_cache(cold_cache);
-      const auto probe_begin = std::chrono::steady_clock::now();
-      if (!invoke_sequence()) return false;
-      const auto probe_end = std::chrono::steady_clock::now();
-      const auto probe_ns = std::max<std::uint64_t>(
-          1, static_cast<std::uint64_t>(
-                 std::chrono::duration_cast<std::chrono::nanoseconds>(
-                     probe_end - probe_begin)
-                     .count()));
-      std::uint64_t repetitions = 1;
       const std::uint64_t calibration_target_ns =
           options.timer_floor_nanoseconds >
                   std::numeric_limits<std::uint64_t>::max() / 2
               ? std::numeric_limits<std::uint64_t>::max()
               : options.timer_floor_nanoseconds * 2;
+      const auto measure_probe = [&]() -> std::uint64_t {
+        const auto probe_begin = std::chrono::steady_clock::now();
+        if (!invoke_sequence()) return 0;
+        const auto probe_end = std::chrono::steady_clock::now();
+        return std::max<std::uint64_t>(
+            1, static_cast<std::uint64_t>(
+                   std::chrono::duration_cast<std::chrono::nanoseconds>(
+                       probe_end - probe_begin)
+                       .count()));
+      };
+      if (options.cache_mode == CacheModeV1::cold) evict_cache(cold_cache);
+      std::uint64_t probe_ns = measure_probe();
+      if (probe_ns == 0) return false;
+      if (options.cache_mode == CacheModeV1::hot) {
+        const std::uint64_t multi_probe_ceiling =
+            calibration_target_ns >
+                    std::numeric_limits<std::uint64_t>::max() / 8
+                ? std::numeric_limits<std::uint64_t>::max()
+                : calibration_target_ns * 8;
+        // A provider's first steady-state call can still be much slower than
+        // the following calls (thread wake-up and first-use work are common
+        // examples). Calibrate from the fastest of three bounded probes when
+        // the first result is close enough to the timer floor that such a
+        // swing could invalidate retained samples. Very long calls keep one
+        // probe so calibration does not distort the benchmark envelope.
+        if (probe_ns < multi_probe_ceiling) {
+          for (int probe = 1; probe < 3; ++probe) {
+            const std::uint64_t candidate = measure_probe();
+            if (candidate == 0) return false;
+            probe_ns = std::min(probe_ns, candidate);
+          }
+        }
+      }
+      std::uint64_t repetitions = 1;
       if (options.cache_mode == CacheModeV1::hot &&
           probe_ns < calibration_target_ns) {
         repetitions = std::min(
