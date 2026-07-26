@@ -364,6 +364,28 @@ def main() -> int:
         else:
             raise AssertionError("unauthenticated final output was accepted")
 
+        asserted_provenance = copy.deepcopy(raw_document)
+        asserted_provenance["environment"]["source_provenance_origin"] = (
+            "explicit-override"
+        )
+        asserted_path = temporary_path / "asserted provenance.json"
+        asserted_path.write_text(
+            json.dumps(asserted_provenance), encoding="utf-8"
+        )
+        try:
+            module.authenticate_report(
+                asserted_path,
+                case,
+                first["source_commit"],
+                physical_cores,
+            )
+        except ValueError as error:
+            assert "clean Git worktree" in str(error)
+        else:
+            raise AssertionError(
+                "user-asserted benchmark provenance was accepted"
+            )
+
         substituted = copy.deepcopy(raw_document)
         substituted["results"][0]["planner_mode"] = "forced"
         substituted["results"][0]["requested_variant"] = module.PACKED_AVX2

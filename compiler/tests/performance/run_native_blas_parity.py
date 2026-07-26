@@ -696,10 +696,11 @@ def authenticate_report(
     if (
         environment.get("source_provenance_state") != "clean"
         or environment.get("source_worktree_dirty") is not False
-        or environment.get("source_provenance_origin")
-        not in {"git-worktree", "explicit-override"}
+        or environment.get("source_provenance_origin") != "git-worktree"
     ):
-        raise ValueError("benchmark source provenance is not clean and exact")
+        raise ValueError(
+            "benchmark source provenance is not a clean Git worktree"
+        )
     if environment.get("source_commit") != source_commit:
         raise ValueError("benchmark source commit differs from runner HEAD")
     if (

@@ -867,9 +867,8 @@ def authenticate_report(
     require(
         environment.get("source_provenance_state") == "clean"
         and environment.get("source_worktree_dirty") is False
-        and environment.get("source_provenance_origin")
-        in {"git-worktree", "explicit-override"},
-        "raw source provenance is not clean and exact",
+        and environment.get("source_provenance_origin") == "git-worktree",
+        "raw source provenance is not a clean Git worktree",
     )
     require(
         environment.get("source_commit") == manifest["source_commit"],

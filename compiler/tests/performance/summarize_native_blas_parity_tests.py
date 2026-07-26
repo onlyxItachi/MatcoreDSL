@@ -546,6 +546,31 @@ def main() -> int:
         assert "raw parity SHA-256 mismatch" in tampered.stderr
         first_raw.write_bytes(pristine_raw)
 
+        asserted_provenance = json.loads(pristine_raw.decode("utf-8"))
+        asserted_provenance["environment"]["source_provenance_origin"] = (
+            "explicit-override"
+        )
+        first_raw.write_text(
+            json.dumps(asserted_provenance, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        first_record = forward_manifest["cases"][0]
+        first_record["sha256"] = sha256(first_raw)
+        forward.write_text(
+            json.dumps(forward_manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        rejected_asserted = execute_summary(
+            summarizer_path, forward, reverse, output, expected=2
+        )
+        assert "clean Git worktree" in rejected_asserted.stderr
+        first_raw.write_bytes(pristine_raw)
+        first_record["sha256"] = sha256(first_raw)
+        forward.write_text(
+            json.dumps(forward_manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
         # Updating the manifest's raw digest does not authorize internally
         # inconsistent timing fields.
         timing_tamper = json.loads(pristine_raw.decode("utf-8"))
