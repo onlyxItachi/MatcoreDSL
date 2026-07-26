@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -12,6 +13,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -211,6 +213,11 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
         return false;
       }
       prepacked_b.front() = std::byte{0x5a};
+      // The production contract rejects a non-positive preparation interval.
+      // This test double otherwise completes quickly enough to fit within one
+      // steady-clock tick on Windows runners, so make the synthetic preparation
+      // deliberately measurable without changing the timed execution path.
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     return true;
   }
