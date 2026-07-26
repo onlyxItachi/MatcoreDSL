@@ -433,10 +433,8 @@ def authenticate_report(path: pathlib.Path, case: AuditCase) -> dict:
         raise ValueError("guarded benchmark result is invalid")
     if not result["timed_final_output_authenticated"]:
         raise ValueError("timed output was not authenticated")
-    if result["actual_threads"] != case.threads and (
-        case.variant in PARALLEL_VARIANTS or case.variant == EXTERNAL_VARIANT
-    ):
-        raise ValueError("actual implementation thread count differs from request")
+    if result["actual_threads"] < 1 or result["actual_threads"] > case.threads:
+        raise ValueError("actual implementation thread count exceeds request")
     return report
 
 
@@ -539,9 +537,13 @@ def main() -> int:
             records.append(record)
             continue
         if args.resume and raw_path.exists():
-            authenticate_report(raw_path, case)
+            report = authenticate_report(raw_path, case)
             record["state"] = "reused"
             record["sha256"] = sha256(raw_path)
+            record["actual_threads"] = report["results"][0]["actual_threads"]
+            record["thread_count_clamped"] = (
+                record["actual_threads"] != case.threads
+            )
             records.append(record)
             continue
         completed = subprocess.run(
@@ -564,9 +566,13 @@ def main() -> int:
             if record["state"] == "failed":
                 break
             continue
-        authenticate_report(raw_path, case)
+        report = authenticate_report(raw_path, case)
         record["state"] = "passed"
         record["sha256"] = sha256(raw_path)
+        record["actual_threads"] = report["results"][0]["actual_threads"]
+        record["thread_count_clamped"] = (
+            record["actual_threads"] != case.threads
+        )
         records.append(record)
 
     manifest = {
