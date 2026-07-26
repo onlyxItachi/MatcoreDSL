@@ -2,6 +2,14 @@
 
 Date: 2026-07-26
 
+> Historical lane report: the measurements and implementation narrative below
+> describe candidate checkpoint
+> `4719528354575f5aff74def97b534e763cb2033c`. Final independent review found
+> that one retained shape did not justify the broad production activation
+> region. The final branch keeps the infrastructure private but makes
+> cooperative B preparation dormant; its focused test now authenticates
+> `packed_b_threads == 0`.
+
 Ownership: `cpu_parallel_gemm.{h,cpp}`, its focused runtime test, and this
 report. The lane was developed in an isolated worktree from `6a26994849aadf`
 and did not modify the shared integration worktree.
@@ -27,11 +35,11 @@ The integration review narrowed the accepted policy after a boundary matrix
 exposed non-robust cells. Completion review then found that the extra
 `M <= 32 && N >= 8192` branch had been chosen from a shape labeled as holdout
 by the later-frozen methodology. That branch was removed rather than
-retrofitting the evidence split. Cooperative preparation now requires more
-than one worker, `M <= 64`, `N >= 4096`, `K >= 4096`, a packed image of at
-least 4 MiB, and more than one NC panel. This retained rule is supported by
-the declared calibration shape `64x4096x4096`; it is not a universal packing
-policy.
+retrofitting the evidence split. At candidate checkpoint `4719528`,
+cooperative preparation required more than one worker, `M <= 64`, `N >= 4096`,
+`K >= 4096`, a packed image of at least 4 MiB, and more than one NC panel. The
+declared calibration shape `64x4096x4096` supported only one point inside that
+region, which is why final review disabled production selection.
 
 ## Implementation
 
@@ -56,11 +64,14 @@ policy.
 
 ## Correctness and race validation
 
-The focused test activates both AVX2 and AVX-512 at `8x4096x4096`, compares
+At the candidate checkpoint, the focused test activated both AVX2 and AVX-512
+at `8x4096x4096`, compared
 each with the independent double-precision oracle, checks output guards,
-checks `packed_b_threads == 4`, and proves packing did not add a second pool
-submission. The former `32x8192x1024` experimental branch is now an explicit
-excluded boundary for both ISAs and authenticates `packed_b_threads == 0`.
+checked `packed_b_threads == 4`, and proved packing did not add a second pool
+submission. The former `32x8192x1024` experimental branch was an explicit
+excluded boundary for both ISAs and authenticated `packed_b_threads == 0`.
+The final branch instead requires `packed_b_threads == 0` for every production
+case until a complete boundary matrix exists.
 The existing packed-backend tests continue to validate KC/NC tails and
 malformed prepacked views through the same shared format helper.
 
@@ -98,17 +109,21 @@ The square path does not activate cooperative packing; its noisier AVX-512
 samples are not evidence of a code-path effect and no square performance claim
 is made.
 
-A separate current-commit S-P-P-S interleave for the short-wide shape measured:
+An intermediate clean checkpoint
+`a008a57e84af17bef7113b108d34141f8a7e3ed7` produced this S-P-P-S
+interleave for the short-wide shape:
 
 | ISA | One-thread packed | Four-thread parallel | Speedup |
 | --- | ---: | ---: | ---: |
 | AVX2 | 25.654 ms, 83.71 GFLOP/s | 12.007 ms, 178.85 GFLOP/s | 2.14x |
 | AVX-512 | 24.188 ms, 88.78 GFLOP/s | 13.305 ms, 161.40 GFLOP/s | 1.82x |
 
-The AVX-512 samples had visibly larger spread. Neither result meets the
-Milestone 7 four-thread 3.0x target. Cooperative B packing removes one
-authenticated serial bottleneck; it does not establish native/OpenBLAS parity
-or solve remaining microkernel, A-packing, placement, and scheduling limits.
+The AVX-512 samples had visibly larger spread. Neither result reaches 3.0x on
+this diagnostic cell. Later runtime changes mean these numbers are not
+final-checkpoint evidence and cannot decide the formal large-square
+four-thread aggregate. Cooperative B packing removes one authenticated serial
+bottleneck; it does not establish native/OpenBLAS parity or solve remaining
+microkernel, A-packing, placement, and scheduling limits.
 
 ## Integration review and boundary evidence
 
@@ -118,10 +133,13 @@ duplicated format/provenance implementation. Commits `648ef7d`, `4462677`, and
 and abortable phase barrier. A later completion audit rejected the exact
 holdout-derived threshold that those commits had retained.
 
-The final clean-commit ABBA confirmation used the same guarded complete-call
-contract with 3 warmups and 7 samples. Four-thread cells were constrained to
-logical CPUs 0-3 and 12-thread cells to logical CPUs 0-11. Baseline remained
-the pre-optimization `6a26994849aadf` build. Ratios below are
+The final clean-source ABBA confirmation used the same guarded complete-call
+contract with 3 warmups and 7 samples. External benchmark receipts identify
+candidate `4719528354575f5aff74def97b534e763cb2033c` and baseline
+`6a26994849aadf738910e18a0cebb66ea9b238dc`; the raw JSON remains untracked.
+Four-thread processes were constrained to logical CPUs 0-3 and 12-thread
+processes to logical CPUs 0-11; individual native workers were not pinned.
+Ratios below are
 `candidate_GFLOP/s / baseline_GFLOP/s`, each formed from the median of the two
 outer or inner ABBA observations.
 
@@ -139,6 +157,11 @@ to disclose the experiment chronology; they are not accepted as calibration
 or blind holdout evidence and their production threshold branch was removed.
 The broader rejected matrix observed ratios down to 0.816x. These are
 host-bounded diagnostics, not a claim for other processors.
+
+All four retained `64x4096x4096` cell-median point estimates favored the
+candidate. No geometric mean, confidence interval, or sample-level win/loss
+claim is available, and this is not a direct comparison with Milestone 5 or
+the final Milestone 7 checkpoint.
 
 Final raw JSON is untracked outside every Git worktree under
 `/var/tmp/MatcoreDSL-m7-cooperative-b-final-clean.4VqD1X`.

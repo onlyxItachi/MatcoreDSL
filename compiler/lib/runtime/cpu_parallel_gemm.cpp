@@ -181,26 +181,21 @@ struct ParallelGemmJobV1 {
 
 inline constexpr std::size_t kCpuOutputCacheLineBytesV1 =
     planner::kCpuParallelCacheLineFloatCountV1 * sizeof(float);
-inline constexpr std::size_t kCpuParallelPackedBMinimumBytesV1 =
-    4U * 1024U * 1024U;
-inline constexpr std::int64_t kCpuParallelPackedBMinimumColumnsV1 = 4096;
-inline constexpr std::int64_t kCpuParallelPackedBMinimumDepthV1 = 1024;
-
 bool should_parallel_pack_b(
     const planner::CpuGemmProblemV1 &problem,
     const planner::CpuParallelTaskPlanV1 &task_plan,
     const CpuParallelGemmWorkspaceRequirementsV1 &requirements,
     std::uint32_t actual_threads) noexcept {
-  if (actual_threads <= 1 ||
-      problem.m > static_cast<std::int64_t>(kCpuPackedGemmMcV1 / 2U) ||
-      problem.n < kCpuParallelPackedBMinimumColumnsV1 ||
-      problem.k < kCpuParallelPackedBMinimumDepthV1 ||
-      task_plan.column_panel_count <= 1 ||
-      requirements.shared_packed_b_bytes <
-          kCpuParallelPackedBMinimumBytesV1) {
-    return false;
-  }
-  return problem.k >= 4096;
+  // Milestone 7 retained only a bounded candidate/baseline diagnostic for
+  // cooperative B preparation. It did not establish a final-checkpoint
+  // no-regression boundary matrix for the former broad shape rule. Keep the
+  // implementation dormant until a future evidence contract authenticates
+  // its complete activation region.
+  (void)problem;
+  (void)task_plan;
+  (void)requirements;
+  (void)actual_threads;
+  return false;
 }
 
 std::size_t divide_round_up(std::size_t numerator,
