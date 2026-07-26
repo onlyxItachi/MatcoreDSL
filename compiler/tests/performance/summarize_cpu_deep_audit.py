@@ -877,9 +877,7 @@ def base_topology_record(environment: dict) -> str:
 
 
 def base_capability_record(environment: dict) -> str:
-    return str(environment.get("capability_record", "")).split(
-        " planner_probe=", 1
-    )[0]
+    return str(environment.get("capability_record", "")).splitlines()[0]
 
 
 def environment_identity_signature(environment: dict) -> tuple:
@@ -905,6 +903,16 @@ def render_report(
 ) -> str:
     manifest = forward.manifest
     environment = forward.environment
+    provider_environment = next(
+        (
+            cell.report["environment"]
+            for cell in forward.cells.values()
+            if cell.variant == EXTERNAL_VARIANT
+        ),
+        {},
+    )
+    full_capability_record = str(environment.get("capability_record", ""))
+    full_topology_record = str(environment.get("topology_record", ""))
     direction = (
         "complete/oneshot paired stable-forward/stable-reverse; "
         "diagnostic/prepack/regret stable-forward only"
@@ -976,6 +984,20 @@ def render_report(
                 f"{safe_text(environment.get('compiler', 'unknown'))}; "
                 f"{safe_text(environment.get('build_type', 'unknown'))}"
             ),
+            f"- Compiler flags: `{safe_text(environment.get('compiler_flags', 'unknown'))}`",
+            (
+                f"- Timer: {safe_text(environment.get('timer_source', 'unknown'))}; "
+                f"resolution={environment.get('timer_resolution_ns', 'unknown')} ns"
+            ),
+            (
+                f"- External provider: "
+                f"{safe_text(provider_environment.get('provider_name', 'unavailable'))} "
+                f"{safe_text(provider_environment.get('provider_version', 'unknown'))}"
+            ),
+            (
+                f"- External provider config: "
+                f"`{safe_text(provider_environment.get('provider_config', 'unavailable'))}`"
+            ),
             (
                 f"- Frequency metadata: governor="
                 f"{safe_text(environment.get('governor', 'unknown'))}, policy="
@@ -983,15 +1005,20 @@ def render_report(
                 f"{safe_text(environment.get('boost_state', 'unknown'))}"
             ),
             (
-                f"- Capability record: "
+                f"- Capability record first line: "
                 f"{safe_text(base_capability_record(environment) or 'unknown')}"
             ),
             (
-                f"- Topology: logical={environment.get('logical_processors', 'unknown')}, "
-                f"physical={environment.get('physical_cores', 'unknown')}, "
-                f"NUMA nodes={environment.get('numa_nodes', 'unknown')}, "
-                f"record SHA-256="
-                f"`{hashlib.sha256(base_topology_record(environment).encode()).hexdigest()}`"
+                f"- Capability record SHA-256: "
+                f"`{hashlib.sha256(full_capability_record.encode()).hexdigest()}`"
+            ),
+            (
+                f"- Topology record first line: "
+                f"{safe_text(base_topology_record(environment) or 'unknown')}"
+            ),
+            (
+                f"- Topology record SHA-256: "
+                f"`{hashlib.sha256(full_topology_record.encode()).hexdigest()}`"
             ),
             "",
         ]
@@ -1047,6 +1074,27 @@ def render_report(
         )
     if not family_ratios:
         lines.append("| none | 0 | n/a |")
+
+    lines.extend(
+        [
+            "",
+            "### Complete comparable shape matrix",
+            "",
+            "| Family | Partition | M×N×K | Fastest native | Native GFLOP/s | OpenBLAS GFLOP/s | Native/OpenBLAS ratio |",
+            "|---|---|---|---|---:|---:|---:|",
+        ]
+    )
+    if comparisons:
+        for family, shape, native, provider in sorted(
+            comparisons, key=lambda item: (item[0], item[1])
+        ):
+            lines.append(
+                f"| {family} | {native.partition} | {'×'.join(map(str, shape))} | "
+                f"`{native.variant}` | {native.gflops:.3f} | "
+                f"{provider.gflops:.3f} | {provider.seconds / native.seconds:.3f} |"
+            )
+    else:
+        lines.append("| none | — | — | — | — | — | — |")
 
     weak = sorted(
         (
@@ -1264,6 +1312,71 @@ def render_report(
         )
     if not provider_by_threads:
         lines.append("| — | 0 | n/a |")
+
+    serial_for_parallel = {
+        "cpu.native-parallel.avx2-fma.f32.v1":
+            "cpu.native-packed.avx2-fma.f32.v1",
+        "cpu.native-parallel.avx512-fma.f32.v1":
+            "cpu.native-packed.avx512-fma.f32.v1",
+    }
+    serial_baselines = {
+        (cell.shape, cell.variant): cell
+        for cell in cells.values()
+        if cell.mode == "complete-hot"
+        and cell.requested_threads == 1
+        and cell.actual_threads == 1
+        and cell.variant in set(serial_for_parallel.values())
+    }
+    per_problem_scaling: dict[tuple, list[float]] = defaultdict(list)
+    for cell in cells.values():
+        serial_variant = serial_for_parallel.get(cell.variant)
+        if (
+            cell.mode != "complete-hot"
+            or serial_variant is None
+            or cell.actual_threads <= 1
+        ):
+            continue
+        baseline = serial_baselines.get((cell.shape, serial_variant))
+        if baseline is None or cell.placement[1:] != baseline.placement[1:]:
+            continue
+        per_problem_scaling[
+            (
+                cell.family,
+                cell.shape,
+                cell.variant,
+                cell.actual_threads,
+                cell.placement[1:],
+            )
+        ].append(baseline.seconds / cell.seconds)
+    scaling_groups: dict[tuple[str, int], list[float]] = defaultdict(list)
+    for key, speedups in per_problem_scaling.items():
+        scaling_groups[(key[0], key[3])].append(median(speedups))
+    lines.extend(
+        [
+            "",
+            "## Native-parallel scaling diagnostic",
+            "",
+            (
+                "This is a native-only diagnostic, not BLAS parity. Each legal "
+                "parallel cell is compared with its corresponding one-thread "
+                "packed ISA baseline only when SMT, affinity, and applied-affinity "
+                "metadata share the same native placement contract. Repeated "
+                "requested-thread clamps are collapsed per shape/ISA/actual-thread cell."
+            ),
+            "",
+            "| Family | Actual native threads | Comparable shape/ISA cells | Median speedup | Median parallel efficiency |",
+            "|---|---:|---:|---:|---:|",
+        ]
+    )
+    for (family, actual_threads), speedups in sorted(scaling_groups.items()):
+        lines.append(
+            f"| {family} | {actual_threads} | {len(speedups)} | "
+            f"{median(speedups):.3f} | "
+            f"{median(speedup / actual_threads for speedup in speedups):.3f} |"
+        )
+    if not scaling_groups:
+        lines.append("| none | — | 0 | n/a | n/a |")
+
     lines.extend(
         [
             "",

@@ -159,10 +159,26 @@ def write_raw(
             "governor": "performance",
             "frequency_policy": "fixed",
             "boost_state": "disabled",
-            "capability_record": "synthetic-avx2",
-            "topology_record": "synthetic-1c",
+            "capability_record": "synthetic-avx2\nraw-planner-detail",
+            "topology_record": "synthetic-1c\nraw-placement-detail",
             "capability_record_version": 2,
             "topology_record_version": 1,
+            "logical_processors": 8,
+            "physical_cores": 4,
+            "numa_nodes": 1,
+            "timer_source": "std::chrono::steady_clock",
+            "timer_resolution_ns": 1,
+            "provider_name": (
+                "OpenBLAS" if record["variant"] == EXTERNAL else "none"
+            ),
+            "provider_version": (
+                "0.3.32" if record["variant"] == EXTERNAL else "unavailable"
+            ),
+            "provider_config": (
+                "USE_THREAD=PTHREAD DYNAMIC_ARCH=1"
+                if record["variant"] == EXTERNAL
+                else ""
+            ),
             "source_commit": SOURCE_COMMIT,
             "source_provenance_state": "clean",
             "source_worktree_dirty": False,
@@ -280,6 +296,7 @@ def build_bundle(directory: pathlib.Path, reverse: bool) -> pathlib.Path:
         ("complete-hot", NATIVE, 1, 1, 0.002 * direction_scale),
         ("complete-hot", EXTERNAL, 1, 1, 0.001 * direction_scale),
         ("complete-hot", EXTERNAL, 4, 4, 0.0004 * direction_scale),
+        ("complete-hot", PARALLEL, 4, 1, 0.0006 * direction_scale),
         ("one-shot-hot", NATIVE, 1, 1, 0.003 * direction_scale),
         ("prepacked-b-hot", NATIVE, 1, 4, 0.0008 * direction_scale),
         ("complete-cold", NATIVE, 1, 1, 0.004 * direction_scale),
@@ -445,10 +462,30 @@ def main() -> int:
         assert "diagnostic/prepack/regret stable-forward only" in report
         assert "3.000 [2.000, 4.000]" in report
         assert "| medium-square | 1 | 0.500 |" in report
+        assert (
+            "| medium-square | calibration | 128×128×128 | "
+            "`cpu.native-packed.avx2-fma.f32.v1` |"
+        ) in report
         assert "| 4 | 1 | 1.000" in report
         assert "median diagnostic/hot ratio: 2.000" in report
         assert "median diagnostic/hot ratio: 0.750" in report
         assert "| 1 | 2.000 | 2.000 | 2.000 | 0 |" in report
+        assert "| medium-square | 4 | 1 | 3.333 | 0.833 |" in report
+        assert "- Compiler flags: `-O3`" in report
+        assert (
+            "- Timer: std::chrono::steady_clock; resolution=1 ns" in report
+        )
+        assert "- External provider: OpenBLAS 0.3.32" in report
+        assert (
+            "- External provider config: "
+            "`USE_THREAD=PTHREAD DYNAMIC_ARCH=1`"
+        ) in report
+        assert "- Capability record first line: synthetic-avx2" in report
+        assert "- Capability record SHA-256:" in report
+        assert "- Topology record first line: synthetic-1c" in report
+        assert "- Topology record SHA-256:" in report
+        assert "raw-planner-detail" not in report
+        assert "raw-placement-detail" not in report
         assert "expected rejection: parallel-output-macro-tile-count" in report
         assert "/synthetic/absolute/path" not in report
 
