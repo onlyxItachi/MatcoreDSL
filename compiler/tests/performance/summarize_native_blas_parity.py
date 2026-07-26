@@ -29,7 +29,7 @@ MANIFEST_VERSION = 3
 BENCHMARK_SCHEMA = "matcore.benchmark.cpu.gemm"
 BENCHMARK_VERSION = 6
 SUMMARY_SCHEMA = "matcore.native-blas-parity.summary"
-SUMMARY_VERSION = 2
+SUMMARY_VERSION = 3
 PARTITION_INTERPRETATION = {
     "calibration": "candidate-development-and-validation",
     "holdout": "declared-validation-not-blind",
@@ -127,6 +127,8 @@ class Bundle:
     states: Counter
     rejection_categories: Counter
     environment: dict
+    summarizer_sha256: str
+    summarizer_git_blob: str
 
 
 @dataclasses.dataclass(frozen=True)
@@ -216,8 +218,9 @@ def load_runner():
 
 def authenticate_source_and_tools(
     manifest: dict, runner_path: pathlib.Path
-) -> pathlib.Path:
+) -> tuple[pathlib.Path, str, str]:
     source_root = runner_path.parents[3]
+    summarizer_path = pathlib.Path(__file__).resolve()
     source_commit = manifest.get("source_commit")
     require(
         isinstance(source_commit, str)
@@ -243,6 +246,18 @@ def authenticate_source_and_tools(
         committed_runner == runner_blob,
         "manifest source commit does not contain the authenticated runner blob",
     )
+    relative_summarizer = summarizer_path.relative_to(source_root).as_posix()
+    summarizer_digest = sha256(summarizer_path)
+    summarizer_blob = run_git(
+        source_root, "hash-object", str(summarizer_path)
+    )
+    committed_summarizer = run_git(
+        source_root, "rev-parse", f"{source_commit}:{relative_summarizer}"
+    )
+    require(
+        committed_summarizer == summarizer_blob,
+        "local parity summarizer differs from the declared source commit",
+    )
 
     benchmark = pathlib.Path(str(manifest.get("benchmark", "")))
     require(
@@ -253,7 +268,7 @@ def authenticate_source_and_tools(
         sha256(benchmark) == manifest.get("benchmark_binary_sha256"),
         "benchmark binary SHA-256 differs from the manifest",
     )
-    return benchmark
+    return benchmark, summarizer_digest, summarizer_blob
 
 
 def thread_strata(physical_cores: int) -> tuple[int, ...]:
@@ -1190,7 +1205,9 @@ def load_bundle(path: pathlib.Path, expected_order: str) -> Bundle:
         "manifest partition interpretation differs from the corrected "
         "validation contract",
     )
-    benchmark = authenticate_source_and_tools(manifest, runner_path)
+    benchmark, summarizer_digest, summarizer_blob = (
+        authenticate_source_and_tools(manifest, runner_path)
+    )
     parallel_plan = expected_parallel_thread_plan(runner, physical_cores)
     require(
         manifest.get("parallel_thread_plan") == parallel_plan,
@@ -1311,6 +1328,8 @@ def load_bundle(path: pathlib.Path, expected_order: str) -> Bundle:
         states=states,
         rejection_categories=rejections,
         environment=representative_environment or {},
+        summarizer_sha256=summarizer_digest,
+        summarizer_git_blob=summarizer_blob,
     )
 
 
@@ -1768,6 +1787,7 @@ def assessment(
             ),
             "measured": regret_shape_coverage,
             "passed": full_regret_coverage,
+            "acceptance": False,
         },
         {
             "id": "no-catastrophic-regret-full-envelope",
@@ -1780,6 +1800,7 @@ def assessment(
             "passed": full_regret_coverage
             and regret_metrics["maximum"] is not None
             and float(regret_metrics["maximum"]) <= 2.00,
+            "acceptance": False,
         },
         {
             "id": "exact-capacity-comparison-coverage",
@@ -1802,6 +1823,7 @@ def assessment(
                 "reduced_or_omitted": len(ceiling_reductions),
             },
             "passed": not ceiling_reductions,
+            "acceptance": False,
         },
     ]
     performance_pass = all(
@@ -1809,12 +1831,11 @@ def assessment(
         for item in criteria
         if item.get("acceptance", True)
     )
-    if not comparisons or not square_single or not regrets:
-        verdict = "failed"
-    elif performance_pass:
-        verdict = "passed"
-    else:
-        verdict = "partially-passed"
+    verdict = (
+        "passed"
+        if comparisons and square_single and regrets and performance_pass
+        else "failed"
+    )
 
     prepacked = []
     for cell in cells.values():
@@ -1882,6 +1903,8 @@ def assessment(
         ],
         "runner_sha256": forward.manifest["runner_sha256"],
         "runner_git_blob": forward.manifest["runner_git_blob"],
+        "summarizer_sha256": forward.summarizer_sha256,
+        "summarizer_git_blob": forward.summarizer_git_blob,
         "forward_manifest_sha256": forward.digest,
         "reverse_manifest_sha256": reverse.digest,
         "physical_cores": forward.manifest["physical_cores"],
@@ -2000,6 +2023,8 @@ def render_markdown(summary: dict) -> str:
         ),
         f"- Runner SHA-256: `{summary['runner_sha256']}`",
         f"- Runner Git blob: `{summary['runner_git_blob']}`",
+        f"- Summarizer SHA-256: `{summary['summarizer_sha256']}`",
+        f"- Summarizer Git blob: `{summary['summarizer_git_blob']}`",
         (
             "- Forward manifest SHA-256: "
             f"`{summary['forward_manifest_sha256']}`"
@@ -2061,8 +2086,12 @@ def render_markdown(summary: dict) -> str:
         "- Every retained sample passed the seeded independent correctness "
         "oracle and final-output authentication.",
         "",
-        "## Milestone 7 acceptance",
-        "",
+            "## Bounded paired-measurement assessment",
+            "",
+            "A `passed` summary means the acceptance-enabled rows below pass. "
+            "Diagnostic rows remain separate manual Milestone 7 gates; this "
+            "summary alone cannot complete the milestone.",
+            "",
         "| Criterion | Threshold | Measured | Result |",
         "|---|---|---|---|",
     ]
@@ -2343,7 +2372,10 @@ def main() -> int:
     parser.add_argument(
         "--require-pass",
         action="store_true",
-        help="return one when authenticated evidence does not meet every target",
+        help=(
+            "return one when authenticated evidence misses any "
+            "acceptance-enabled bounded-summary target"
+        ),
     )
     args = parser.parse_args()
     try:

@@ -63,6 +63,7 @@ def variant_seconds(
     summary: object,
     case: object,
     order_factor: float,
+    native_ratio_scale: float = 1.0,
 ) -> float:
     m, n, k = case.shape
     base = max(2.0 * m * n * k / 100.0e9, 1.0e-5)
@@ -82,6 +83,8 @@ def variant_seconds(
         summary.OPENBLAS: 1.0,
         summary.AUTO: 1.0,
     }
+    if case.variant in summary.NATIVE_VARIANTS:
+        ratios[case.variant] *= native_ratio_scale
     return provider / ratios[case.variant] * order_factor
 
 
@@ -189,8 +192,11 @@ def raw_report(
     source_commit: str,
     physical_cores: int,
     order_factor: float,
+    native_ratio_scale: float = 1.0,
 ) -> dict:
-    seconds = variant_seconds(summary, case, order_factor)
+    seconds = variant_seconds(
+        summary, case, order_factor, native_ratio_scale
+    )
     ordered_samples = samples(seconds)
     ordered = sorted(ordered_samples)
     actual_threads = case.threads
@@ -324,8 +330,10 @@ def write_bundle(
     source_commit: str,
     runner_path: pathlib.Path,
     physical_cores: int,
+    native_ratio_scale: float = 1.0,
+    directory_name: str | None = None,
 ) -> pathlib.Path:
-    directory = root / order
+    directory = root / (directory_name or order)
     directory.mkdir()
     cases = summary.expected_cases(runner, physical_cores)
     if order == "stable-reverse":
@@ -342,6 +350,7 @@ def write_bundle(
             source_commit,
             physical_cores,
             order_factor,
+            native_ratio_scale,
         )
         raw_path.write_text(
             json.dumps(document, sort_keys=True) + "\n",
@@ -450,7 +459,7 @@ def main() -> int:
     summary = load_module("matcore_native_parity_summary", summarizer_path)
     runner, runner_path = summary.load_runner()
     assert summary.MANIFEST_VERSION == 3
-    assert summary.SUMMARY_VERSION == 2
+    assert summary.SUMMARY_VERSION == 3
     assert runner.PARTITION_INTERPRETATION == (
         summary.PARTITION_INTERPRETATION
     )
@@ -506,12 +515,17 @@ def main() -> int:
             (output / "summary.json").read_text(encoding="utf-8")
         )
         assert summary_json["schema"] == summary.SUMMARY_SCHEMA
-        assert summary_json["version"] == 2
+        assert summary_json["version"] == 3
+        assert summary_json["summarizer_sha256"] == sha256(summarizer_path)
+        assert summary_json["summarizer_git_blob"] == run(
+            ["git", "-C", str(repository), "hash-object",
+             str(summarizer_path)]
+        ).stdout.strip()
         assert summary_json["partition_interpretation"] == {
             "calibration": "candidate-development-and-validation",
             "holdout": "declared-validation-not-blind",
         }
-        assert summary_json["verdict"] == "partially-passed"
+        assert summary_json["verdict"] == "passed"
         criteria = {
             item["id"]: item for item in summary_json["criteria"]
         }
@@ -523,10 +537,19 @@ def main() -> int:
             "planner-regret-full-envelope-coverage"
         ]["passed"]
         assert not criteria[
+            "planner-regret-full-envelope-coverage"
+        ]["acceptance"]
+        assert not criteria[
             "no-catastrophic-regret-full-envelope"
         ]["passed"]
+        assert not criteria[
+            "no-catastrophic-regret-full-envelope"
+        ]["acceptance"]
         assert criteria["exact-capacity-comparison-coverage"]["passed"]
         assert not criteria["declared-thread-ceiling-coverage"]["passed"]
+        assert not criteria[
+            "declared-thread-ceiling-coverage"
+        ]["acceptance"]
         assert summary_json["planner_regret_coverage"]["scope"] == (
             "bounded-diagnostic-not-full-envelope"
         )
@@ -537,7 +560,7 @@ def main() -> int:
         first_markdown = (output / "summary.md").read_bytes()
         assert b"validation-not-blind" in first_markdown
         assert b"No unbiased holdout claim is made" in first_markdown
-        assert b"manifest v3; benchmark v6; sanitized summary v2" in first_markdown
+        assert b"manifest v3; benchmark v6; sanitized summary v3" in first_markdown
         assert b"## Measurement contract" in first_markdown
         assert b"## Planner regret" in first_markdown
         assert b"## Prepacked-B repeated execution" in first_markdown
@@ -551,10 +574,9 @@ def main() -> int:
             forward,
             reverse,
             output,
-            expected=1,
             require_pass=True,
         )
-        assert "verdict=partially-passed" in required.stdout
+        assert "verdict=passed" in required.stdout
         first_json = (output / "summary.json").read_bytes()
         execute_summary(
             summarizer_path,
@@ -564,6 +586,42 @@ def main() -> int:
         )
         assert (output / "summary.md").read_bytes() == first_markdown
         assert (output / "summary.json").read_bytes() == first_json
+
+        adverse_forward = write_bundle(
+            root,
+            "stable-forward",
+            summary,
+            runner,
+            benchmark,
+            source_commit,
+            runner_path,
+            physical_cores,
+            native_ratio_scale=0.10,
+            directory_name="adverse-forward",
+        )
+        adverse_reverse = write_bundle(
+            root,
+            "stable-reverse",
+            summary,
+            runner,
+            benchmark,
+            source_commit,
+            runner_path,
+            physical_cores,
+            native_ratio_scale=0.10,
+            directory_name="adverse-reverse",
+        )
+        adverse_output = root / "adverse-summary"
+        adverse_output.mkdir()
+        adverse = execute_summary(
+            summarizer_path,
+            adverse_forward,
+            adverse_reverse,
+            adverse_output,
+            expected=1,
+            require_pass=True,
+        )
+        assert "verdict=failed" in adverse.stdout
 
         forward_manifest = json.loads(forward.read_text(encoding="utf-8"))
         reverse_manifest = json.loads(reverse.read_text(encoding="utf-8"))
@@ -730,6 +788,43 @@ def main() -> int:
         forward.write_text(
             json.dumps(forward_manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
+        )
+
+        # The summarizer authenticates its own bytes against the source commit.
+        tampered_repository = root / "tampered-repository"
+        run(
+            [
+                "git",
+                "clone",
+                "--shared",
+                "--quiet",
+                str(repository),
+                str(tampered_repository),
+            ]
+        )
+        run(
+            [
+                "git",
+                "-C",
+                str(tampered_repository),
+                "checkout",
+                "--quiet",
+                source_commit,
+            ]
+        )
+        tampered_summarizer = (
+            tampered_repository
+            / "compiler/tests/performance/summarize_native_blas_parity.py"
+        )
+        tampered_summarizer.write_bytes(
+            tampered_summarizer.read_bytes() + b"\n# deliberate tamper\n"
+        )
+        rejected_summarizer = execute_summary(
+            tampered_summarizer, forward, reverse, output, expected=2
+        )
+        assert (
+            "local parity summarizer differs from the declared source commit"
+            in rejected_summarizer.stderr
         )
 
         # The executable bytes remain part of both bundle identities.

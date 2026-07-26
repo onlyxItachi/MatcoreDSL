@@ -39,10 +39,11 @@ Only paired cells are aggregated. The deterministic sanitized JSON/Markdown
 reports contain no raw paths. They report fastest-native/OpenBLAS ratios per
 declared family and exact thread count, the full comparison matrix, native
 scaling, prepacked-B evidence, planner regret, missing comparisons, and each
-Milestone 7 acceptance threshold. Authenticated evidence is classified as
-`passed`, `partially-passed`, or `failed`; `--require-pass` turns a valid
-non-passing performance result into exit status 1, while malformed evidence
-uses exit status 2.
+Milestone 7 acceptance threshold. `--require-pass` turns a valid non-passing
+performance result into exit status 1, while malformed or incomplete evidence
+uses exit status 2. The bounded regret and capacity-limited thread strata are
+reported as non-acceptance diagnostics; full-envelope regret and every
+original thread ceiling remain separate manual Milestone 7 gates.
 
 The ratio gate is intentionally not satisfied by an automatic plan that chose
 OpenBLAS. Native parity uses only packed or persistent-parallel MDSLC
@@ -53,7 +54,8 @@ different compact-one-thread versus unbound-multi-thread placement boundary.
 ## Adversarial coverage
 
 The focused contract test synthesizes the entire manifest-v3 matrix in both
-directions and verifies a passing deterministic result. It separately rejects:
+directions and verifies a deterministic bounded-evidence result. It separately
+checks a favorable passing result, an adverse-performance failure, and rejects:
 
 - changed raw bytes with an unchanged digest;
 - changed timing fields with an attacker-updated raw digest;
