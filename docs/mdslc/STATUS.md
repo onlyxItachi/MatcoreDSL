@@ -28,6 +28,54 @@ Status date: 2026-07-26
   remapping commit IDs.
 - Milestone 3 tracker: GitHub milestone `#1`, completed
 
+## Milestone 7 native BLAS parity
+
+**Milestone 7 is partially passed at the reviewed local integration
+checkpoint. The implementation, correctness, artifact, sanitizer, ABI,
+package, and consumer gates pass, but the declared native/OpenBLAS performance
+envelope is not established. Issue #15 and milestone #5 remain open; no
+completion tag exists.**
+
+The private CPU backend now has a wider AVX-512 4x32 full-tile body,
+two-dimensional output-task planning, exact task-capacity diagnostics, and a
+narrow cooperative packed-B preparation path for measured short-wide
+problems. The retained rule requires multiple workers, `M <= 64`, `N >= 4096`,
+`K >= 4096`, at least 4 MiB of packed B, and more than one NC panel. It uses
+the existing caller-owned workspace and persistent execution-context
+submission. No hidden allocation, cross-call cache, K split, or public ABI
+change was added.
+
+Bounded ABBA evidence for `64x4096x4096` measured 4-/12-thread gains of
+1.715x/1.879x for AVX2 and 1.720x/1.809x for AVX-512 versus the pre-change
+baseline. A separate current-path diagnostic measured only 2.14x AVX2 and
+1.82x AVX-512 four-thread speedup, below the declared 3.0x target. A proposed
+serial AVX2 full-tile routing change was 0.62--2.47% slower on stable complete
+calls and was reverted rather than counted as progress.
+
+The schema-v6/manifest-v3 parity runner and deterministic summarizer
+authenticate Git source, tracked runner bytes, benchmark binary, plan, raw
+digests, timing scopes, results, exact actual threads, placement, correctness,
+and forward/reverse coverage. The full physical sweep could not complete
+because other local sessions repeatedly launched compiler, pytest, checksum,
+and device-validation workloads. An authenticated forward manifest reached
+258/368 cases, but no complete forward/reverse pair exists and incomplete data
+is not used for parity claims. Full native/OpenBLAS family ratios and
+full-envelope regret are therefore unestablished.
+
+Exact local validation at implementation/test checkpoint `2863253` passed
+Release 50/50, Debug 50/50, OpenBLAS-disabled 50/50, ASan/UBSan 19/19, TSan
+4/4, package/consumer 4/4, ISA artifacts 3/3, the native
+`.mdsl -> ELF .o -> executable` proof, repository hygiene, and the 14-case
+legacy frontend contract. The OpenBLAS-disabled forced request failed closed.
+Hosted Linux, Windows x64, and hygiene checks remain a pull-request gate.
+
+The bounded disposition is documented in
+`docs/performance/cpu/native-blas-parity-v1.md` and
+`docs/mdslc/agent-reports/m7-integration-validation.md`. Milestone 7 must not
+be called complete, issue #15/milestone #5 must not be closed, and no parity
+completion tag may be created unless a later exclusive-host run satisfies the
+declared contract.
+
 ## Milestone 6 CPU performance deep audit
 
 **Milestone 6 is published and complete for the bounded audit scope. PR #14

@@ -98,6 +98,30 @@ The audit proposes measured experiments for Milestone 7; it does not itself
 promote a kernel, alter planner thresholds, expose GEMV/GEVM, or freeze the
 public API.
 
+## Milestone 7 partial disposition
+
+Milestone 7 retains useful private CPU-backend hardening but has not completed
+its native BLAS parity gate:
+
+- a narrow measured short-wide path cooperatively prepares packed B using the
+  persistent workers and existing caller-owned workspace;
+- parallel planning and diagnostics now represent exact M/N task geometry and
+  effective thread capacity;
+- the Release AVX2 and AVX-512 production full-tile artifacts have durable
+  register/FMA/no-vector-spill checks;
+- the parity runner/summarizer fail closed on source, binary, plan, raw digest,
+  timing scope, placement, result, and coverage mismatches;
+- Release, Debug, OpenBLAS-disabled, sanitizer, package, native compiler,
+  hygiene, and legacy gates pass; but
+- the measured four-thread short-wide speedups remain below 3.0x, and shared
+  host contention prevented a complete authenticated forward/reverse parity
+  matrix.
+
+Accordingly, complete native/OpenBLAS family ratios and full-envelope planner
+regret are not claimed. Issue #15 and GitHub milestone #5 remain open, and
+there is no parity completion tag. The accepted bounded report is
+`docs/performance/cpu/native-blas-parity-v1.md`.
+
 ## Milestone 5 published Linux gate and focused Windows validation
 
 The advanced Linux CPU implementation passed its local, independent-review,
@@ -126,18 +150,19 @@ is inferred from Linux evidence.
 
 ## Next three exact engineering tasks
 
-1. **Complete Milestone 7 evidence and review.** Evaluate the retained
-   full-tile/microkernel, shared packed-B, and two-dimensional tasking changes
-   against the complete declared matrix without a blind-holdout claim.
-2. **Calibrate and validate the resulting native parity envelope.** Compare
-   native variants and OpenBLAS under equal single-/multi-thread placement,
-   keep allocation and packing visible, harden planner regret, run all
-   correctness/sanitizer/package/Windows gates, and report partial status
-   rather than changing the envelope if the declared targets are not met.
-3. **Prepare the separate API/backend-contract freeze only after Milestone 7
-   is dispositioned.** Resolve transformed-operand lifetime, forced variant
-   identity, report growth, and device-neutral execution-context questions;
-   do not freeze automatically from performance evidence.
+1. **Finish Milestone 7 on an exclusive performance host.** Run the frozen
+   368-case stable-forward and stable-reverse plans without concurrent
+   compiler/test/checksum workloads, render the deterministic report, and
+   evaluate the unchanged ratio, scaling, and regret criteria.
+2. **Address the remaining measured CPU limits.** Improve parallel A packing,
+   output-task scheduling, and large/rectangular execution only from new
+   evidence; retain OpenBLAS selection where it is faster and do not alter the
+   envelope to manufacture parity.
+3. **Enter the separate API/backend-contract freeze only after its entry
+   criteria pass.** Resolve transformed-operand ownership/invalidation, forced
+   variant identity, structured report evolution, and device-neutral
+   execution-context questions; do not freeze automatically from this partial
+   result.
 
 ## Later operation and lowering milestones
 

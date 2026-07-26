@@ -234,3 +234,36 @@ These findings sharpen the later freeze questions around transformed-operand
 identity, stable implementation-selection surfaces, structured execution
 reports, and operation orientation. They do not justify removing or mutating
 an existing exported symbol.
+
+## Milestone 7 bounded disposition
+
+The final local Milestone 7 implementation/test checkpoint is `2863253`; the
+authoritative bounded performance disposition is
+[native-blas-parity-v1.md](../performance/cpu/native-blas-parity-v1.md).
+
+The private backend work validates that task geometry, packed-B preparation,
+microkernel identity, and effective thread capacity can evolve without
+changing the existing 15-function C ABI. Linux Release/Debug, strict C17,
+installed source-inaccessible consumer, OpenBLAS-disabled, sanitizer, and
+artifact gates remain green. This is useful evidence for keeping those public
+surfaces additive.
+
+The result is nevertheless **not ready for API/ABI/backend-contract freeze**:
+
+- the complete native/OpenBLAS parity envelope and full-registry planner regret
+  were not established;
+- the measured four-thread short-wide path remains below the declared 3.0x
+  speedup target;
+- caller-visible transformed-operand identity, content immutability, lifetime,
+  invalidation, and size bounds remain undecided;
+- exact task grids and capacity-limited requested/actual thread reporting need
+  a structured versioned query contract before any freeze;
+- forced stable variant IDs versus private kernel/blocking profiles remain an
+  open policy decision; and
+- GEMV and GEVM remain design-only, with no public declarations, IR
+  operations, ABI entry points, planner variants, or executable backends.
+
+Milestone 7 issue #15 and GitHub milestone #5 remain open. A later
+exclusive-host forward/reverse collection may update the performance
+disposition, but it must not silently mutate an existing export or convert a
+private packed representation into a public lifetime contract.
