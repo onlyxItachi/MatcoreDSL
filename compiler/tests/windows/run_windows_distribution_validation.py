@@ -114,7 +114,14 @@ def assert_coff_x64(readobj: Path, path: Path) -> str:
     return output
 
 
-def inspect_microkernel(objdump: Path, archive: Path, symbol: str, register: str) -> dict[str, int]:
+def inspect_microkernel(
+    objdump: Path,
+    archive: Path,
+    symbol: str,
+    register: str,
+    *,
+    require_no_vector_stack_spill: bool = False,
+) -> dict[str, int]:
     result = run(
         [str(objdump), f"--disassemble-symbols={symbol}", "--no-show-raw-insn", str(archive)]
     )
@@ -130,7 +137,29 @@ def inspect_microkernel(objdump: Path, archive: Path, symbol: str, register: str
             f"{symbol} lacks exact {register.upper()} packed-FMA evidence: "
             f"registers={register_count} fma={fma_count}"
         )
-    return {"register_operands": register_count, "packed_fma_sites": fma_count}
+    vector_stack_spills = [
+        line
+        for line in output.splitlines()
+        if re.search(rf"\b{register}[0-9]+\b", line, re.IGNORECASE)
+        and (
+            re.search(r"\([^)]*%(?:r|e)sp\)", line, re.IGNORECASE)
+            or re.search(
+                r"\[[^\]]*\b(?:r|e)sp\b[^\]]*\]",
+                line,
+                re.IGNORECASE,
+            )
+        )
+    ]
+    if require_no_vector_stack_spill and vector_stack_spills:
+        raise RuntimeError(
+            f"{symbol} contains vector stack spill/reload instructions: "
+            f"{vector_stack_spills}"
+        )
+    return {
+        "register_operands": register_count,
+        "packed_fma_sites": fma_count,
+        "vector_stack_spills": len(vector_stack_spills),
+    }
 
 
 def scan_for_path_leaks(paths: list[Path], forbidden: list[Path]) -> int:
@@ -820,13 +849,21 @@ def main() -> int:
             llvm_objdump, backend_archive, AVX2_CHECKED_SYMBOL, "ymm"
         ),
         "avx2_full": inspect_microkernel(
-            llvm_objdump, backend_archive, AVX2_FULL_SYMBOL, "ymm"
+            llvm_objdump,
+            backend_archive,
+            AVX2_FULL_SYMBOL,
+            "ymm",
+            require_no_vector_stack_spill=True,
         ),
         "avx512_checked": inspect_microkernel(
             llvm_objdump, backend_archive, AVX512_CHECKED_SYMBOL, "zmm"
         ),
         "avx512_full": inspect_microkernel(
-            llvm_objdump, backend_archive, AVX512_FULL_SYMBOL, "zmm"
+            llvm_objdump,
+            backend_archive,
+            AVX512_FULL_SYMBOL,
+            "zmm",
+            require_no_vector_stack_spill=True,
         ),
     }
 
