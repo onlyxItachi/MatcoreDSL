@@ -18,7 +18,6 @@ import math
 import os
 import pathlib
 import subprocess
-import sys
 import time
 from typing import Iterable
 
@@ -529,6 +528,7 @@ def plan_fingerprint(
     cases: list[AuditCase],
     skips: list[AuditSkip],
     suites: set[str],
+    families: set[str],
     variants: tuple[str, ...],
     threads: tuple[int, ...],
     warmup: int,
@@ -542,6 +542,7 @@ def plan_fingerprint(
             "schema": "matcore.cpu-performance-deep-audit.plan",
             "version": 1,
             "suites": sorted(suites),
+            "families": sorted(families),
             "variants": list(variants),
             "threads": list(threads),
             "warmup": warmup,
@@ -731,6 +732,11 @@ def main() -> int:
         help="comma list: complete,compute,cold,prepacked,oneshot,regret,all",
     )
     parser.add_argument(
+        "--families",
+        default="all",
+        help="comma list of audited shape families, or all",
+    )
+    parser.add_argument(
         "--variants",
         default=",".join(VARIANTS),
         help="comma-separated stable IDs",
@@ -782,6 +788,14 @@ def main() -> int:
     }
     if not suites or unknown_suites:
         parser.error(f"unknown or empty suite set: {sorted(unknown_suites)}")
+    families = {value for value in args.families.split(",") if value}
+    if "all" in families:
+        families = set(SHAPE_FAMILIES)
+    unknown_families = families - set(SHAPE_FAMILIES)
+    if not families or unknown_families:
+        parser.error(
+            f"unknown or empty shape-family set: {sorted(unknown_families)}"
+        )
     variants = tuple(value for value in args.variants.split(",") if value)
     unknown_variants = set(variants) - set(VARIANTS)
     if not variants or unknown_variants:
@@ -796,6 +810,8 @@ def main() -> int:
         parser.error("memory bound must be positive and limit nonnegative")
 
     cases, skips = build_cases(suites, variants, threads)
+    cases = [case for case in cases if case.family in families]
+    skips = [skip for skip in skips if skip.family in families]
     if args.case_order == "stable-reverse":
         cases.reverse()
     if args.limit:
@@ -808,6 +824,7 @@ def main() -> int:
         cases,
         skips,
         suites,
+        families,
         variants,
         threads,
         args.warmup,
@@ -980,6 +997,7 @@ def main() -> int:
         "finished_unix_seconds": int(time.time()),
         "benchmark": str(executable),
         "suites": sorted(suites),
+        "families": sorted(families),
         "variants": list(variants),
         "threads": list(threads),
         "case_order": args.case_order,
