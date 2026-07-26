@@ -251,17 +251,10 @@ void compute_block(const planner::CpuGemmProblemV1 &problem,
       const float *b_panel = packed_b +
                              (column / kCpuPackedGemmNrV1) * depth *
                                  kCpuPackedGemmNrV1;
-      float *output_tile =
-          out + (row_begin + row) * ldc + column_begin + column;
-      if (tile_rows == kCpuPackedGemmMrV1 &&
-          tile_columns == kCpuPackedGemmNrV1) {
-        detail::matcore_cpu_packed_avx2_4x16_full_microkernel_f32_v2(
-            a_panel, b_panel, depth, output_tile, ldc, k_begin != 0);
-      } else {
-        detail::matcore_cpu_packed_avx2_4x16_microkernel_f32_v1(
-            a_panel, b_panel, depth, output_tile, ldc, tile_rows, tile_columns,
-            k_begin != 0);
-      }
+      detail::matcore_cpu_packed_avx2_4x16_microkernel_f32_v1(
+          a_panel, b_panel, depth,
+          out + (row_begin + row) * ldc + column_begin + column, ldc,
+          tile_rows, tile_columns, k_begin != 0);
     }
   }
 }
