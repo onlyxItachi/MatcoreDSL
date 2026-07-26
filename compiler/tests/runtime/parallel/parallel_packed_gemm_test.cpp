@@ -305,10 +305,34 @@ void run_balanced_partition_correctness() {
 }
 
 void run_parallel_b_pack_correctness() {
-  if (!runtime::cpu_packed_avx2_runtime_usable_v1()) return;
-  constexpr std::size_t m = 64;
-  constexpr std::size_t k = 1009;
-  constexpr std::size_t n = 1040;
+  using RuntimeUsableFn = bool (*)() noexcept;
+  using RequirementsFn = runtime::CpuParallelGemmStatusV1 (*)(
+      const planner::CpuGemmProblemV1 &, std::uint32_t,
+      runtime::CpuParallelGemmWorkspaceRequirementsV1 *) noexcept;
+  using ExecuteFn = runtime::CpuParallelGemmStatusV1 (*)(
+      runtime::CpuExecutionContextV1 &,
+      const planner::CpuGemmProblemV1 &, const float *, const float *, float *,
+      void *, std::size_t, std::uint32_t,
+      runtime::CpuProviderNestingPolicyV1,
+      runtime::CpuParallelGemmReportV1 *) noexcept;
+  struct BackendCase {
+    std::string_view name;
+    RuntimeUsableFn runtime_usable;
+    RequirementsFn requirements;
+    ExecuteFn execute;
+  };
+  constexpr BackendCase backends[] = {
+      {"AVX2", runtime::cpu_packed_avx2_runtime_usable_v1,
+       runtime::cpu_parallel_packed_avx2_workspace_requirements_v1,
+       runtime::cpu_execute_parallel_packed_avx2_v1},
+      {"AVX-512", runtime::cpu_packed_avx512_runtime_usable_v1,
+       runtime::cpu_parallel_packed_avx512_workspace_requirements_v1,
+       runtime::cpu_execute_parallel_packed_avx512_v1},
+  };
+
+  constexpr std::size_t m = 32;
+  constexpr std::size_t k = 1024;
+  constexpr std::size_t n = 4096;
   constexpr std::size_t guard_elements = 16;
   constexpr float guard_sentinel = -718.25F;
   const auto gemm_problem = problem(m, k, n, 64);
@@ -326,29 +350,35 @@ void run_parallel_b_pack_correctness() {
             guard_sentinel);
   const auto expected = oracle(lhs, rhs, m, k, n);
 
-  auto context = make_context();
-  runtime::CpuParallelGemmWorkspaceRequirementsV1 requirements;
-  expect(runtime::cpu_parallel_packed_avx2_workspace_requirements_v1(
-             gemm_problem, 4, &requirements) ==
-             runtime::CpuParallelGemmStatusV1::success,
-         "parallel B-pack workspace query succeeds");
-  AlignedBuffer workspace(requirements.total_bytes);
-  runtime::CpuParallelGemmReportV1 report;
-  const auto status = runtime::cpu_execute_parallel_packed_avx2_v1(
-      *context, gemm_problem, lhs, rhs, out, workspace.data(),
-      workspace.size(), 4, runtime::CpuProviderNestingPolicyV1::native_only,
-      &report);
-  expect(status == runtime::CpuParallelGemmStatusV1::success &&
-             report.actual_threads == 4 && report.packed_b_threads == 4 &&
-             report.context_submission == 1,
-         "large B is packed cooperatively in the single persistent submission");
-  expect(close(out, m * n, expected),
-         "parallel B-pack result matches double-precision oracle");
-  expect(guards_unchanged(guarded_out, m * n + 2 * guard_elements,
-                          guard_elements, guard_sentinel),
-         "parallel B-pack execution preserves output guards");
-  expect(context->info().completed_submissions == 1,
-         "parallel packing does not add a second worker-pool submission");
+  for (const BackendCase &backend : backends) {
+    if (!backend.runtime_usable()) continue;
+    std::fill(guarded_out, guarded_out + m * n + 2 * guard_elements,
+              guard_sentinel);
+    auto context = make_context();
+    runtime::CpuParallelGemmWorkspaceRequirementsV1 requirements;
+    expect(backend.requirements(gemm_problem, 4, &requirements) ==
+               runtime::CpuParallelGemmStatusV1::success,
+           "parallel B-pack workspace query succeeds");
+    AlignedBuffer workspace(requirements.total_bytes);
+    runtime::CpuParallelGemmReportV1 report;
+    const auto status = backend.execute(
+        *context, gemm_problem, lhs, rhs, out, workspace.data(),
+        workspace.size(), 4,
+        runtime::CpuProviderNestingPolicyV1::native_only, &report);
+    expect(status == runtime::CpuParallelGemmStatusV1::success &&
+               report.actual_threads == 4 && report.packed_b_threads == 4 &&
+               report.context_submission == 1,
+           "large B is packed cooperatively in one persistent submission");
+    expect(close(out, m * n, expected),
+           "parallel B-pack result matches double-precision oracle");
+    expect(guards_unchanged(guarded_out, m * n + 2 * guard_elements,
+                            guard_elements, guard_sentinel),
+           "parallel B-pack execution preserves output guards");
+    expect(context->info().completed_submissions == 1,
+           "parallel packing does not add a second pool submission");
+    std::cout << "parallel " << backend.name
+              << " cooperative B-pack PASS\n";
+  }
 }
 
 void run_low_alignment_row_only_correctness() {

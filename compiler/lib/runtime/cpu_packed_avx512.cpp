@@ -1,5 +1,6 @@
 #include "cpu_packed_avx512.h"
 #include "cpu_capability_v2.h"
+#include "cpu_packed_b_format.h"
 
 #include <algorithm>
 #include <array>
@@ -29,11 +30,6 @@
 
 namespace matcore::mdslc::runtime {
 namespace {
-
-// Kept identical to packed AVX2 because CpuPackedBViewV1 describes one common
-// v1 packing format, not an ISA-specific blob.
-inline constexpr std::uint64_t kPackedBProvenanceSeed =
-    UINT64_C(0x4d43504241563131);
 
 struct ByteSpan {
   std::uintptr_t begin = 0;
@@ -90,32 +86,6 @@ bool pointer_has_alignment(const void *pointer,
                            std::size_t alignment) noexcept {
   return pointer != nullptr && alignment != 0 &&
          reinterpret_cast<std::uintptr_t>(pointer) % alignment == 0;
-}
-
-std::uint64_t mix_provenance(std::uint64_t state,
-                             std::uint64_t value) noexcept {
-  state ^= value + UINT64_C(0x9e3779b97f4a7c15) + (state << 6U) +
-           (state >> 2U);
-  return state;
-}
-
-std::uint64_t packed_b_provenance(const CpuPackedBViewV1 &view) noexcept {
-  std::uint64_t result = kPackedBProvenanceSeed;
-  result = mix_provenance(
-      result, static_cast<std::uint64_t>(
-                  reinterpret_cast<std::uintptr_t>(view.source_data)));
-  result = mix_provenance(
-      result, static_cast<std::uint64_t>(
-                  reinterpret_cast<std::uintptr_t>(view.packed_data)));
-  result = mix_provenance(result, static_cast<std::uint64_t>(view.storage_bytes));
-  result =
-      mix_provenance(result, static_cast<std::uint64_t>(view.packed_elements));
-  result = mix_provenance(result, static_cast<std::uint64_t>(view.k));
-  result = mix_provenance(result, static_cast<std::uint64_t>(view.n));
-  result = mix_provenance(result, view.kc);
-  result = mix_provenance(result, view.nc);
-  result = mix_provenance(result, view.nr);
-  return result;
 }
 
 CpuPackedGemmStatusV1 dimensions(
@@ -204,28 +174,6 @@ void pack_a_block(const float *lhs, std::size_t leading_dimension,
   }
 }
 
-std::size_t pack_b_block(const float *rhs, std::size_t leading_dimension,
-                         std::size_t k_begin, std::size_t column_begin,
-                         std::size_t depth, std::size_t columns,
-                         float *packed_b) noexcept {
-  std::size_t padded_columns = 0;
-  (void)checked_round_up(columns, kCpuPackedGemmNrV1, &padded_columns);
-  std::size_t destination = 0;
-  for (std::size_t column = 0; column < padded_columns;
-       column += kCpuPackedGemmNrV1) {
-    for (std::size_t p = 0; p < depth; ++p) {
-      for (std::size_t lane = 0; lane < kCpuPackedGemmNrV1; ++lane) {
-        packed_b[destination++] =
-            column + lane < columns
-                ? rhs[(k_begin + p) * leading_dimension + column_begin +
-                      column + lane]
-                : 0.0F;
-      }
-    }
-  }
-  return destination;
-}
-
 void compute_block(const planner::CpuGemmProblemV1 &problem,
                    const float *lhs, float *out, std::size_t row_begin,
                    std::size_t column_begin, std::size_t k_begin,
@@ -275,24 +223,13 @@ void compute_block(const planner::CpuGemmProblemV1 &problem,
 CpuPackedGemmStatusV1 validate_prepacked_view(
     const planner::CpuGemmProblemV1 &problem, const CpuPackedBViewV1 &view,
     ByteSpan *source_span, ByteSpan *packed_span) noexcept {
-  if (view.version != kCpuPackedGemmBackendVersionV1 ||
-      view.struct_size != sizeof(CpuPackedBViewV1) ||
-      view.source_data == nullptr || view.packed_data == nullptr ||
-      view.k != problem.k || view.n != problem.n ||
-      view.kc != kCpuPackedGemmKcV1 || view.nc != kCpuPackedGemmNcV1 ||
-      view.nr != kCpuPackedGemmNrV1 || view.reserved0 != 0 ||
-      !pointer_has_alignment(view.packed_data,
-                             kCpuPackedGemmWorkspaceAlignmentV1) ||
-      view.provenance != packed_b_provenance(view)) {
-    return CpuPackedGemmStatusV1::invalid_prepacked_b;
-  }
-
   CpuPackedGemmWorkspaceRequirementsV1 requirements;
   const auto status =
       cpu_packed_avx512_prepacked_b_requirements_v1(problem, &requirements);
   if (status != CpuPackedGemmStatusV1::success) return status;
-  if (view.storage_bytes < requirements.total_bytes ||
-      view.packed_elements != requirements.packed_b_bytes / sizeof(float)) {
+  if (!detail::cpu_validate_packed_b_view_metadata_v1(
+          problem, view, requirements.total_bytes,
+          requirements.packed_b_bytes / sizeof(float))) {
     return CpuPackedGemmStatusV1::invalid_prepacked_b;
   }
   const auto k = static_cast<std::size_t>(problem.k);
@@ -519,25 +456,14 @@ CpuPackedGemmStatusV1 cpu_prepare_packed_b_avx512_v1(
     const std::size_t columns = std::min(kCpuPackedGemmNcV1, n - column);
     for (std::size_t p = 0; p < k; p += kCpuPackedGemmKcV1) {
       const std::size_t depth = std::min(kCpuPackedGemmKcV1, k - p);
-      packed_elements += pack_b_block(rhs, n, p, column, depth, columns,
-                                      destination + packed_elements);
+      packed_elements += detail::cpu_pack_b_block_v1(
+          rhs, n, p, column, depth, columns, destination + packed_elements);
     }
   }
 
-  CpuPackedBViewV1 result;
-  result.version = kCpuPackedGemmBackendVersionV1;
-  result.struct_size = sizeof(CpuPackedBViewV1);
-  result.source_data = rhs;
-  result.packed_data = static_cast<const float *>(packed_storage);
-  result.storage_bytes = packed_storage_bytes;
-  result.packed_elements = packed_elements;
-  result.k = problem.k;
-  result.n = problem.n;
-  result.kc = kCpuPackedGemmKcV1;
-  result.nc = kCpuPackedGemmNcV1;
-  result.nr = kCpuPackedGemmNrV1;
-  result.provenance = packed_b_provenance(result);
-  *view = result;
+  *view = detail::cpu_make_packed_b_view_v1(
+      problem, rhs, static_cast<const float *>(packed_storage),
+      packed_storage_bytes, packed_elements);
   return CpuPackedGemmStatusV1::success;
 }
 
@@ -581,7 +507,8 @@ CpuPackedGemmStatusV1 cpu_execute_packed_avx512_v1(
     const std::size_t columns = std::min(kCpuPackedGemmNcV1, n - column);
     for (std::size_t p = 0; p < k; p += kCpuPackedGemmKcV1) {
       const std::size_t depth = std::min(kCpuPackedGemmKcV1, k - p);
-      (void)pack_b_block(rhs, n, p, column, depth, columns, packed_b);
+      (void)detail::cpu_pack_b_block_v1(rhs, n, p, column, depth, columns,
+                                        packed_b);
       for (std::size_t row = 0; row < m; row += kCpuPackedGemmMcV1) {
         const std::size_t rows = std::min(kCpuPackedGemmMcV1, m - row);
         compute_block(problem, lhs, out, row, column, p, rows, columns, depth,
