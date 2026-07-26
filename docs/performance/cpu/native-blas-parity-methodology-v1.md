@@ -15,7 +15,12 @@ count as native parity.
   persistent parallel variants when legal.
 - External comparator: authenticated CBLAS SGEMM from the configured OpenBLAS
   provider.
-- Requested thread counts: 1, 4, and the discovered physical-core count.
+- Requested thread ceilings: 1, 4, and the discovered physical-core count.
+  Native/OpenBLAS parity cells use the exact native task capacity under each
+  multi-thread ceiling. If the output task graph cannot use the full ceiling,
+  both native and OpenBLAS are measured at the same lower exact count and the
+  ceiling/capacity mapping is retained in the authenticated manifest. A
+  capacity-limited cell is not reported as physical-core-count parity.
 - Primary timing: hot-cache, caller-owned reused workspace, transient packing
   included, allocation excluded.
 - Repeated-weight timing: caller-owned authenticated prepacked B, with its
@@ -78,6 +83,10 @@ authenticated for both implementations. Multi-thread parity uses an explicitly
 unbound stratum (`affinity=none`) for both native and OpenBLAS when provider
 worker affinity cannot be authenticated. Bound-native scaling is reported
 separately and must not be relabeled as equal-placement BLAS parity.
+The deterministic task-capacity projection is contract-tested against the
+planner's 128-row, 256-column, cacheline-safe, work-floor model. Every forced
+comparison still requires exact requested/actual equality; silent thread
+clamping remains invalid evidence.
 
 ## Metrics
 

@@ -25,7 +25,7 @@ import time
 
 
 BENCHMARK_SCHEMA_VERSION = 6
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 2
 DEFAULT_SEED = 0x4D4154434F524532
 DEFAULT_WARMUP = 5
 DEFAULT_ITERATIONS = 11
@@ -246,12 +246,75 @@ def thread_strata(physical_cores: int) -> tuple[int, ...]:
     return tuple(dict.fromkeys((1, 4, physical_cores)))
 
 
+def parallel_task_capacity(
+    shape: tuple[int, int, int], requested_threads: int
+) -> int:
+    """Mirror the versioned planner-v3 disjoint-output task-capacity contract."""
+    m, n, k = shape
+    if min(m, n, k, requested_threads) <= 0:
+        return 0
+    macro_tiles = (m + 127) // 128
+    row_quantum = math.lcm(4, 16 // math.gcd(n, 16))
+    row_groups = (m + row_quantum - 1) // row_quantum
+    column_panels = (n + 255) // 256
+    maximum_row_tasks = min(requested_threads, macro_tiles, row_groups)
+    row_tasks = maximum_row_tasks
+    task_count = maximum_row_tasks
+    if n % 16 == 0 and column_panels > 1:
+        for candidate_rows in range(1, maximum_row_tasks + 1):
+            candidate_columns = min(
+                column_panels, requested_threads // candidate_rows
+            )
+            candidate_tasks = candidate_rows * candidate_columns
+            if candidate_tasks > task_count or (
+                candidate_tasks == task_count and candidate_rows > row_tasks
+            ):
+                row_tasks = candidate_rows
+                task_count = candidate_tasks
+    if task_count > maximum_row_tasks:
+        work_floor = 1 << (23 if row_tasks == 1 else 25)
+        if (2 * m * n * k) // task_count < work_floor:
+            task_count = maximum_row_tasks
+    return min(requested_threads, task_count)
+
+
+def exact_parallel_thread_strata(
+    shape: tuple[int, int, int], physical_cores: int
+) -> tuple[int, ...]:
+    """Return fair exact-thread cells derived from 4/physical-core ceilings."""
+    exact: list[int] = []
+    for ceiling in dict.fromkeys((4, physical_cores)):
+        capacity = parallel_task_capacity(shape, ceiling)
+        if capacity > 1 and capacity not in exact:
+            exact.append(capacity)
+    return tuple(exact)
+
+
+def parallel_thread_plan(physical_cores: int) -> list[dict[str, object]]:
+    ceilings = tuple(dict.fromkeys((4, physical_cores)))
+    return [
+        {
+            "partition": spec.partition,
+            "family": spec.family,
+            "shape": list(spec.shape),
+            "requested_ceilings": list(ceilings),
+            "task_capacities": [
+                parallel_task_capacity(spec.shape, ceiling)
+                for ceiling in ceilings
+            ],
+            "exact_comparison_threads": list(
+                exact_parallel_thread_strata(spec.shape, physical_cores)
+            ),
+        }
+        for spec in PARITY_SHAPES
+    ]
+
+
 def build_cases(
     suites: set[str], physical_cores: int
 ) -> list[ParityCase]:
     cases: list[ParityCase] = []
     threads = thread_strata(physical_cores)
-    parallel_threads = tuple(value for value in threads if value > 1)
 
     if "parity" in suites:
         for spec in PARITY_SHAPES:
@@ -266,7 +329,9 @@ def build_cases(
                         "complete-hot",
                     )
                 )
-            for thread_count in parallel_threads:
+            for thread_count in exact_parallel_thread_strata(
+                spec.shape, physical_cores
+            ):
                 for variant in PARALLEL_PARITY_VARIANTS:
                     cases.append(
                         ParityCase(
@@ -709,6 +774,33 @@ def authenticate_report(
         )
     if case.variant == AUTO and actual_threads > case.threads:
         raise ValueError("automatic plan exceeded the requested thread ceiling")
+    if case.variant in (PARALLEL_AVX2, PARALLEL_AVX512):
+        expected_capacity = parallel_task_capacity(case.shape, case.threads)
+        row_tasks = result.get("parallel_row_tasks")
+        column_tasks = result.get("parallel_column_tasks")
+        task_count = result.get("parallel_task_count")
+        if (
+            not isinstance(row_tasks, int)
+            or not isinstance(column_tasks, int)
+            or not isinstance(task_count, int)
+            or row_tasks < 1
+            or column_tasks < 1
+            or task_count != row_tasks * column_tasks
+            or task_count != expected_capacity
+        ):
+            raise ValueError(
+                "parallel result task geometry disagrees with the frozen "
+                "planner-capacity model"
+            )
+    elif any(
+        result.get(field) != 0
+        for field in (
+            "parallel_row_tasks",
+            "parallel_column_tasks",
+            "parallel_task_count",
+        )
+    ):
+        raise ValueError("serial/provider result unexpectedly reports parallel tasks")
 
     reconstructed = reconstructed_timing(result)
     for field, expected in reconstructed.items():
@@ -742,7 +834,7 @@ def authenticate_report(
 
 _EXPECTED_REJECTION_REASONS: tuple[tuple[str, str], ...] = (
     (
-        "parallel candidate requires at least two output macro-tiles and workers",
+        "parallel candidate requires at least two disjoint output tasks and workers",
         "parallel-output-tile-count",
     ),
     (
@@ -812,6 +904,7 @@ def plan_fingerprint(
             "suites": sorted(suites),
             "physical_cores": physical_cores,
             "thread_strata": list(thread_strata(physical_cores)),
+            "parallel_thread_plan": parallel_thread_plan(physical_cores),
             "case_order": case_order,
             "benchmark": str(executable),
             "benchmark_schema_version": BENCHMARK_SCHEMA_VERSION,
@@ -868,6 +961,7 @@ def manifest_value(
         "suites": sorted(suites),
         "physical_cores": physical_cores,
         "thread_strata": list(thread_strata(physical_cores)),
+        "parallel_thread_plan": parallel_thread_plan(physical_cores),
         "case_order": case_order,
         "warmup": DEFAULT_WARMUP,
         "iterations": DEFAULT_ITERATIONS,

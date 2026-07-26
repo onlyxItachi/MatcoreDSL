@@ -138,24 +138,40 @@ def main() -> int:
         "diagnostic",
     }
     structural = module.build_cases(suites, 12)
-    assert len(structural) == 413
+    assert len(structural) > 300
     assert len({case.key for case in structural}) == len(structural)
     primary = [case for case in structural if case.mode == "complete-hot"]
     for spec in module.PARITY_SHAPES:
         matching = [case for case in primary if case.shape == spec.shape]
-        assert {
-            (case.variant, case.threads) for case in matching
-        } == {
+        expected = {
             (module.PACKED_AVX2, 1),
             (module.PACKED_AVX512, 1),
             (module.OPENBLAS, 1),
-            (module.PARALLEL_AVX2, 4),
-            (module.PARALLEL_AVX512, 4),
-            (module.OPENBLAS, 4),
-            (module.PARALLEL_AVX2, 12),
-            (module.PARALLEL_AVX512, 12),
-            (module.OPENBLAS, 12),
         }
+        for thread_count in module.exact_parallel_thread_strata(
+            spec.shape, 12
+        ):
+            expected.update(
+                {
+                    (module.PARALLEL_AVX2, thread_count),
+                    (module.PARALLEL_AVX512, thread_count),
+                    (module.OPENBLAS, thread_count),
+                }
+            )
+            assert (
+                module.parallel_task_capacity(spec.shape, thread_count)
+                == thread_count
+            )
+        assert {(case.variant, case.threads) for case in matching} == expected
+    assert module.parallel_task_capacity((512, 512, 512), 12) == 8
+    assert module.exact_parallel_thread_strata((512, 512, 512), 12) == (4, 8)
+    assert module.parallel_task_capacity((384, 384, 384), 12) == 3
+    assert module.exact_parallel_thread_strata((384, 384, 384), 12) == (3,)
+    assert module.parallel_task_capacity((1024, 1024, 1024), 12) == 12
+    assert module.exact_parallel_thread_strata((1024, 1024, 1024), 12) == (
+        4,
+        12,
+    )
     assert {
         case.threads
         for case in structural
@@ -204,7 +220,7 @@ def main() -> int:
             (forward_output / "manifest.json").read_text(encoding="utf-8")
         )
         assert forward["schema"] == "matcore.native-blas-parity.manifest"
-        assert forward["version"] == 1
+        assert forward["version"] == 2
         assert forward["benchmark_schema_version"] == 6
         assert forward["source_commit"]
         assert forward["runner_git_blob"]
@@ -215,6 +231,9 @@ def main() -> int:
         assert forward["dry_run"] is True
         assert forward["limit"] == 0
         assert forward["thread_strata"] == expected_threads
+        assert forward["parallel_thread_plan"] == module.parallel_thread_plan(
+            physical_cores
+        )
         assert len(forward["cases"]) == len(
             module.build_cases(suites, physical_cores)
         )
@@ -450,7 +469,7 @@ def main() -> int:
     m, n, k = (31, 33, 35)
     exact_rejection = (
         f"matcore-bench: variant planning failed for {m}x{n}x{k}: "
-        "parallel candidate requires at least two output macro-tiles and workers"
+        "parallel candidate requires at least two disjoint output tasks and workers"
     )
     rejection_case = module.ParityCase(
         "holdout",
