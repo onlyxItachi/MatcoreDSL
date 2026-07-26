@@ -36,8 +36,6 @@ using FullMicrokernel32FnV1 = void (*)(
     const float *, const float *, const float *, std::size_t, float *,
     std::size_t, bool) noexcept;
 
-enum class PackedIsaV1 : std::uint8_t { avx2 = 0, avx512 = 1 };
-
 struct PackedBackendOpsV1 {
   RuntimeUsableFnV1 runtime_usable = nullptr;
   WorkspaceRequirementsFnV1 workspace_requirements = nullptr;
@@ -47,7 +45,6 @@ struct PackedBackendOpsV1 {
   MicrokernelFnV1 microkernel = nullptr;
   FullMicrokernel16FnV1 full_microkernel_16 = nullptr;
   FullMicrokernel32FnV1 full_microkernel_32 = nullptr;
-  PackedIsaV1 isa = PackedIsaV1::avx2;
 };
 
 inline constexpr PackedBackendOpsV1 kPackedAvx2Ops{
@@ -58,8 +55,7 @@ inline constexpr PackedBackendOpsV1 kPackedAvx2Ops{
     cpu_execute_packed_avx2_prepacked_b_v1,
     detail::matcore_cpu_packed_avx2_4x16_microkernel_f32_v1,
     detail::matcore_cpu_packed_avx2_4x16_full_microkernel_f32_v2,
-    nullptr,
-    PackedIsaV1::avx2};
+    nullptr};
 
 inline constexpr PackedBackendOpsV1 kPackedAvx512Ops{
     cpu_packed_avx512_runtime_usable_v1,
@@ -69,8 +65,7 @@ inline constexpr PackedBackendOpsV1 kPackedAvx512Ops{
     cpu_execute_packed_avx512_prepacked_b_v1,
     detail::matcore_cpu_packed_avx512_4x16_microkernel_f32_v1,
     nullptr,
-    detail::matcore_internal_cpu_packed_avx512_4x32_full_microkernel_f32_m7,
-    PackedIsaV1::avx512};
+    detail::matcore_internal_cpu_packed_avx512_4x32_full_microkernel_f32_m7};
 
 struct ByteSpan {
   std::uintptr_t begin = 0;
@@ -192,7 +187,6 @@ inline constexpr std::int64_t kCpuParallelPackedBMinimumColumnsV1 = 4096;
 inline constexpr std::int64_t kCpuParallelPackedBMinimumDepthV1 = 1024;
 
 bool should_parallel_pack_b(
-    const PackedBackendOpsV1 &ops,
     const planner::CpuGemmProblemV1 &problem,
     const planner::CpuParallelTaskPlanV1 &task_plan,
     const CpuParallelGemmWorkspaceRequirementsV1 &requirements,
@@ -205,9 +199,6 @@ bool should_parallel_pack_b(
       requirements.shared_packed_b_bytes <
           kCpuParallelPackedBMinimumBytesV1) {
     return false;
-  }
-  if (ops.isa == PackedIsaV1::avx2) {
-    return problem.k >= 4096 || problem.m <= 32;
   }
   return problem.k >= 4096 || (problem.m <= 32 && problem.n >= 8192);
 }
@@ -598,7 +589,7 @@ CpuParallelGemmStatusV1 execute_parallel(
   auto *packed_b_destination = reinterpret_cast<float *>(
       workspace_start + requirements.shared_packed_b_offset);
   const bool parallel_pack_b = should_parallel_pack_b(
-      ops, problem, task_plan, requirements, actual_threads);
+      problem, task_plan, requirements, actual_threads);
   CpuPackedBViewV1 packed_b;
   if (parallel_pack_b) {
     packed_b = detail::cpu_make_packed_b_view_v1(
