@@ -13,10 +13,13 @@ No Milestone 6 runner or summarizer was changed.
 
 The new Linux x86-64 runner makes the reviewed
 `native-blas-parity-methodology-v1.md` matrix executable without weakening the
-Milestone 6 evidence authority. It freezes the calibration and holdout shapes,
+Milestone 6 evidence authority. It freezes the complete declared shape matrix,
 the serial and parallel candidate sets, the `1`, `4`, and caller-supplied
 physical-core thread strata, repeated-input and authenticated prepacked-B
-cases, and bounded built-in planner-regret diagnostics.
+cases, and bounded built-in planner-regret diagnostics. Manifest v3 retains
+the original case-key identifiers while recording their honest chronology:
+`calibration` means candidate development and validation, and `holdout` means
+declared validation that is not blind.
 
 Every retained multi-thread parity case uses the same
 `allow-smt`/`affinity=none` placement for native and OpenBLAS candidates. Every

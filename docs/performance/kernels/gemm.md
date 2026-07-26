@@ -1,7 +1,7 @@
 # Private CPU GEMM kernel contract
 
-Status: Milestone 7 internal backend contract at
-`e49260e68f7e43124591e6515bfeb1fe84c3ea74`.
+Status: Milestone 7 internal backend contract, synchronized with the retained
+production rules after the `bbfc2d8` methodology correction.
 
 This document describes the implemented and reviewed native CPU GEMM layers.
 It is not a public API or ABI freeze, a promise that a private microkernel name
@@ -100,9 +100,9 @@ Planner-v3 currently evaluates these fixed diagnostic identities:
 
 These IDs identify planner candidates, not individual microkernel symbols or
 blocking profiles. A private tile body may change after correctness, artifact,
-holdout, and planner evidence without forcing that body into the installed
-headers. Whether forced implementation IDs should remain public enum values is
-an open pre-freeze decision.
+complete declared validation, and planner evidence without forcing that body
+into the installed headers. Whether forced implementation IDs should remain
+public enum values is an open pre-freeze decision.
 
 ## Packed format and workspace
 
@@ -207,9 +207,9 @@ Milestone 7 path cooperatively prepares disjoint final NC panels only in a
 measured short-wide envelope:
 
 - more than one worker;
-- `M <= 64`, `N >= 4096`, and `K >= 1024`;
+- `M <= 64`, `N >= 4096`, and `K >= 4096`;
 - at least two NC panels and at least 4 MiB packed B;
-- additionally `K >= 4096`, or `M <= 32 && N >= 8192`.
+- complete final-layout packed-B storage with disjoint panel ownership.
 
 Workers write disjoint final packed intervals. A release/acquire phase barrier
 publishes the complete read-only image before compute. An abort state prevents
@@ -238,9 +238,11 @@ tie-breaking. Runtime autotuning and implicit history-dependent dispatch are
 outside this milestone. OpenBLAS remains selectable when it is faster; an
 automatic plan that chooses OpenBLAS is not native parity.
 
-Planner changes require frozen calibration and holdout evidence with every
-legal candidate forced. A threshold that fixes one shape but creates
-catastrophic regret elsewhere is rejected.
+Planner changes require the complete declared matrix with every legal
+candidate forced and the partition chronology recorded accurately. The
+`holdout` case-key identifier in Milestone 7 means declared validation, not a
+blind holdout. A threshold that fixes one shape but creates catastrophic
+regret elsewhere is rejected.
 
 ## Correctness and artifact gates
 

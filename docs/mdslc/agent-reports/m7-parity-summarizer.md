@@ -17,16 +17,17 @@ The new summarizer treats the two complete stable-order benchmark bundles as
 untrusted input and fails closed before emitting a sanitized result. It
 authenticates:
 
-- manifest schema v2, benchmark schema v6, exact suite/timing/seed/memory
+- manifest schema v3, benchmark schema v6, exact suite/timing/seed/memory
   contract, and complete case accounting;
 - the benchmark executable SHA-256, local tracked runner SHA-256, runner Git
   blob, and the runner blob at the declared source commit;
-- the independently reconstructed manifest-v2 case matrix, per-shape
+- the independently reconstructed manifest-v3 case matrix, corrected
+  partition chronology, per-shape
   task-capacity projection, stable order, command vector, plan SHA-256, raw
   filename, and raw SHA-256;
 - clean Linux x86-64 source provenance, one homogeneous physical topology and
   build/provider environment, exact requested/actual forced thread counts, and
-  manifest-v2 parallel task geometry;
+  manifest-v3 parallel task geometry;
 - ordered timing samples, aggregate timer-floor coverage, minimum/median/p95,
   GFLOP/s, correctness tolerance, authenticated final output, prepacked-B
   preparation/amortization, and balanced planner-regret arithmetic;
@@ -51,7 +52,7 @@ different compact-one-thread versus unbound-multi-thread placement boundary.
 
 ## Adversarial coverage
 
-The focused contract test synthesizes the entire manifest-v2 matrix in both
+The focused contract test synthesizes the entire manifest-v3 matrix in both
 directions and verifies a passing deterministic result. It separately rejects:
 
 - changed raw bytes with an unchanged digest;
@@ -93,7 +94,7 @@ Results:
 ## Integration handoff
 
 The integration owner should register the test next to the existing parity
-runner contract after the manifest-v2 runner changes land:
+runner contract after the manifest-v3 runner changes land:
 
 ```cmake
 add_test(
@@ -107,6 +108,6 @@ add_test(
 ```
 
 The final raw sweep must be generated from a clean commit that already contains
-the manifest-v2 runner. Run the summarizer while the authenticated benchmark
+the manifest-v3 runner. Run the summarizer while the authenticated benchmark
 binary remains available; then commit only its sanitized report, never either
 raw bundle.

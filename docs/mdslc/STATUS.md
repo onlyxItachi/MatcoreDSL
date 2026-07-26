@@ -2,11 +2,13 @@
 
 Status date: 2026-07-26
 
-- Rewritten canonical `origin/main` at the Milestone 6 branch point:
-  `951239f1bee5541a4cf5ad72fab2192de07cf89d`
-- Milestone 6 integration branch: `mdslc/cpu-performance-deep-audit`
-- Milestone 6 locally accepted review head:
-  `ed9546c4fbe2af4013600ff7c9d41b357a7aa239`
+- Canonical `origin/main` and published Milestone 6 merge:
+  `ddda3ccf628dae60bdb7f57d68d024fd02168fcb`
+- Milestone 6 pull request: `#14`, merged normally
+- Milestone 6 umbrella issue / GitHub milestone: `#13` / `#4`, closed
+- Milestone 6 immutable tag: `mdslc-cpu-performance-audit-v1`
+- Milestone 7 integration branch: `mdslc/native-blas-parity-v1`
+- Milestone 7 umbrella issue / GitHub milestone: `#15` / `#5`, open
 - Completed Milestone 5 merge before history sanitation:
   `091d74072a710389b4a8e9d51f696ad9773021e6`
 - Focused Windows validation branch: `mdslc/windows-x64-v1`
@@ -28,9 +30,10 @@ Status date: 2026-07-26
 
 ## Milestone 6 CPU performance deep audit
 
-**Milestone 6 has passed its local integration and independent-review gates
-for the bounded audit scope. Normal PR publication, hosted checks, normal
-merge, immutable tagging, and tracker closure remain pending.**
+**Milestone 6 is published and complete for the bounded audit scope. PR #14
+passed hosted checks, merged normally into `main` at `ddda3cc`, issue #13 and
+milestone #4 are closed, and the immutable
+`mdslc-cpu-performance-audit-v1` tag anchors the merge.**
 
 The final schema-v6 collection is authenticated by immutable external
 manifests. The forward order contains 711 executable cases: 583 accepted raw

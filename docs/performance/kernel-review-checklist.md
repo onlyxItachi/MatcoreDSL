@@ -156,9 +156,10 @@ capabilities, command, and result.
       actually used, not only the requested variant.
 - [ ] Forced legal candidates execute; forced illegal candidates do not
       fallback.
-- [ ] Calibration and holdout sets are separate and identified.
+- [ ] Every evidence partition is identified with its actual chronology; a
+      declared-validation partition is not presented as a blind holdout.
 - [ ] Threshold changes improve the target region without catastrophic
-      holdout regret.
+      regret across the complete declared matrix.
 
 ## 10. Benchmark fairness and performance claims
 
