@@ -513,12 +513,20 @@ CpuParallelTaskPlanV1 plan_cpu_parallel_tasks_v1(
       }
     }
   }
-  if (result.task_count > maximum_row_tasks &&
-      detail::operation_count(problem) / result.task_count <
-          kCpuParallelMinimumWorkPerThreadV1) {
-    result.row_task_count = maximum_row_tasks;
-    result.column_task_count = 1;
-    result.task_count = maximum_row_tasks;
+  if (result.task_count > maximum_row_tasks) {
+    const std::uint64_t minimum_work_per_thread =
+        result.row_task_count == 1
+            ? kCpuParallelColumnOnlyMinimumWorkPerThreadV1
+            : kCpuParallelTwoDimensionalMinimumWorkPerThreadV1;
+    const std::uint64_t floating_point_operations =
+        detail::saturating_multiply(UINT64_C(2),
+                                    detail::operation_count(problem));
+    if (floating_point_operations / result.task_count <
+        minimum_work_per_thread) {
+      result.row_task_count = maximum_row_tasks;
+      result.column_task_count = 1;
+      result.task_count = maximum_row_tasks;
+    }
   }
   result.actual_threads = static_cast<std::uint32_t>(
       std::min<std::uint64_t>(requested_threads, result.task_count));

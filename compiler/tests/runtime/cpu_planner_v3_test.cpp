@@ -238,10 +238,23 @@ void adaptive_parallel_task_contract() {
              post_macro.row_quantum == 4 &&
              post_macro.row_group_count == 33 &&
              post_macro.row_task_count == 2 &&
-             post_macro.column_task_count == 2 &&
-             post_macro.task_count == 4 &&
-             post_macro.actual_threads == 4,
-         "post-MC tail uses a deterministic two-dimensional task grid");
+             post_macro.column_task_count == 1 &&
+             post_macro.task_count == 2 &&
+             post_macro.actual_threads == 2,
+         "small post-MC tail rejects an unprofitable two-dimensional grid");
+
+  const auto large_post_macro_problem = problem(129, 1024, 512);
+  const auto large_post_macro =
+      planner::plan_cpu_parallel_tasks_v1(large_post_macro_problem, 4);
+  expect(large_post_macro.macro_tile_count == 2 &&
+             large_post_macro.row_quantum == 4 &&
+             large_post_macro.row_group_count == 33 &&
+             large_post_macro.row_task_count == 2 &&
+             large_post_macro.column_panel_count == 4 &&
+             large_post_macro.column_task_count == 2 &&
+             large_post_macro.task_count == 4 &&
+             large_post_macro.actual_threads == 4,
+         "large post-MC work uses a deterministic two-dimensional task grid");
 
   const auto low_work =
       planner::plan_cpu_parallel_tasks_v1(problem(64, 16, 16), 4);

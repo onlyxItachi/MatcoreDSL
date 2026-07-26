@@ -21,6 +21,10 @@ inline constexpr std::size_t kCpuGemmCandidateCountV3 = 8;
 inline constexpr std::size_t kCpuPlannerReportedNumaNodeLimitV1 = 16;
 inline constexpr std::uint64_t kCpuParallelMinimumWorkPerThreadV1 =
     UINT64_C(1) << 20;
+inline constexpr std::uint64_t
+    kCpuParallelColumnOnlyMinimumWorkPerThreadV1 = UINT64_C(1) << 23;
+inline constexpr std::uint64_t
+    kCpuParallelTwoDimensionalMinimumWorkPerThreadV1 = UINT64_C(1) << 25;
 inline constexpr std::uint64_t kCpuParallelMacroTileRowsV1 = 128;
 inline constexpr std::uint64_t kCpuParallelRegisterTileRowsV1 = 4;
 inline constexpr std::uint64_t kCpuParallelCacheLineFloatCountV1 = 16;
@@ -77,10 +81,12 @@ struct CpuThreadPolicyV1 {
 };
 
 /*
- * Pure planner/runtime contract for deterministic whole-row tasking. The
- * runtime owns disjoint row ranges and never splits K, so no reduction or
- * output synchronization is required. Row boundaries are aligned to both the
- * packed microkernel's MR and a complete 64-byte output-cacheline cycle.
+ * Pure planner/runtime contract for deterministic disjoint output tasking.
+ * The runtime never splits K, so no reduction or output synchronization is
+ * required. Row boundaries are aligned to both the packed microkernel's MR
+ * and a complete 64-byte output-cacheline cycle. Cacheline-safe problems may
+ * additionally expose NC-sized column panels when measured work floors make
+ * that decomposition worthwhile.
  */
 struct CpuParallelTaskPlanV1 {
   std::uint64_t macro_tile_count = 0;
