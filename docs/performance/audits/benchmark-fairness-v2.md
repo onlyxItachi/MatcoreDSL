@@ -400,3 +400,98 @@ or multi-thread native/OpenBLAS claims.
 
 Benchmark fairness v2 verdict: **rejected pending the high-severity acceptance
 actions above**.
+
+---
+
+## Schema-v6 final acceptance review
+
+Date: 2026-07-26
+
+This section is the final review of the replacement schema-v6 collection. The
+rejection above remains as the historical record of the earlier schema-v5 and
+weak-resume evidence; it does not describe the authenticated collection below.
+
+### Authenticated evidence
+
+- **[measured]** The stable-forward manifest SHA-256 is
+  `b3f872bd0085b15a8cd0cfcc7663af2a41f445355a3e3237c979dc52618362c0`.
+  It declares source commit
+  `509ef2b775e501783dfa7f2c4aa21e91f513bd6a`, benchmark binary
+  `a5a07cf06b6274aeba50a66c20713847f2d65a28ab28021e6d27e64a941c31f5`,
+  runner
+  `be1db49ce5e82d34fc8b455d86c2fe2ad46ea5363a71b0af43b31104f1fd010d`,
+  plan
+  `c435d53b84856f4b2d0e52957a31a30c58964503550731e85cc0f2112ae3a64a`,
+  711 executable cases, 583 passed cells, 128 exact legality rejections,
+  and 58 predeclared runtime-bound skips.
+- **[measured]** The stable-reverse manifest SHA-256 is
+  `4939c0c77586e4115dfe5c1aab1ff044d716e9a5d060c9f2ef52f265634df7f8`.
+  It uses the same source, binary, and runner identities with plan
+  `73bfb874fd94561f2b8581c39246f96ed5e723639424dddb33129e13637f3700`;
+  it declares 539 executable cases, 429 passed cells, 110 exact legality
+  rejections, and 49 predeclared skips.
+- **[source-backed]** The final summarizer loads the hash-matched frozen runner
+  as an independent plan authority. It reconstructs the complete case and skip
+  matrices, every command, all measurement-affecting configuration fields,
+  environment identity, raw file hashes, forced-variant identity, planner
+  evidence, timing arithmetic, and exact expected rejection semantics.
+- **[measured]** Re-summarizing both immutable bundles reproduced
+  [the committed sanitized report](../cpu/cpu-performance-deep-audit-v1.md)
+  byte-for-byte at SHA-256
+  `144075d9527eb20a04eb033e23f869b1ea4f3554ae9b30241f7f7714abfbb426`.
+
+### Closure of the historical blockers
+
+1. **[measured] Resume identity:** the accepted collection has zero reused
+   cells. Source, binary, runner, seed, plan, timing, memory, provider
+   environment, commands, and raw configuration are authenticated.
+2. **[measured] One-shot coverage:** 46 allocation-inclusive cells pair with
+   equivalent reused-workspace complete-call cells.
+3. **[measured] Prepacked-B setup:** one preparation call is authenticated and
+   reported separately from steady state; the report reconstructs preparation,
+   sequence, and amortized totals for 1, 4, 16, and 64 executions.
+4. **[measured] Completeness:** every frozen planned cell is passed, rejected
+   with the one independently permitted legality diagnostic, or predeclared as
+   a deterministic runtime-bound skip. Failed or incomplete states are fatal.
+5. **[measured] Process order:** complete-hot and one-shot cells have paired
+   stable-forward/stable-reverse controls and are reported as arithmetic
+   midpoints with their direction ranges.
+6. **[measured] Adversarial authentication:** removing a declared weak shape,
+   altering alignment/memory/timer configuration, treating a crash-like return
+   as expected, changing a reconstructed command, or substituting another
+   selected implementation for a forced variant all cause a nonzero summary
+   rejection.
+
+### Remaining fairness boundaries
+
+- **[source-backed limitation]** Multi-thread OpenBLAS used unbound
+  `allow-smt/none` placement. Its reported thread value authenticates the
+  configured provider team, not sampled active concurrency. Those cells remain
+  diagnostic-only and are excluded from native/OpenBLAS parity and comparable
+  planner-regret claims.
+- **[source-backed limitation]** Provider initialization and process startup
+  are outside the one-shot interval. One-shot means replan, output/workspace
+  allocation, packing, compute, and synchronization for the already-started
+  benchmark process.
+- **[source-backed limitation]** Cold-cache, compute-only, prepacked-B, and
+  planner-regret suites are stable-forward only. They are labelled diagnostics
+  or scoped repeated-execution evidence, not paired parity results.
+- **[measured limitation]** `kernel.perf_event_paranoid=4` blocked physical
+  hardware counters. The audit makes no measured IPC, cache/TLB-miss, stalled
+  cycle, DRAM-traffic, or workload-frequency claim.
+- **[derived limitation]** Two opposite process orders expose order
+  sensitivity but do not establish confidence intervals across independent
+  machine sessions. Small differences remain unsuitable for parity claims.
+
+## Final independent conclusion
+
+The schema-v6 collection is complete and authenticated enough for the bounded
+Milestone 6 root-cause audit, for selecting evidence-backed Milestone 7
+experiments, and for the explicitly scoped single-thread and native-only
+aggregates in the sanitized report. It is not evidence of universal BLAS
+parity, controlled multi-thread OpenBLAS placement, or hardware-counter causal
+shares.
+
+Final benchmark fairness v2 verdict: **accepted for the Milestone 6 audit
+scope, with the limitations above; no unresolved high- or medium-severity
+finding**.
