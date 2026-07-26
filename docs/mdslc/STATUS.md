@@ -66,7 +66,7 @@ records 258/368 cases, but no complete forward/reverse pair exists and the
 summarizer emitted no performance verdict. Full native/OpenBLAS family ratios
 and full-envelope regret are therefore unestablished.
 
-Exact local validation at final code checkpoint `b0f5cb7` passed
+Exact local validation at final code checkpoint `ff483af` passed
 Release 50/50, Debug 50/50, OpenBLAS-disabled 50/50, ASan/UBSan 19/19, TSan
 4/4, package/consumer 4/4, ISA artifacts 3/3, the native
 `.mdsl -> ELF .o -> executable` proof, repository hygiene, and the 14-case

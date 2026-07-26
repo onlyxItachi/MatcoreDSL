@@ -238,7 +238,7 @@ an existing exported symbol.
 
 ## Milestone 7 bounded disposition
 
-The final locally validated Milestone 7 code checkpoint is `b0f5cb7`; the
+The final locally validated Milestone 7 code checkpoint is `ff483af`; the
 candidate bounded disposition pending hosted gates is
 [native-blas-parity-v1.md](../performance/cpu/native-blas-parity-v1.md).
 

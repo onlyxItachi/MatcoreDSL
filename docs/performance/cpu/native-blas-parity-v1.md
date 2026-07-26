@@ -27,7 +27,7 @@ complete declared native/OpenBLAS parity envelope was not established.
 - Incomplete physical-run pre-final-review checkpoint:
   `2863253d1f2b06a943c2028ae298d0381d15ddf4`.
 - Final locally validated code checkpoint:
-  `b0f5cb7ba851d0e71ac22849b2845a6c918c22f0`.
+  `ff483afcfc06c491deed88b8e194737940701086`.
 - Exact Release benchmark SHA-256:
   `61028379491877db4383cc73359dcce009e0d96d36f85ad471ae30ceab1fb8b9`.
 - Runner SHA-256:
@@ -51,6 +51,11 @@ reviewed v3 summarizer has SHA-256
 and Git blob `191e68a2c6a8ea1954454e811ea147a690c48e08`. It intentionally rejects
 the earlier incomplete receipt and must be used for any future complete
 collection.
+
+Test-only follow-up `ff483af` enlarged the synthetic first-use/steady-state
+calibration gap so the benchmark contract remains deterministic when Windows
+rounds short sleeps to its scheduler quantum. It does not change benchmark or
+runtime production behavior.
 
 The benchmark binary authenticated a clean Git worktree and exact tracked
 source commit. Benchmark schema v6 and parity manifest v3 distinguish complete

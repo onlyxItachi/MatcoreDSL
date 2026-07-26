@@ -5,7 +5,7 @@ Date: 2026-07-26
 Branch: `mdslc/native-blas-parity-v1`
 
 Validated code checkpoint:
-`b0f5cb7ba851d0e71ac22849b2845a6c918c22f0`
+`ff483afcfc06c491deed88b8e194737940701086`
 
 ## Disposition
 
@@ -54,10 +54,16 @@ completion tag or API/backend-contract freeze is authorized.
    not found.** Workspace remains caller-owned, packed-B state is not cached
    across calls, the 15-function public C ABI is unchanged, and unavailable
    OpenBLAS requests fail without fallback.
+9. **Windows scheduler-quantum-sensitive benchmark fixture — resolved.** The
+   original 200 microsecond synthetic steady-state sleeps could be rounded
+   above the 2 millisecond calibration target on Windows. Test-only follow-up
+   `ff483af` uses a comfortably larger synthetic gap; the focused Release and
+   Debug tests pass, including 20/20 repeated Release executions. Production
+   calibration logic is unchanged.
 
 ## Exact local validation
 
-At `b0f5cb7`:
+At `ff483af`:
 
 - Release with OpenBLAS 0.3.32: 50/50 CTest passed.
 - Debug with OpenBLAS 0.3.32: 50/50 CTest passed independently.

@@ -7,7 +7,7 @@ Date: 2026-07-26
 - Base: `ddda3ccf628dae60bdb7f57d68d024fd02168fcb`
   (`mdslc-cpu-performance-audit-v1`).
 - Final locally validated code checkpoint:
-  `b0f5cb7ba851d0e71ac22849b2845a6c918c22f0`.
+  `ff483afcfc06c491deed88b8e194737940701086`.
 - Incomplete performance-collection checkpoint:
   `2863253d1f2b06a943c2028ae298d0381d15ddf4`.
 - Final-review safety commits from `0fe66e7` through `b0f5cb7` make
@@ -31,13 +31,13 @@ were used with build parallelism two.
 
 | Configuration | Result |
 | --- | ---: |
-| Release, OpenBLAS 0.3.32 required | 50/50 CTest passed; 135.78 s |
-| Debug, OpenBLAS 0.3.32 required | 50/50 CTest passed independently; 209.05 s |
-| Release, OpenBLAS explicitly disabled | 50/50 CTest passed independently; 125.55 s |
-| ASan+UBSan supported scope | 19/19 passed; 4.54 s |
-| TSan shared-state scope | 4/4 passed; 9.11 s |
-| Installed package/consumer verbose rerun | 4/4 passed; 20.17 s |
-| Exact Release ISA artifact rerun | 3/3 passed; 0.24 s |
+| Release, OpenBLAS 0.3.32 required | 50/50 CTest passed; 117.88 s |
+| Debug, OpenBLAS 0.3.32 required | 50/50 CTest passed independently; 204.96 s |
+| Release, OpenBLAS explicitly disabled | 50/50 CTest passed independently; 117.81 s |
+| ASan+UBSan supported scope | 19/19 passed; 4.50 s |
+| TSan shared-state scope | 4/4 passed; 7.67 s |
+| Installed package/consumer scope | 4/4 passed as part of exact Release |
+| Exact Release ISA artifact scope | 3/3 passed as part of exact Release |
 
 The OpenBLAS-disabled forced-provider request exited 1, selected no variant,
 reported `OpenBLAS CBLAS adapter is not linked`, and left no OpenBLAS
@@ -57,7 +57,7 @@ then passed as shown above.
 
 ## Native compiler/artifact proof
 
-The Release `mdslc++` from checkpoint `b0f5cb7` compiled
+The Release `mdslc++` from the final implementation checkpoint compiled
 `compiler/examples/gemm_v0.mdsl` with `--save-temps -c`. Ordinary Clang 21
 linked the resulting object against the runtime. Execution printed:
 
@@ -136,8 +136,14 @@ unestablished.
 ## Windows and hosted status
 
 The Linux-side contract tests for the Windows distribution validator passed.
-Actual clang-cl/COFF/PE/DLL, package, consumer, and ZIP execution at this
-branch tip remain a hosted pull-request gate. No new Windows runtime or
+The first hosted push and pull-request Windows jobs reached 37/38 Release
+tests; `benchmark.cpu.contract` alone failed because its synthetic 200
+microsecond steady-state sleeps were rounded above a 2 millisecond calibration
+target by the Windows scheduler. Test-only commit `ff483af` widens that
+synthetic gap without changing production timing logic. The exact clean
+follow-up passed the focused Release and Debug test, plus 20/20 repeated
+Release executions. Actual clang-cl/COFF/PE/DLL, package, consumer, and ZIP
+revalidation at `ff483af` remains a hosted pull-request gate. No new Windows
 performance result is claimed.
 
 ## Publication constraints
