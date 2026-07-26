@@ -159,20 +159,27 @@ multi-thread results because this host contains heterogeneous core/frequency
 domains and two LLC groups.
 
 Provider and native comparisons require equal requested and actual thread
-counts. Results with incomplete affinity, unavailable cores, or provider
-thread-count ambiguity remain diagnostic and are excluded from parity or
-regret aggregates.
+counts and equivalent placement. The current pthread OpenBLAS adapter
+authenticates its configured local thread count, but not the exact CPUs on
+which provider workers ran. Multi-thread OpenBLAS therefore remains an
+unbound-provider diagnostic and is not used for strict native/provider parity
+or regret. Results with incomplete affinity, unavailable cores, or provider
+thread-count ambiguity remain visibly excluded.
 
 ## Measurement modes
 
 Each retained result names exactly one timing scope:
 
-1. **End-to-end one-shot** includes planning, workspace preparation,
-   allocation, packing, compute, and synchronization.
+1. **End-to-end one-shot** includes deterministic replanning, output/workspace
+   allocation and initialization, packing, compute, and synchronization for
+   each invocation. Input allocation/initialization, persistent-context
+   creation, provider initialization, and the correctness oracle remain
+   outside the interval and are named as exclusions.
 2. **Reused workspace, packing included** excludes allocation and includes
    preparation/packing, compute, and synchronization.
-3. **Prepacked B** excludes B packing from repeated execution and reports the
-   separate one-time B preparation cost.
+3. **Prepacked B** excludes B packing from repeated execution and reports one
+   separately timed, authenticated preparation call, the steady-state
+   sequence duration, and the explicitly derived amortized total.
 4. **Compute-only diagnostic** prepares packed operands outside the interval
    and times only the internal packed compute call plus required
    synchronization. It is not compared directly with complete CBLAS SGEMM as
@@ -182,19 +189,26 @@ Hot-cache is the primary reproducible comparison. Cold-cache is a separate,
 best-effort 64 MiB eviction experiment and is not claimed to model a
 particular application cache state.
 
-Allocation, input initialization, and the double-precision oracle are excluded
-from every complete-call timing except the explicitly named one-shot
-allocation mode. The benchmark records the actual scope in each result.
+Input initialization, persistent-context construction, provider
+initialization, and the double-precision oracle are excluded from all timing
+modes. Output/workspace allocation is included only in the explicitly named
+one-shot mode. The benchmark records the actual scope in each result.
 
 ## Sampling and correctness
 
 - Inputs use a fixed recorded seed.
 - Warmups execute the same implementation and mode as measured samples.
-- Complete-call hot-cache aggregates run until the configured one-millisecond
-  timer floor.
-- Retained runs use at least seven measured aggregate samples; primary
-  comparisons use eleven where the total matrix remains bounded.
-- Minimum, median, and nearest-rank p95 are retained.
+- Complete-call hot-cache calibration targets twice the configured
+  one-millisecond timer floor and retains an additional factor-of-two
+  repetition margin. Every accepted sample must still clear the configured
+  floor.
+- Cold-cache and balanced planner-regret diagnostics use a separately labelled
+  one-microsecond floor; timer-noise points are excluded from aggregate regret
+  claims.
+- Retained runs use seven measured aggregate samples.
+- External raw schema-v6 reports retain the ordered, normalized sample vector
+  as well as minimum, median, and nearest-rank p95. Planner-regret
+  forward/reverse passes and scaling baselines retain their own vectors.
 - Every timed final output is authenticated.
 - Small problems use a full independent double-precision element oracle.
 - Larger problems use the benchmark's independent double-precision checksum
@@ -229,19 +243,29 @@ must remain visible.
 
 ## Reproducibility and raw-data policy
 
-The benchmark emits schema-v4 JSON with exact source provenance, compiler
+The benchmark emits schema-v6 JSON with exact source provenance, compiler
 flags, environment, capability/topology records, provider information,
-workspace and packing state, placement, correctness, timing, and plan
-metadata. A raw-run directory must:
+workspace and packing state, placement, correctness, ordered timing samples,
+one-time prepack timing, and plan metadata. A raw-run directory must:
 
 - be outside the source tree or below ignored `benchmark_reports/`;
 - contain a manifest with the exact command sequence;
+- freeze the benchmark binary SHA-256, runner SHA-256, benchmark source
+  commit, seed, normalized case-plan digest, environment overrides, and every
+  measurement-affecting option;
+- reject `--resume` when any frozen identity or accepted raw-file digest
+  differs;
 - never be added to Git;
 - be retained externally long enough for independent review.
 
 Sanitized summaries quote the source commit and a SHA-256 inventory of the raw
 bundle. They contain enough rows to reproduce every aggregate claim but omit
 large raw samples, generated binaries, logs, and profiler databases.
+
+The primary complete matrix is collected in stable forward order and repeated
+in exact stable reverse order. Cross-implementation conclusions report the
+paired run range or midpoint rather than treating a single fixed process order
+as immune to frequency, thermal, or desktop-load drift.
 
 ## Milestone 6 change boundary
 
@@ -254,4 +278,3 @@ surface remain unchanged until:
 2. candidate changes identify correctness, legality, and measurement gates;
 3. an independent reviewer accepts the fairness and conclusions;
 4. the Milestone 6 PR passes hosted validation and is merged.
-
