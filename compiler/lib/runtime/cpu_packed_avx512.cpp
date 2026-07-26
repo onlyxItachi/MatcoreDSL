@@ -21,7 +21,26 @@
 #define MATCORE_MDSLC_PACKED_AVX512_COMPILED 0
 #endif
 
+#if (defined(__clang__) || defined(__GNUC__)) && !defined(_WIN32)
+#define MATCORE_MDSLC_INTERNAL_VISIBILITY __attribute__((visibility("hidden")))
+#else
+#define MATCORE_MDSLC_INTERNAL_VISIBILITY
+#endif
+
 namespace matcore::mdslc::runtime {
+namespace detail {
+
+// Private full-tile entry point kept out of the public runtime header. The
+// exact C symbol exists only so the artifact test can prove that the emitted
+// body still contains the intended AVX-512 register tile.
+extern "C" MATCORE_MDSLC_PACKED_AVX512_TARGET
+    MATCORE_MDSLC_INTERNAL_VISIBILITY void
+    matcore_internal_cpu_packed_avx512_4x32_full_microkernel_f32_m7(
+        const float *packed_a, const float *packed_b0,
+        const float *packed_b1, std::size_t k, float *output,
+        std::size_t output_stride, bool accumulate) noexcept;
+
+}  // namespace detail
 namespace {
 
 // Kept identical to packed AVX2 because CpuPackedBViewV1 describes one common
@@ -233,8 +252,26 @@ void compute_block(const planner::CpuGemmProblemV1 &problem,
         std::min(kCpuPackedGemmMrV1, rows - row));
     const float *a_panel =
         packed_a + (row / kCpuPackedGemmMrV1) * depth * kCpuPackedGemmMrV1;
-    for (std::size_t column = 0; column < columns;
-         column += kCpuPackedGemmNrV1) {
+    std::size_t column = 0;
+    if (tile_rows == kCpuPackedGemmMrV1) {
+      // Two adjacent packed-B micro-panels share the same A broadcasts. The
+      // larger full tile doubles the AVX-512 accumulator chains while retaining
+      // the common v1 packed-B format and the checked 4x16 edge path below.
+      for (; column + 2 * kCpuPackedGemmNrV1 <= columns;
+           column += 2 * kCpuPackedGemmNrV1) {
+        const float *b_panel0 = packed_b +
+                                (column / kCpuPackedGemmNrV1) * depth *
+                                    kCpuPackedGemmNrV1;
+        const float *b_panel1 =
+            b_panel0 + depth * kCpuPackedGemmNrV1;
+        detail::
+            matcore_internal_cpu_packed_avx512_4x32_full_microkernel_f32_m7(
+                a_panel, b_panel0, b_panel1, depth,
+                out + (row_begin + row) * ldc + column_begin + column, ldc,
+                k_begin != 0);
+      }
+    }
+    for (; column < columns; column += kCpuPackedGemmNrV1) {
       const auto tile_columns = static_cast<std::uint32_t>(
           std::min(kCpuPackedGemmNrV1, columns - column));
       const float *b_panel = packed_b +
@@ -325,6 +362,65 @@ CpuPackedGemmStatusV1 cpu_packed_avx512_prepacked_b_requirements_v1(
 }
 
 namespace detail {
+
+extern "C" MATCORE_MDSLC_PACKED_AVX512_TARGET
+    MATCORE_MDSLC_INTERNAL_VISIBILITY void
+    matcore_internal_cpu_packed_avx512_4x32_full_microkernel_f32_m7(
+        const float *packed_a, const float *packed_b0,
+        const float *packed_b1, std::size_t k, float *output,
+        std::size_t output_stride, bool accumulate) noexcept {
+#if MATCORE_MDSLC_PACKED_AVX512_COMPILED
+  const __m512 zero = _mm512_setzero_ps();
+  __m512 c00 = accumulate ? _mm512_loadu_ps(output) : zero;
+  __m512 c01 = accumulate ? _mm512_loadu_ps(output + 16) : zero;
+  __m512 c10 = accumulate ? _mm512_loadu_ps(output + output_stride) : zero;
+  __m512 c11 =
+      accumulate ? _mm512_loadu_ps(output + output_stride + 16) : zero;
+  __m512 c20 =
+      accumulate ? _mm512_loadu_ps(output + 2 * output_stride) : zero;
+  __m512 c21 =
+      accumulate ? _mm512_loadu_ps(output + 2 * output_stride + 16) : zero;
+  __m512 c30 =
+      accumulate ? _mm512_loadu_ps(output + 3 * output_stride) : zero;
+  __m512 c31 =
+      accumulate ? _mm512_loadu_ps(output + 3 * output_stride + 16) : zero;
+
+  for (std::size_t p = 0; p < k; ++p) {
+    const __m512 b0 = _mm512_load_ps(packed_b0 + p * kCpuPackedGemmNrV1);
+    const __m512 b1 = _mm512_load_ps(packed_b1 + p * kCpuPackedGemmNrV1);
+    const float *a = packed_a + p * kCpuPackedGemmMrV1;
+    const __m512 a0 = _mm512_set1_ps(a[0]);
+    const __m512 a1 = _mm512_set1_ps(a[1]);
+    const __m512 a2 = _mm512_set1_ps(a[2]);
+    const __m512 a3 = _mm512_set1_ps(a[3]);
+    c00 = _mm512_fmadd_ps(a0, b0, c00);
+    c01 = _mm512_fmadd_ps(a0, b1, c01);
+    c10 = _mm512_fmadd_ps(a1, b0, c10);
+    c11 = _mm512_fmadd_ps(a1, b1, c11);
+    c20 = _mm512_fmadd_ps(a2, b0, c20);
+    c21 = _mm512_fmadd_ps(a2, b1, c21);
+    c30 = _mm512_fmadd_ps(a3, b0, c30);
+    c31 = _mm512_fmadd_ps(a3, b1, c31);
+  }
+
+  _mm512_storeu_ps(output, c00);
+  _mm512_storeu_ps(output + 16, c01);
+  _mm512_storeu_ps(output + output_stride, c10);
+  _mm512_storeu_ps(output + output_stride + 16, c11);
+  _mm512_storeu_ps(output + 2 * output_stride, c20);
+  _mm512_storeu_ps(output + 2 * output_stride + 16, c21);
+  _mm512_storeu_ps(output + 3 * output_stride, c30);
+  _mm512_storeu_ps(output + 3 * output_stride + 16, c31);
+#else
+  (void)packed_a;
+  (void)packed_b0;
+  (void)packed_b1;
+  (void)k;
+  (void)output;
+  (void)output_stride;
+  (void)accumulate;
+#endif
+}
 
 extern "C" MATCORE_MDSLC_PACKED_AVX512_TARGET void
 matcore_cpu_packed_avx512_4x16_microkernel_f32_v1(
@@ -575,3 +671,4 @@ CpuPackedGemmStatusV1 cpu_execute_packed_avx512_prepacked_b_v1(
 
 #undef MATCORE_MDSLC_PACKED_AVX512_TARGET
 #undef MATCORE_MDSLC_PACKED_AVX512_COMPILED
+#undef MATCORE_MDSLC_INTERNAL_VISIBILITY
