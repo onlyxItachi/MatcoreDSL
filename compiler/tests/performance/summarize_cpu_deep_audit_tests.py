@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
+import importlib.util
 import json
 import pathlib
 import shutil
@@ -19,6 +21,7 @@ SOURCE_COMMIT = "a" * 40
 NATIVE = "cpu.native-packed.avx2-fma.f32.v1"
 EXTERNAL = "cpu.external.openblas.f32.v1"
 PARALLEL = "cpu.native-parallel.avx2-fma.f32.v1"
+PARALLEL_AVX512 = "cpu.native-parallel.avx512-fma.f32.v1"
 
 
 def canonical_sha256(value: object) -> str:
@@ -31,6 +34,18 @@ def canonical_sha256(value: object) -> str:
 
 def file_sha256(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def load_runner_authority(summarizer: pathlib.Path):
+    path = summarizer.with_name("run_cpu_deep_audit.py")
+    specification = importlib.util.spec_from_file_location(
+        "_matcore_summary_test_plan_authority", path
+    )
+    assert specification is not None and specification.loader is not None
+    module = importlib.util.module_from_spec(specification)
+    sys.modules[specification.name] = module
+    specification.loader.exec_module(module)
+    return module
 
 
 def run(command: list[str], expected: int = 0) -> subprocess.CompletedProcess[str]:
@@ -63,8 +78,20 @@ def false_preparation() -> dict:
     }
 
 
+def samples_for(seconds: float) -> list[float]:
+    return [
+        seconds * 0.7,
+        seconds * 0.8,
+        seconds * 0.9,
+        seconds,
+        seconds * 1.1,
+        seconds * 1.2,
+        seconds * 1.3,
+    ]
+
+
 def candidate(variant: str, seconds: float) -> dict:
-    samples = [seconds * 0.9, seconds, seconds * 1.1]
+    samples = samples_for(seconds)
     return {
         "variant": variant,
         "selected_variant": variant,
@@ -106,7 +133,7 @@ def write_raw(
     preparation_seconds: float = 0.0,
 ) -> None:
     m, n, k = record["shape"]
-    samples = [seconds * 0.9, seconds, seconds * 1.1]
+    samples = samples_for(seconds)
     mode = record["mode"]
     cache = "cold" if mode == "complete-cold" else "hot"
     allocation = (
@@ -168,27 +195,28 @@ def write_raw(
             "numa_nodes": 1,
             "timer_source": "std::chrono::steady_clock",
             "timer_resolution_ns": 1,
-            "provider_name": (
-                "OpenBLAS" if record["variant"] == EXTERNAL else "none"
-            ),
-            "provider_version": (
-                "0.3.32" if record["variant"] == EXTERNAL else "unavailable"
-            ),
-            "provider_config": (
-                "USE_THREAD=PTHREAD DYNAMIC_ARCH=1"
-                if record["variant"] == EXTERNAL
-                else ""
-            ),
+            "cpu_affinity": "0-7",
+            "hardware_threads": 8,
+            "source_provenance_origin": "git-worktree",
+            "capability_runtime_validation_source": "synthetic numerical self-test",
+            "topology_discovery_complete": True,
+            "persistent_execution_context": True,
+            "available_processors": 8,
+            "provider_name": "OpenBLAS",
+            "provider_version": "0.3.32",
+            "provider_config": "USE_THREAD=PTHREAD DYNAMIC_ARCH=1",
             "source_commit": SOURCE_COMMIT,
             "source_provenance_state": "clean",
             "source_worktree_dirty": False,
         },
         "configuration": {
+            "profile": "custom",
             "requested_variant": record["variant"],
             "requested_threads": record["threads"],
             "warmup_iterations": 2,
-            "measured_iterations": 3,
+            "measured_iterations": 7,
             "lhs_sequence_length": record["lhs_sequence"],
+            "alignment_bytes": 64,
             "cache_mode": cache,
             "allocation_mode": allocation,
             "packing_mode": packing,
@@ -202,7 +230,15 @@ def write_raw(
                 if record["variant"] == EXTERNAL and record["threads"] > 1
                 else "compact"
             ),
+            "maximum_memory_bytes": 2048 * 1024 * 1024,
+            "timer_floor_ns": (
+                1000
+                if mode in {"complete-cold", "planner-regret-hot"}
+                else 1000 * 1000
+            ),
             "seed": SEED,
+            "compare_one_thread": False,
+            "planner_regret": mode == "planner-regret-hot",
         },
         "results": [
             {
@@ -236,8 +272,8 @@ def write_raw(
                 "timed_final_output_authenticated": True,
                 "normalized_samples_seconds": samples,
                 "minimum_seconds": samples[0],
-                "median_seconds": samples[1],
-                "p95_seconds": samples[2],
+                "median_seconds": samples[3],
+                "p95_seconds": samples[6],
                 "gflops": (2 * m * n * k) / seconds / 1.0e9,
                 "prepacked_b_preparation": preparation,
                 "planner_regret": planner,
@@ -290,109 +326,177 @@ def plan_digest(manifest: dict) -> str:
     )
 
 
-def build_bundle(directory: pathlib.Path, reverse: bool) -> pathlib.Path:
-    direction_scale = 2.0 if reverse else 1.0
-    specifications = [
-        ("complete-hot", NATIVE, 1, 1, 0.002 * direction_scale),
-        ("complete-hot", EXTERNAL, 1, 1, 0.001 * direction_scale),
-        ("complete-hot", EXTERNAL, 4, 4, 0.0004 * direction_scale),
-        ("complete-hot", PARALLEL, 4, 1, 0.0006 * direction_scale),
-        ("one-shot-hot", NATIVE, 1, 1, 0.003 * direction_scale),
-        ("prepacked-b-hot", NATIVE, 1, 4, 0.0008 * direction_scale),
-        ("complete-cold", NATIVE, 1, 1, 0.004 * direction_scale),
-        ("compute-only-hot", NATIVE, 1, 1, 0.0015 * direction_scale),
-        ("planner-regret-hot", "auto", 1, 1, 0.002 * direction_scale),
-    ]
-    if reverse:
-        specifications = [
-            specification
-            for specification in specifications
-            if specification[0] in {"complete-hot", "one-shot-hot"}
-        ]
-    records = []
-    for index, (mode, variant, threads, lhs_sequence, seconds) in enumerate(
-        specifications
+def synthetic_seconds(case, reverse: bool) -> float:
+    shape = tuple(case.shape)
+    direction_scale = (
+        2.0 if reverse and case.mode in {"complete-hot", "one-shot-hot"} else 1.0
+    )
+    if shape == (128, 128, 128):
+        if case.mode == "complete-hot":
+            if case.variant == NATIVE:
+                return 0.002 * direction_scale
+            if case.variant == EXTERNAL:
+                return 0.001 * direction_scale
+            return 0.004 * direction_scale
+        if case.variant == NATIVE and case.mode == "one-shot-hot":
+            return 0.003 * direction_scale
+        if case.variant == NATIVE and case.mode == "prepacked-b-hot":
+            return 0.0008
+        if case.variant == NATIVE and case.mode == "complete-cold":
+            return 0.004
+        if case.variant == NATIVE and case.mode == "compute-only-hot":
+            return 0.0015
+        if case.mode == "planner-regret-hot":
+            return 0.002
+    if (
+        shape == (512, 512, 512)
+        and case.mode == "complete-hot"
+        and case.variant == NATIVE
     ):
+        return 0.002 * direction_scale
+    if (
+        shape == (512, 512, 512)
+        and case.mode == "complete-hot"
+        and case.variant == PARALLEL
+        and case.threads == 4
+    ):
+        return 0.0006 * direction_scale
+    rates = {
+        "cpu.reference.f32.v1": 5.0,
+        "cpu.tiled.f32.v1": 20.0,
+        "cpu.compiler-vectorized.avx2-fma.f32.v1": 50.0,
+        NATIVE: 100.0,
+        "cpu.native-packed.avx512-fma.f32.v1": 105.0,
+        PARALLEL: 80.0,
+        PARALLEL_AVX512: 84.0,
+        EXTERNAL: 150.0,
+        "auto": 90.0,
+    }
+    operations = 2 * case.shape[0] * case.shape[1] * case.shape[2]
+    seconds = max(1.0e-6, operations / rates[case.variant] / 1.0e9)
+    factors = {
+        "one-shot-hot": 1.5,
+        "prepacked-b-hot": 0.5,
+        "complete-cold": 2.0,
+        "compute-only-hot": 0.75,
+        "planner-regret-hot": 1.0,
+        "complete-hot": 1.0,
+    }
+    return seconds * factors[case.mode] * direction_scale
+
+
+def build_bundle(
+    directory: pathlib.Path, reverse: bool, authority: object
+) -> pathlib.Path:
+    suites = (
+        {"complete", "oneshot"}
+        if reverse
+        else {"cold", "complete", "compute", "oneshot", "prepacked", "regret"}
+    )
+    cases, skips = authority.build_cases(
+        suites, tuple(authority.VARIANTS), (1, 2, 4, 12)
+    )
+    case_order = "stable-reverse" if reverse else "stable-forward"
+    if reverse:
+        cases.reverse()
+    benchmark = "/synthetic/absolute/path/matcore-bench"
+    records = []
+    for index, case in enumerate(cases):
         record = {
             "index": index,
-            "family": "medium-square",
-            "partition": "calibration",
-            "shape": [128, 128, 128],
-            "variant": variant,
-            "threads": threads,
-            "mode": mode,
-            "lhs_sequence": lhs_sequence,
-            "state": "passed",
-            "actual_threads": threads,
-            "thread_count_clamped": False,
+            **json.loads(json.dumps(dataclasses.asdict(case))),
+            "state": "planned",
         }
-        record["key"] = case_key(record)
-        record["raw_file"] = f"{index:04d}.json"
-        preparation_seconds = (
-            0.001 * direction_scale if mode == "prepacked-b-hot" else 0.0
-        )
+        record["key"] = case.key
+        record["raw_file"] = f"{index:04d}__{case.key}.json"
         raw_path = directory / record["raw_file"]
+        record["command"] = authority.case_command(
+            pathlib.Path(benchmark),
+            case,
+            raw_path,
+            2,
+            7,
+            1000,
+            2048,
+        )
+        m, n, k = case.shape
+        expected_rejection = (
+            case.variant in {PARALLEL, PARALLEL_AVX512}
+            and case.threads >= 2
+            and (m + 127) // 128 < 2
+            and case.mode in {"complete-hot", "complete-cold", "one-shot-hot"}
+        )
+        if expected_rejection:
+            record.update(
+                {
+                    "state": "rejected",
+                    "returncode": 1,
+                    "rejection_category": "parallel-output-macro-tile-count",
+                    "stdout": "",
+                    "stderr": (
+                        f"matcore-bench: variant planning failed for {m}x{n}x{k}: "
+                        "parallel candidate requires at least two output "
+                        "macro-tiles and workers\n"
+                    ),
+                }
+            )
+            records.append(record)
+            continue
+        if case.variant in {PARALLEL, PARALLEL_AVX512}:
+            actual_threads = min(case.threads, (m + 127) // 128)
+        elif case.variant == EXTERNAL:
+            actual_threads = case.threads
+        else:
+            actual_threads = 1
+        record.update(
+            {
+                "state": "passed",
+                "actual_threads": actual_threads,
+                "thread_count_clamped": actual_threads != case.threads,
+            }
+        )
+        seconds = synthetic_seconds(case, reverse)
+        preparation_seconds = (
+            0.001 if case.mode == "prepacked-b-hot" else 0.0
+        )
         write_raw(raw_path, record, seconds, preparation_seconds)
         record["sha256"] = file_sha256(raw_path)
         records.append(record)
-
-    rejected = {
-        "index": len(records),
-        "family": "small-square",
-        "partition": "diagnostic",
-        "shape": [4, 4, 4],
-        "variant": PARALLEL,
-        "threads": 2,
-        "mode": "complete-hot",
-        "lhs_sequence": 1,
-        "state": "rejected",
-        "actual_threads": 0,
-        "thread_count_clamped": False,
-        "raw_file": "rejected.json",
-        "returncode": 2,
-        "rejection_category": "parallel-output-macro-tile-count",
-        "stdout": "",
-        "stderr": "expected synthetic rejection",
-    }
-    rejected["key"] = case_key(rejected)
-    records.append(rejected)
     if reverse:
-        records.reverse()
         next(record for record in records if record["state"] == "passed")[
             "state"
         ] = "reused"
-        for index, record in enumerate(records):
-            record["index"] = index
-
     manifest = {
         "schema": "matcore.cpu-performance-deep-audit.manifest",
         "version": 2,
         "benchmark_schema_version": 6,
         "benchmark_binary_sha256": "b" * 64,
-        "runner_sha256": "c" * 64,
-        "plan_sha256": "",
+        "runner_sha256": file_sha256(
+            pathlib.Path(authority.__file__).resolve()
+        ),
+        "plan_sha256": authority.plan_fingerprint(
+            cases,
+            skips,
+            suites,
+            tuple(authority.VARIANTS),
+            (1, 2, 4, 12),
+            2,
+            7,
+            1000,
+            2048,
+            case_order,
+        ),
         "benchmark_source_commit": SOURCE_COMMIT,
         "benchmark_seed": SEED,
         "started_unix_seconds": 100,
         "finished_unix_seconds": 200,
-        "benchmark": "/synthetic/absolute/path/matcore-bench",
-        "suites": (
-            ["complete", "oneshot"]
-            if reverse
-            else [
-                "cold",
-                "complete",
-                "compute",
-                "oneshot",
-                "prepacked",
-                "regret",
-            ]
-        ),
-        "variants": [NATIVE, PARALLEL, EXTERNAL],
-        "threads": [1, 2, 4],
-        "case_order": "stable-reverse" if reverse else "stable-forward",
+        "benchmark": benchmark,
+        "suites": sorted(suites),
+        "variants": list(authority.VARIANTS),
+        "threads": [1, 2, 4, 12],
+        "case_order": case_order,
         "warmup": 2,
-        "iterations": 3,
+        "iterations": 7,
         "timer_floor_us": 1000,
         "max_memory_mib": 2048,
         "dry_run": False,
@@ -402,18 +506,10 @@ def build_bundle(directory: pathlib.Path, reverse: bool) -> pathlib.Path:
             "MKL_NUM_THREADS": "1",
         },
         "cases": records,
-        "skips": [
-            {
-                "family": "large-square",
-                "shape": [4096, 4096, 4096],
-                "variant": "cpu.reference.f32.v1",
-                "threads": 1,
-                "mode": "complete-hot",
-                "reason": "audit runtime bound: synthetic",
-            }
-        ],
+        "skips": json.loads(
+            json.dumps([dataclasses.asdict(skip) for skip in skips])
+        ),
     }
-    manifest["plan_sha256"] = plan_digest(manifest)
     manifest_path = directory / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return manifest_path
@@ -446,6 +542,7 @@ def main() -> int:
     parser.add_argument("--summarizer", required=True)
     args = parser.parse_args()
     summarizer = pathlib.Path(args.summarizer).resolve()
+    authority = load_runner_authority(summarizer)
 
     with tempfile.TemporaryDirectory(prefix="matcore audit summary ") as temporary:
         root = pathlib.Path(temporary)
@@ -453,24 +550,26 @@ def main() -> int:
         reverse_dir = root / "reverse raw"
         forward_dir.mkdir()
         reverse_dir.mkdir()
-        forward = build_bundle(forward_dir, reverse=False)
-        reverse = build_bundle(reverse_dir, reverse=True)
+        forward = build_bundle(forward_dir, reverse=False, authority=authority)
+        reverse = build_bundle(reverse_dir, reverse=True, authority=authority)
         output = root / "sanitized report.md"
         summarize(summarizer, forward, reverse, output)
         report = output.read_text(encoding="utf-8")
         assert "complete/oneshot paired stable-forward/stable-reverse" in report
         assert "diagnostic/prepack/regret stable-forward only" in report
         assert "3.000 [2.000, 4.000]" in report
-        assert "| medium-square | 1 | 0.500 |" in report
+        assert "| medium-square | 6 | 0.700 |" in report
         assert (
             "| medium-square | calibration | 128×128×128 | "
             "`cpu.native-packed.avx2-fma.f32.v1` |"
         ) in report
-        assert "| 4 | 1 | 1.000" in report
+        assert "| 4 | 8 | 1.000" in report
         assert "median diagnostic/hot ratio: 2.000" in report
         assert "median diagnostic/hot ratio: 0.750" in report
-        assert "| 1 | 2.000 | 2.000 | 2.000 | 0 |" in report
-        assert "| medium-square | 4 | 1 | 3.333 | 0.833 |" in report
+        assert "| 24 | 2.000 | 2.000 | 2.000 | 0 |" in report
+        assert "| medium-square | 4 | 2 | 1.382 | 0.346 |" in report
+        assert "| Configured OpenBLAS threads |" in report
+        assert "active OpenBLAS concurrency was not sampled" in report
         assert "- Compiler flags: `-O3`" in report
         assert (
             "- Timer: std::chrono::steady_clock; resolution=1 ns" in report
@@ -529,6 +628,147 @@ def main() -> int:
         )
         assert "source commit differs" in rejected.stderr
 
+        configuration_attacks = (
+            ("alignment", "alignment_bytes", 4),
+            ("maximum-memory", "maximum_memory_bytes", 4096),
+            ("timer-floor", "timer_floor_ns", 1),
+            ("compare-flag", "compare_one_thread", True),
+            ("planner-flag", "planner_regret", True),
+            ("smt-placement", "smt_policy", "allow-smt"),
+            ("affinity-placement", "affinity_policy", "none"),
+        )
+        for name, field, value in configuration_attacks:
+            attack_dir = root / f"configuration-{name}"
+            shutil.copytree(forward_dir, attack_dir)
+            attack_manifest_path = attack_dir / "manifest.json"
+            attack_manifest = json.loads(
+                attack_manifest_path.read_text(encoding="utf-8")
+            )
+            attack_record = next(
+                record
+                for record in attack_manifest["cases"]
+                if record["state"] == "passed"
+                and record["mode"] == "complete-hot"
+                and record["variant"] == NATIVE
+            )
+            attack_raw = attack_dir / attack_record["raw_file"]
+            attack_report = json.loads(attack_raw.read_text(encoding="utf-8"))
+            attack_report["configuration"][field] = value
+            attack_raw.write_text(
+                json.dumps(attack_report, indent=2) + "\n", encoding="utf-8"
+            )
+            attack_record["sha256"] = file_sha256(attack_raw)
+            attack_manifest_path.write_text(
+                json.dumps(attack_manifest, indent=2) + "\n", encoding="utf-8"
+            )
+            rejected = summarize(
+                summarizer,
+                attack_manifest_path,
+                reverse,
+                root / f"configuration-{name}.md",
+                expected=2,
+            )
+            assert f"configuration mismatch for {field}" in rejected.stderr
+
+        environment_attacks = (
+            ("provider", "provider_config", "tampered-provider"),
+            ("timer-source", "timer_source", "tampered-clock"),
+            ("timer-resolution", "timer_resolution_ns", 999),
+            ("physical-cores", "physical_cores", 999),
+            ("available-processors", "available_processors", 999),
+        )
+        for name, field, value in environment_attacks:
+            attack_dir = root / f"environment-{name}"
+            shutil.copytree(forward_dir, attack_dir)
+            attack_manifest_path = attack_dir / "manifest.json"
+            attack_manifest = json.loads(
+                attack_manifest_path.read_text(encoding="utf-8")
+            )
+            attack_record = next(
+                record
+                for record in attack_manifest["cases"]
+                if record["state"] == "passed"
+            )
+            attack_raw = attack_dir / attack_record["raw_file"]
+            attack_report = json.loads(attack_raw.read_text(encoding="utf-8"))
+            attack_report["environment"][field] = value
+            attack_raw.write_text(
+                json.dumps(attack_report, indent=2) + "\n", encoding="utf-8"
+            )
+            attack_record["sha256"] = file_sha256(attack_raw)
+            attack_manifest_path.write_text(
+                json.dumps(attack_manifest, indent=2) + "\n", encoding="utf-8"
+            )
+            rejected = summarize(
+                summarizer,
+                attack_manifest_path,
+                reverse,
+                root / f"environment-{name}.md",
+                expected=2,
+            )
+            assert "homogeneous benchmark environment" in rejected.stderr
+
+        fallback_dir = root / "forced-fallback"
+        shutil.copytree(forward_dir, fallback_dir)
+        fallback_manifest_path = fallback_dir / "manifest.json"
+        fallback_manifest = json.loads(
+            fallback_manifest_path.read_text(encoding="utf-8")
+        )
+        fallback_record = next(
+            record
+            for record in fallback_manifest["cases"]
+            if record["state"] == "passed"
+            and record["variant"] == NATIVE
+            and record["mode"] == "complete-hot"
+        )
+        fallback_raw = fallback_dir / fallback_record["raw_file"]
+        fallback_report = json.loads(fallback_raw.read_text(encoding="utf-8"))
+        fallback_report["results"][0]["selected_variant"] = EXTERNAL
+        fallback_raw.write_text(
+            json.dumps(fallback_report, indent=2) + "\n", encoding="utf-8"
+        )
+        fallback_record["sha256"] = file_sha256(fallback_raw)
+        fallback_manifest_path.write_text(
+            json.dumps(fallback_manifest, indent=2) + "\n", encoding="utf-8"
+        )
+        rejected = summarize(
+            summarizer,
+            fallback_manifest_path,
+            reverse,
+            root / "fallback.md",
+            expected=2,
+        )
+        assert "silently selected a different implementation" in rejected.stderr
+
+        auto_dir = root / "auto-selection-mismatch"
+        shutil.copytree(forward_dir, auto_dir)
+        auto_manifest_path = auto_dir / "manifest.json"
+        auto_manifest = json.loads(auto_manifest_path.read_text(encoding="utf-8"))
+        auto_record = next(
+            record
+            for record in auto_manifest["cases"]
+            if record["state"] == "passed"
+            and record["mode"] == "planner-regret-hot"
+        )
+        auto_raw = auto_dir / auto_record["raw_file"]
+        auto_report = json.loads(auto_raw.read_text(encoding="utf-8"))
+        auto_report["results"][0]["selected_variant"] = "cpu.nonexistent.f32.v1"
+        auto_raw.write_text(
+            json.dumps(auto_report, indent=2) + "\n", encoding="utf-8"
+        )
+        auto_record["sha256"] = file_sha256(auto_raw)
+        auto_manifest_path.write_text(
+            json.dumps(auto_manifest, indent=2) + "\n", encoding="utf-8"
+        )
+        rejected = summarize(
+            summarizer,
+            auto_manifest_path,
+            reverse,
+            root / "auto-selection.md",
+            expected=2,
+        )
+        assert "no unique authenticated timing candidate" in rejected.stderr
+
         incomplete_dir = root / "incomplete"
         shutil.copytree(forward_dir, incomplete_dir)
         incomplete_manifest = incomplete_dir / "manifest.json"
@@ -565,7 +805,7 @@ def main() -> int:
         rejected = summarize(
             summarizer, forward, missing_manifest, root / "missing.md", expected=2
         )
-        assert "exact complete/oneshot forward subset" in rejected.stderr
+        assert "frozen matrix" in rejected.stderr
 
         extra_dir = root / "extra-reverse-case"
         shutil.copytree(reverse_dir, extra_dir)
@@ -616,7 +856,95 @@ def main() -> int:
             root / "mismatch.md",
             expected=2,
         )
-        assert "per-case execution status differs" in rejected.stderr
+        assert (
+            "not an independently expected parallel legality failure"
+            in rejected.stderr
+        )
+
+        selective_forward_dir = root / "selective-shape-forward"
+        selective_reverse_dir = root / "selective-shape-reverse"
+        shutil.copytree(forward_dir, selective_forward_dir)
+        shutil.copytree(reverse_dir, selective_reverse_dir)
+        for directory in (selective_forward_dir, selective_reverse_dir):
+            selective_manifest_path = directory / "manifest.json"
+            selective = json.loads(
+                selective_manifest_path.read_text(encoding="utf-8")
+            )
+            selective["cases"] = [
+                record
+                for record in selective["cases"]
+                if record["shape"] != [4096, 64, 4096]
+            ]
+            selective["skips"] = [
+                skip
+                for skip in selective["skips"]
+                if skip["shape"] != [4096, 64, 4096]
+            ]
+            selective["plan_sha256"] = plan_digest(selective)
+            selective_manifest_path.write_text(
+                json.dumps(selective, indent=2) + "\n", encoding="utf-8"
+            )
+        rejected = summarize(
+            summarizer,
+            selective_forward_dir / "manifest.json",
+            selective_reverse_dir / "manifest.json",
+            root / "selective.md",
+            expected=2,
+        )
+        assert "independently reconstructed frozen matrix" in rejected.stderr
+
+        rejection_attack_dir = root / "rejection-attack"
+        shutil.copytree(forward_dir, rejection_attack_dir)
+        rejection_manifest_path = rejection_attack_dir / "manifest.json"
+        rejection_attack = json.loads(
+            rejection_manifest_path.read_text(encoding="utf-8")
+        )
+        rejection_record = next(
+            record
+            for record in rejection_attack["cases"]
+            if record["state"] == "rejected"
+        )
+        rejection_record["returncode"] = 139
+        rejection_record["rejection_category"] = (
+            "segmentation-fault-treated-as-expected"
+        )
+        rejection_record["stderr"] = "segmentation fault\n"
+        rejection_manifest_path.write_text(
+            json.dumps(rejection_attack, indent=2) + "\n", encoding="utf-8"
+        )
+        rejected = summarize(
+            summarizer,
+            rejection_manifest_path,
+            reverse,
+            root / "rejection-attack.md",
+            expected=2,
+        )
+        assert "unexpected return code" in rejected.stderr
+
+        command_attack_dir = root / "command-attack"
+        shutil.copytree(forward_dir, command_attack_dir)
+        command_manifest_path = command_attack_dir / "manifest.json"
+        command_attack = json.loads(
+            command_manifest_path.read_text(encoding="utf-8")
+        )
+        command_record = next(
+            record
+            for record in command_attack["cases"]
+            if record["state"] == "rejected"
+        )
+        thread_index = command_record["command"].index("--threads") + 1
+        command_record["command"][thread_index] = "99"
+        command_manifest_path.write_text(
+            json.dumps(command_attack, indent=2) + "\n", encoding="utf-8"
+        )
+        rejected = summarize(
+            summarizer,
+            command_manifest_path,
+            reverse,
+            root / "command-attack.md",
+            expected=2,
+        )
+        assert "command does not reconstruct" in rejected.stderr
 
     print("deep-audit summary contract: synthetic authentication checks passed")
     return 0

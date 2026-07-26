@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import hashlib
+import importlib.util
 import json
 import math
 import pathlib
@@ -45,6 +46,17 @@ FORWARD_MODES = {
 }
 REVERSE_MODES = {"complete-hot", "one-shot-hot"}
 EXTERNAL_VARIANT = "cpu.external.openblas.f32.v1"
+PARALLEL_VARIANTS = {
+    "cpu.native-parallel.avx2-fma.f32.v1",
+    "cpu.native-parallel.avx512-fma.f32.v1",
+}
+FROZEN_THREADS = (1, 2, 4, 12)
+FROZEN_WARMUP = 2
+FROZEN_ITERATIONS = 7
+FROZEN_TIMER_FLOOR_US = 1000
+FROZEN_MAX_MEMORY_MIB = 2048
+EXPECTED_REJECTION_CATEGORY = "parallel-output-macro-tile-count"
+EXPECTED_REJECTION_RETURN_CODE = 1
 
 
 class AuditError(RuntimeError):
@@ -108,6 +120,27 @@ def canonical_sha256(value: object) -> str:
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def load_plan_authority(manifest: dict):
+    runner_path = pathlib.Path(__file__).resolve().with_name(
+        "run_cpu_deep_audit.py"
+    )
+    require(
+        sha256(runner_path) == manifest.get("runner_sha256"),
+        "local frozen runner SHA-256 differs from manifest plan authority",
+    )
+    specification = importlib.util.spec_from_file_location(
+        "_matcore_cpu_deep_audit_plan_authority", runner_path
+    )
+    require(
+        specification is not None and specification.loader is not None,
+        "cannot load frozen runner plan authority",
+    )
+    module = importlib.util.module_from_spec(specification)
+    sys.modules[specification.name] = module
+    specification.loader.exec_module(module)
+    return module
 
 
 def require(condition: bool, message: str) -> None:
@@ -249,6 +282,88 @@ def reconstructed_plan_digest(manifest: dict) -> str:
         "skips": skips,
     }
     return canonical_sha256(plan)
+
+
+def authenticate_frozen_plan(
+    manifest: dict,
+    expected_suites: set[str],
+    expected_order: str,
+) -> object:
+    authority = load_plan_authority(manifest)
+    require(
+        tuple(manifest.get("variants", [])) == tuple(authority.VARIANTS),
+        "manifest variant registry differs from the frozen audit contract",
+    )
+    require(
+        tuple(manifest.get("threads", [])) == FROZEN_THREADS,
+        "manifest thread matrix differs from the frozen audit contract",
+    )
+    require(
+        manifest.get("warmup") == FROZEN_WARMUP
+        and manifest.get("iterations") == FROZEN_ITERATIONS
+        and manifest.get("timer_floor_us") == FROZEN_TIMER_FLOOR_US
+        and manifest.get("max_memory_mib") == FROZEN_MAX_MEMORY_MIB,
+        "manifest timing or memory contract differs from the frozen audit contract",
+    )
+    require(
+        manifest.get("environment_overrides")
+        == {
+            "OPENBLAS_NUM_THREADS": "1",
+            "OMP_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+        },
+        "manifest provider environment differs from the frozen audit contract",
+    )
+    expected_cases, expected_skips = authority.build_cases(
+        expected_suites,
+        tuple(authority.VARIANTS),
+        FROZEN_THREADS,
+    )
+    if expected_order == "stable-reverse":
+        expected_cases.reverse()
+    expected_case_dicts = json.loads(
+        json.dumps([dataclasses.asdict(case) for case in expected_cases])
+    )
+    actual_case_dicts = [
+        {
+            "family": record["family"],
+            "partition": record["partition"],
+            "shape": record["shape"],
+            "variant": record["variant"],
+            "threads": record["threads"],
+            "mode": record["mode"],
+            "lhs_sequence": record["lhs_sequence"],
+        }
+        for record in manifest["cases"]
+    ]
+    require(
+        actual_case_dicts == expected_case_dicts,
+        "manifest cases differ from the independently reconstructed frozen matrix",
+    )
+    expected_skip_dicts = json.loads(
+        json.dumps([dataclasses.asdict(skip) for skip in expected_skips])
+    )
+    require(
+        manifest["skips"] == expected_skip_dicts,
+        "manifest skips differ from the independently reconstructed frozen matrix",
+    )
+    expected_plan_digest = authority.plan_fingerprint(
+        expected_cases,
+        expected_skips,
+        expected_suites,
+        tuple(authority.VARIANTS),
+        FROZEN_THREADS,
+        FROZEN_WARMUP,
+        FROZEN_ITERATIONS,
+        FROZEN_TIMER_FLOOR_US,
+        FROZEN_MAX_MEMORY_MIB,
+        expected_order,
+    )
+    require(
+        manifest["plan_sha256"] == expected_plan_digest,
+        "manifest plan SHA-256 differs from the frozen plan authority",
+    )
+    return authority
 
 
 def expected_mode_configuration(mode: str) -> tuple[str, str, str]:
@@ -451,17 +566,39 @@ def authenticate_report(
     expected_cache, expected_allocation, expected_packing = (
         expected_mode_configuration(mode)
     )
-    require(
-        configuration.get("requested_variant") == variant
-        and configuration.get("requested_threads") == requested_threads
-        and configuration.get("lhs_sequence_length") == lhs_sequence
-        and configuration.get("warmup_iterations") == manifest["warmup"]
-        and configuration.get("measured_iterations") == manifest["iterations"]
-        and configuration.get("cache_mode") == expected_cache
-        and configuration.get("allocation_mode") == expected_allocation
-        and configuration.get("packing_mode") == expected_packing,
-        "raw configuration differs from manifest case semantics",
-    )
+    provider_parallel = variant == EXTERNAL_VARIANT and requested_threads > 1
+    expected_configuration = {
+        "profile": "custom",
+        "requested_variant": variant,
+        "requested_threads": requested_threads,
+        "warmup_iterations": manifest["warmup"],
+        "measured_iterations": manifest["iterations"],
+        "lhs_sequence_length": lhs_sequence,
+        "alignment_bytes": 64,
+        "cache_mode": expected_cache,
+        "allocation_mode": expected_allocation,
+        "packing_mode": expected_packing,
+        "smt_policy": (
+            "allow-smt" if provider_parallel else "physical-cores-only"
+        ),
+        "affinity_policy": "none" if provider_parallel else "compact",
+        "maximum_memory_bytes": manifest["max_memory_mib"] * 1024 * 1024,
+        "timer_floor_ns": (
+            min(manifest["timer_floor_us"], 1)
+            if mode in {"complete-cold", "planner-regret-hot"}
+            else manifest["timer_floor_us"]
+        )
+        * 1000,
+        "seed": manifest["benchmark_seed"],
+        "compare_one_thread": False,
+        "planner_regret": mode == "planner-regret-hot",
+    }
+    for field, expected in expected_configuration.items():
+        require(
+            configuration.get(field) == expected,
+            f"raw configuration mismatch for {field}: expected "
+            f"{expected!r}, found {configuration.get(field)!r}",
+        )
     result = results[0]
     require(
         (result.get("m"), result.get("n"), result.get("k")) == shape,
@@ -470,6 +607,10 @@ def authenticate_report(
     require(
         result.get("requested_variant") == variant,
         "raw requested variant differs from manifest case",
+    )
+    require(
+        variant == "auto" or result.get("selected_variant") == variant,
+        "forced raw variant silently selected a different implementation",
     )
     require(
         result.get("timing_valid") is True
@@ -587,6 +728,92 @@ def authenticate_report(
     )
 
 
+def authenticate_case_command(
+    record: dict,
+    manifest: dict,
+    authority: object,
+) -> pathlib.Path:
+    command = record.get("command")
+    require(
+        isinstance(command, list)
+        and command
+        and all(isinstance(argument, str) for argument in command),
+        "manifest case command is missing or malformed",
+    )
+    require(
+        command.count("--json-out") == 1,
+        "manifest case command has an invalid JSON-output argument",
+    )
+    output_index = command.index("--json-out") + 1
+    require(output_index < len(command), "manifest case command omits JSON output")
+    command_output = pathlib.Path(command[output_index])
+    require(
+        command_output.name == record["raw_file"],
+        "manifest case command JSON output differs from raw-file identity",
+    )
+    case = authority.AuditCase(
+        record["family"],
+        record["partition"],
+        tuple(record["shape"]),
+        record["variant"],
+        record["threads"],
+        record["mode"],
+        record["lhs_sequence"],
+    )
+    expected = authority.case_command(
+        pathlib.Path(manifest["benchmark"]),
+        case,
+        command_output,
+        manifest["warmup"],
+        manifest["iterations"],
+        manifest["timer_floor_us"],
+        manifest["max_memory_mib"],
+    )
+    require(
+        command == expected,
+        f"manifest command does not reconstruct for {record['key']}",
+    )
+    return command_output
+
+
+def authenticate_expected_rejection(
+    record: dict,
+    manifest_directory: pathlib.Path,
+    command_output: pathlib.Path,
+) -> None:
+    m, n, k = record["shape"]
+    expected_diagnostic = (
+        f"matcore-bench: variant planning failed for {m}x{n}x{k}: "
+        "parallel candidate requires at least two output macro-tiles and workers\n"
+    )
+    require(
+        record["variant"] in PARALLEL_VARIANTS
+        and record["threads"] >= 2
+        and (m + 127) // 128 < 2
+        and record["mode"]
+        in {"complete-hot", "complete-cold", "one-shot-hot"},
+        "rejected case is not an independently expected parallel legality failure",
+    )
+    require(
+        record.get("returncode") == EXPECTED_REJECTION_RETURN_CODE,
+        "expected legality rejection has an unexpected return code",
+    )
+    require(
+        record.get("rejection_category") == EXPECTED_REJECTION_CATEGORY,
+        "expected legality rejection has an unexpected category",
+    )
+    require(
+        record.get("stdout") == "" and record.get("stderr") == expected_diagnostic,
+        "expected legality rejection lacks its exact actionable diagnostic",
+    )
+    require("sha256" not in record, "rejected case unexpectedly has a raw SHA")
+    require(
+        not (manifest_directory / record["raw_file"]).exists()
+        and not command_output.exists(),
+        "rejected case unexpectedly produced a raw evidence file",
+    )
+
+
 def load_bundle(
     path: pathlib.Path,
     expected_order: str,
@@ -649,6 +876,11 @@ def load_bundle(
         reconstructed_plan_digest(manifest) == manifest["plan_sha256"],
         "manifest plan digest does not reconstruct; bundle is incomplete or altered",
     )
+    authority = authenticate_frozen_plan(
+        manifest,
+        expected_suites,
+        expected_order,
+    )
 
     states: Counter = Counter()
     rejection_categories: Counter = Counter()
@@ -667,24 +899,6 @@ def load_bundle(
             "manifest case key is invalid or duplicated",
         )
         seen_record_keys.add(record["key"])
-        state = record.get("state")
-        require(
-            state in {"passed", "reused", "rejected"},
-            f"incomplete bundle contains case state {state!r}",
-        )
-        states[state] += 1
-        if state == "rejected":
-            require(
-                isinstance(record.get("returncode"), int)
-                and record["returncode"] != 0
-                and isinstance(record.get("rejection_category"), str)
-                and record["rejection_category"],
-                "rejected case lacks an authenticated rejection category",
-            )
-            require("sha256" not in record, "rejected case unexpectedly has raw SHA")
-            rejection_categories[record["rejection_category"]] += 1
-            continue
-
         raw_name = record.get("raw_file")
         require(
             isinstance(raw_name, str)
@@ -692,6 +906,20 @@ def load_bundle(
             and pathlib.PurePath(raw_name).name == raw_name,
             "raw evidence path must be a plain relative filename",
         )
+        command_output = authenticate_case_command(record, manifest, authority)
+        state = record.get("state")
+        require(
+            state in {"passed", "reused", "rejected"},
+            f"incomplete bundle contains case state {state!r}",
+        )
+        states[state] += 1
+        if state == "rejected":
+            authenticate_expected_rejection(
+                record, manifest_directory, command_output
+            )
+            rejection_categories[record["rejection_category"]] += 1
+            continue
+
         raw_path = manifest_directory / raw_name
         require(raw_path.is_file(), f"raw evidence is missing for {record['key']}")
         expected_digest = require_sha(record.get("sha256"), "raw sha256")
@@ -891,9 +1119,24 @@ def environment_identity_signature(environment: dict) -> tuple:
         "governor",
         "frequency_policy",
         "boost_state",
+        "cpu_affinity",
+        "hardware_threads",
+        "source_provenance_origin",
+        "timer_source",
+        "timer_resolution_ns",
         "capability_record",
+        "capability_runtime_validation_source",
         "capability_record_version",
         "topology_record_version",
+        "topology_discovery_complete",
+        "logical_processors",
+        "physical_cores",
+        "numa_nodes",
+        "persistent_execution_context",
+        "available_processors",
+        "provider_name",
+        "provider_version",
+        "provider_config",
     )
     return (*tuple(environment.get(field) for field in fields), base_topology_record(environment))
 
@@ -1298,10 +1541,12 @@ def render_report(
             (
                 "Multi-thread OpenBLAS uses unbound `allow-smt/none` placement "
                 "in this audit and is retained only as a separate diagnostic; "
-                "it is not compared with compact physical-core native runs."
+                "it is not compared with compact physical-core native runs. "
+                "The reported value is the configured provider thread count; "
+                "active OpenBLAS concurrency was not sampled."
             ),
             "",
-            "| Actual OpenBLAS threads | Diagnostic cells | Median GFLOP/s |",
+            "| Configured OpenBLAS threads | Diagnostic cells | Median GFLOP/s |",
             "|---:|---:|---:|",
         ]
     )
