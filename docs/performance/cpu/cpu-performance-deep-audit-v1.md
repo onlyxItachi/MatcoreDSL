@@ -135,9 +135,9 @@ The sanitized regret recomputation compares only candidates with the selected ca
 
 ## Thread and placement exclusions
 
-Multi-thread OpenBLAS uses unbound `allow-smt/none` placement in this audit and is retained only as a separate diagnostic; it is not compared with compact physical-core native runs.
+Multi-thread OpenBLAS uses unbound `allow-smt/none` placement in this audit and is retained only as a separate diagnostic; it is not compared with compact physical-core native runs. The reported value is the configured provider thread count; active OpenBLAS concurrency was not sampled.
 
-| Actual OpenBLAS threads | Diagnostic cells | Median GFLOP/s |
+| Configured OpenBLAS threads | Diagnostic cells | Median GFLOP/s |
 |---:|---:|---:|
 | 2 | 35 | 166.482 |
 | 4 | 35 | 252.490 |
