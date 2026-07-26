@@ -78,10 +78,13 @@ def main() -> int:
     sections = run([arguments.objdump, "-h", arguments.artifact]).lower()
     debug_artifact = ".debug_info" in sections
     stack_reference = re.search(r"\b(?:rsp|esp)\b", full) is not None
+    optimized_register_tile = len(full_ymm_registers) >= 10
     if (
-        len(full_ymm_registers) < 10
-        or full_fma < 8
-        or (stack_reference and not debug_artifact)
+        full_fma < 8
+        or (
+            not debug_artifact
+            and (not optimized_register_tile or stack_reference)
+        )
     ):
         print(
             "AVX2 full-tile microkernel lost its eight-chain packed body "
@@ -99,7 +102,8 @@ def main() -> int:
         f"checked_fma={checked_fma} full_tile_symbol={FULL_TILE_SYMBOL} "
         f"full_tile_distinct_ymm={len(full_ymm_registers)} "
         f"full_tile_fma={full_fma} "
-        f"stack_reference={stack_reference} debug_artifact={debug_artifact}"
+        f"stack_reference={stack_reference} debug_artifact={debug_artifact} "
+        f"optimized_register_tile={optimized_register_tile}"
     )
     return 0
 

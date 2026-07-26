@@ -59,6 +59,9 @@ def main() -> int:
     schema_path = pathlib.Path(args.schema)
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     assert schema["properties"]["version"]["const"] == 6
+    help_text = run([str(executable), "--help"]).stdout
+    assert "write schema-v6 JSON" in help_text
+    assert "schema-v4" not in help_text
     v5_schema = json.loads(
         schema_path.with_name("matcore-bench-v5.schema.json").read_text(
             encoding="utf-8"
