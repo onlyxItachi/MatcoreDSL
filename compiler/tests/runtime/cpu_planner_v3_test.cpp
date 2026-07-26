@@ -158,6 +158,11 @@ void registry_and_parallel_policy() {
              forced.selected_id ==
                  "cpu.native-parallel.avx2-fma.f32.v1" &&
              parallel.legal && parallel.actual_threads == 8 &&
+             parallel.requested_thread_ceiling == 8 &&
+             parallel.parallel_row_tasks == 8 &&
+             parallel.parallel_column_tasks == 1 &&
+             parallel.parallel_task_count == 8 &&
+             !parallel.thread_capacity_limited &&
              parallel.required_workspace_bytes ==
                  UINT64_C(262144) + UINT64_C(8) * UINT64_C(131072) &&
              parallel.shared_workspace_bytes == UINT64_C(262144) &&
@@ -280,8 +285,27 @@ void adaptive_parallel_task_contract() {
       planner::CpuGemmRequestV3::force_native_parallel_avx2_fma,
       single_node_placement());
   expect(forced.status == planner::CpuPlanStatusV1::selected &&
-             forced.candidates[6].actual_threads == 4,
+             forced.candidates[6].actual_threads == 4 &&
+             forced.candidates[6].requested_thread_ceiling == 4 &&
+             forced.candidates[6].parallel_row_tasks == 1 &&
+             forced.candidates[6].parallel_column_tasks == 4 &&
+             forced.candidates[6].parallel_task_count == 4 &&
+             !forced.candidates[6].thread_capacity_limited,
          "planner legality uses the same adaptive task capacity as execution");
+
+  const auto capacity_limited = planner::plan_cpu_gemm_v3(
+      problem(512, 512, 512), avx2_capabilities(), topology(), policy(12),
+      resources(),
+      planner::CpuGemmRequestV3::force_native_parallel_avx2_fma,
+      single_node_placement());
+  expect(capacity_limited.status == planner::CpuPlanStatusV1::selected &&
+             capacity_limited.candidates[6].actual_threads == 8 &&
+             capacity_limited.candidates[6].requested_thread_ceiling == 12 &&
+             capacity_limited.candidates[6].parallel_row_tasks == 4 &&
+             capacity_limited.candidates[6].parallel_column_tasks == 2 &&
+             capacity_limited.candidates[6].parallel_task_count == 8 &&
+             capacity_limited.candidates[6].thread_capacity_limited,
+         "planner reports the exact output-task capacity behind a worker clamp");
 
   const auto invalid =
       planner::plan_cpu_parallel_tasks_v1(problem(0, 16, 16), 4);
@@ -318,7 +342,8 @@ void parallel_rejection_boundaries() {
   expect(tiny.status == planner::CpuPlanStatusV1::forced_variant_illegal &&
              tiny.candidates[6].runtime_validated &&
              tiny.candidates[6].reason ==
-                 "parallel candidate requires at least two output macro-tiles and workers",
+                 "parallel candidate requires at least two disjoint output "
+                 "tasks and workers",
          "tiny problem cannot select parallel execution without erasing exact "
          "runtime evidence");
 
@@ -550,6 +575,12 @@ void avx512_fail_closed_and_determinism() {
              first_text.find("cpu.native-parallel.avx2-fma.f32.v1") !=
                  std::string::npos &&
              first_text.find("threads=8") != std::string::npos &&
+             first_text.find("thread-ceiling=8") != std::string::npos &&
+             first_text.find("row-tasks=8") != std::string::npos &&
+             first_text.find("column-tasks=1") != std::string::npos &&
+             first_text.find("task-count=8") != std::string::npos &&
+             first_text.find("thread-capacity-limited=false") !=
+                 std::string::npos &&
              first_text.find("priority=") != std::string::npos &&
              first_text.find("required-hardware=") != std::string::npos &&
              first_text.find("required-os=") != std::string::npos &&

@@ -198,6 +198,11 @@ struct CpuCandidateDecisionV3 {
   std::uint64_t required_workspace_bytes = 0;
   std::uint32_t required_workspace_alignment = 1;
   std::uint32_t actual_threads = 0;
+  std::uint32_t requested_thread_ceiling = 0;
+  std::uint64_t parallel_row_tasks = 0;
+  std::uint64_t parallel_column_tasks = 0;
+  std::uint64_t parallel_task_count = 0;
+  bool thread_capacity_limited = false;
   std::uint16_t deterministic_priority = 0;
   std::uint64_t shared_workspace_bytes = 0;
   std::uint64_t per_worker_workspace_bytes = 0;

@@ -267,7 +267,9 @@ def parse_candidate(encoded: str) -> dict[str, Any]:
     match = re.fullmatch(
         r"(cpu\.[^:]+):(legal|rejected):reason=(.*):cost=(\d+):priority=(\d+):"
         r"workspace=(\d+):shared-workspace=(\d+):per-worker-workspace=(\d+):"
-        r"alignment=(\d+):threads=(\d+):runtime-validated=(true|false):"
+        r"alignment=(\d+):threads=(\d+):thread-ceiling=(\d+):"
+        r"row-tasks=(\d+):column-tasks=(\d+):task-count=(\d+):"
+        r"thread-capacity-limited=(true|false):runtime-validated=(true|false):"
         r"required-hardware=(\d+):required-os=(\d+):required-compiler=(\d+):"
         r"required-implementation=(\d+):cross-numa=(true|false)",
         encoded,
@@ -285,12 +287,17 @@ def parse_candidate(encoded: str) -> dict[str, Any]:
         "per_worker_workspace_bytes": int(match.group(8)),
         "workspace_alignment": int(match.group(9)),
         "threads": int(match.group(10)),
-        "runtime_validated": match.group(11) == "true",
-        "required_hardware_mask": int(match.group(12)),
-        "required_os_mask": int(match.group(13)),
-        "required_compiler_mask": int(match.group(14)),
-        "required_implementation_mask": int(match.group(15)),
-        "cross_numa": match.group(16) == "true",
+        "thread_ceiling": int(match.group(11)),
+        "row_tasks": int(match.group(12)),
+        "column_tasks": int(match.group(13)),
+        "task_count": int(match.group(14)),
+        "thread_capacity_limited": match.group(15) == "true",
+        "runtime_validated": match.group(16) == "true",
+        "required_hardware_mask": int(match.group(17)),
+        "required_os_mask": int(match.group(18)),
+        "required_compiler_mask": int(match.group(19)),
+        "required_implementation_mask": int(match.group(20)),
+        "cross_numa": match.group(21) == "true",
     }
 
 

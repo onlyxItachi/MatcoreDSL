@@ -10,7 +10,11 @@ namespace matcore::mdslc::runtime {
  * Execute one deterministic numerical self-test for every stable F32 CPU
  * implementation. Serial/provider tests run on worker zero, so evidence for
  * a bound context authenticates the same placement used by later execution.
- * Parallel evidence requires at least two persistent workers. A false field
+ * Parallel evidence requires at least two persistent workers and authenticates
+ * the stable variant entry point through a disjoint row partition. Adaptive
+ * column-only and two-dimensional task geometry is reported by the execution
+ * API and separately exercised by exact production-path runtime tests; the
+ * evidence record does not claim exhaustive shape coverage. A false field
  * means unavailable or failed; no ISA/provider support is inferred.
  */
 CpuRuntimeValidationEvidenceV1 validate_cpu_runtime_variants_v1(

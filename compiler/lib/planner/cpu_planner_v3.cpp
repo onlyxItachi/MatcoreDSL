@@ -843,6 +843,12 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
                           CpuGemmVariantV3::native_parallel_avx512_fma;
       const std::uint32_t actual_threads = parallel_tasks.actual_threads;
       decision.actual_threads = actual_threads;
+      decision.requested_thread_ceiling = thread_ceiling;
+      decision.parallel_row_tasks = parallel_tasks.row_task_count;
+      decision.parallel_column_tasks = parallel_tasks.column_task_count;
+      decision.parallel_task_count = parallel_tasks.task_count;
+      decision.thread_capacity_limited =
+          actual_threads != 0 && actual_threads < thread_ceiling;
       std::uint64_t total_workspace = 0;
       if (decision.shared_workspace_bytes != 0 &&
           decision.per_worker_workspace_bytes != 0 && actual_threads != 0 &&
@@ -914,7 +920,9 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
         decision.reason = "parallel AVX-512 F32 requires FMA";
       else {
         if (actual_threads < 2)
-          decision.reason = "parallel candidate requires at least two output macro-tiles and workers";
+          decision.reason =
+              "parallel candidate requires at least two disjoint output tasks "
+              "and workers";
         else if (divide_round_up(detail::operation_count(problem),
                                  actual_threads) <
                  kCpuParallelMinimumWorkPerThreadV1)
@@ -1133,6 +1141,16 @@ std::size_t format_cpu_gemm_plan_v3(const CpuGemmPlanV3 &plan,
     writer.number(candidate.required_workspace_alignment);
     writer.text(":threads=");
     writer.number(candidate.actual_threads);
+    writer.text(":thread-ceiling=");
+    writer.number(candidate.requested_thread_ceiling);
+    writer.text(":row-tasks=");
+    writer.number(candidate.parallel_row_tasks);
+    writer.text(":column-tasks=");
+    writer.number(candidate.parallel_column_tasks);
+    writer.text(":task-count=");
+    writer.number(candidate.parallel_task_count);
+    writer.text(":thread-capacity-limited=");
+    writer.text(candidate.thread_capacity_limited ? "true" : "false");
     writer.text(":runtime-validated=");
     writer.text(candidate.runtime_validated ? "true" : "false");
     writer.text(":required-hardware=");

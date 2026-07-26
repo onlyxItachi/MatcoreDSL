@@ -49,6 +49,9 @@ struct CpuParallelGemmReportV1 {
   std::uint32_t requested_threads = 0;
   std::uint32_t actual_threads = 0;
   std::size_t macro_tile_count = 0;
+  std::size_t row_task_count = 0;
+  std::size_t column_task_count = 0;
+  std::size_t task_count = 0;
   std::size_t workspace_bytes = 0;
   std::size_t shared_packed_b_bytes = 0;
   std::size_t per_worker_workspace_bytes = 0;

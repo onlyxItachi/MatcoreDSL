@@ -189,6 +189,9 @@ void run_parallel_correctness() {
     expect(status == runtime::CpuParallelGemmStatusV1::success,
            "parallel packed execution succeeds");
     expect(report.actual_threads == 4 && report.macro_tile_count == 4 &&
+               report.row_task_count == 4 &&
+               report.column_task_count == 1 &&
+               report.task_count == 4 &&
                report.shared_packed_b_bytes ==
                    requirements.shared_packed_b_bytes &&
                report.context_submission == repetition,
@@ -219,7 +222,10 @@ void run_parallel_correctness() {
              runtime::CpuProviderNestingPolicyV1::native_only, &tiny_report) ==
              runtime::CpuParallelGemmStatusV1::success &&
              tiny_report.actual_threads == 1 &&
-             tiny_report.macro_tile_count == 1,
+             tiny_report.macro_tile_count == 1 &&
+             tiny_report.row_task_count == 1 &&
+             tiny_report.column_task_count == 1 &&
+             tiny_report.task_count == 1,
          "tiny GEMM is deterministically reduced to one worker");
 }
 
@@ -230,12 +236,14 @@ void run_balanced_partition_correctness() {
     std::size_t k;
     std::size_t n;
     std::size_t expected_macro_tiles;
+    std::size_t expected_row_tasks;
+    std::size_t expected_column_tasks;
     std::string_view label;
   };
   constexpr TestCase cases[] = {
-      {64, 257, 1024, 1, "short-wide sub-MC"},
-      {129, 1024, 512, 2, "post-MC task wave"},
-      {63, 261, 1024, 1, "short-wide M/K-tail"},
+      {64, 257, 1024, 1, 1, 4, "short-wide sub-MC"},
+      {129, 1024, 512, 2, 2, 2, "post-MC task wave"},
+      {63, 261, 1024, 1, 1, 4, "short-wide M/K-tail"},
   };
   constexpr std::size_t guard_elements = 16;
   constexpr float guard_sentinel = 937.25F;
@@ -280,6 +288,10 @@ void run_balanced_partition_correctness() {
            test_case.label);
     expect(report.actual_threads == 4 &&
                report.macro_tile_count == test_case.expected_macro_tiles &&
+               report.row_task_count == test_case.expected_row_tasks &&
+               report.column_task_count ==
+                   test_case.expected_column_tasks &&
+               report.task_count == 4 &&
                report.context_submission == submission,
            "adaptive partition uses four workers despite an imbalanced "
            "legacy macro-tile wave");
@@ -322,7 +334,10 @@ void run_low_alignment_row_only_correctness() {
              workspace.size(), 4,
              runtime::CpuProviderNestingPolicyV1::native_only, &report) ==
              runtime::CpuParallelGemmStatusV1::success &&
-             report.actual_threads == 1 && report.macro_tile_count == 1,
+             report.actual_threads == 1 && report.macro_tile_count == 1 &&
+             report.row_task_count == 1 &&
+             report.column_task_count == 1 &&
+             report.task_count == 1,
          "low-alignment output remains on the fail-closed row-only path");
   expect(close(out, m * n, expected),
          "low-alignment row-only result matches double-precision oracle");
@@ -445,10 +460,12 @@ void run_parallel_avx512_correctness() {
     std::size_t k;
     std::size_t n;
     std::size_t macro_tiles;
+    std::size_t row_tasks;
+    std::size_t column_tasks;
   };
   constexpr TwoDimensionalCase two_dimensional_cases[] = {
-      {64, 257, 1024, 1},
-      {129, 1024, 512, 2},
+      {64, 257, 1024, 1, 1, 4},
+      {129, 1024, 512, 2, 2, 2},
   };
   constexpr std::size_t guard_elements = 16;
   constexpr float guard_sentinel = -481.5F;
@@ -498,7 +515,12 @@ void run_parallel_avx512_correctness() {
            "parallel AVX-512 2-D execution succeeds");
     expect(two_dimensional_report.actual_threads == 4 &&
                two_dimensional_report.macro_tile_count ==
-                   test_case.macro_tiles,
+                   test_case.macro_tiles &&
+               two_dimensional_report.row_task_count ==
+                   test_case.row_tasks &&
+               two_dimensional_report.column_task_count ==
+                   test_case.column_tasks &&
+               two_dimensional_report.task_count == 4,
            "parallel AVX-512 reports authenticated 2-D output partitions");
     expect(close(two_dimensional_out, out_elements,
                  two_dimensional_expected),

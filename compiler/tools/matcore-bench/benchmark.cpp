@@ -311,6 +311,12 @@ std::string regret_plan_mismatch(
   if (actual.planner_version != expected.planner_version)
     return "planner_version";
   if (actual.actual_threads != expected.actual_threads) return "actual_threads";
+  if (actual.parallel_row_tasks != expected.parallel_row_tasks)
+    return "parallel_row_tasks";
+  if (actual.parallel_column_tasks != expected.parallel_column_tasks)
+    return "parallel_column_tasks";
+  if (actual.parallel_task_count != expected.parallel_task_count)
+    return "parallel_task_count";
   if (actual.workspace_bytes != expected.workspace_bytes)
     return "workspace_bytes";
   if (actual.shared_workspace_bytes != expected.shared_workspace_bytes)
@@ -1337,6 +1343,10 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
         candidate.planner_version = candidate_plan.planner_version;
         candidate.timing_scope = candidate_plan.timing_scope;
         candidate.actual_threads = candidate_plan.actual_threads;
+        candidate.parallel_row_tasks = candidate_plan.parallel_row_tasks;
+        candidate.parallel_column_tasks =
+            candidate_plan.parallel_column_tasks;
+        candidate.parallel_task_count = candidate_plan.parallel_task_count;
         candidate.workspace_bytes = candidate_plan.workspace_bytes;
         candidate.shared_workspace_bytes =
             candidate_plan.shared_workspace_bytes;
@@ -1700,6 +1710,12 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
                 result.requested_variant == "auto" ? "automatic" : "forced");
     output << ",\n      \"planner_version\": " << result.plan.planner_version
            << ",\n      \"actual_threads\": " << result.plan.actual_threads
+           << ",\n      \"parallel_row_tasks\": "
+           << result.plan.parallel_row_tasks
+           << ",\n      \"parallel_column_tasks\": "
+           << result.plan.parallel_column_tasks
+           << ",\n      \"parallel_task_count\": "
+           << result.plan.parallel_task_count
            << ",\n      \"workspace_bytes\": " << result.plan.workspace_bytes
            << ",\n      \"shared_workspace_bytes\": "
            << result.plan.shared_workspace_bytes
@@ -1864,6 +1880,12 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
              << ", \"timing_scope\": ";
       json_string(output, candidate.timing_scope);
       output << ", \"actual_threads\": " << candidate.actual_threads
+             << ", \"parallel_row_tasks\": "
+             << candidate.parallel_row_tasks
+             << ", \"parallel_column_tasks\": "
+             << candidate.parallel_column_tasks
+             << ", \"parallel_task_count\": "
+             << candidate.parallel_task_count
              << ", \"workspace_bytes\": " << candidate.workspace_bytes
              << ", \"shared_workspace_bytes\": "
              << candidate.shared_workspace_bytes

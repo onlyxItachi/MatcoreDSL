@@ -564,8 +564,12 @@ def plan_fingerprint(
 def expected_legality_rejection(case: AuditCase, stderr: str) -> str | None:
     if (
         case.variant in PARALLEL_VARIANTS
-        and "parallel candidate requires at least two output macro-tiles and workers"
-        in stderr
+        and (
+            "parallel candidate requires at least two output macro-tiles and workers"
+            in stderr
+            or "parallel candidate requires at least two disjoint output tasks and workers"
+            in stderr
+        )
     ):
         return "parallel-output-macro-tile-count"
     return None

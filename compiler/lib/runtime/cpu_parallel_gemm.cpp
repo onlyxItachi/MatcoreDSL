@@ -546,6 +546,11 @@ CpuParallelGemmStatusV1 execute_parallel(
   report->actual_threads = actual_threads;
   report->macro_tile_count =
       static_cast<std::size_t>(task_plan.macro_tile_count);
+  report->row_task_count =
+      static_cast<std::size_t>(task_plan.row_task_count);
+  report->column_task_count =
+      static_cast<std::size_t>(task_plan.column_task_count);
+  report->task_count = static_cast<std::size_t>(task_plan.task_count);
   report->workspace_bytes = requirements.total_bytes;
   report->shared_packed_b_bytes = requirements.shared_packed_b_bytes;
   report->per_worker_workspace_bytes = requirements.per_worker_bytes;
