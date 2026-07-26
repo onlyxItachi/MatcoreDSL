@@ -39,6 +39,7 @@ SERIAL_VARIANTS = VARIANTS[:5]
 PARALLEL_VARIANTS = VARIANTS[5:7]
 EXTERNAL_VARIANT = VARIANTS[7]
 PACKED_VARIANTS = VARIANTS[3:7]
+SERIAL_PACKED_VARIANTS = VARIANTS[3:5]
 
 SHAPE_FAMILIES: dict[str, tuple[tuple[int, int, int], ...]] = {
     "small-square": tuple((size, size, size) for size in (4, 8, 16, 24, 32, 48, 64)),
@@ -90,6 +91,15 @@ PREPACKED_SHAPES = (
     (512, 512, 512),
     (1, 4096, 4096),
     (8, 4096, 4096),
+)
+ONE_SHOT_SHAPES = (
+    (64, 64, 64),
+    (256, 256, 256),
+    (1024, 1024, 1024),
+    (4096, 64, 4096),
+    (64, 4096, 4096),
+    (1, 4096, 4096),
+    (127, 129, 131),
 )
 COLD_SHAPES = (
     (64, 64, 64),
@@ -221,7 +231,7 @@ def build_cases(
 
     if "compute" in suites:
         for family, shape in all_shapes():
-            for variant in PACKED_VARIANTS[:2]:
+            for variant in SERIAL_PACKED_VARIANTS[:1]:
                 if variant in variants:
                     cases.append(
                         AuditCase(
@@ -276,7 +286,7 @@ def build_cases(
             family = next(
                 name for name, shapes in SHAPE_FAMILIES.items() if shape in shapes
             )
-            for variant in PACKED_VARIANTS:
+            for variant in SERIAL_PACKED_VARIANTS:
                 if variant not in variants:
                     continue
                 candidate_threads = (
@@ -295,6 +305,53 @@ def build_cases(
                                 thread_count,
                                 "prepacked-b-hot",
                                 sequence,
+                            )
+                        )
+
+    if "oneshot" in suites:
+        requested_parallel_threads = tuple(
+            value for value in threads if value == 4
+        )
+        if not requested_parallel_threads:
+            requested_parallel_threads = tuple(
+                value for value in threads if value > 1
+            )[:1]
+        provider_threads = tuple(
+            value for value in threads if value in {1, 4}
+        )
+        for shape in ONE_SHOT_SHAPES:
+            family = next(
+                name for name, shapes in SHAPE_FAMILIES.items() if shape in shapes
+            )
+            for variant in variants:
+                if variant in SERIAL_VARIANTS:
+                    candidate_threads = (1,)
+                elif variant in PARALLEL_VARIANTS:
+                    candidate_threads = requested_parallel_threads
+                else:
+                    candidate_threads = provider_threads
+                for thread_count in candidate_threads:
+                    legal, reason = bounded_variant(shape, variant)
+                    if legal:
+                        cases.append(
+                            AuditCase(
+                                family,
+                                partition_for(shape),
+                                shape,
+                                variant,
+                                thread_count,
+                                "one-shot-hot",
+                            )
+                        )
+                    else:
+                        skips.append(
+                            AuditSkip(
+                                family,
+                                shape,
+                                variant,
+                                thread_count,
+                                "one-shot-hot",
+                                reason,
                             )
                         )
 
@@ -381,19 +438,22 @@ def case_command(
         str(DEFAULT_SEED),
         "--alignment",
         "64",
-        "--reuse-workspace",
         "--guard",
         "--json-out",
         str(output),
     ]
-    if case.mode == "compute-only-hot":
-        command.extend(("--exclude-packing", "--hot-cache"))
-    elif case.mode == "prepacked-b-hot":
-        command.extend(("--prepack-b", "--hot-cache"))
-    elif case.mode == "complete-cold":
-        command.extend(("--include-packing", "--cold-cache"))
+    if case.mode == "one-shot-hot":
+        command.extend(("--include-allocation", "--include-packing", "--hot-cache"))
     else:
-        command.extend(("--include-packing", "--hot-cache"))
+        command.append("--reuse-workspace")
+        if case.mode == "compute-only-hot":
+            command.extend(("--exclude-packing", "--hot-cache"))
+        elif case.mode == "prepacked-b-hot":
+            command.extend(("--prepack-b", "--hot-cache"))
+        elif case.mode == "complete-cold":
+            command.extend(("--include-packing", "--cold-cache"))
+        else:
+            command.extend(("--include-packing", "--hot-cache"))
     if case.mode == "planner-regret-hot":
         command.append("--planner-regret")
     if case.variant == EXTERNAL_VARIANT and case.threads > 1:
@@ -443,7 +503,11 @@ def expected_case_configuration(
         "lhs_sequence_length": case.lhs_sequence,
         "alignment_bytes": 64,
         "cache_mode": cache_mode,
-        "allocation_mode": "reuse-workspace",
+        "allocation_mode": (
+            "include-allocation"
+            if case.mode == "one-shot-hot"
+            else "reuse-workspace"
+        ),
         "packing_mode": packing_mode,
         "smt_policy": (
             "allow-smt" if provider_parallel else "physical-cores-only"
@@ -470,6 +534,7 @@ def plan_fingerprint(
     iterations: int,
     timer_floor_us: int,
     maximum_memory_mib: int,
+    case_order: str,
 ) -> str:
     return canonical_sha256(
         {
@@ -482,6 +547,7 @@ def plan_fingerprint(
             "iterations": iterations,
             "timer_floor_us": timer_floor_us,
             "max_memory_mib": maximum_memory_mib,
+            "case_order": case_order,
             "seed": DEFAULT_SEED,
             "cases": [dataclasses.asdict(case) for case in cases],
             "skips": [dataclasses.asdict(skip) for skip in skips],
@@ -489,17 +555,14 @@ def plan_fingerprint(
     )
 
 
-def expected_legality_rejection(stderr: str) -> bool:
-    return any(
-        marker in stderr
-        for marker in (
-            "variant planning failed",
-            "does not support prepacked-B",
-            "is not linked",
-            "not runtime-validated",
-            "unavailable on this host",
-        )
-    )
+def expected_legality_rejection(case: AuditCase, stderr: str) -> str | None:
+    if (
+        case.variant in PARALLEL_VARIANTS
+        and "parallel candidate requires at least two output macro-tiles and workers"
+        in stderr
+    ):
+        return "parallel-output-macro-tile-count"
+    return None
 
 
 def authenticate_report(
@@ -560,7 +623,7 @@ def main() -> int:
     parser.add_argument(
         "--suites",
         default="complete",
-        help="comma list: complete,compute,cold,prepacked,regret,all",
+        help="comma list: complete,compute,cold,prepacked,oneshot,regret,all",
     )
     parser.add_argument(
         "--variants",
@@ -575,6 +638,11 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument(
+        "--case-order",
+        choices=("stable-forward", "stable-reverse"),
+        default="stable-forward",
+    )
     args = parser.parse_args()
 
     executable = pathlib.Path(args.bench).resolve()
@@ -591,8 +659,22 @@ def main() -> int:
 
     suites = {value for value in args.suites.split(",") if value}
     if "all" in suites:
-        suites = {"complete", "compute", "cold", "prepacked", "regret"}
-    unknown_suites = suites - {"complete", "compute", "cold", "prepacked", "regret"}
+        suites = {
+            "complete",
+            "compute",
+            "cold",
+            "prepacked",
+            "oneshot",
+            "regret",
+        }
+    unknown_suites = suites - {
+        "complete",
+        "compute",
+        "cold",
+        "prepacked",
+        "oneshot",
+        "regret",
+    }
     if not suites or unknown_suites:
         parser.error(f"unknown or empty suite set: {sorted(unknown_suites)}")
     variants = tuple(value for value in args.variants.split(",") if value)
@@ -609,6 +691,8 @@ def main() -> int:
         parser.error("memory bound must be positive and limit nonnegative")
 
     cases, skips = build_cases(suites, variants, threads)
+    if args.case_order == "stable-reverse":
+        cases.reverse()
     if args.limit:
         cases = cases[: args.limit]
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -625,6 +709,7 @@ def main() -> int:
         args.iterations,
         args.timer_floor_us,
         args.max_memory_mib,
+        args.case_order,
     )
     if args.resume and args.dry_run:
         parser.error("--resume cannot be combined with --dry-run")
@@ -744,11 +829,12 @@ def main() -> int:
             env=environment,
         )
         if completed.returncode != 0:
-            record["state"] = (
-                "rejected"
-                if expected_legality_rejection(completed.stderr)
-                else "failed"
+            rejection_category = expected_legality_rejection(
+                case, completed.stderr
             )
+            record["state"] = "rejected" if rejection_category else "failed"
+            if rejection_category:
+                record["rejection_category"] = rejection_category
             record["returncode"] = completed.returncode
             record["stdout"] = completed.stdout
             record["stderr"] = completed.stderr
@@ -791,6 +877,7 @@ def main() -> int:
         "suites": sorted(suites),
         "variants": list(variants),
         "threads": list(threads),
+        "case_order": args.case_order,
         "warmup": args.warmup,
         "iterations": args.iterations,
         "timer_floor_us": args.timer_floor_us,

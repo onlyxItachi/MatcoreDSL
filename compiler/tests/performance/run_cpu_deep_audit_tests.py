@@ -92,11 +92,23 @@ def main() -> int:
         ]
         assert {
             case["variant"] for case in compute
+        } == {"cpu.native-packed.avx2-fma.f32.v1"}
+        assert all("--exclude-packing" in case["command"] for case in compute)
+        assert {
+            case["variant"] for case in prepacked
         } == {
             "cpu.native-packed.avx2-fma.f32.v1",
             "cpu.native-packed.avx512-fma.f32.v1",
         }
-        assert all("--exclude-packing" in case["command"] for case in compute)
+        one_shot = [
+            case for case in manifest["cases"] if case["mode"] == "one-shot-hot"
+        ]
+        assert one_shot
+        assert all(
+            "--include-allocation" in case["command"]
+            and "--reuse-workspace" not in case["command"]
+            for case in one_shot
+        )
         cold = [
             case for case in manifest["cases"] if case["mode"] == "complete-cold"
         ]
@@ -149,6 +161,32 @@ def main() -> int:
             "--allow-smt" in case["command"]
             and case["command"][-1] == "none"
             for case in provider_parallel
+        )
+
+        reverse_output = pathlib.Path(temporary) / "reverse raw output"
+        run(
+            [
+                sys.executable,
+                str(runner),
+                "--bench",
+                str(bench),
+                "--output-dir",
+                str(reverse_output),
+                "--suites",
+                "all",
+                "--threads",
+                "1,2,4,12",
+                "--case-order",
+                "stable-reverse",
+                "--dry-run",
+            ]
+        )
+        reverse_manifest = json.loads(
+            (reverse_output / "manifest.json").read_text(encoding="utf-8")
+        )
+        assert reverse_manifest["case_order"] == "stable-reverse"
+        assert [case["key"] for case in reverse_manifest["cases"]] == list(
+            reversed(keys)
         )
 
     with tempfile.TemporaryDirectory(prefix="matcore deep audit resume ") as temporary:
