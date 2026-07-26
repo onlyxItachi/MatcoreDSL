@@ -2366,6 +2366,17 @@ def atomic_write(path: pathlib.Path, text: str) -> None:
     temporary.replace(path)
 
 
+def invalidate_output(path: pathlib.Path) -> pathlib.Path:
+    path = path.expanduser().absolute()
+    require(
+        not path.exists() or path.is_file() or path.is_symlink(),
+        f"summary output path is not a file: {path}",
+    )
+    if path.exists() or path.is_symlink():
+        path.unlink()
+    return path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--forward-manifest", required=True)
@@ -2382,6 +2393,16 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
+        markdown_out = invalidate_output(pathlib.Path(args.markdown_out))
+        json_out = (
+            invalidate_output(pathlib.Path(args.json_out))
+            if args.json_out
+            else None
+        )
+        require(
+            json_out is None or json_out != markdown_out,
+            "Markdown and JSON outputs must be distinct paths",
+        )
         forward = load_bundle(
             pathlib.Path(args.forward_manifest), "stable-forward"
         )
@@ -2391,11 +2412,11 @@ def main() -> int:
         cells = pair_bundles(forward, reverse)
         summary = assessment(forward, reverse, cells)
         atomic_write(
-            pathlib.Path(args.markdown_out), render_markdown(summary)
+            markdown_out, render_markdown(summary)
         )
-        if args.json_out:
+        if json_out is not None:
             atomic_write(
-                pathlib.Path(args.json_out),
+                json_out,
                 json.dumps(summary, indent=2, sort_keys=True) + "\n",
             )
     except ParityError as error:

@@ -695,6 +695,8 @@ def main() -> int:
             summarizer_path, forward, reverse, output, expected=2
         )
         assert "raw parity SHA-256 mismatch" in tampered.stderr
+        assert not (output / "summary.md").exists()
+        assert not (output / "summary.json").exists()
         first_raw.write_bytes(pristine_raw)
 
         asserted_provenance = json.loads(pristine_raw.decode("utf-8"))
