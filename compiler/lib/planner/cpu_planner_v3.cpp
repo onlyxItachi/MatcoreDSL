@@ -8,7 +8,6 @@
 namespace matcore::mdslc::planner {
 namespace {
 
-inline constexpr std::uint64_t kParallelMacroTileRowsV1 = 128;
 // Complete-call calibration on the declared Milestone 5 host found a narrow
 // gap in the inherited v2 cost model.  When a multi-worker native context is
 // explicitly bound, provider-owned multithreading is illegal and the
@@ -292,6 +291,23 @@ std::uint64_t divide_round_up(std::uint64_t numerator,
   return numerator / denominator + (numerator % denominator != 0 ? 1U : 0U);
 }
 
+std::uint64_t greatest_common_divisor(std::uint64_t lhs,
+                                      std::uint64_t rhs) noexcept {
+  while (rhs != 0) {
+    const std::uint64_t remainder = lhs % rhs;
+    lhs = rhs;
+    rhs = remainder;
+  }
+  return lhs;
+}
+
+std::uint64_t least_common_multiple(std::uint64_t lhs,
+                                    std::uint64_t rhs) noexcept {
+  const std::uint64_t divisor = greatest_common_divisor(lhs, rhs);
+  if (divisor == 0) return 0;
+  return detail::saturating_multiply(lhs / divisor, rhs);
+}
+
 bool total_parallel_workspace(std::uint64_t shared_bytes,
                         std::uint64_t per_worker_bytes,
                         std::uint32_t threads,
@@ -449,6 +465,66 @@ void populate_resource_metadata(
 
 }  // namespace
 
+CpuParallelTaskPlanV1 plan_cpu_parallel_tasks_v1(
+    const CpuGemmProblemV1 &problem,
+    std::uint32_t requested_threads) noexcept {
+  CpuParallelTaskPlanV1 result;
+  if (problem.m <= 0 || problem.n <= 0 || problem.k <= 0 ||
+      requested_threads == 0)
+    return result;
+
+  const std::uint64_t rows = static_cast<std::uint64_t>(problem.m);
+  const std::uint64_t columns = static_cast<std::uint64_t>(problem.n);
+  result.macro_tile_count =
+      divide_round_up(rows, kCpuParallelMacroTileRowsV1);
+  const std::uint64_t rows_per_cacheline_boundary =
+      kCpuParallelCacheLineFloatCountV1 /
+      greatest_common_divisor(columns, kCpuParallelCacheLineFloatCountV1);
+  result.row_quantum =
+      least_common_multiple(kCpuParallelRegisterTileRowsV1,
+                            rows_per_cacheline_boundary);
+  if (result.row_quantum == 0) return {};
+  result.row_group_count = divide_round_up(rows, result.row_quantum);
+  result.column_panel_count =
+      divide_round_up(columns, kCpuParallelColumnTileColumnsV1);
+
+  const std::uint64_t maximum_row_tasks = std::min<std::uint64_t>(
+      requested_threads,
+      std::min(result.macro_tile_count, result.row_group_count));
+  result.row_task_count = maximum_row_tasks;
+  result.column_task_count = 1;
+  result.task_count = maximum_row_tasks;
+
+  const bool column_partition_safe =
+      problem.minimum_alignment_bytes >= 64 &&
+      columns % kCpuParallelCacheLineFloatCountV1 == 0;
+  if (column_partition_safe && result.column_panel_count > 1) {
+    for (std::uint64_t row_tasks = 1; row_tasks <= maximum_row_tasks;
+         ++row_tasks) {
+      const std::uint64_t column_tasks = std::min<std::uint64_t>(
+          result.column_panel_count, requested_threads / row_tasks);
+      const std::uint64_t candidate_tasks = row_tasks * column_tasks;
+      if (candidate_tasks > result.task_count ||
+          (candidate_tasks == result.task_count &&
+           row_tasks > result.row_task_count)) {
+        result.row_task_count = row_tasks;
+        result.column_task_count = column_tasks;
+        result.task_count = candidate_tasks;
+      }
+    }
+  }
+  if (result.task_count > maximum_row_tasks &&
+      detail::operation_count(problem) / result.task_count <
+          kCpuParallelMinimumWorkPerThreadV1) {
+    result.row_task_count = maximum_row_tasks;
+    result.column_task_count = 1;
+    result.task_count = maximum_row_tasks;
+  }
+  result.actual_threads = static_cast<std::uint32_t>(
+      std::min<std::uint64_t>(requested_threads, result.task_count));
+  return result;
+}
+
 const std::array<CpuGemmVariantRecordV3, kCpuGemmCandidateCountV3> &
 cpu_gemm_variant_registry_v3() noexcept {
   return kCpuGemmVariantRegistryV3;
@@ -591,17 +667,13 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
   const std::string_view placement_error =
       topology_error.empty() ? placement_reason(topology, placement)
                              : topology_error;
-  const std::uint64_t macro_tiles =
-      problem.m > 0
-          ? (static_cast<std::uint64_t>(problem.m) +
-             kParallelMacroTileRowsV1 - 1U) /
-                kParallelMacroTileRowsV1
-          : 0;
   const std::uint32_t thread_ceiling =
       topology_error.empty()
           ? policy_thread_ceiling(topology, thread_policy, resources,
                                   placement)
           : 0;
+  const CpuParallelTaskPlanV1 parallel_tasks =
+      plan_cpu_parallel_tasks_v1(problem, thread_ceiling);
 
   bool found = false;
   std::uint64_t best_cost = std::numeric_limits<std::uint64_t>::max();
@@ -761,8 +833,7 @@ CpuGemmPlanV3 plan_cpu_gemm_v3(
     } else {
       const bool avx512 = record.variant ==
                           CpuGemmVariantV3::native_parallel_avx512_fma;
-      const std::uint32_t actual_threads = static_cast<std::uint32_t>(
-          std::min<std::uint64_t>(thread_ceiling, macro_tiles));
+      const std::uint32_t actual_threads = parallel_tasks.actual_threads;
       decision.actual_threads = actual_threads;
       std::uint64_t total_workspace = 0;
       if (decision.shared_workspace_bytes != 0 &&

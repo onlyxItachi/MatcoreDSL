@@ -21,6 +21,10 @@ inline constexpr std::size_t kCpuGemmCandidateCountV3 = 8;
 inline constexpr std::size_t kCpuPlannerReportedNumaNodeLimitV1 = 16;
 inline constexpr std::uint64_t kCpuParallelMinimumWorkPerThreadV1 =
     UINT64_C(1) << 20;
+inline constexpr std::uint64_t kCpuParallelMacroTileRowsV1 = 128;
+inline constexpr std::uint64_t kCpuParallelRegisterTileRowsV1 = 4;
+inline constexpr std::uint64_t kCpuParallelCacheLineFloatCountV1 = 16;
+inline constexpr std::uint64_t kCpuParallelColumnTileColumnsV1 = 256;
 
 enum class CpuGemmVariantV3 : std::uint8_t {
   reference = 0,
@@ -70,6 +74,23 @@ struct CpuThreadPolicyV1 {
   // to runtime-owned bound workers. Single-thread provider execution remains
   // legal because it can run on one bound worker.
   bool worker_affinity_active = false;
+};
+
+/*
+ * Pure planner/runtime contract for deterministic whole-row tasking. The
+ * runtime owns disjoint row ranges and never splits K, so no reduction or
+ * output synchronization is required. Row boundaries are aligned to both the
+ * packed microkernel's MR and a complete 64-byte output-cacheline cycle.
+ */
+struct CpuParallelTaskPlanV1 {
+  std::uint64_t macro_tile_count = 0;
+  std::uint64_t row_quantum = 0;
+  std::uint64_t row_group_count = 0;
+  std::uint64_t row_task_count = 0;
+  std::uint64_t column_panel_count = 0;
+  std::uint64_t column_task_count = 0;
+  std::uint64_t task_count = 0;
+  std::uint32_t actual_threads = 0;
 };
 
 enum class CpuPlannerNumaPolicyV1 : std::uint8_t {
@@ -222,6 +243,10 @@ CpuPlannerTopologyViewV1 project_cpu_topology_v1_for_planner_v1(
     // membership and therefore makes parallel topology evidence incomplete.
     // Call restrict_cpu_topology_v1 first for parallel planning.
     std::uint32_t available_processors_override = 0) noexcept;
+
+CpuParallelTaskPlanV1 plan_cpu_parallel_tasks_v1(
+    const CpuGemmProblemV1 &problem,
+    std::uint32_t requested_threads) noexcept;
 
 const std::array<CpuGemmVariantRecordV3, kCpuGemmCandidateCountV3> &
 cpu_gemm_variant_registry_v3() noexcept;
