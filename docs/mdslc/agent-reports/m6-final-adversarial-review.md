@@ -237,3 +237,33 @@ Repository hygiene and `git diff --check` also passed.
 Post-review verdict: **accepted; the change removes an ancestor-path false
 positive without weakening detection of producer source/build/staging
 dependencies. No new high- or medium-severity finding.**
+
+## Post-review Windows timing addendum
+
+Reviewed follow-up: `90a3039` (`test(perf): make preparation timing portable`)
+
+The Windows hosted runner exposed a synthetic-test edge: the
+`RecordingRunner` prepacked-B preparation could complete within one
+`steady_clock` tick, producing a non-positive duration that the production
+benchmark contract correctly rejects.
+
+The change is confined to
+`compiler/tests/benchmark/benchmark_core_test.cpp`. It sleeps for one
+millisecond only inside the test double's `prepare(prepack_b=true)` callback.
+It does not modify the production runner, benchmark core, timer, raw evidence,
+planner, or execution code. Preparation remains outside the timed steady-state
+execution path; the delay merely ensures that the contract test has a
+measurable positive synthetic preparation interval. Failed-preparation and
+non-prepacked paths do not sleep.
+
+The focused test executable was rebuilt and the contract rerun:
+
+```text
+benchmark.cpu.contract  PASS (1/1)
+```
+
+Repository hygiene and `git diff --check` passed.
+
+Post-review verdict: **accepted; this is a portable test-fixture correction,
+not benchmark gaming or a production performance change. No new high- or
+medium-severity finding.**
