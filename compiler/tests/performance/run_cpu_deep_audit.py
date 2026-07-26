@@ -538,24 +538,27 @@ def plan_fingerprint(
     families: set[str] | None = None,
 ) -> str:
     selected_families = set(SHAPE_FAMILIES) if families is None else families
-    return canonical_sha256(
-        {
-            "schema": "matcore.cpu-performance-deep-audit.plan",
-            "version": 1,
-            "suites": sorted(suites),
-            "families": sorted(selected_families),
-            "variants": list(variants),
-            "threads": list(threads),
-            "warmup": warmup,
-            "iterations": iterations,
-            "timer_floor_us": timer_floor_us,
-            "max_memory_mib": maximum_memory_mib,
-            "case_order": case_order,
-            "seed": DEFAULT_SEED,
-            "cases": [dataclasses.asdict(case) for case in cases],
-            "skips": [dataclasses.asdict(skip) for skip in skips],
-        }
-    )
+    plan = {
+        "schema": "matcore.cpu-performance-deep-audit.plan",
+        "version": 1,
+        "suites": sorted(suites),
+        "variants": list(variants),
+        "threads": list(threads),
+        "warmup": warmup,
+        "iterations": iterations,
+        "timer_floor_us": timer_floor_us,
+        "max_memory_mib": maximum_memory_mib,
+        "case_order": case_order,
+        "seed": DEFAULT_SEED,
+        "cases": [dataclasses.asdict(case) for case in cases],
+        "skips": [dataclasses.asdict(skip) for skip in skips],
+    }
+    # Preserve the frozen Milestone 6 plan digest byte-for-byte for the default
+    # full matrix. A subset adds an authenticated extension instead of
+    # retroactively invalidating retained audit bundles.
+    if selected_families != set(SHAPE_FAMILIES):
+        plan["families"] = sorted(selected_families)
+    return canonical_sha256(plan)
 
 
 def expected_legality_rejection(case: AuditCase, stderr: str) -> str | None:
