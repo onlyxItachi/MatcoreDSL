@@ -98,6 +98,15 @@ def main() -> int:
         for case in cold:
             floor_index = case["command"].index("--timer-floor-us") + 1
             assert case["command"][floor_index] == "1"
+        regret = [
+            case
+            for case in manifest["cases"]
+            if case["mode"] == "planner-regret-hot"
+        ]
+        assert regret
+        for case in regret:
+            floor_index = case["command"].index("--timer-floor-us") + 1
+            assert case["command"][floor_index] == "1"
 
         reference_large_skip = [
             skip

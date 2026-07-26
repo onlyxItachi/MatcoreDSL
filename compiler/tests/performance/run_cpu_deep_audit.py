@@ -343,12 +343,14 @@ def case_command(
 ) -> list[str]:
     m, n, k = case.shape
     # Cold-cache samples deliberately do not aggregate multiple GEMMs behind
-    # one eviction. Keep their timer floor at one microsecond so small,
-    # separately labelled diagnostic shapes remain observable instead of
-    # being rejected by the complete-call hot-cache floor.
+    # one eviction. Planner-regret runs already perform balanced forward and
+    # reverse passes and can also reject an otherwise useful audit case when a
+    # single fast provider sample straddles the aggregation floor. Keep these
+    # explicitly diagnostic modes at one microsecond; ordinary complete-call
+    # measurements retain the stricter caller-supplied floor.
     effective_timer_floor_us = (
         min(timer_floor_us, 1)
-        if case.mode == "complete-cold"
+        if case.mode in {"complete-cold", "planner-regret-hot"}
         else timer_floor_us
     )
     command = [
