@@ -14,6 +14,7 @@ import argparse
 import dataclasses
 import hashlib
 import json
+import math
 import os
 import pathlib
 import subprocess
@@ -22,7 +23,7 @@ import time
 from typing import Iterable
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 MANIFEST_VERSION = 2
 DEFAULT_SEED = 0x4D4154434F524531
 VARIANTS = (
@@ -613,6 +614,110 @@ def authenticate_report(
         raise ValueError("timed output was not authenticated")
     if result["actual_threads"] < 1 or result["actual_threads"] > case.threads:
         raise ValueError("actual implementation thread count exceeds request")
+    samples = result.get("normalized_samples_seconds")
+    if (
+        not isinstance(samples, list)
+        or len(samples) != iterations
+        or any(
+            not isinstance(sample, (int, float))
+            or not math.isfinite(sample)
+            or sample <= 0.0
+            for sample in samples
+        )
+    ):
+        raise ValueError("ordered timing samples are missing or invalid")
+    ordered_samples = sorted(float(sample) for sample in samples)
+    p95_index = math.ceil(len(ordered_samples) * 0.95) - 1
+    reconstructed = {
+        "minimum_seconds": ordered_samples[0],
+        "median_seconds": ordered_samples[len(ordered_samples) // 2],
+        "p95_seconds": ordered_samples[p95_index],
+    }
+    for field, expected in reconstructed.items():
+        if not math.isclose(
+            float(result[field]), expected, rel_tol=1.0e-12, abs_tol=1.0e-15
+        ):
+            raise ValueError(f"{field} does not match the raw timing samples")
+
+    preparation = result.get("prepacked_b_preparation")
+    if not isinstance(preparation, dict):
+        raise ValueError("prepacked-B preparation metadata is missing")
+    if case.mode == "prepacked-b-hot":
+        if not (
+            preparation.get("requested")
+            and preparation.get("measured")
+            and preparation.get("authenticated")
+            and preparation.get("preparation_calls") == 1
+            and preparation.get("amortization_executions") == case.lhs_sequence
+            and preparation.get("amortized_total_valid")
+        ):
+            raise ValueError("prepacked-B preparation was not authenticated")
+        prepare_seconds = float(preparation["preparation_seconds"])
+        steady_seconds = float(preparation["steady_state_sequence_seconds"])
+        total_seconds = float(preparation["amortized_total_sequence_seconds"])
+        per_execution = float(preparation["amortized_per_execution_seconds"])
+        expected_steady = float(result["median_seconds"]) * case.lhs_sequence
+        if (
+            prepare_seconds <= 0.0
+            or not math.isclose(
+                steady_seconds,
+                expected_steady,
+                rel_tol=1.0e-12,
+                abs_tol=1.0e-15,
+            )
+            or not math.isclose(
+                total_seconds,
+                prepare_seconds + steady_seconds,
+                rel_tol=1.0e-12,
+                abs_tol=1.0e-15,
+            )
+            or not math.isclose(
+                per_execution,
+                total_seconds / case.lhs_sequence,
+                rel_tol=1.0e-12,
+                abs_tol=1.0e-15,
+            )
+        ):
+            raise ValueError("prepacked-B amortized timing arithmetic mismatch")
+    elif preparation.get("requested"):
+        raise ValueError("unexpected prepacked-B preparation metadata")
+
+    if case.mode == "planner-regret-hot":
+        regret = result.get("planner_regret")
+        if not isinstance(regret, dict) or not regret.get("valid"):
+            raise ValueError("planner-regret result is missing or invalid")
+        for candidate in regret.get("candidates", []):
+            if not candidate.get("timing_valid"):
+                continue
+            for pass_name in ("forward", "reverse"):
+                pass_samples = candidate.get(
+                    f"{pass_name}_pass_normalized_samples_seconds"
+                )
+                if (
+                    not isinstance(pass_samples, list)
+                    or len(pass_samples) != iterations
+                    or any(
+                        not isinstance(sample, (int, float))
+                        or not math.isfinite(sample)
+                        or sample <= 0.0
+                        for sample in pass_samples
+                    )
+                ):
+                    raise ValueError(
+                        f"planner-regret {pass_name} samples are invalid"
+                    )
+                expected_median = sorted(
+                    float(sample) for sample in pass_samples
+                )[len(pass_samples) // 2]
+                if not math.isclose(
+                    float(candidate[f"{pass_name}_pass_median_seconds"]),
+                    expected_median,
+                    rel_tol=1.0e-12,
+                    abs_tol=1.0e-15,
+                ):
+                    raise ValueError(
+                        f"planner-regret {pass_name} median mismatch"
+                    )
     return report
 
 

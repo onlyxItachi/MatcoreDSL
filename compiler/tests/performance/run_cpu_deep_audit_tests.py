@@ -49,7 +49,7 @@ def main() -> int:
         )
         assert manifest["schema"] == "matcore.cpu-performance-deep-audit.manifest"
         assert manifest["version"] == 2
-        assert manifest["benchmark_schema_version"] == 5
+        assert manifest["benchmark_schema_version"] == 6
         assert len(manifest["benchmark_binary_sha256"]) == 64
         assert len(manifest["runner_sha256"]) == 64
         assert len(manifest["plan_sha256"]) == 64
