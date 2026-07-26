@@ -1,0 +1,121 @@
+# Native BLAS parity methodology v1
+
+Status: frozen before Milestone 7 candidate measurements.
+
+This contract defines the host-bounded evidence required to evaluate native
+MDSLC F32 GEMM against the configured OpenBLAS provider. It does not claim
+universal BLAS parity, and an automatic plan that selects OpenBLAS does not
+count as native parity.
+
+## Scope
+
+- Platform: the physically measured Linux x86-64 validation host.
+- Operation: row-major contiguous `f32` GEMM with `f32` accumulation/output.
+- Native candidates: packed AVX2/FMA and packed AVX-512/FMA, including their
+  persistent parallel variants when legal.
+- External comparator: authenticated CBLAS SGEMM from the configured OpenBLAS
+  provider.
+- Requested thread counts: 1, 4, and the discovered physical-core count.
+- Primary timing: hot-cache, caller-owned reused workspace, transient packing
+  included, allocation excluded.
+- Repeated-weight timing: caller-owned authenticated prepacked B, with its
+  one-time preparation reported separately and amortized over 1, 4, 16, and 64
+  executions.
+
+Reference, tiled, and compiler-vectorized variants remain correctness and
+regression controls. They are not eligible to establish native parity.
+Compute-only timing remains a diagnostic and is never compared with a complete
+CBLAS call.
+
+## Frozen shape partitions
+
+Candidate design and static planner rules may use the calibration partition.
+The holdout partition must not be used to choose a candidate or threshold.
+Both partitions are reported.
+
+### Calibration
+
+| Family | Shapes `(M,N,K)` |
+| --- | --- |
+| medium square | `96^3`, `192^3`, `384^3` |
+| tall-skinny | `4096x64x4096`, `4096x128x1024` |
+| short-wide | `64x4096x4096`, `128x4096x1024` |
+| tail-heavy | `63x65x67`, `255x257x259` |
+
+### Holdout
+
+| Family | Shapes `(M,N,K)` |
+| --- | --- |
+| medium square | `128^3`, `256^3`, `512^3` |
+| large square | `768^3`, `1024^3`, `1536^3`, `2048^3`, `4096^3` |
+| tall-skinny | `8192x32x1024`, `2048x256x4096` |
+| short-wide | `32x8192x1024`, `256x2048x4096` |
+| tail-heavy | `31x33x35`, `127x129x131`, `511x513x515` |
+
+The vector-like family remains a diagnostic because Milestone 6 already found
+that it is governed by a different low-arithmetic-intensity regime. It is
+reported but excluded from the medium/large parity aggregate.
+
+## Fairness and provenance
+
+Every retained result must:
+
+1. come from a clean, exact source commit and record the benchmark-binary and
+   runner digests;
+2. use the same seeded inputs and double-precision correctness oracle;
+3. authenticate the final timed output;
+4. report requested and actual threads, placement, cache mode, packing mode,
+   workspace, provider configuration, compiler, and CPU capabilities;
+5. run both stable-forward and stable-reverse candidate order;
+6. use at least five warmups and eleven retained aggregate samples;
+7. aggregate fast operations until the timer floor is met;
+8. reject NaN, infinity, incorrect output, illegal fallback, and unauthenticated
+   timing;
+9. keep raw JSON outside Git and commit only a deterministic sanitized summary.
+
+Single-thread comparisons use the same compact placement when it is
+authenticated for both implementations. Multi-thread parity uses an explicitly
+unbound stratum (`affinity=none`) for both native and OpenBLAS when provider
+worker affinity cannot be authenticated. Bound-native scaling is reported
+separately and must not be relabeled as equal-placement BLAS parity.
+
+## Metrics
+
+For each shape/thread/mode cell:
+
+```text
+native ratio = fastest legal native throughput / OpenBLAS throughput
+planner regret = selected complete-call time / fastest comparable legal time
+speedup(T) = native one-thread time / native T-thread time
+efficiency(T) = speedup(T) / T
+```
+
+Forward and reverse passes are paired per cell before family aggregation.
+Median, nearest-rank p95, minimum, and maximum are reported. Timer-noise cells
+are listed and excluded from aggregate claims rather than silently removed.
+
+## Acceptance thresholds
+
+The declared Milestone 7 targets are:
+
+- single-thread medium/large native/OpenBLAS median ratio at least `0.90`;
+- no core family median below `0.75` without an approved explicit limitation;
+- at least one meaningful supported family at or above `1.00`;
+- multi-thread large-shape median ratio at least `0.85` at equal requested and
+  actual thread count;
+- four-thread native speedup at least `3.0x` for sufficiently large GEMM;
+- planner regret median at most `1.05`, p95 at most `1.15`, and maximum at most
+  `1.35` inside the parity envelope;
+- no automatic-selection regret above `2.0`.
+
+If these thresholds are not met after correct evidence-backed implementation,
+the milestone is reported as partial. Shapes, timing modes, or comparators must
+not be removed merely to manufacture a pass.
+
+## Change-control rule
+
+Candidate changes must preserve the stable C ABI, explicit workspace,
+fail-closed legality, source provenance, and Windows compatibility. A candidate
+is promoted only after forced correctness, sanitizer, exact-instruction, and
+paired complete-call measurements pass. Public GEMV/GEVM APIs, runtime
+autotuning, and API/ABI freeze remain out of scope.
