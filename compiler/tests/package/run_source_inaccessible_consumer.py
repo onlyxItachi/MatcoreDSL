@@ -350,15 +350,22 @@ def main() -> int:
     shutil.move(staging_prefix, relocated_prefix)
     require_install(relocated_prefix)
 
-    forbidden_paths = [
+    installed_forbidden_paths = [
         repository,
         producer_source,
         producer_build,
         staging_prefix,
     ]
-    spellings = forbidden_spellings(forbidden_paths)
-    scan_forbidden_paths(relocated_prefix, spellings, "installed package")
-    scan_forbidden_paths(consumer_source, spellings, "copied consumer source")
+    installed_spellings = forbidden_spellings(installed_forbidden_paths)
+    producer_spellings = forbidden_spellings(
+        [producer_source, producer_build, staging_prefix]
+    )
+    scan_forbidden_paths(
+        relocated_prefix, installed_spellings, "installed package"
+    )
+    scan_forbidden_paths(
+        consumer_source, installed_spellings, "copied consumer source"
+    )
 
     # These are disposable directories created by this test. Removing them
     # before consumer configuration makes stale source/build dependencies fail
@@ -408,8 +415,20 @@ def main() -> int:
                 f"{executed.stdout}"
             )
 
-    scan_forbidden_paths(relocated_prefix, spellings, "installed package")
-    scan_forbidden_paths(consumer_build, spellings, "consumer build")
+    scan_forbidden_paths(
+        relocated_prefix, installed_spellings, "installed package"
+    )
+    # The configured build root may itself live under the source checkout
+    # (the normal in-tree CI layout). CMake and Ninja necessarily record the
+    # consumer build's own absolute path in generated metadata, so matching the
+    # checkout ancestor there would be a false positive. The package and copied
+    # consumer source were already checked against that ancestor above. At this
+    # stage the actual invariant is that no generated consumer file retains a
+    # dependency on the deleted disposable producer source, build, or staging
+    # prefix.
+    scan_forbidden_paths(
+        consumer_build, producer_spellings, "consumer build"
+    )
     if producer_source.exists() or producer_build.exists():
         raise TestFailure(
             "consumer execution recreated or accessed the producer tree"
