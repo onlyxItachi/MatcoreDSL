@@ -29,8 +29,12 @@ EXPORT_PATTERN = re.compile(
     r"(matcore_runtime_[A-Za-z0-9_]+)\s*\(",
     re.MULTILINE,
 )
-AVX2_SYMBOL = "matcore_cpu_packed_avx2_4x16_microkernel_f32_v1"
-AVX512_SYMBOL = "matcore_cpu_packed_avx512_4x16_microkernel_f32_v1"
+AVX2_CHECKED_SYMBOL = "matcore_cpu_packed_avx2_4x16_microkernel_f32_v1"
+AVX2_FULL_SYMBOL = "matcore_cpu_packed_avx2_4x16_full_microkernel_f32_v2"
+AVX512_CHECKED_SYMBOL = "matcore_cpu_packed_avx512_4x16_microkernel_f32_v1"
+AVX512_FULL_SYMBOL = (
+    "matcore_internal_cpu_packed_avx512_4x32_full_microkernel_f32_m7"
+)
 STABLE_VARIANTS = (
     "cpu.reference.f32.v1",
     "cpu.tiled.f32.v1",
@@ -796,12 +800,27 @@ def main() -> int:
     archive_symbols = run(
         [str(llvm_nm), "--defined-only", "--format=posix", str(backend_archive)]
     ).stdout
-    for symbol in (AVX2_SYMBOL, AVX512_SYMBOL):
+    for symbol in (
+        AVX2_CHECKED_SYMBOL,
+        AVX2_FULL_SYMBOL,
+        AVX512_CHECKED_SYMBOL,
+        AVX512_FULL_SYMBOL,
+    ):
         if symbol not in archive_symbols:
             raise RuntimeError(f"CPU backend archive lacks {symbol}")
     isa_evidence = {
-        "avx2": inspect_microkernel(llvm_objdump, backend_archive, AVX2_SYMBOL, "ymm"),
-        "avx512": inspect_microkernel(llvm_objdump, backend_archive, AVX512_SYMBOL, "zmm"),
+        "avx2_checked": inspect_microkernel(
+            llvm_objdump, backend_archive, AVX2_CHECKED_SYMBOL, "ymm"
+        ),
+        "avx2_full": inspect_microkernel(
+            llvm_objdump, backend_archive, AVX2_FULL_SYMBOL, "ymm"
+        ),
+        "avx512_checked": inspect_microkernel(
+            llvm_objdump, backend_archive, AVX512_CHECKED_SYMBOL, "zmm"
+        ),
+        "avx512_full": inspect_microkernel(
+            llvm_objdump, backend_archive, AVX512_FULL_SYMBOL, "zmm"
+        ),
     }
 
     platform_result = run(
