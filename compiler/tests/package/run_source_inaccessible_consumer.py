@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import shutil
@@ -14,6 +15,11 @@ import sys
 
 class TestFailure(RuntimeError):
     """The installed package retained an undeclared producer dependency."""
+
+
+TEST_ROOT_BASENAME = "installed-source-inaccessible"
+TEST_ROOT_SENTINEL = ".matcoredsl-source-inaccessible-test-root-v1.json"
+TEST_ROOT_SENTINEL_SCHEMA = "matcoredsl.source-inaccessible-test-root"
 
 
 def run(
@@ -61,6 +67,112 @@ def absolute_tool(spelling: str, description: str) -> Path:
     if not path.is_file():
         raise TestFailure(f"{description} is not an existing file: {path}")
     return path
+
+
+def lexical_absolute(spelling: str, description: str) -> Path:
+    if ".." in Path(spelling).parts:
+        raise TestFailure(f"{description} must not contain '..': {spelling}")
+    return Path(os.path.abspath(spelling))
+
+
+def validate_no_symlink_resolution(path: Path, description: str) -> None:
+    if path.resolve() != path:
+        raise TestFailure(
+            f"{description} contains a symlink or non-canonical component: {path}"
+        )
+
+
+def sentinel_payload(build_root: Path, test_root: Path) -> dict[str, object]:
+    return {
+        "schema": TEST_ROOT_SENTINEL_SCHEMA,
+        "version": 1,
+        "expected_build_root": str(build_root),
+        "test_root": str(test_root),
+    }
+
+
+def prepare_test_root(
+    test_root_spelling: str,
+    expected_build_root_spelling: str,
+    protected_repository: Path,
+) -> tuple[Path, Path]:
+    build_root = lexical_absolute(
+        expected_build_root_spelling, "expected CMake build root"
+    )
+    test_root = lexical_absolute(test_root_spelling, "test root")
+    validate_no_symlink_resolution(build_root, "expected CMake build root")
+    cmake_cache = build_root / "CMakeCache.txt"
+    if (
+        not build_root.is_dir()
+        or cmake_cache.is_symlink()
+        or not cmake_cache.is_file()
+    ):
+        raise TestFailure(
+            "expected build root is not a configured CMake build tree: "
+            f"{build_root}"
+        )
+
+    expected_test_root = build_root / "tests" / TEST_ROOT_BASENAME
+    if test_root != expected_test_root:
+        raise TestFailure(
+            f"test root mismatch: expected {expected_test_root}, got {test_root}"
+        )
+    if (
+        test_root == protected_repository
+        or test_root in protected_repository.parents
+    ):
+        raise TestFailure(
+            "test root must not equal or contain the real source checkout"
+        )
+
+    tests_directory = expected_test_root.parent
+    if tests_directory.is_symlink():
+        raise TestFailure(
+            f"CMake tests directory must not be a symlink: {tests_directory}"
+        )
+    if tests_directory.exists():
+        validate_no_symlink_resolution(tests_directory, "CMake tests directory")
+        if not tests_directory.is_dir():
+            raise TestFailure(
+                f"CMake tests path is not a directory: {tests_directory}"
+            )
+    else:
+        tests_directory.mkdir(parents=True)
+        validate_no_symlink_resolution(tests_directory, "CMake tests directory")
+
+    expected_sentinel = sentinel_payload(build_root, test_root)
+    sentinel = test_root / TEST_ROOT_SENTINEL
+    if test_root.is_symlink():
+        raise TestFailure(f"test root must not be a symlink: {test_root}")
+    if test_root.exists():
+        validate_no_symlink_resolution(test_root, "test root")
+        if not test_root.is_dir():
+            raise TestFailure(f"test root is not a directory: {test_root}")
+        try:
+            actual_sentinel = json.loads(sentinel.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise TestFailure(
+                "refusing to remove an existing test root without its valid "
+                f"safety sentinel: {test_root}: {error}"
+            ) from error
+        if actual_sentinel != expected_sentinel:
+            raise TestFailure(
+                "refusing to remove an existing test root whose safety "
+                f"sentinel does not match this configured build: {test_root}"
+            )
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise TestFailure(
+                "this platform lacks symlink-safe recursive removal; refusing "
+                f"to reset the existing test root: {test_root}"
+            )
+        shutil.rmtree(test_root)
+
+    test_root.mkdir()
+    sentinel.write_text(
+        json.dumps(expected_sentinel, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return test_root, build_root
 
 
 def clone_clean_commit(
@@ -166,6 +278,7 @@ def main() -> int:
     parser.add_argument("--cmake", required=True)
     parser.add_argument("--git", required=True)
     parser.add_argument("--repository-root", required=True)
+    parser.add_argument("--expected-build-root", required=True)
     parser.add_argument("--test-root", required=True)
     parser.add_argument("--c-compiler", required=True)
     parser.add_argument("--cxx-compiler", required=True)
@@ -178,19 +291,11 @@ def main() -> int:
     c_compiler = absolute_tool(arguments.c_compiler, "C compiler")
     cxx_compiler = absolute_tool(arguments.cxx_compiler, "C++ compiler")
     clangxx = absolute_tool(arguments.clangxx, "Clang C++ driver")
-    test_root = Path(arguments.test_root).resolve()
-    if test_root.name != "installed-source-inaccessible":
-        raise TestFailure(
-            "test root must end in the dedicated "
-            "'installed-source-inaccessible' directory"
-        )
-    if test_root == repository or test_root in repository.parents:
-        raise TestFailure(
-            "test root must not equal or contain the real source checkout"
-        )
-    if test_root.exists():
-        shutil.rmtree(test_root)
-    test_root.mkdir(parents=True)
+    test_root, _ = prepare_test_root(
+        arguments.test_root,
+        arguments.expected_build_root,
+        repository,
+    )
 
     producer_source = test_root / "producer-source"
     producer_build = test_root / "producer-build"

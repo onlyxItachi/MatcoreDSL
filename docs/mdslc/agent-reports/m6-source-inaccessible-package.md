@@ -3,7 +3,8 @@
 Lane ownership:
 
 - `compiler/tests/package/run_source_inaccessible_consumer.py`
-- the `package.installed_source_inaccessible` registration in
+- `compiler/tests/package/run_source_inaccessible_consumer_safety_tests.py`
+- the `package.installed_source_inaccessible` and safety-test registrations in
   `compiler/CMakeLists.txt`
 
 ## Contract
@@ -24,10 +25,19 @@ Before consumer configuration, the test:
 4. authenticates the consumer output; and
 5. repeats the path-leak scan over the install and consumer build.
 
-The test root is constrained to the dedicated
-`installed-source-inaccessible` basename and may not equal or contain the real
-checkout. The CTest is Linux-only, serial, and has a ten-minute timeout.
-Existing Windows package coverage is unchanged.
+The test root must be the exact
+`<configured-CMake-build>/tests/installed-source-inaccessible` path. The
+configured build root must have a `CMakeCache.txt`; parent components, the
+build root, and test path may not escape through `..` or symlinks. An existing
+test root is removed only when its versioned sentinel authenticates the exact
+canonical build and test-root paths, and only through Python's symlink-safe
+recursive-removal implementation. It may not equal or contain the real
+checkout. A separate lightweight adversarial CTest preserves mismatched,
+symlink-target, unsentinelled, and protected-checkout victim files while
+proving each request is rejected.
+
+The nested CTest is Linux-only, serial, and has a ten-minute timeout. Existing
+Windows package coverage is unchanged.
 
 ## Validation
 
@@ -46,10 +56,16 @@ Focused validation after the benchmark measurement window closed:
   passed;
 - copied external `.mdsl` consumer configure/build/execute: passed and printed
   `consumer-before`, `consumer-header=1`, and `consumer-pass`;
-- registered CTest:
-  `package.installed_source_inaccessible` passed 1/1 in 25.60 seconds against
-  source checkpoint `aecc9b8495887bc74ea30524c23970e27febf23a`;
-- CTest registration inventory: 47 tests including the new package gate;
+- review hardening adversarial cases for a mismatched root, symlinked test
+  root, missing sentinel, `..` spelling, symlinked build root, and a test root
+  containing the protected checkout: all rejected without mutating their
+  victim markers;
+- registered CTests:
+  `package.installed_source_inaccessible` and
+  `package.installed_source_inaccessible_safety` passed 2/2 in 23.92 seconds
+  against source checkpoint
+  `eeb160a068838890d130511bfdc177257059143e`;
+- CTest registration inventory: 48 tests including both package gates;
 - Python syntax, `git diff --check`, and repository hygiene: passed.
 
 No production source, public ABI, Windows path, benchmark data, or planner
