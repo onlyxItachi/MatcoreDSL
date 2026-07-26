@@ -576,7 +576,7 @@ def main() -> int:
         selective = execute_summary(
             summarizer_path, forward, reverse, output, expected=2
         )
-        assert "complete frozen v2 matrix" in selective.stderr
+        assert "complete frozen v3 matrix" in selective.stderr
         forward.write_text(
             json.dumps(forward_manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",

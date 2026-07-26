@@ -225,7 +225,10 @@ def main() -> int:
             (forward_output / "manifest.json").read_text(encoding="utf-8")
         )
         assert forward["schema"] == "matcore.native-blas-parity.manifest"
-        assert forward["version"] == 2
+        assert forward["version"] == 3
+        assert forward["partition_interpretation"] == (
+            module.PARTITION_INTERPRETATION
+        )
         assert forward["benchmark_schema_version"] == 6
         assert forward["source_commit"]
         assert forward["runner_git_blob"]
