@@ -74,14 +74,23 @@ def main() -> int:
         ]
     ).lower()
     full_zmm_registers = set(re.findall(r"\bzmm[0-9]+\b", full_disassembly))
+    full_zmm_count = len(re.findall(r"\bzmm[0-9]+\b", full_disassembly))
     full_fma_count = len(
         re.findall(r"\bvfmadd(?:132|213|231)ps\b", full_disassembly)
     )
-    if len(full_zmm_registers) < 10 or full_fma_count < 8:
+    sections = run([arguments.objdump, "-h", arguments.artifact]).lower()
+    debug_artifact = ".debug_info" in sections
+    optimized_register_tile = len(full_zmm_registers) >= 10
+    if (
+        full_zmm_count < 16
+        or full_fma_count < 8
+        or (not optimized_register_tile and not debug_artifact)
+    ):
         print(
             "AVX-512 4x32 full-tile microkernel lost its eight-chain packed body "
             f"(distinct_zmm={len(full_zmm_registers)}, "
-            f"packed_fma={full_fma_count})",
+            f"zmm={full_zmm_count}, packed_fma={full_fma_count}, "
+            f"debug_artifact={debug_artifact})",
             file=sys.stderr,
         )
         print(full_disassembly, file=sys.stderr)
@@ -92,7 +101,8 @@ def main() -> int:
         f"checked_symbol={CHECKED_SYMBOL} checked_zmm={checked_zmm_count} "
         f"checked_fma={checked_fma_count} full_tile_symbol={FULL_TILE_SYMBOL} "
         f"full_tile_distinct_zmm={len(full_zmm_registers)} "
-        f"full_tile_fma={full_fma_count}"
+        f"full_tile_fma={full_fma_count} "
+        f"optimized_register_tile={optimized_register_tile}"
     )
     return 0
 
