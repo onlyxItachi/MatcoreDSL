@@ -311,6 +311,12 @@ std::string regret_plan_mismatch(
   if (actual.planner_version != expected.planner_version)
     return "planner_version";
   if (actual.actual_threads != expected.actual_threads) return "actual_threads";
+  if (actual.parallel_row_tasks != expected.parallel_row_tasks)
+    return "parallel_row_tasks";
+  if (actual.parallel_column_tasks != expected.parallel_column_tasks)
+    return "parallel_column_tasks";
+  if (actual.parallel_task_count != expected.parallel_task_count)
+    return "parallel_task_count";
   if (actual.workspace_bytes != expected.workspace_bytes)
     return "workspace_bytes";
   if (actual.shared_workspace_bytes != expected.shared_workspace_bytes)
@@ -1020,21 +1026,45 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
         if (!invoke_sequence()) return false;
       }
 
-      if (options.cache_mode == CacheModeV1::cold) evict_cache(cold_cache);
-      const auto probe_begin = std::chrono::steady_clock::now();
-      if (!invoke_sequence()) return false;
-      const auto probe_end = std::chrono::steady_clock::now();
-      const auto probe_ns = std::max<std::uint64_t>(
-          1, static_cast<std::uint64_t>(
-                 std::chrono::duration_cast<std::chrono::nanoseconds>(
-                     probe_end - probe_begin)
-                     .count()));
-      std::uint64_t repetitions = 1;
       const std::uint64_t calibration_target_ns =
           options.timer_floor_nanoseconds >
                   std::numeric_limits<std::uint64_t>::max() / 2
               ? std::numeric_limits<std::uint64_t>::max()
               : options.timer_floor_nanoseconds * 2;
+      const auto measure_probe = [&]() -> std::uint64_t {
+        const auto probe_begin = std::chrono::steady_clock::now();
+        if (!invoke_sequence()) return 0;
+        const auto probe_end = std::chrono::steady_clock::now();
+        return std::max<std::uint64_t>(
+            1, static_cast<std::uint64_t>(
+                   std::chrono::duration_cast<std::chrono::nanoseconds>(
+                       probe_end - probe_begin)
+                       .count()));
+      };
+      if (options.cache_mode == CacheModeV1::cold) evict_cache(cold_cache);
+      std::uint64_t probe_ns = measure_probe();
+      if (probe_ns == 0) return false;
+      if (options.cache_mode == CacheModeV1::hot) {
+        const std::uint64_t multi_probe_ceiling =
+            calibration_target_ns >
+                    std::numeric_limits<std::uint64_t>::max() / 8
+                ? std::numeric_limits<std::uint64_t>::max()
+                : calibration_target_ns * 8;
+        // A provider's first steady-state call can still be much slower than
+        // the following calls (thread wake-up and first-use work are common
+        // examples). Calibrate from the fastest of three bounded probes when
+        // the first result is close enough to the timer floor that such a
+        // swing could invalidate retained samples. Very long calls keep one
+        // probe so calibration does not distort the benchmark envelope.
+        if (probe_ns < multi_probe_ceiling) {
+          for (int probe = 1; probe < 3; ++probe) {
+            const std::uint64_t candidate = measure_probe();
+            if (candidate == 0) return false;
+            probe_ns = std::min(probe_ns, candidate);
+          }
+        }
+      }
+      std::uint64_t repetitions = 1;
       if (options.cache_mode == CacheModeV1::hot &&
           probe_ns < calibration_target_ns) {
         repetitions = std::min(
@@ -1313,6 +1343,10 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
         candidate.planner_version = candidate_plan.planner_version;
         candidate.timing_scope = candidate_plan.timing_scope;
         candidate.actual_threads = candidate_plan.actual_threads;
+        candidate.parallel_row_tasks = candidate_plan.parallel_row_tasks;
+        candidate.parallel_column_tasks =
+            candidate_plan.parallel_column_tasks;
+        candidate.parallel_task_count = candidate_plan.parallel_task_count;
         candidate.workspace_bytes = candidate_plan.workspace_bytes;
         candidate.shared_workspace_bytes =
             candidate_plan.shared_workspace_bytes;
@@ -1676,6 +1710,12 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
                 result.requested_variant == "auto" ? "automatic" : "forced");
     output << ",\n      \"planner_version\": " << result.plan.planner_version
            << ",\n      \"actual_threads\": " << result.plan.actual_threads
+           << ",\n      \"parallel_row_tasks\": "
+           << result.plan.parallel_row_tasks
+           << ",\n      \"parallel_column_tasks\": "
+           << result.plan.parallel_column_tasks
+           << ",\n      \"parallel_task_count\": "
+           << result.plan.parallel_task_count
            << ",\n      \"workspace_bytes\": " << result.plan.workspace_bytes
            << ",\n      \"shared_workspace_bytes\": "
            << result.plan.shared_workspace_bytes
@@ -1840,6 +1880,12 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
              << ", \"timing_scope\": ";
       json_string(output, candidate.timing_scope);
       output << ", \"actual_threads\": " << candidate.actual_threads
+             << ", \"parallel_row_tasks\": "
+             << candidate.parallel_row_tasks
+             << ", \"parallel_column_tasks\": "
+             << candidate.parallel_column_tasks
+             << ", \"parallel_task_count\": "
+             << candidate.parallel_task_count
              << ", \"workspace_bytes\": " << candidate.workspace_bytes
              << ", \"shared_workspace_bytes\": "
              << candidate.shared_workspace_bytes

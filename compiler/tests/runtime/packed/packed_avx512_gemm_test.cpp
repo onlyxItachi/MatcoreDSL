@@ -186,6 +186,12 @@ void representative_and_randomized_correctness() {
     run_shape(m_distribution(generator), k_distribution(generator),
               n_distribution(generator), iteration % 2, 1000U + iteration);
   }
+
+  // Exercise the private 4x32 full-tile path directly through the checked
+  // executor, including adjacent tiles and a second KC accumulation block.
+  run_shape(4, 5, 32, 0, 2001);
+  run_shape(8, 257, 64, 0, 2002);
+  run_shape(9, 513, 96, 1, 2003);
 }
 
 void prepacked_interoperability() {

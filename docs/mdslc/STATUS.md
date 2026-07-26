@@ -2,11 +2,13 @@
 
 Status date: 2026-07-26
 
-- Rewritten canonical `origin/main` at the Milestone 6 branch point:
-  `951239f1bee5541a4cf5ad72fab2192de07cf89d`
-- Milestone 6 integration branch: `mdslc/cpu-performance-deep-audit`
-- Milestone 6 locally accepted review head:
-  `ed9546c4fbe2af4013600ff7c9d41b357a7aa239`
+- Canonical `origin/main` and published Milestone 6 merge:
+  `ddda3ccf628dae60bdb7f57d68d024fd02168fcb`
+- Milestone 6 pull request: `#14`, merged normally
+- Milestone 6 umbrella issue / GitHub milestone: `#13` / `#4`, closed
+- Milestone 6 immutable tag: `mdslc-cpu-performance-audit-v1`
+- Milestone 7 integration branch: `mdslc/native-blas-parity-v1`
+- Milestone 7 umbrella issue / GitHub milestone: `#15` / `#5`, open
 - Completed Milestone 5 merge before history sanitation:
   `091d74072a710389b4a8e9d51f696ad9773021e6`
 - Focused Windows validation branch: `mdslc/windows-x64-v1`
@@ -26,11 +28,66 @@ Status date: 2026-07-26
   remapping commit IDs.
 - Milestone 3 tracker: GitHub milestone `#1`, completed
 
+## Milestone 7 native BLAS parity
+
+**Milestone 7 has a candidate manual partial disposition pending hosted gates.
+The non-performance implementation, correctness, artifact, sanitizer, ABI,
+package, and consumer gates pass locally, but performance acceptance was not
+evaluated because the declared forward/reverse evidence pair is incomplete.
+Issue #15 and milestone #5 remain open; no completion tag exists.**
+
+The private CPU backend now has a wider AVX-512 4x32 full-tile body,
+two-dimensional output-task planning, exact task-capacity diagnostics, and
+cooperative packed-B preparation infrastructure. Independent review rejected
+the broad production activation rule because only one retained shape had
+bounded performance evidence, so cooperative preparation is dormant pending a
+predeclared final-checkpoint boundary matrix. The ordinary serial B-preparation
+path remains active. No hidden allocation, cross-call cache, K split, or public
+ABI change was added.
+
+Four bounded cell-median point estimates at cooperative-packing checkpoint
+`4719528354575f5aff74def97b534e763cb2033c` favored the candidate by
+1.715--1.879x for AVX2 and 1.720--1.809x for AVX-512 versus intra-Milestone-7
+checkpoint `6a26994849aadf738910e18a0cebb66ea9b238dc`. They are not direct
+Milestone 5 or final-code-checkpoint evidence. An intermediate `a008a57`
+diagnostic measured 2.14x AVX2 and 1.82x AVX-512 four-thread speedup, but later
+runtime changes mean final-code-checkpoint scaling remains unestablished. A
+proposed serial AVX2 full-tile routing change was 0.62--2.47% slower on stable
+complete calls and was reverted rather than counted as progress.
+
+The schema-v6/manifest-v3 parity runner and deterministic summarizer
+authenticate Git source, tracked runner and summarizer bytes, benchmark binary,
+plan, raw digests, timing scopes, results, exact actual threads, placement,
+correctness, and forward/reverse coverage. The full physical sweep could not
+complete on the shared host. An external, untracked exact-checkpoint forward
+receipt with SHA-256
+`26e75ecbcfbb19d024fa8a5fa9790b65a2deb5743b39f16a4f22dd39381cfe69`
+records 258/368 cases, but no complete forward/reverse pair exists and the
+summarizer emitted no performance verdict. Full native/OpenBLAS family ratios
+and full-envelope regret are therefore unestablished.
+
+Exact local validation at final code checkpoint `ff483af` passed
+Release 50/50, Debug 50/50, OpenBLAS-disabled 50/50, ASan/UBSan 19/19, TSan
+4/4, package/consumer 4/4, ISA artifacts 3/3, the native
+`.mdsl -> ELF .o -> executable` proof, repository hygiene, and the 14-case
+legacy frontend contract. The OpenBLAS-disabled forced request failed closed.
+Independent static review found no unresolved high- or medium-severity code
+finding. Hosted Linux, Windows x64, and hygiene checks remain a pull-request
+gate.
+
+The bounded disposition is documented in
+`docs/performance/cpu/native-blas-parity-v1.md` and
+`docs/mdslc/agent-reports/m7-integration-validation.md`. Milestone 7 must not
+be called complete, issue #15/milestone #5 must not be closed, and no parity
+completion tag may be created unless a later exclusive-host run satisfies the
+declared contract.
+
 ## Milestone 6 CPU performance deep audit
 
-**Milestone 6 has passed its local integration and independent-review gates
-for the bounded audit scope. Normal PR publication, hosted checks, normal
-merge, immutable tagging, and tracker closure remain pending.**
+**Milestone 6 is published and complete for the bounded audit scope. PR #14
+passed hosted checks, merged normally into `main` at `ddda3cc`, issue #13 and
+milestone #4 are closed, and the immutable
+`mdslc-cpu-performance-audit-v1` tag anchors the merge.**
 
 The final schema-v6 collection is authenticated by immutable external
 manifests. The forward order contains 711 executable cases: 583 accepted raw

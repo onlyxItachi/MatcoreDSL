@@ -782,10 +782,13 @@ def authenticate_expected_rejection(
     command_output: pathlib.Path,
 ) -> None:
     m, n, k = record["shape"]
-    expected_diagnostic = (
+    expected_diagnostics = {
         f"matcore-bench: variant planning failed for {m}x{n}x{k}: "
-        "parallel candidate requires at least two output macro-tiles and workers\n"
-    )
+        "parallel candidate requires at least two output macro-tiles and workers\n",
+        f"matcore-bench: variant planning failed for {m}x{n}x{k}: "
+        "parallel candidate requires at least two disjoint output tasks and "
+        "workers\n",
+    }
     require(
         record["variant"] in PARALLEL_VARIANTS
         and record["threads"] >= 2
@@ -803,7 +806,8 @@ def authenticate_expected_rejection(
         "expected legality rejection has an unexpected category",
     )
     require(
-        record.get("stdout") == "" and record.get("stderr") == expected_diagnostic,
+        record.get("stdout") == ""
+        and record.get("stderr") in expected_diagnostics,
         "expected legality rejection lacks its exact actionable diagnostic",
     )
     require("sha256" not in record, "rejected case unexpectedly has a raw SHA")

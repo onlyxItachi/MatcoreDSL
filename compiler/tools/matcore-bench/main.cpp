@@ -47,7 +47,7 @@ void usage(std::ostream &output) {
       "  --guard                  reject any invalid timing or correctness result\n"
       "  --compare-one-thread     add same-family one-thread speedup/efficiency\n"
       "  --planner-regret         time every legal complete-call candidate; auto only\n"
-      "  --json-out PATH          write schema-v4 JSON ('-' writes stdout)\n"
+      "  --json-out PATH          write schema-v6 JSON ('-' writes stdout)\n"
       "  --list-variants          list the runner's registered stable IDs\n"
       "  --help                   show this help\n";
 }

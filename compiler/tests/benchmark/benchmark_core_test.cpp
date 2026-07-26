@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -97,12 +98,15 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
                            PlanDrift drift = PlanDrift::none,
                            bool corrupt_forward_validation = false,
                            bool corrupt_reverse_validation = false,
-                           bool fail_prepacked_b_prepare = false)
+                           bool fail_prepacked_b_prepare = false,
+                           std::vector<std::chrono::microseconds>
+                               execution_delays = {})
       : fail_reverse_selected_(fail_reverse_selected),
         drift_(drift),
         corrupt_forward_validation_(corrupt_forward_validation),
         corrupt_reverse_validation_(corrupt_reverse_validation),
-        fail_prepacked_b_prepare_(fail_prepacked_b_prepare) {}
+        fail_prepacked_b_prepare_(fail_prepacked_b_prepare),
+        execution_delays_(std::move(execution_delays)) {}
 
   bench::RunnerEnvironmentV1 environment() const override { return {}; }
 
@@ -227,6 +231,9 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
                const float *rhs, float *output, std::span<std::byte>,
                std::span<const std::byte> prepacked_b, bool packing_is_prepared,
                std::string &error) const override {
+    if (execution_count_ < execution_delays_.size())
+      std::this_thread::sleep_for(execution_delays_[execution_count_]);
+    ++execution_count_;
     if (plan.supports_prepacked_b && plan.prepacked_b_bytes != 0 &&
         (!packing_is_prepared || prepacked_b.empty() ||
          prepacked_b.front() != std::byte{0x5a})) {
@@ -279,6 +286,8 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
   bool corrupt_forward_validation_ = false;
   bool corrupt_reverse_validation_ = false;
   bool fail_prepacked_b_prepare_ = false;
+  std::vector<std::chrono::microseconds> execution_delays_;
+  mutable std::size_t execution_count_ = 0;
   mutable std::uint32_t selected_plan_count_ = 0;
   mutable std::uint32_t prepare_calls_ = 0;
   mutable std::uint32_t prepacked_b_prepare_calls_ = 0;
@@ -560,6 +569,26 @@ int main() {
                  report.results[0].timing_aggregation_boundary) ==
                  "one-clock-pair-per-aggregate-repetition-block",
          "benchmark result identifies the variant and passes independent oracle");
+
+  RecordingRunner variable_probe_runner(
+      false, RecordingRunner::PlanDrift::none, false, false, false,
+      {std::chrono::microseconds(100'000), std::chrono::microseconds(1'000),
+       std::chrono::microseconds(1'000)});
+  auto variable_probe_options = run_options;
+  variable_probe_options.requested_variant = "test.selected";
+  variable_probe_options.warmup_iterations = 0;
+  // Keep the synthetic steady-state probes below the calibration target even
+  // when Windows rounds short sleep_for durations to its scheduler quantum.
+  variable_probe_options.timer_floor_nanoseconds = 25'000'000;
+  bench::BenchmarkReportV1 variable_probe_report;
+  expect(
+      bench::run_benchmarks_v1(variable_probe_options, variable_probe_runner,
+                               variable_probe_report, error) &&
+          variable_probe_report.results.size() == 1 &&
+          variable_probe_report.results[0].timing.valid &&
+          variable_probe_report.results[0].timing.aggregate_repetitions > 1,
+      "hot timing calibration uses multiple probes when first-use latency "
+      "would under-aggregate steady-state samples");
 
   auto sequence_options = run_options;
   sequence_options.lhs_sequence_length = 4;

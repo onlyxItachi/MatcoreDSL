@@ -48,7 +48,14 @@ struct CpuParallelGemmReportV1 {
   std::uint32_t version = kCpuParallelGemmVersionV1;
   std::uint32_t requested_threads = 0;
   std::uint32_t actual_threads = 0;
+  // Internal runtime evidence: zero means B was prepared by the submitting
+  // thread before dispatch; values greater than one mean the caller-owned B
+  // image was prepared cooperatively by that many persistent workers.
+  std::uint32_t packed_b_threads = 0;
   std::size_t macro_tile_count = 0;
+  std::size_t row_task_count = 0;
+  std::size_t column_task_count = 0;
+  std::size_t task_count = 0;
   std::size_t workspace_bytes = 0;
   std::size_t shared_packed_b_bytes = 0;
   std::size_t per_worker_workspace_bytes = 0;
@@ -65,11 +72,14 @@ CpuParallelGemmStatusV1 cpu_parallel_packed_avx512_workspace_requirements_v1(
     std::uint32_t execution_threads,
     CpuParallelGemmWorkspaceRequirementsV1 *requirements) noexcept;
 
-// Executes independent MC-row bands with a deterministic cyclic assignment:
-// task t is owned by worker (t % actual_threads). The complete workspace is a
-// caller-owned arena containing one shared immutable packed-B image followed
-// by cache-line-aligned, non-overlapping transient-A worker slices. B packing
-// happens once before dispatch and remains part of end-to-end execution.
+// Executes independent rectangles from the deterministic shared M/N task
+// planner. Task t is owned by worker (t % actual_threads). The complete
+// workspace is a caller-owned arena containing one shared immutable packed-B
+// image followed by cache-line-aligned, non-overlapping transient-A worker
+// slices. B packing remains part of end-to-end execution and is completed by
+// the submitting thread before dispatch. Private cooperative-preparation
+// infrastructure is deliberately dormant until a final-checkpoint boundary
+// matrix authenticates a complete activation region.
 CpuParallelGemmStatusV1 cpu_execute_parallel_packed_avx2_v1(
     CpuExecutionContextV1 &context,
     const planner::CpuGemmProblemV1 &problem, const float *lhs,

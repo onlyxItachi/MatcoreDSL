@@ -93,6 +93,9 @@ struct RunnerPlanV1 {
   bool complete_implementation_comparison = true;
   std::uint32_t planner_version = 0;
   std::uint32_t actual_threads = 1;
+  std::uint64_t parallel_row_tasks = 0;
+  std::uint64_t parallel_column_tasks = 0;
+  std::uint64_t parallel_task_count = 0;
   std::uint64_t workspace_bytes = 0;
   std::uint64_t shared_workspace_bytes = 0;
   std::uint64_t per_worker_workspace_bytes = 0;
@@ -239,6 +242,9 @@ struct RegretCandidateResultV3 {
   std::uint32_t planner_version = 0;
   std::string timing_scope;
   std::uint32_t actual_threads = 1;
+  std::uint64_t parallel_row_tasks = 0;
+  std::uint64_t parallel_column_tasks = 0;
+  std::uint64_t parallel_task_count = 0;
   std::uint64_t workspace_bytes = 0;
   std::uint64_t shared_workspace_bytes = 0;
   std::uint64_t per_worker_workspace_bytes = 0;

@@ -194,3 +194,78 @@ The separate freeze milestone should not begin until:
 - an independent ABI/backend-contract review has no unresolved high or medium
   finding.
 
+## Milestone 7 private-backend evidence update
+
+This additive update records the reviewed private CPU backend state at
+`e49260e68f7e43124591e6515bfeb1fe84c3ea74`. It does not supersede the open
+questions above, freeze an API, or assert final native-BLAS parity.
+
+- The AVX-512 full-tile experiment is an internal 4x32 body over two adjacent
+  v1 packed-B micro-panels. Its checked 4x16 edge path remains separate.
+- AVX2 has a private prevalidated 4x16 body, but independent ABBA evidence
+  rejected routing the serial executor through it as a performance promotion.
+  Serial AVX2 therefore retains the checked entry; the private full-tile body
+  remains in the parallel executor after its caller proves complete extents.
+- The deterministic parallel planner now represents M-only, N-only, and
+  two-dimensional output-task grids. It does not split K or change the
+  accumulation order for one output element.
+- Private infrastructure can cooperatively prepare disjoint final B panels
+  inside one persistent execution-context submission. Final review found the
+  broad activation region under-measured, so production selection is dormant.
+  This remains within-call candidate preparation with a publication barrier,
+  not a caller-owned cross-call parallel-prepacking API.
+- The internal packed-B format/provenance model consolidates layout and storage
+  authentication, but it still cannot prove that source contents remain
+  immutable. It is not a general public transformed-operand object.
+- Stable planner variant IDs remain distinct from private microkernel symbols
+  and blocking profiles. Whether forced implementation IDs belong in the final
+  public request enum remains open.
+- Detailed task grids, cooperative-preparation state, and transformed-operand
+  lifetime need a versioned structured-report decision before any freeze.
+- [GEMM](../performance/kernels/gemm.md) now documents the implemented private
+  execution contract. [GEMV](../performance/kernels/gemv.md) and
+  [GEVM](../performance/kernels/gevm.md) remain design-only: there is no public
+  declaration, capture, IR operation, ABI entry point, planner variant, or
+  runtime implementation for either operation.
+- Final parity outcome and quantitative envelope remain owned by the
+  authenticated Milestone 7 performance report. No conclusion is inferred
+  from an individual kernel or packing experiment.
+
+These findings sharpen the later freeze questions around transformed-operand
+identity, stable implementation-selection surfaces, structured execution
+reports, and operation orientation. They do not justify removing or mutating
+an existing exported symbol.
+
+## Milestone 7 bounded disposition
+
+The final locally validated Milestone 7 code checkpoint is `ff483af`; the
+candidate bounded disposition pending hosted gates is
+[native-blas-parity-v1.md](../performance/cpu/native-blas-parity-v1.md).
+
+The private backend work validates that task geometry, packed-B preparation,
+microkernel identity, and effective thread capacity can evolve without
+changing the existing 15-function C ABI. Linux Release/Debug, strict C17,
+installed source-inaccessible consumer, OpenBLAS-disabled, sanitizer, and
+artifact gates remain green. This is useful evidence for keeping those public
+surfaces additive.
+
+The result is nevertheless **not ready for API/ABI/backend-contract freeze**:
+
+- the complete native/OpenBLAS parity envelope and full-registry planner regret
+  were not established;
+- an intermediate four-thread short-wide diagnostic remained below the
+  declared 3.0x target, while exact final-checkpoint scaling remains
+  unestablished;
+- caller-visible transformed-operand identity, content immutability, lifetime,
+  invalidation, and size bounds remain undecided;
+- exact task grids and capacity-limited requested/actual thread reporting need
+  a structured versioned query contract before any freeze;
+- forced stable variant IDs versus private kernel/blocking profiles remain an
+  open policy decision; and
+- GEMV and GEVM remain design-only, with no public declarations, IR
+  operations, ABI entry points, planner variants, or executable backends.
+
+Milestone 7 issue #15 and GitHub milestone #5 remain open. A later
+exclusive-host forward/reverse collection may update the performance
+disposition, but it must not silently mutate an existing export or convert a
+private packed representation into a public lifetime contract.

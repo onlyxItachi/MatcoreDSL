@@ -176,12 +176,12 @@ void representative_and_randomized_correctness() {
     std::size_t k;
     std::size_t n;
   };
-  const std::array<Shape, 14> shapes{{
+  const std::array<Shape, 15> shapes{{
       {1, 1, 1},       {2, 3, 2},       {4, 8, 16},
       {3, 5, 17},      {5, 19, 7},      {16, 16, 16},
       {31, 35, 33},    {33, 37, 35},    {63, 67, 65},
       {127, 131, 129}, {129, 17, 257},  {7, 257, 19},
-      {130, 259, 258}, {257, 33, 15},
+      {130, 259, 258}, {257, 33, 15},    {8, 513, 32},
   }};
   std::uint32_t seed = 1;
   for (const auto &shape : shapes) {

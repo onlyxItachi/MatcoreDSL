@@ -1,10 +1,14 @@
 #include "cpu_parallel_gemm.h"
+#include "cpu_packed_b_format.h"
+#include "cpu_planner_v3.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <thread>
 
 namespace matcore::mdslc::runtime {
 namespace {
@@ -22,6 +26,15 @@ using PreparePackedBFnV1 = CpuPackedGemmStatusV1 (*)(
 using ExecutePrepackedFnV1 = CpuPackedGemmStatusV1 (*)(
     const planner::CpuGemmProblemV1 &, const float *, float *,
     const CpuPackedBViewV1 &, void *, std::size_t) noexcept;
+using MicrokernelFnV1 = void (*)(const float *, const float *, std::size_t,
+                                 float *, std::size_t, std::uint32_t,
+                                 std::uint32_t, bool) noexcept;
+using FullMicrokernel16FnV1 = void (*)(const float *, const float *,
+                                      std::size_t, float *, std::size_t,
+                                      bool) noexcept;
+using FullMicrokernel32FnV1 = void (*)(
+    const float *, const float *, const float *, std::size_t, float *,
+    std::size_t, bool) noexcept;
 
 struct PackedBackendOpsV1 {
   RuntimeUsableFnV1 runtime_usable = nullptr;
@@ -29,6 +42,9 @@ struct PackedBackendOpsV1 {
   PrepackedRequirementsFnV1 prepacked_requirements = nullptr;
   PreparePackedBFnV1 prepare_b = nullptr;
   ExecutePrepackedFnV1 execute_prepacked = nullptr;
+  MicrokernelFnV1 microkernel = nullptr;
+  FullMicrokernel16FnV1 full_microkernel_16 = nullptr;
+  FullMicrokernel32FnV1 full_microkernel_32 = nullptr;
 };
 
 inline constexpr PackedBackendOpsV1 kPackedAvx2Ops{
@@ -36,14 +52,20 @@ inline constexpr PackedBackendOpsV1 kPackedAvx2Ops{
     cpu_packed_avx2_workspace_requirements_v1,
     cpu_packed_avx2_prepacked_b_requirements_v1,
     cpu_prepare_packed_b_avx2_v1,
-    cpu_execute_packed_avx2_prepacked_b_v1};
+    cpu_execute_packed_avx2_prepacked_b_v1,
+    detail::matcore_cpu_packed_avx2_4x16_microkernel_f32_v1,
+    detail::matcore_cpu_packed_avx2_4x16_full_microkernel_f32_v2,
+    nullptr};
 
 inline constexpr PackedBackendOpsV1 kPackedAvx512Ops{
     cpu_packed_avx512_runtime_usable_v1,
     cpu_packed_avx512_workspace_requirements_v1,
     cpu_packed_avx512_prepacked_b_requirements_v1,
     cpu_prepare_packed_b_avx512_v1,
-    cpu_execute_packed_avx512_prepacked_b_v1};
+    cpu_execute_packed_avx512_prepacked_b_v1,
+    detail::matcore_cpu_packed_avx512_4x16_microkernel_f32_v1,
+    nullptr,
+    detail::matcore_internal_cpu_packed_avx512_4x32_full_microkernel_f32_m7};
 
 struct ByteSpan {
   std::uintptr_t begin = 0;
@@ -138,32 +160,319 @@ struct ParallelGemmJobV1 {
   float *out = nullptr;
   CpuPackedBViewV1 packed_b;
   ExecutePrepackedFnV1 execute_prepacked = nullptr;
+  MicrokernelFnV1 microkernel = nullptr;
+  FullMicrokernel16FnV1 full_microkernel_16 = nullptr;
+  FullMicrokernel32FnV1 full_microkernel_32 = nullptr;
   std::byte *workspace = nullptr;
   std::size_t worker_region_offset = 0;
   std::size_t per_worker_stride = 0;
+  std::size_t row_quantum = 0;
+  std::size_t row_group_count = 0;
+  std::size_t row_task_count = 0;
+  std::size_t column_panel_count = 0;
+  std::size_t column_task_count = 0;
+  std::size_t task_count = 0;
+  std::uint32_t active_threads = 0;
+  const float *rhs = nullptr;
+  float *packed_b_destination = nullptr;
+  std::atomic<std::uint32_t> *packed_b_workers_ready = nullptr;
+  std::atomic<bool> *packed_b_pack_failed = nullptr;
 };
 
-CpuExecutionStatusV1 execute_row_band(std::size_t task_index,
-                                      std::size_t worker_index,
-                                      void *user_data) noexcept {
+inline constexpr std::size_t kCpuOutputCacheLineBytesV1 =
+    planner::kCpuParallelCacheLineFloatCountV1 * sizeof(float);
+bool should_parallel_pack_b(
+    const planner::CpuGemmProblemV1 &problem,
+    const planner::CpuParallelTaskPlanV1 &task_plan,
+    const CpuParallelGemmWorkspaceRequirementsV1 &requirements,
+    std::uint32_t actual_threads) noexcept {
+  // Milestone 7 retained only a bounded candidate/baseline diagnostic for
+  // cooperative B preparation. It did not establish a final-checkpoint
+  // no-regression boundary matrix for the former broad shape rule. Keep the
+  // implementation dormant until a future evidence contract authenticates
+  // its complete activation region.
+  (void)problem;
+  (void)task_plan;
+  (void)requirements;
+  (void)actual_threads;
+  return false;
+}
+
+std::size_t divide_round_up(std::size_t numerator,
+                            std::size_t denominator) noexcept {
+  return numerator / denominator + (numerator % denominator != 0 ? 1U : 0U);
+}
+
+bool validate_task_plan_and_packed_b(
+    const planner::CpuGemmProblemV1 &problem, const float *rhs,
+    const float *out, const planner::CpuParallelTaskPlanV1 &plan,
+    const CpuPackedBViewV1 &packed_b) noexcept {
+  const auto n = static_cast<std::size_t>(problem.n);
+  const auto k = static_cast<std::size_t>(problem.k);
+  std::size_t padded_columns = 0;
+  std::size_t expected_packed_elements = 0;
+  std::size_t expected_packed_bytes = 0;
+  const auto maximum_size =
+      static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max());
+  const planner::CpuParallelTaskPlanV1 expected =
+      planner::plan_cpu_parallel_tasks_v1(problem, plan.actual_threads);
+  if (plan.row_quantum == 0 || plan.row_group_count == 0 ||
+      plan.row_task_count == 0 || plan.column_panel_count == 0 ||
+      plan.column_task_count == 0 || plan.actual_threads == 0 ||
+      plan.macro_tile_count > maximum_size || plan.row_quantum > maximum_size ||
+      plan.row_group_count > maximum_size ||
+      plan.row_task_count > maximum_size ||
+      plan.column_panel_count > maximum_size ||
+      plan.column_task_count > maximum_size || plan.task_count > maximum_size ||
+      plan.macro_tile_count != expected.macro_tile_count ||
+      plan.row_quantum != expected.row_quantum ||
+      plan.row_group_count != expected.row_group_count ||
+      plan.row_task_count != expected.row_task_count ||
+      plan.column_panel_count != expected.column_panel_count ||
+      plan.column_task_count != expected.column_task_count ||
+      plan.task_count != expected.task_count ||
+      plan.actual_threads != expected.actual_threads) {
+    return false;
+  }
+  if (plan.column_task_count > 1 &&
+      (n % planner::kCpuParallelCacheLineFloatCountV1 != 0 ||
+       problem.minimum_alignment_bytes < kCpuOutputCacheLineBytesV1 ||
+       !pointer_has_alignment(out, kCpuOutputCacheLineBytesV1))) {
+    return false;
+  }
+  if (!checked_round_up(n, kCpuPackedGemmNrV1, &padded_columns) ||
+      !checked_multiply(padded_columns, k, &expected_packed_elements) ||
+      !checked_multiply(expected_packed_elements, sizeof(float),
+                        &expected_packed_bytes)) {
+    return false;
+  }
+  return packed_b.source_data == rhs &&
+         detail::cpu_validate_packed_b_view_metadata_v1(
+             problem, packed_b, expected_packed_bytes,
+             expected_packed_elements);
+}
+
+void pack_a_block(const float *lhs, std::size_t leading_dimension,
+                  std::size_t row_begin, std::size_t k_begin,
+                  std::size_t rows, std::size_t depth,
+                  float *packed_a) noexcept {
+  const std::size_t padded_rows =
+      divide_round_up(rows, kCpuPackedGemmMrV1) * kCpuPackedGemmMrV1;
+  std::size_t destination = 0;
+  for (std::size_t row = 0; row < padded_rows;
+       row += kCpuPackedGemmMrV1) {
+    for (std::size_t p = 0; p < depth; ++p) {
+      for (std::size_t lane = 0; lane < kCpuPackedGemmMrV1; ++lane) {
+        packed_a[destination++] =
+            row + lane < rows
+                ? lhs[(row_begin + row + lane) * leading_dimension + k_begin +
+                      p]
+                : 0.0F;
+      }
+    }
+  }
+}
+
+void compute_output_block(const ParallelGemmJobV1 &job, const float *lhs,
+                          float *out, std::size_t row_begin,
+                          std::size_t column_begin, std::size_t k_begin,
+                          std::size_t rows, std::size_t columns,
+                          std::size_t depth, float *packed_a,
+                          const float *packed_b) noexcept {
+  const std::size_t k = static_cast<std::size_t>(job.problem.k);
+  const std::size_t n = static_cast<std::size_t>(job.problem.n);
+  pack_a_block(lhs, k, row_begin, k_begin, rows, depth, packed_a);
+  for (std::size_t row = 0; row < rows; row += kCpuPackedGemmMrV1) {
+    const auto tile_rows = static_cast<std::uint32_t>(
+        std::min(kCpuPackedGemmMrV1, rows - row));
+    const float *a_panel =
+        packed_a + (row / kCpuPackedGemmMrV1) * depth * kCpuPackedGemmMrV1;
+    for (std::size_t column = 0; column < columns;) {
+      const auto tile_columns = static_cast<std::uint32_t>(
+          std::min(kCpuPackedGemmNrV1, columns - column));
+      const float *b_panel =
+          packed_b + (column / kCpuPackedGemmNrV1) * depth *
+                         kCpuPackedGemmNrV1;
+      float *output =
+          out + (row_begin + row) * n + column_begin + column;
+      if (tile_rows == kCpuPackedGemmMrV1 &&
+          job.full_microkernel_32 != nullptr &&
+          columns - column >= 2 * kCpuPackedGemmNrV1) {
+        job.full_microkernel_32(
+            a_panel, b_panel,
+            b_panel + depth * kCpuPackedGemmNrV1, depth, output, n,
+            k_begin != 0);
+        column += 2 * kCpuPackedGemmNrV1;
+      } else if (tile_rows == kCpuPackedGemmMrV1 &&
+                 tile_columns == kCpuPackedGemmNrV1 &&
+                 job.full_microkernel_16 != nullptr) {
+        job.full_microkernel_16(a_panel, b_panel, depth, output, n,
+                                k_begin != 0);
+        column += kCpuPackedGemmNrV1;
+      } else {
+        job.microkernel(a_panel, b_panel, depth, output, n, tile_rows,
+                        tile_columns, k_begin != 0);
+        column += tile_columns;
+      }
+    }
+  }
+}
+
+CpuExecutionStatusV1 execute_output_partition(std::size_t task_index,
+                                              std::size_t worker_index,
+                                              void *user_data) noexcept {
   auto *job = static_cast<ParallelGemmJobV1 *>(user_data);
+  if (job == nullptr || job->execute_prepacked == nullptr ||
+      job->microkernel == nullptr ||
+      task_index >= job->task_count || job->row_task_count == 0 ||
+      job->column_task_count == 0) {
+    return CpuExecutionStatusV1::callback_failed;
+  }
   const std::size_t m = static_cast<std::size_t>(job->problem.m);
   const std::size_t n = static_cast<std::size_t>(job->problem.n);
   const std::size_t k = static_cast<std::size_t>(job->problem.k);
-  const std::size_t row_begin = task_index * kCpuPackedGemmMcV1;
-  const std::size_t rows = std::min(kCpuPackedGemmMcV1, m - row_begin);
-  planner::CpuGemmProblemV1 band = job->problem;
-  band.m = static_cast<std::int64_t>(rows);
+  const std::size_t row_task_index = task_index / job->column_task_count;
+  const std::size_t column_task_index = task_index % job->column_task_count;
+
+  const std::size_t base_groups =
+      job->row_group_count / job->row_task_count;
+  const std::size_t extra_groups =
+      job->row_group_count % job->row_task_count;
+  const std::size_t group_begin =
+      row_task_index * base_groups +
+      std::min(row_task_index, extra_groups);
+  const std::size_t groups =
+      base_groups + (row_task_index < extra_groups ? 1U : 0U);
+  const std::size_t row_begin = group_begin * job->row_quantum;
+  const std::size_t rows =
+      std::min(m - row_begin, groups * job->row_quantum);
+
+  const std::size_t base_column_panels =
+      job->column_panel_count / job->column_task_count;
+  const std::size_t extra_column_panels =
+      job->column_panel_count % job->column_task_count;
+  const std::size_t column_panel_begin =
+      column_task_index * base_column_panels +
+      std::min(column_task_index, extra_column_panels);
+  const std::size_t column_panels =
+      base_column_panels +
+      (column_task_index < extra_column_panels ? 1U : 0U);
+  const std::size_t column_begin =
+      column_panel_begin * kCpuPackedGemmNcV1;
+  const std::size_t column_end =
+      std::min(n, (column_panel_begin + column_panels) *
+                      kCpuPackedGemmNcV1);
 
   void *worker_workspace =
       job->workspace + job->worker_region_offset +
       worker_index * job->per_worker_stride;
-  const auto status = job->execute_prepacked(
-      band, job->lhs + row_begin * k, job->out + row_begin * n,
-      job->packed_b, worker_workspace, job->per_worker_stride);
-  return status == CpuPackedGemmStatusV1::success
-             ? CpuExecutionStatusV1::success
-             : CpuExecutionStatusV1::callback_failed;
+  if (job->column_task_count == 1) {
+    planner::CpuGemmProblemV1 band = job->problem;
+    band.m = static_cast<std::int64_t>(rows);
+    const auto status = job->execute_prepacked(
+        band, job->lhs + row_begin * k, job->out + row_begin * n,
+        job->packed_b, worker_workspace, job->per_worker_stride);
+    return status == CpuPackedGemmStatusV1::success
+               ? CpuExecutionStatusV1::success
+               : CpuExecutionStatusV1::callback_failed;
+  }
+
+  auto *packed_a = static_cast<float *>(worker_workspace);
+  for (std::size_t column = column_begin; column < column_end;
+       column += kCpuPackedGemmNcV1) {
+    const std::size_t columns =
+        std::min(kCpuPackedGemmNcV1, column_end - column);
+    const std::size_t padded_columns =
+        divide_round_up(columns, kCpuPackedGemmNrV1) *
+        kCpuPackedGemmNrV1;
+    std::size_t packed_column_offset = 0;
+    std::size_t packed_column_elements = 0;
+    if (!checked_multiply(column, k, &packed_column_offset) ||
+        !checked_multiply(padded_columns, k, &packed_column_elements) ||
+        packed_column_offset > job->packed_b.packed_elements ||
+        packed_column_elements >
+            job->packed_b.packed_elements - packed_column_offset) {
+      return CpuExecutionStatusV1::callback_failed;
+    }
+    const float *packed_column_panel =
+        job->packed_b.packed_data + packed_column_offset;
+    std::size_t packed_k_offset = 0;
+    for (std::size_t p = 0; p < k; p += kCpuPackedGemmKcV1) {
+      const std::size_t depth = std::min(kCpuPackedGemmKcV1, k - p);
+      std::size_t packed_k_elements = 0;
+      if (!checked_multiply(padded_columns, depth, &packed_k_elements) ||
+          packed_k_offset > packed_column_elements ||
+          packed_k_elements > packed_column_elements - packed_k_offset) {
+        return CpuExecutionStatusV1::callback_failed;
+      }
+      for (std::size_t row = 0; row < rows;
+           row += kCpuPackedGemmMcV1) {
+        const std::size_t block_rows =
+            std::min(kCpuPackedGemmMcV1, rows - row);
+        compute_output_block(
+            *job, job->lhs + row_begin * k, job->out + row_begin * n, row,
+            column, p, block_rows, columns, depth, packed_a,
+            packed_column_panel + packed_k_offset);
+      }
+      packed_k_offset += packed_k_elements;
+    }
+    if (packed_k_offset != packed_column_elements)
+      return CpuExecutionStatusV1::callback_failed;
+  }
+  return CpuExecutionStatusV1::success;
+}
+
+CpuExecutionStatusV1 pack_b_and_execute_output_partitions(
+    std::size_t, std::size_t worker_index, void *user_data) noexcept {
+  auto *job = static_cast<ParallelGemmJobV1 *>(user_data);
+  if (job == nullptr || job->active_threads == 0 ||
+      worker_index >= job->active_threads || job->rhs == nullptr ||
+      job->packed_b_destination == nullptr ||
+      job->packed_b_workers_ready == nullptr ||
+      job->packed_b_pack_failed == nullptr) {
+    return CpuExecutionStatusV1::callback_failed;
+  }
+
+  const std::size_t n = static_cast<std::size_t>(job->problem.n);
+  const std::size_t k = static_cast<std::size_t>(job->problem.k);
+  bool local_pack_failed = false;
+  for (std::size_t panel = worker_index; panel < job->column_panel_count;
+       panel += job->active_threads) {
+    const std::size_t column_begin = panel * kCpuPackedGemmNcV1;
+    const std::size_t columns =
+        std::min(kCpuPackedGemmNcV1, n - column_begin);
+    std::size_t expected_panel_elements = 0;
+    if (!checked_multiply(
+            divide_round_up(columns, kCpuPackedGemmNrV1) *
+                kCpuPackedGemmNrV1,
+            k, &expected_panel_elements) ||
+        detail::cpu_pack_b_column_panel_v1(
+            job->rhs, n, k, column_begin, columns,
+            job->packed_b_destination + column_begin * k) !=
+            expected_panel_elements) {
+      local_pack_failed = true;
+      break;
+    }
+  }
+
+  if (local_pack_failed)
+    job->packed_b_pack_failed->store(true, std::memory_order_release);
+  job->packed_b_workers_ready->fetch_add(1, std::memory_order_release);
+  while (job->packed_b_workers_ready->load(std::memory_order_acquire) !=
+             job->active_threads &&
+         !job->packed_b_pack_failed->load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+  if (job->packed_b_pack_failed->load(std::memory_order_acquire))
+    return CpuExecutionStatusV1::callback_failed;
+
+  for (std::size_t task = worker_index; task < job->task_count;
+       task += job->active_threads) {
+    const CpuExecutionStatusV1 status =
+        execute_output_partition(task, worker_index, job);
+    if (status != CpuExecutionStatusV1::success) return status;
+  }
+  return CpuExecutionStatusV1::success;
 }
 
 CpuParallelGemmStatusV1 workspace_requirements(
@@ -253,11 +562,9 @@ CpuParallelGemmStatusV1 execute_parallel(
     return CpuParallelGemmStatusV1::context_unavailable;
   if (requested_threads > context_info.actual_worker_count)
     return CpuParallelGemmStatusV1::invalid_thread_count;
-  const std::size_t m = static_cast<std::size_t>(problem.m);
-  const std::size_t macro_tile_count =
-      (m + kCpuPackedGemmMcV1 - 1U) / kCpuPackedGemmMcV1;
-  const auto actual_threads = static_cast<std::uint32_t>(
-      std::min<std::size_t>(requested_threads, macro_tile_count));
+  const planner::CpuParallelTaskPlanV1 task_plan =
+      planner::plan_cpu_parallel_tasks_v1(problem, requested_threads);
+  const std::uint32_t actual_threads = task_plan.actual_threads;
   if (actual_threads == 0)
     return CpuParallelGemmStatusV1::invalid_thread_count;
   if (nesting_policy == CpuProviderNestingPolicyV1::external_provider_active &&
@@ -274,23 +581,59 @@ CpuParallelGemmStatusV1 execute_parallel(
   if (preflight != CpuParallelGemmStatusV1::success) return preflight;
 
   auto *workspace_start = static_cast<std::byte *>(workspace);
+  auto *packed_b_destination = reinterpret_cast<float *>(
+      workspace_start + requirements.shared_packed_b_offset);
+  const bool parallel_pack_b = should_parallel_pack_b(
+      problem, task_plan, requirements, actual_threads);
   CpuPackedBViewV1 packed_b;
-  const auto pack_status = ops.prepare_b(
-      problem, rhs, workspace_start + requirements.shared_packed_b_offset,
-      requirements.shared_packed_b_bytes, &packed_b);
-  if (pack_status != CpuPackedGemmStatusV1::success)
-    return map_packed_status(pack_status);
+  if (parallel_pack_b) {
+    packed_b = detail::cpu_make_packed_b_view_v1(
+        problem, rhs, packed_b_destination,
+        requirements.shared_packed_b_bytes,
+        requirements.shared_packed_b_bytes / sizeof(float));
+  } else {
+    const auto pack_status = ops.prepare_b(
+        problem, rhs, packed_b_destination,
+        requirements.shared_packed_b_bytes, &packed_b);
+    if (pack_status != CpuPackedGemmStatusV1::success)
+      return map_packed_status(pack_status);
+  }
+  if (!validate_task_plan_and_packed_b(problem, rhs, out, task_plan,
+                                       packed_b)) {
+    return CpuParallelGemmStatusV1::invalid_problem;
+  }
 
+  std::atomic<std::uint32_t> packed_b_workers_ready{0};
+  std::atomic<bool> packed_b_pack_failed{false};
   ParallelGemmJobV1 job{problem,
                         lhs,
                         out,
                         packed_b,
                         ops.execute_prepacked,
+                        ops.microkernel,
+                        ops.full_microkernel_16,
+                        ops.full_microkernel_32,
                         workspace_start,
                         requirements.worker_region_offset,
-                        requirements.per_worker_stride_bytes};
+                        requirements.per_worker_stride_bytes,
+                        static_cast<std::size_t>(task_plan.row_quantum),
+                        static_cast<std::size_t>(task_plan.row_group_count),
+                        static_cast<std::size_t>(task_plan.row_task_count),
+                        static_cast<std::size_t>(task_plan.column_panel_count),
+                        static_cast<std::size_t>(task_plan.column_task_count),
+                        static_cast<std::size_t>(task_plan.task_count),
+                        actual_threads,
+                        parallel_pack_b ? rhs : nullptr,
+                        parallel_pack_b ? packed_b_destination : nullptr,
+                        parallel_pack_b ? &packed_b_workers_ready : nullptr,
+                        parallel_pack_b ? &packed_b_pack_failed : nullptr};
   const CpuExecutionStatusV1 execution = context.run_tasks(
-      macro_tile_count, actual_threads, nesting_policy, execute_row_band, &job);
+      parallel_pack_b ? static_cast<std::size_t>(actual_threads)
+                      : static_cast<std::size_t>(task_plan.task_count),
+      actual_threads, nesting_policy,
+      parallel_pack_b ? pack_b_and_execute_output_partitions
+                      : execute_output_partition,
+      &job);
   if (execution == CpuExecutionStatusV1::nested_parallelism_rejected)
     return CpuParallelGemmStatusV1::nested_parallelism_rejected;
   if (execution != CpuExecutionStatusV1::success)
@@ -298,7 +641,14 @@ CpuParallelGemmStatusV1 execute_parallel(
 
   const CpuExecutionContextInfoV1 finished = context.info();
   report->actual_threads = actual_threads;
-  report->macro_tile_count = macro_tile_count;
+  report->packed_b_threads = parallel_pack_b ? actual_threads : 0;
+  report->macro_tile_count =
+      static_cast<std::size_t>(task_plan.macro_tile_count);
+  report->row_task_count =
+      static_cast<std::size_t>(task_plan.row_task_count);
+  report->column_task_count =
+      static_cast<std::size_t>(task_plan.column_task_count);
+  report->task_count = static_cast<std::size_t>(task_plan.task_count);
   report->workspace_bytes = requirements.total_bytes;
   report->shared_packed_b_bytes = requirements.shared_packed_b_bytes;
   report->per_worker_workspace_bytes = requirements.per_worker_bytes;

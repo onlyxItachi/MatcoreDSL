@@ -158,6 +158,11 @@ void registry_and_parallel_policy() {
              forced.selected_id ==
                  "cpu.native-parallel.avx2-fma.f32.v1" &&
              parallel.legal && parallel.actual_threads == 8 &&
+             parallel.requested_thread_ceiling == 8 &&
+             parallel.parallel_row_tasks == 8 &&
+             parallel.parallel_column_tasks == 1 &&
+             parallel.parallel_task_count == 8 &&
+             !parallel.thread_capacity_limited &&
              parallel.required_workspace_bytes ==
                  UINT64_C(262144) + UINT64_C(8) * UINT64_C(131072) &&
              parallel.shared_workspace_bytes == UINT64_C(262144) &&
@@ -217,6 +222,97 @@ void registry_and_parallel_policy() {
          "one provider thread remains executable on a bound native worker");
 }
 
+void adaptive_parallel_task_contract() {
+  const auto short_wide_problem = problem(64, 1024, 257);
+  const auto short_wide =
+      planner::plan_cpu_parallel_tasks_v1(short_wide_problem, 4);
+  expect(short_wide.macro_tile_count == 1 &&
+             short_wide.row_quantum == 4 &&
+             short_wide.row_group_count == 16 &&
+             short_wide.row_task_count == 1 &&
+             short_wide.column_panel_count == 4 &&
+             short_wide.column_task_count == 4 &&
+             short_wide.task_count == 4 &&
+             short_wide.actual_threads == 4,
+         "large short-wide work exposes cacheline-safe N parallelism");
+
+  const auto post_macro_problem = problem(129, 512, 129);
+  const auto post_macro =
+      planner::plan_cpu_parallel_tasks_v1(post_macro_problem, 4);
+  expect(post_macro.macro_tile_count == 2 &&
+             post_macro.row_quantum == 4 &&
+             post_macro.row_group_count == 33 &&
+             post_macro.row_task_count == 2 &&
+             post_macro.column_task_count == 1 &&
+             post_macro.task_count == 2 &&
+             post_macro.actual_threads == 2,
+         "small post-MC tail rejects an unprofitable two-dimensional grid");
+
+  const auto large_post_macro_problem = problem(129, 1024, 512);
+  const auto large_post_macro =
+      planner::plan_cpu_parallel_tasks_v1(large_post_macro_problem, 4);
+  expect(large_post_macro.macro_tile_count == 2 &&
+             large_post_macro.row_quantum == 4 &&
+             large_post_macro.row_group_count == 33 &&
+             large_post_macro.row_task_count == 2 &&
+             large_post_macro.column_panel_count == 4 &&
+             large_post_macro.column_task_count == 2 &&
+             large_post_macro.task_count == 4 &&
+             large_post_macro.actual_threads == 4,
+         "large post-MC work uses a deterministic two-dimensional task grid");
+
+  const auto low_work =
+      planner::plan_cpu_parallel_tasks_v1(problem(64, 16, 16), 4);
+  expect(low_work.macro_tile_count == 1 &&
+             low_work.row_group_count == 16 &&
+             low_work.row_task_count == 1 &&
+             low_work.column_task_count == 1 &&
+             low_work.actual_threads == 1,
+         "single-panel sub-MC work remains serial");
+
+  auto low_alignment_problem = short_wide_problem;
+  low_alignment_problem.minimum_alignment_bytes = alignof(float);
+  const auto low_alignment =
+      planner::plan_cpu_parallel_tasks_v1(low_alignment_problem, 4);
+  expect(low_alignment.row_task_count == 1 &&
+             low_alignment.column_task_count == 1 &&
+             low_alignment.actual_threads == 1,
+         "N partitioning requires the declared 64-byte output contract");
+
+  const auto forced = planner::plan_cpu_gemm_v3(
+      short_wide_problem, avx2_capabilities(), topology(), policy(4),
+      resources(),
+      planner::CpuGemmRequestV3::force_native_parallel_avx2_fma,
+      single_node_placement());
+  expect(forced.status == planner::CpuPlanStatusV1::selected &&
+             forced.candidates[6].actual_threads == 4 &&
+             forced.candidates[6].requested_thread_ceiling == 4 &&
+             forced.candidates[6].parallel_row_tasks == 1 &&
+             forced.candidates[6].parallel_column_tasks == 4 &&
+             forced.candidates[6].parallel_task_count == 4 &&
+             !forced.candidates[6].thread_capacity_limited,
+         "planner legality uses the same adaptive task capacity as execution");
+
+  const auto capacity_limited = planner::plan_cpu_gemm_v3(
+      problem(512, 512, 512), avx2_capabilities(), topology(), policy(12),
+      resources(),
+      planner::CpuGemmRequestV3::force_native_parallel_avx2_fma,
+      single_node_placement());
+  expect(capacity_limited.status == planner::CpuPlanStatusV1::selected &&
+             capacity_limited.candidates[6].actual_threads == 8 &&
+             capacity_limited.candidates[6].requested_thread_ceiling == 12 &&
+             capacity_limited.candidates[6].parallel_row_tasks == 4 &&
+             capacity_limited.candidates[6].parallel_column_tasks == 2 &&
+             capacity_limited.candidates[6].parallel_task_count == 8 &&
+             capacity_limited.candidates[6].thread_capacity_limited,
+         "planner reports the exact output-task capacity behind a worker clamp");
+
+  const auto invalid =
+      planner::plan_cpu_parallel_tasks_v1(problem(0, 16, 16), 4);
+  expect(invalid.actual_threads == 0 && invalid.row_quantum == 0,
+         "invalid task problems fail closed");
+}
+
 void parallel_rejection_boundaries() {
   const auto missing_placement = planner::plan_cpu_gemm_v3(
       problem(1024, 1024, 1024), avx2_capabilities(), topology(), policy(8),
@@ -246,7 +342,8 @@ void parallel_rejection_boundaries() {
   expect(tiny.status == planner::CpuPlanStatusV1::forced_variant_illegal &&
              tiny.candidates[6].runtime_validated &&
              tiny.candidates[6].reason ==
-                 "parallel candidate requires at least two output macro-tiles and workers",
+                 "parallel candidate requires at least two disjoint output "
+                 "tasks and workers",
          "tiny problem cannot select parallel execution without erasing exact "
          "runtime evidence");
 
@@ -478,6 +575,12 @@ void avx512_fail_closed_and_determinism() {
              first_text.find("cpu.native-parallel.avx2-fma.f32.v1") !=
                  std::string::npos &&
              first_text.find("threads=8") != std::string::npos &&
+             first_text.find("thread-ceiling=8") != std::string::npos &&
+             first_text.find("row-tasks=8") != std::string::npos &&
+             first_text.find("column-tasks=1") != std::string::npos &&
+             first_text.find("task-count=8") != std::string::npos &&
+             first_text.find("thread-capacity-limited=false") !=
+                 std::string::npos &&
              first_text.find("priority=") != std::string::npos &&
              first_text.find("required-hardware=") != std::string::npos &&
              first_text.find("required-os=") != std::string::npos &&
@@ -604,6 +707,7 @@ void versioned_capability_and_topology_projection() {
 
 int main() {
   registry_and_parallel_policy();
+  adaptive_parallel_task_contract();
   parallel_rejection_boundaries();
   bound_context_crossover_calibration();
   numa_evidence_and_cost();

@@ -29,8 +29,12 @@ EXPORT_PATTERN = re.compile(
     r"(matcore_runtime_[A-Za-z0-9_]+)\s*\(",
     re.MULTILINE,
 )
-AVX2_SYMBOL = "matcore_cpu_packed_avx2_4x16_microkernel_f32_v1"
-AVX512_SYMBOL = "matcore_cpu_packed_avx512_4x16_microkernel_f32_v1"
+AVX2_CHECKED_SYMBOL = "matcore_cpu_packed_avx2_4x16_microkernel_f32_v1"
+AVX2_FULL_SYMBOL = "matcore_cpu_packed_avx2_4x16_full_microkernel_f32_v2"
+AVX512_CHECKED_SYMBOL = "matcore_cpu_packed_avx512_4x16_microkernel_f32_v1"
+AVX512_FULL_SYMBOL = (
+    "matcore_internal_cpu_packed_avx512_4x32_full_microkernel_f32_m7"
+)
 STABLE_VARIANTS = (
     "cpu.reference.f32.v1",
     "cpu.tiled.f32.v1",
@@ -110,7 +114,14 @@ def assert_coff_x64(readobj: Path, path: Path) -> str:
     return output
 
 
-def inspect_microkernel(objdump: Path, archive: Path, symbol: str, register: str) -> dict[str, int]:
+def inspect_microkernel(
+    objdump: Path,
+    archive: Path,
+    symbol: str,
+    register: str,
+    *,
+    require_no_vector_stack_spill: bool = False,
+) -> dict[str, int]:
     result = run(
         [str(objdump), f"--disassemble-symbols={symbol}", "--no-show-raw-insn", str(archive)]
     )
@@ -126,7 +137,29 @@ def inspect_microkernel(objdump: Path, archive: Path, symbol: str, register: str
             f"{symbol} lacks exact {register.upper()} packed-FMA evidence: "
             f"registers={register_count} fma={fma_count}"
         )
-    return {"register_operands": register_count, "packed_fma_sites": fma_count}
+    vector_stack_spills = [
+        line
+        for line in output.splitlines()
+        if re.search(rf"\b{register}[0-9]+\b", line, re.IGNORECASE)
+        and (
+            re.search(r"\([^)]*%(?:r|e)sp\)", line, re.IGNORECASE)
+            or re.search(
+                r"\[[^\]]*\b(?:r|e)sp\b[^\]]*\]",
+                line,
+                re.IGNORECASE,
+            )
+        )
+    ]
+    if require_no_vector_stack_spill and vector_stack_spills:
+        raise RuntimeError(
+            f"{symbol} contains vector stack spill/reload instructions: "
+            f"{vector_stack_spills}"
+        )
+    return {
+        "register_operands": register_count,
+        "packed_fma_sites": fma_count,
+        "vector_stack_spills": len(vector_stack_spills),
+    }
 
 
 def scan_for_path_leaks(paths: list[Path], forbidden: list[Path]) -> int:
@@ -263,7 +296,9 @@ def parse_candidate(encoded: str) -> dict[str, Any]:
     match = re.fullmatch(
         r"(cpu\.[^:]+):(legal|rejected):reason=(.*):cost=(\d+):priority=(\d+):"
         r"workspace=(\d+):shared-workspace=(\d+):per-worker-workspace=(\d+):"
-        r"alignment=(\d+):threads=(\d+):runtime-validated=(true|false):"
+        r"alignment=(\d+):threads=(\d+):thread-ceiling=(\d+):"
+        r"row-tasks=(\d+):column-tasks=(\d+):task-count=(\d+):"
+        r"thread-capacity-limited=(true|false):runtime-validated=(true|false):"
         r"required-hardware=(\d+):required-os=(\d+):required-compiler=(\d+):"
         r"required-implementation=(\d+):cross-numa=(true|false)",
         encoded,
@@ -281,12 +316,17 @@ def parse_candidate(encoded: str) -> dict[str, Any]:
         "per_worker_workspace_bytes": int(match.group(8)),
         "workspace_alignment": int(match.group(9)),
         "threads": int(match.group(10)),
-        "runtime_validated": match.group(11) == "true",
-        "required_hardware_mask": int(match.group(12)),
-        "required_os_mask": int(match.group(13)),
-        "required_compiler_mask": int(match.group(14)),
-        "required_implementation_mask": int(match.group(15)),
-        "cross_numa": match.group(16) == "true",
+        "thread_ceiling": int(match.group(11)),
+        "row_tasks": int(match.group(12)),
+        "column_tasks": int(match.group(13)),
+        "task_count": int(match.group(14)),
+        "thread_capacity_limited": match.group(15) == "true",
+        "runtime_validated": match.group(16) == "true",
+        "required_hardware_mask": int(match.group(17)),
+        "required_os_mask": int(match.group(18)),
+        "required_compiler_mask": int(match.group(19)),
+        "required_implementation_mask": int(match.group(20)),
+        "cross_numa": match.group(21) == "true",
     }
 
 
@@ -796,12 +836,35 @@ def main() -> int:
     archive_symbols = run(
         [str(llvm_nm), "--defined-only", "--format=posix", str(backend_archive)]
     ).stdout
-    for symbol in (AVX2_SYMBOL, AVX512_SYMBOL):
+    for symbol in (
+        AVX2_CHECKED_SYMBOL,
+        AVX2_FULL_SYMBOL,
+        AVX512_CHECKED_SYMBOL,
+        AVX512_FULL_SYMBOL,
+    ):
         if symbol not in archive_symbols:
             raise RuntimeError(f"CPU backend archive lacks {symbol}")
     isa_evidence = {
-        "avx2": inspect_microkernel(llvm_objdump, backend_archive, AVX2_SYMBOL, "ymm"),
-        "avx512": inspect_microkernel(llvm_objdump, backend_archive, AVX512_SYMBOL, "zmm"),
+        "avx2_checked": inspect_microkernel(
+            llvm_objdump, backend_archive, AVX2_CHECKED_SYMBOL, "ymm"
+        ),
+        "avx2_full": inspect_microkernel(
+            llvm_objdump,
+            backend_archive,
+            AVX2_FULL_SYMBOL,
+            "ymm",
+            require_no_vector_stack_spill=True,
+        ),
+        "avx512_checked": inspect_microkernel(
+            llvm_objdump, backend_archive, AVX512_CHECKED_SYMBOL, "zmm"
+        ),
+        "avx512_full": inspect_microkernel(
+            llvm_objdump,
+            backend_archive,
+            AVX512_FULL_SYMBOL,
+            "zmm",
+            require_no_vector_stack_spill=True,
+        ),
     }
 
     platform_result = run(

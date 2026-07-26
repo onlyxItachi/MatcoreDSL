@@ -776,6 +776,9 @@ class PlannerRunner final : public GemmRunnerV1 {
           static_cast<std::size_t>(selected.selected_variant);
       auto &candidate = selected.candidates[selected_index];
       result.actual_threads = candidate.actual_threads;
+      result.parallel_row_tasks = candidate.parallel_row_tasks;
+      result.parallel_column_tasks = candidate.parallel_column_tasks;
+      result.parallel_task_count = candidate.parallel_task_count;
       result.workspace_bytes = candidate.required_workspace_bytes;
       result.shared_workspace_bytes = candidate.shared_workspace_bytes;
       result.per_worker_workspace_bytes = candidate.per_worker_workspace_bytes;
@@ -1189,6 +1192,10 @@ class PlannerRunner final : public GemmRunnerV1 {
           return false;
         }
         if (execution_report.actual_threads != plan.actual_threads ||
+            execution_report.row_task_count != plan.parallel_row_tasks ||
+            execution_report.column_task_count !=
+                plan.parallel_column_tasks ||
+            execution_report.task_count != plan.parallel_task_count ||
             execution_report.workspace_bytes != plan.workspace_bytes ||
             execution_report.shared_packed_b_bytes >
                 plan.shared_workspace_bytes ||

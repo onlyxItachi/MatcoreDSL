@@ -60,25 +60,28 @@ correctness, and passes its declared acceptance suite.
     ZIP candidate pass. AVX-512 runtime remains unavailable on the hosted CPU,
     Windows OpenBLAS is omitted, multi-node NUMA is synthetic-only, and the VC
     Redistributable remains an external prerequisite.
-13. **CPU performance deep audit — locally accepted; publication pending.**
+13. **CPU performance deep audit — complete and published.**
     Schema-v6 forward/reverse evidence is fail-closed and reproducible;
     packing/data movement, microkernel scheduling, cache/roofline limits,
     persistent parallel execution, benchmark fairness, BLAS architecture, and
     future GEMV/GEVM backend design have independent audit records. Fresh
     Release, Debug, OpenBLAS-disabled, supported sanitizer, package,
     source-inaccessible consumer, native artifact, legacy, and hygiene gates
-    pass. Hardware counters were blocked, controlled multi-thread OpenBLAS
-    placement was not established, and native BLAS parity is not claimed.
+    pass. PR #14 passed hosted checks, merged normally, and is anchored by
+    `mdslc-cpu-performance-audit-v1`. Hardware counters were blocked,
+    controlled multi-thread OpenBLAS placement was not established, and native
+    BLAS parity is not claimed.
 
 The architecture verdict is **passed for the standalone native CPU
 frontend/runtime vertical slice**. The AST-JSON producer remains an explicitly
 selected compatibility oracle only; it is never a fallback from native.
 
-## Milestone 6 local acceptance
+## Milestone 6 published acceptance
 
-The bounded CPU Performance Deep Audit has passed its local integration and
-independent-review gates. Its authenticated evidence explains weak native
-regions without changing production planner behavior:
+The bounded CPU Performance Deep Audit passed local integration, independent
+review, hosted checks, normal merge, immutable tagging, and tracker closure.
+Its authenticated evidence explains weak native regions without changing
+production planner behavior:
 
 - medium/large square and tail-heavy native throughput remains below the
   matched single-thread OpenBLAS baseline;
@@ -93,8 +96,32 @@ regions without changing production planner behavior:
 
 The audit proposes measured experiments for Milestone 7; it does not itself
 promote a kernel, alter planner thresholds, expose GEMV/GEVM, or freeze the
-public API. Before Milestone 7 begins, Milestone 6 must still pass the normal
-PR/hosted-check/merge/tag publication gate.
+public API.
+
+## Milestone 7 partial disposition
+
+Milestone 7 retains useful private CPU-backend hardening but has not completed
+or evaluated its native BLAS parity gate:
+
+- cooperative packed-B preparation infrastructure was implemented, but its
+  broad production rule is dormant after independent review found insufficient
+  final-checkpoint boundary evidence;
+- parallel planning and diagnostics now represent exact M/N task geometry and
+  effective thread capacity;
+- the Release AVX2 and AVX-512 production full-tile artifacts have durable
+  register/FMA/no-vector-spill checks;
+- the parity runner/summarizer fail closed on source, binary, plan, raw digest,
+  timing scope, placement, result, and coverage mismatches;
+- Release, Debug, OpenBLAS-disabled, sanitizer, package, native compiler,
+  hygiene, and legacy gates pass; but
+- an intermediate short-wide diagnostic remained below 3.0x, exact final-code
+  scaling is unestablished, and shared host contention prevented a complete
+  authenticated forward/reverse parity matrix.
+
+Accordingly, complete native/OpenBLAS family ratios and full-envelope planner
+regret are not claimed. Issue #15 and GitHub milestone #5 remain open, and
+there is no parity completion tag. The candidate local disposition pending
+hosted gates is `docs/performance/cpu/native-blas-parity-v1.md`.
 
 ## Milestone 5 published Linux gate and focused Windows validation
 
@@ -124,18 +151,19 @@ is inferred from Linux evidence.
 
 ## Next three exact engineering tasks
 
-1. **Publish Milestone 6 normally.** Open the non-draft PR to `main`, require
-   hosted Linux and Windows checks, merge normally only after they pass, create
-   immutable tag `mdslc-cpu-performance-audit-v1`, and close the tracker.
-2. **Start Milestone 7 from updated clean `main`.** Evaluate the audit-ranked
-   full-tile/microkernel, ISA-specific blocking, tall/short rectangular,
-   shared/prepacked-B, and two-dimensional tasking experiments independently;
-   retain only measured improvements.
-3. **Calibrate and validate the resulting native parity envelope.** Compare
-   native variants and OpenBLAS under equal single-/multi-thread placement,
-   keep allocation and packing visible, harden planner regret, run all
-   correctness/sanitizer/package/Windows gates, and report partial status
-   rather than changing the envelope if the declared targets are not met.
+1. **Finish Milestone 7 on an exclusive performance host.** Run the frozen
+   368-case stable-forward and stable-reverse plans without concurrent
+   compiler/test/checksum workloads, render the deterministic report, and
+   evaluate the unchanged ratio, scaling, and regret criteria.
+2. **Address the remaining measured CPU limits.** Improve parallel A packing,
+   output-task scheduling, and large/rectangular execution only from new
+   evidence; retain OpenBLAS selection where it is faster and do not alter the
+   envelope to manufacture parity.
+3. **Enter the separate API/backend-contract freeze only after its entry
+   criteria pass.** Resolve transformed-operand ownership/invalidation, forced
+   variant identity, structured report evolution, and device-neutral
+   execution-context questions; do not freeze automatically from this partial
+   result.
 
 ## Later operation and lowering milestones
 

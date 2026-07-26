@@ -18,7 +18,6 @@ import math
 import os
 import pathlib
 import subprocess
-import sys
 import time
 from typing import Iterable
 
@@ -536,31 +535,41 @@ def plan_fingerprint(
     timer_floor_us: int,
     maximum_memory_mib: int,
     case_order: str,
+    families: set[str] | None = None,
 ) -> str:
-    return canonical_sha256(
-        {
-            "schema": "matcore.cpu-performance-deep-audit.plan",
-            "version": 1,
-            "suites": sorted(suites),
-            "variants": list(variants),
-            "threads": list(threads),
-            "warmup": warmup,
-            "iterations": iterations,
-            "timer_floor_us": timer_floor_us,
-            "max_memory_mib": maximum_memory_mib,
-            "case_order": case_order,
-            "seed": DEFAULT_SEED,
-            "cases": [dataclasses.asdict(case) for case in cases],
-            "skips": [dataclasses.asdict(skip) for skip in skips],
-        }
-    )
+    selected_families = set(SHAPE_FAMILIES) if families is None else families
+    plan = {
+        "schema": "matcore.cpu-performance-deep-audit.plan",
+        "version": 1,
+        "suites": sorted(suites),
+        "variants": list(variants),
+        "threads": list(threads),
+        "warmup": warmup,
+        "iterations": iterations,
+        "timer_floor_us": timer_floor_us,
+        "max_memory_mib": maximum_memory_mib,
+        "case_order": case_order,
+        "seed": DEFAULT_SEED,
+        "cases": [dataclasses.asdict(case) for case in cases],
+        "skips": [dataclasses.asdict(skip) for skip in skips],
+    }
+    # Preserve the frozen Milestone 6 plan digest byte-for-byte for the default
+    # full matrix. A subset adds an authenticated extension instead of
+    # retroactively invalidating retained audit bundles.
+    if selected_families != set(SHAPE_FAMILIES):
+        plan["families"] = sorted(selected_families)
+    return canonical_sha256(plan)
 
 
 def expected_legality_rejection(case: AuditCase, stderr: str) -> str | None:
     if (
         case.variant in PARALLEL_VARIANTS
-        and "parallel candidate requires at least two output macro-tiles and workers"
-        in stderr
+        and (
+            "parallel candidate requires at least two output macro-tiles and workers"
+            in stderr
+            or "parallel candidate requires at least two disjoint output tasks and workers"
+            in stderr
+        )
     ):
         return "parallel-output-macro-tile-count"
     return None
@@ -731,6 +740,11 @@ def main() -> int:
         help="comma list: complete,compute,cold,prepacked,oneshot,regret,all",
     )
     parser.add_argument(
+        "--families",
+        default="all",
+        help="comma list of audited shape families, or all",
+    )
+    parser.add_argument(
         "--variants",
         default=",".join(VARIANTS),
         help="comma-separated stable IDs",
@@ -782,6 +796,14 @@ def main() -> int:
     }
     if not suites or unknown_suites:
         parser.error(f"unknown or empty suite set: {sorted(unknown_suites)}")
+    families = {value for value in args.families.split(",") if value}
+    if "all" in families:
+        families = set(SHAPE_FAMILIES)
+    unknown_families = families - set(SHAPE_FAMILIES)
+    if not families or unknown_families:
+        parser.error(
+            f"unknown or empty shape-family set: {sorted(unknown_families)}"
+        )
     variants = tuple(value for value in args.variants.split(",") if value)
     unknown_variants = set(variants) - set(VARIANTS)
     if not variants or unknown_variants:
@@ -796,6 +818,8 @@ def main() -> int:
         parser.error("memory bound must be positive and limit nonnegative")
 
     cases, skips = build_cases(suites, variants, threads)
+    cases = [case for case in cases if case.family in families]
+    skips = [skip for skip in skips if skip.family in families]
     if args.case_order == "stable-reverse":
         cases.reverse()
     if args.limit:
@@ -815,6 +839,7 @@ def main() -> int:
         args.timer_floor_us,
         args.max_memory_mib,
         args.case_order,
+        families=families,
     )
     if args.resume and args.dry_run:
         parser.error("--resume cannot be combined with --dry-run")
@@ -980,6 +1005,7 @@ def main() -> int:
         "finished_unix_seconds": int(time.time()),
         "benchmark": str(executable),
         "suites": sorted(suites),
+        "families": sorted(families),
         "variants": list(variants),
         "threads": list(threads),
         "case_order": args.case_order,

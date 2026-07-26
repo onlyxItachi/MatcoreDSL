@@ -347,16 +347,28 @@ if(BUILD_TESTING)
     find_program(MDSLC_NM_EXECUTABLE NAMES nm llvm-nm-21)
     if(MDSLC_OBJDUMP_EXECUTABLE AND MDSLC_NM_EXECUTABLE)
       find_package(Python3 COMPONENTS Interpreter QUIET)
-      add_test(
-        NAME runtime.cpu.packed_avx2_object
-        COMMAND
-          "${CMAKE_COMMAND}"
-          "-DMDSLC_OBJDUMP=${MDSLC_OBJDUMP_EXECUTABLE}"
-          "-DMDSLC_NM=${MDSLC_NM_EXECUTABLE}"
-          "-DMDSLC_PACKED_ARTIFACT=$<TARGET_FILE:matcore_runtime>"
-          -P
-          "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/cmake/expect_cpu_packed_avx2_microkernel.cmake"
-      )
+      if(Python3_Interpreter_FOUND)
+        add_test(
+          NAME runtime.cpu.packed_avx2_object
+          COMMAND
+            "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/packed/check_avx2_microkernel.py"
+            --artifact "$<TARGET_FILE:matcore_cpu_backends_v1>"
+            --objdump "${MDSLC_OBJDUMP_EXECUTABLE}"
+            --nm "${MDSLC_NM_EXECUTABLE}"
+        )
+      else()
+        add_test(
+          NAME runtime.cpu.packed_avx2_object
+          COMMAND
+            "${CMAKE_COMMAND}"
+            "-DMDSLC_OBJDUMP=${MDSLC_OBJDUMP_EXECUTABLE}"
+            "-DMDSLC_NM=${MDSLC_NM_EXECUTABLE}"
+            "-DMDSLC_PACKED_ARTIFACT=$<TARGET_FILE:matcore_runtime>"
+            -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/cmake/expect_cpu_packed_avx2_microkernel.cmake"
+        )
+      endif()
       add_test(
         NAME runtime.cpu.vectorized_object
         COMMAND
