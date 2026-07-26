@@ -342,6 +342,15 @@ def case_command(
     maximum_memory_mib: int,
 ) -> list[str]:
     m, n, k = case.shape
+    # Cold-cache samples deliberately do not aggregate multiple GEMMs behind
+    # one eviction. Keep their timer floor at one microsecond so small,
+    # separately labelled diagnostic shapes remain observable instead of
+    # being rejected by the complete-call hot-cache floor.
+    effective_timer_floor_us = (
+        min(timer_floor_us, 1)
+        if case.mode == "complete-cold"
+        else timer_floor_us
+    )
     command = [
         str(executable),
         "--m",
@@ -361,7 +370,7 @@ def case_command(
         "--lhs-sequence",
         str(case.lhs_sequence),
         "--timer-floor-us",
-        str(timer_floor_us),
+        str(effective_timer_floor_us),
         "--max-memory-mib",
         str(maximum_memory_mib),
         "--alignment",

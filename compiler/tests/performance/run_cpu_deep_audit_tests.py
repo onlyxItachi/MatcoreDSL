@@ -91,6 +91,13 @@ def main() -> int:
             "cpu.native-packed.avx512-fma.f32.v1",
         }
         assert all("--exclude-packing" in case["command"] for case in compute)
+        cold = [
+            case for case in manifest["cases"] if case["mode"] == "complete-cold"
+        ]
+        assert cold
+        for case in cold:
+            floor_index = case["command"].index("--timer-floor-us") + 1
+            assert case["command"][floor_index] == "1"
 
         reference_large_skip = [
             skip
