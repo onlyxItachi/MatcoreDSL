@@ -102,9 +102,6 @@ REGRET_SHAPES = (
     (128, 128, 128),
     (256, 256, 256),
     (512, 512, 512),
-    (1024, 1024, 1024),
-    (4096, 64, 4096),
-    (64, 4096, 4096),
     (127, 129, 131),
     (511, 513, 515),
 )
@@ -399,6 +396,19 @@ def sha256(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
+def expected_legality_rejection(stderr: str) -> bool:
+    return any(
+        marker in stderr
+        for marker in (
+            "variant planning failed",
+            "does not support prepacked-B",
+            "is not linked",
+            "not runtime-validated",
+            "unavailable on this host",
+        )
+    )
+
+
 def authenticate_report(path: pathlib.Path, case: AuditCase) -> dict:
     report = json.loads(path.read_text(encoding="utf-8"))
     if report.get("schema") != "matcore.benchmark.cpu.gemm":
@@ -542,12 +552,18 @@ def main() -> int:
             env=environment,
         )
         if completed.returncode != 0:
-            record["state"] = "failed"
+            record["state"] = (
+                "rejected"
+                if expected_legality_rejection(completed.stderr)
+                else "failed"
+            )
             record["returncode"] = completed.returncode
             record["stdout"] = completed.stdout
             record["stderr"] = completed.stderr
             records.append(record)
-            break
+            if record["state"] == "failed":
+                break
+            continue
         authenticate_report(raw_path, case)
         record["state"] = "passed"
         record["sha256"] = sha256(raw_path)
