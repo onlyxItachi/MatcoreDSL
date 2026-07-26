@@ -748,10 +748,16 @@ def main() -> int:
             elif mutation == "duplicate":
                 candidates[-1] = copy.deepcopy(candidates[0])
             else:
+                timed_candidate = next(
+                    candidate
+                    for candidate in candidates
+                    if candidate["timing_valid"]
+                )
                 original_variant = candidates[-1]["variant"]
-                candidates[-1] = copy.deepcopy(candidates[0])
+                candidates[-1] = copy.deepcopy(timed_candidate)
                 candidates[-1]["variant"] = original_variant
                 candidates[-1]["selected_variant"] = original_variant
+                candidates[-1]["legal"] = True
                 candidates[-1][
                     "complete_implementation_comparison"
                 ] = False
