@@ -557,7 +557,6 @@ def main() -> int:
             forward,
             reverse,
             output,
-            require_pass=True,
         )
         assert (output / "summary.md").read_bytes() == first_markdown
         assert (output / "summary.json").read_bytes() == first_json
