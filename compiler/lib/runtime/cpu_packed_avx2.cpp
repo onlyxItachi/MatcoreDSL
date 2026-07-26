@@ -22,6 +22,19 @@
 #endif
 
 namespace matcore::mdslc::runtime {
+
+namespace detail {
+
+// Production packed execution reaches this private symbol only after the
+// descriptor, workspace, and complete 4x16 tile contracts have been
+// validated. Keeping it separate prevents full tiles from paying the checked
+// edge wrapper's stack-buffer setup on every microkernel call.
+extern "C" void matcore_cpu_packed_avx2_4x16_full_microkernel_f32_v2(
+    const float *packed_a, const float *packed_b, std::size_t k,
+    float *output, std::size_t output_stride, bool accumulate) noexcept;
+
+}  // namespace detail
+
 namespace {
 
 inline constexpr std::uint64_t kPackedBProvenanceSeed =
@@ -238,10 +251,17 @@ void compute_block(const planner::CpuGemmProblemV1 &problem,
       const float *b_panel = packed_b +
                              (column / kCpuPackedGemmNrV1) * depth *
                                  kCpuPackedGemmNrV1;
-      detail::matcore_cpu_packed_avx2_4x16_microkernel_f32_v1(
-          a_panel, b_panel, depth,
-          out + (row_begin + row) * ldc + column_begin + column, ldc,
-          tile_rows, tile_columns, k_begin != 0);
+      float *output_tile =
+          out + (row_begin + row) * ldc + column_begin + column;
+      if (tile_rows == kCpuPackedGemmMrV1 &&
+          tile_columns == kCpuPackedGemmNrV1) {
+        detail::matcore_cpu_packed_avx2_4x16_full_microkernel_f32_v2(
+            a_panel, b_panel, depth, output_tile, ldc, k_begin != 0);
+      } else {
+        detail::matcore_cpu_packed_avx2_4x16_microkernel_f32_v1(
+            a_panel, b_panel, depth, output_tile, ldc, tile_rows, tile_columns,
+            k_begin != 0);
+      }
     }
   }
 }
@@ -307,44 +327,28 @@ bool cpu_packed_avx2_runtime_usable_v1() noexcept {
 
 namespace detail {
 
-extern "C" MATCORE_MDSLC_PACKED_AVX2_TARGET void
-matcore_cpu_packed_avx2_4x16_microkernel_f32_v1(
-    const float *packed_a, const float *packed_b, std::size_t k,
-    float *output, std::size_t output_stride, std::uint32_t rows,
-    std::uint32_t columns, bool accumulate) noexcept {
+namespace {
+
 #if MATCORE_MDSLC_PACKED_AVX2_COMPILED
-  if (packed_a == nullptr || packed_b == nullptr || output == nullptr || k == 0 ||
-      rows == 0 || rows > kCpuPackedGemmMrV1 || columns == 0 ||
-      columns > kCpuPackedGemmNrV1) {
-    return;
-  }
-
-  alignas(32) std::array<float, kCpuPackedGemmMrV1 * kCpuPackedGemmNrV1>
-      edge{};
-  const bool complete_tile =
-      rows == kCpuPackedGemmMrV1 && columns == kCpuPackedGemmNrV1;
-  float *tile = output;
-  std::size_t tile_stride = output_stride;
-  if (!complete_tile) {
-    if (accumulate) {
-      for (std::size_t row = 0; row < rows; ++row)
-        for (std::size_t column = 0; column < columns; ++column)
-          edge[row * kCpuPackedGemmNrV1 + column] =
-              output[row * output_stride + column];
-    }
-    tile = edge.data();
-    tile_stride = kCpuPackedGemmNrV1;
-  }
-
+__attribute__((target("avx2,fma"), always_inline)) inline void
+compute_avx2_4x16_full_tile(const float *packed_a, const float *packed_b,
+                           std::size_t k, float *output,
+                           std::size_t output_stride,
+                           bool accumulate) noexcept {
   const __m256 zero = _mm256_setzero_ps();
-  __m256 c00 = accumulate ? _mm256_loadu_ps(tile) : zero;
-  __m256 c01 = accumulate ? _mm256_loadu_ps(tile + 8) : zero;
-  __m256 c10 = accumulate ? _mm256_loadu_ps(tile + tile_stride) : zero;
-  __m256 c11 = accumulate ? _mm256_loadu_ps(tile + tile_stride + 8) : zero;
-  __m256 c20 = accumulate ? _mm256_loadu_ps(tile + 2 * tile_stride) : zero;
-  __m256 c21 = accumulate ? _mm256_loadu_ps(tile + 2 * tile_stride + 8) : zero;
-  __m256 c30 = accumulate ? _mm256_loadu_ps(tile + 3 * tile_stride) : zero;
-  __m256 c31 = accumulate ? _mm256_loadu_ps(tile + 3 * tile_stride + 8) : zero;
+  __m256 c00 = accumulate ? _mm256_loadu_ps(output) : zero;
+  __m256 c01 = accumulate ? _mm256_loadu_ps(output + 8) : zero;
+  __m256 c10 = accumulate ? _mm256_loadu_ps(output + output_stride) : zero;
+  __m256 c11 =
+      accumulate ? _mm256_loadu_ps(output + output_stride + 8) : zero;
+  __m256 c20 =
+      accumulate ? _mm256_loadu_ps(output + 2 * output_stride) : zero;
+  __m256 c21 =
+      accumulate ? _mm256_loadu_ps(output + 2 * output_stride + 8) : zero;
+  __m256 c30 =
+      accumulate ? _mm256_loadu_ps(output + 3 * output_stride) : zero;
+  __m256 c31 =
+      accumulate ? _mm256_loadu_ps(output + 3 * output_stride + 8) : zero;
 
   for (std::size_t p = 0; p < k; ++p) {
     const __m256 b0 = _mm256_load_ps(packed_b + p * kCpuPackedGemmNrV1);
@@ -365,21 +369,71 @@ matcore_cpu_packed_avx2_4x16_microkernel_f32_v1(
     c31 = _mm256_fmadd_ps(a3, b1, c31);
   }
 
-  _mm256_storeu_ps(tile, c00);
-  _mm256_storeu_ps(tile + 8, c01);
-  _mm256_storeu_ps(tile + tile_stride, c10);
-  _mm256_storeu_ps(tile + tile_stride + 8, c11);
-  _mm256_storeu_ps(tile + 2 * tile_stride, c20);
-  _mm256_storeu_ps(tile + 2 * tile_stride + 8, c21);
-  _mm256_storeu_ps(tile + 3 * tile_stride, c30);
-  _mm256_storeu_ps(tile + 3 * tile_stride + 8, c31);
+  _mm256_storeu_ps(output, c00);
+  _mm256_storeu_ps(output + 8, c01);
+  _mm256_storeu_ps(output + output_stride, c10);
+  _mm256_storeu_ps(output + output_stride + 8, c11);
+  _mm256_storeu_ps(output + 2 * output_stride, c20);
+  _mm256_storeu_ps(output + 2 * output_stride + 8, c21);
+  _mm256_storeu_ps(output + 3 * output_stride, c30);
+  _mm256_storeu_ps(output + 3 * output_stride + 8, c31);
+}
+#endif
 
-  if (!complete_tile) {
+}  // namespace
+
+extern "C" MATCORE_MDSLC_PACKED_AVX2_TARGET void
+matcore_cpu_packed_avx2_4x16_full_microkernel_f32_v2(
+    const float *packed_a, const float *packed_b, std::size_t k,
+    float *output, std::size_t output_stride, bool accumulate) noexcept {
+#if MATCORE_MDSLC_PACKED_AVX2_COMPILED
+  compute_avx2_4x16_full_tile(packed_a, packed_b, k, output, output_stride,
+                             accumulate);
+#else
+  (void)packed_a;
+  (void)packed_b;
+  (void)k;
+  (void)output;
+  (void)output_stride;
+  (void)accumulate;
+#endif
+}
+
+extern "C" MATCORE_MDSLC_PACKED_AVX2_TARGET void
+matcore_cpu_packed_avx2_4x16_microkernel_f32_v1(
+    const float *packed_a, const float *packed_b, std::size_t k,
+    float *output, std::size_t output_stride, std::uint32_t rows,
+    std::uint32_t columns, bool accumulate) noexcept {
+#if MATCORE_MDSLC_PACKED_AVX2_COMPILED
+  if (packed_a == nullptr || packed_b == nullptr || output == nullptr || k == 0 ||
+      rows == 0 || rows > kCpuPackedGemmMrV1 || columns == 0 ||
+      columns > kCpuPackedGemmNrV1) {
+    return;
+  }
+
+  const bool complete_tile =
+      rows == kCpuPackedGemmMrV1 && columns == kCpuPackedGemmNrV1;
+  if (complete_tile) {
+    compute_avx2_4x16_full_tile(packed_a, packed_b, k, output, output_stride,
+                               accumulate);
+    return;
+  }
+
+  alignas(32) std::array<float, kCpuPackedGemmMrV1 * kCpuPackedGemmNrV1>
+      edge{};
+  if (accumulate) {
     for (std::size_t row = 0; row < rows; ++row)
       for (std::size_t column = 0; column < columns; ++column)
-        output[row * output_stride + column] =
-            edge[row * kCpuPackedGemmNrV1 + column];
+        edge[row * kCpuPackedGemmNrV1 + column] =
+            output[row * output_stride + column];
   }
+
+  compute_avx2_4x16_full_tile(packed_a, packed_b, k, edge.data(),
+                             kCpuPackedGemmNrV1, accumulate);
+  for (std::size_t row = 0; row < rows; ++row)
+    for (std::size_t column = 0; column < columns; ++column)
+      output[row * output_stride + column] =
+          edge[row * kCpuPackedGemmNrV1 + column];
 #else
   (void)packed_a;
   (void)packed_b;
