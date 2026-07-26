@@ -200,7 +200,7 @@ bool should_parallel_pack_b(
           kCpuParallelPackedBMinimumBytesV1) {
     return false;
   }
-  return problem.k >= 4096 || (problem.m <= 32 && problem.n >= 8192);
+  return problem.k >= 4096;
 }
 
 std::size_t divide_round_up(std::size_t numerator,

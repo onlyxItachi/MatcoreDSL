@@ -23,13 +23,15 @@ concrete:
   8.0 ms to 11.0 ms. The cache/barrier cost exceeded the small serial packing
   share.
 
-The integration review narrowed the accepted policy twice after a boundary
-matrix exposed non-robust cells. Cooperative preparation now requires more
-than one worker, `M <= 64`, `N >= 4096`, `K >= 1024`, a packed image of at
-least 4 MiB, and more than one NC panel. It then admits only either
-`K >= 4096`, or the very-wide boundary `M <= 32 && N >= 8192`. The rejected
-`M=128` and `32x4096x1024` cells retain serial B preparation. This is a
-measured short-wide rule, not a universal packing policy.
+The integration review narrowed the accepted policy after a boundary matrix
+exposed non-robust cells. Completion review then found that the extra
+`M <= 32 && N >= 8192` branch had been chosen from a shape labeled as holdout
+by the later-frozen methodology. That branch was removed rather than
+retrofitting the evidence split. Cooperative preparation now requires more
+than one worker, `M <= 64`, `N >= 4096`, `K >= 4096`, a packed image of at
+least 4 MiB, and more than one NC panel. This retained rule is supported by
+the declared calibration shape `64x4096x4096`; it is not a universal packing
+policy.
 
 ## Implementation
 
@@ -54,13 +56,13 @@ measured short-wide rule, not a universal packing policy.
 
 ## Correctness and race validation
 
-The focused test activates both AVX2 and AVX-512 at `32x8192x1024`, compares
+The focused test activates both AVX2 and AVX-512 at `8x4096x4096`, compares
 each with the independent double-precision oracle, checks output guards,
 checks `packed_b_threads == 4`, and proves packing did not add a second pool
-submission. Separate AVX2 `65x4096x1024` and AVX-512 `32x4096x1024`
-boundaries authenticate `packed_b_threads == 0`. The existing packed-backend
-tests continue to validate KC/NC tails and malformed prepacked views through
-the same shared format helper.
+submission. The former `32x8192x1024` experimental branch is now an explicit
+excluded boundary for both ISAs and authenticates `packed_b_threads == 0`.
+The existing packed-backend tests continue to validate KC/NC tails and
+malformed prepacked views through the same shared format helper.
 
 | Configuration | Result |
 | --- | --- |
@@ -108,12 +110,13 @@ Milestone 7 four-thread 3.0x target. Cooperative B packing removes one
 authenticated serial bottleneck; it does not establish native/OpenBLAS parity
 or solve remaining microkernel, A-packing, placement, and scheduling limits.
 
-## Integration review and final boundary calibration
+## Integration review and boundary evidence
 
 An independent review rejected the initial broad activation rule and the
 duplicated format/provenance implementation. Commits `648ef7d`, `4462677`, and
 `4719528` introduced the shared format contract, both-ISA activation tests,
-abortable phase barrier, and the final measured gate described above.
+and abortable phase barrier. A later completion audit rejected the exact
+holdout-derived threshold that those commits had retained.
 
 The final clean-commit ABBA confirmation used the same guarded complete-call
 contract with 3 warmups and 7 samples. Four-thread cells were constrained to
@@ -122,18 +125,20 @@ the pre-optimization `6a26994849aadf` build. Ratios below are
 `candidate_GFLOP/s / baseline_GFLOP/s`, each formed from the median of the two
 outer or inner ABBA observations.
 
-| Retained cell | 4 threads | 12 threads |
+| Diagnostic cell | 4 threads | 12 threads |
 | --- | ---: | ---: |
 | `32x8192x1024`, AVX2 | 1.118x | 1.438x |
 | `64x4096x4096`, AVX2 | 1.715x | 1.879x |
 | `32x8192x1024`, AVX-512 | 1.186x | 1.526x |
 | `64x4096x4096`, AVX-512 | 1.720x | 1.809x |
 
-The retained-cell median was 1.621x and the minimum was 1.118x on this host.
-The rejected boundary matrix included `M=128` cells and
-`32x4096x1024`; observed ratios ranged down to 0.816x, which is why those
-regions do not activate the optimization. These are host-bounded calibration
-results, not a claim for other processors.
+The `64x4096x4096` calibration cell remains valid support for the retained
+`K >= 4096` rule: 4-/12-thread gains were 1.715x/1.879x for AVX2 and
+1.720x/1.809x for AVX-512. The `32x8192x1024` rows are preserved above only
+to disclose the experiment chronology; they are not accepted as calibration
+or blind holdout evidence and their production threshold branch was removed.
+The broader rejected matrix observed ratios down to 0.816x. These are
+host-bounded diagnostics, not a claim for other processors.
 
 Final raw JSON is untracked outside every Git worktree under
 `/var/tmp/MatcoreDSL-m7-cooperative-b-final-clean.4VqD1X`.
@@ -141,8 +146,8 @@ Final raw JSON is untracked outside every Git worktree under
 ## Handoff
 
 Initial implementation commit: `a008a57e84af17bef7113b108d34141f8a7e3ed7`.
-Integrated implementation commits: `d13d264`, `648ef7d`, `4462677`, and
-`4719528`.
+Integrated implementation commits before the methodology correction:
+`d13d264`, `648ef7d`, `4462677`, and `4719528`.
 
 The integration owner should rerun the complete Release/Debug/sanitizer and
 Windows matrix after resolving overlap with concurrent planner/runtime

@@ -328,18 +328,18 @@ void run_parallel_b_pack_correctness() {
   constexpr BackendCase backends[] = {
       {"AVX2", runtime::cpu_packed_avx2_runtime_usable_v1,
        runtime::cpu_parallel_packed_avx2_workspace_requirements_v1,
-       runtime::cpu_execute_parallel_packed_avx2_v1, 32, 1024, 8192, 4},
+       runtime::cpu_execute_parallel_packed_avx2_v1, 8, 4096, 4096, 4},
       {"AVX-512", runtime::cpu_packed_avx512_runtime_usable_v1,
        runtime::cpu_parallel_packed_avx512_workspace_requirements_v1,
-       runtime::cpu_execute_parallel_packed_avx512_v1, 32, 1024, 8192, 4},
+       runtime::cpu_execute_parallel_packed_avx512_v1, 8, 4096, 4096, 4},
       {"AVX2 excluded boundary",
        runtime::cpu_packed_avx2_runtime_usable_v1,
        runtime::cpu_parallel_packed_avx2_workspace_requirements_v1,
-       runtime::cpu_execute_parallel_packed_avx2_v1, 65, 1024, 4096, 0},
+       runtime::cpu_execute_parallel_packed_avx2_v1, 32, 1024, 8192, 0},
       {"AVX-512 excluded boundary",
        runtime::cpu_packed_avx512_runtime_usable_v1,
        runtime::cpu_parallel_packed_avx512_workspace_requirements_v1,
-       runtime::cpu_execute_parallel_packed_avx512_v1, 32, 1024, 4096, 0},
+       runtime::cpu_execute_parallel_packed_avx512_v1, 32, 1024, 8192, 0},
   };
 
   constexpr std::size_t guard_elements = 16;
