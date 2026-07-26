@@ -101,7 +101,19 @@ def planner_regret(
     )
     alternative_samples = samples(alternative_seconds)
 
-    def candidate(variant: str, values: list[float]) -> dict:
+    def candidate(
+        variant: str, values: list[float] | None
+    ) -> dict:
+        if values is None:
+            return {
+                "variant": variant,
+                "selected_variant": "",
+                "legal": False,
+                "plan_authenticated": True,
+                "complete_implementation_comparison": False,
+                "timing_valid": False,
+                "correctness": False,
+            }
         ordered = sorted(values)
         middle = ordered[len(ordered) // 2]
         return {
@@ -133,12 +145,13 @@ def planner_regret(
             "balanced_estimate_seconds": middle,
         }
 
+    alternatives = {
+        selected_variant: selected_samples,
+        "cpu.native-packed.avx2-fma.f32.v1": alternative_samples,
+    }
     candidates = [
-        candidate(selected_variant, selected_samples),
-        candidate(
-            "cpu.native-packed.avx2-fma.f32.v1",
-            alternative_samples,
-        ),
+        candidate(variant, alternatives.get(variant))
+        for variant in summary.PLANNER_V3_VARIANTS
     ]
     fastest_variant = (
         selected_variant
@@ -602,6 +615,27 @@ def main() -> int:
             require_pass=True,
         )
         assert "bounded-verdict=passed" in required.stdout
+        pristine_forward_manifest = forward.read_bytes()
+        collision_json = root / "collision-sentinel.json"
+        collision_json.write_bytes(b"must remain unchanged\n")
+        collision = run(
+            [
+                sys.executable,
+                str(summarizer_path),
+                "--forward-manifest",
+                str(forward),
+                "--reverse-manifest",
+                str(reverse),
+                "--markdown-out",
+                str(forward),
+                "--json-out",
+                str(collision_json),
+            ],
+            expected=2,
+        )
+        assert "collides with parity evidence input" in collision.stderr
+        assert forward.read_bytes() == pristine_forward_manifest
+        assert collision_json.read_bytes() == b"must remain unchanged\n"
         first_json = (output / "summary.json").read_bytes()
         execute_summary(
             summarizer_path,
@@ -686,6 +720,62 @@ def main() -> int:
 
         forward_manifest = json.loads(forward.read_text(encoding="utf-8"))
         reverse_manifest = json.loads(reverse.read_text(encoding="utf-8"))
+
+        regret_record = next(
+            record
+            for record in forward_manifest["cases"]
+            if record["mode"] == "planner-regret-hot"
+        )
+        regret_raw = forward.parent / regret_record["raw_file"]
+        pristine_regret_raw = regret_raw.read_bytes()
+        for mutation, expected_message in (
+            ("omit", "complete ordered v3 registry"),
+            ("duplicate", "complete ordered v3 registry"),
+        ):
+            regret_document = json.loads(
+                pristine_regret_raw.decode("utf-8")
+            )
+            candidates = regret_document["results"][0][
+                "planner_regret"
+            ]["candidates"]
+            if mutation == "omit":
+                candidates.pop()
+            else:
+                candidates[-1] = copy.deepcopy(candidates[0])
+            regret_raw.write_text(
+                json.dumps(regret_document, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            regret_record["sha256"] = sha256(regret_raw)
+            forward.write_text(
+                json.dumps(
+                    forward_manifest, indent=2, sort_keys=True
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            rejected_registry = execute_summary(
+                summarizer_path, forward, reverse, output, expected=2
+            )
+            assert expected_message in rejected_registry.stderr
+            assert not (output / "summary.md").exists()
+            assert not (output / "summary.json").exists()
+            regret_raw.write_bytes(pristine_regret_raw)
+            regret_record["sha256"] = sha256(regret_raw)
+            forward.write_text(
+                json.dumps(
+                    forward_manifest, indent=2, sort_keys=True
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+        execute_summary(
+            summarizer_path,
+            forward,
+            reverse,
+            output,
+        )
 
         # Raw tampering is rejected even when the JSON remains parseable.
         first_raw = forward.parent / forward_manifest["cases"][0]["raw_file"]

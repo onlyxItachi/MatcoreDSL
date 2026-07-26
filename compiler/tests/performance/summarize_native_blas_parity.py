@@ -16,6 +16,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import os
 import pathlib
 import statistics
 import subprocess
@@ -58,6 +59,16 @@ PARALLEL_NATIVE_VARIANTS = {
 NATIVE_VARIANTS = SERIAL_NATIVE_VARIANTS | PARALLEL_NATIVE_VARIANTS
 OPENBLAS = "cpu.external.openblas.f32.v1"
 AUTO = "auto"
+PLANNER_V3_VARIANTS = (
+    "cpu.reference.f32.v1",
+    "cpu.tiled.f32.v1",
+    "cpu.compiler-vectorized.avx2-fma.f32.v1",
+    OPENBLAS,
+    "cpu.native-packed.avx2-fma.f32.v1",
+    "cpu.native-packed.avx512-fma.f32.v1",
+    "cpu.native-parallel.avx2-fma.f32.v1",
+    "cpu.native-parallel.avx512-fma.f32.v1",
+)
 CORE_FAMILIES = {
     "medium-square",
     "large-square",
@@ -695,8 +706,12 @@ def authenticate_planner_regret(
     )
     candidates = planner.get("candidates")
     require(
-        isinstance(candidates, list) and candidates,
-        "planner-regret candidates are missing",
+        isinstance(candidates, list)
+        and [candidate.get("variant") for candidate in candidates
+             if isinstance(candidate, dict)]
+        == list(PLANNER_V3_VARIANTS),
+        "planner-regret candidates differ from the complete ordered v3 "
+        "registry",
     )
     reconstructed: list[tuple[dict, float]] = []
     for candidate in candidates:
@@ -710,6 +725,20 @@ def authenticate_planner_regret(
                 and candidate.get("plan_authenticated") is True,
                 "forced planner-regret candidate was substituted",
             )
+        require(
+            candidate.get("timing_valid") is False
+            if not candidate.get("legal")
+            else True,
+            "illegal planner-regret candidate was timed",
+        )
+        require(
+            not (
+                candidate.get("legal")
+                and candidate.get("complete_implementation_comparison")
+                and candidate.get("timing_valid") is not True
+            ),
+            "comparable legal planner-regret candidate was not timed",
+        )
         if not candidate.get("timing_valid"):
             continue
         require(
@@ -2319,8 +2348,8 @@ def render_markdown(summary: dict) -> str:
             "## Claims supported",
             "",
             "- The reported native/OpenBLAS ratios, absolute GFLOP/s, scaling, "
-            "prepacked-B measurements, and planner regret are reproducible for "
-            "the exact authenticated host, source, binary, and provider.",
+            "prepacked-B measurements, and planner regret are authenticated "
+            "and traceable to the exact host, source, binary, and provider.",
             "- Native parity metrics include only native packed or persistent-"
             "parallel MDSLC variants; automatic OpenBLAS selections are not "
             "misclassified as native parity.",
@@ -2377,6 +2406,47 @@ def invalidate_output(path: pathlib.Path) -> pathlib.Path:
     return path
 
 
+def normalized_path(path: pathlib.Path) -> pathlib.Path:
+    return path.expanduser().absolute().resolve(strict=False)
+
+
+def paths_alias(first: pathlib.Path, second: pathlib.Path) -> bool:
+    if normalized_path(first) == normalized_path(second):
+        return True
+    if first.exists() and second.exists():
+        try:
+            return os.path.samefile(first, second)
+        except OSError:
+            return False
+    return False
+
+
+def protected_evidence_paths(manifest_path: pathlib.Path) -> set[pathlib.Path]:
+    manifest_path = manifest_path.expanduser().absolute()
+    protected = {manifest_path}
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return protected
+    if not isinstance(manifest, dict):
+        return protected
+    for field in ("benchmark", "runner"):
+        value = manifest.get(field)
+        if isinstance(value, str) and value:
+            protected.add(pathlib.Path(value).expanduser().absolute())
+    records = manifest.get("cases")
+    if isinstance(records, list):
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            raw_file = record.get("raw_file")
+            if isinstance(raw_file, str) and raw_file:
+                protected.add(
+                    (manifest_path.parent / raw_file).absolute()
+                )
+    return protected
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--forward-manifest", required=True)
@@ -2393,21 +2463,50 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
-        markdown_out = invalidate_output(pathlib.Path(args.markdown_out))
+        forward_manifest = pathlib.Path(
+            args.forward_manifest
+        ).expanduser().absolute()
+        reverse_manifest = pathlib.Path(
+            args.reverse_manifest
+        ).expanduser().absolute()
+        markdown_out = pathlib.Path(args.markdown_out).expanduser().absolute()
         json_out = (
-            invalidate_output(pathlib.Path(args.json_out))
+            pathlib.Path(args.json_out).expanduser().absolute()
             if args.json_out
             else None
         )
         require(
-            json_out is None or json_out != markdown_out,
+            json_out is None or not paths_alias(json_out, markdown_out),
             "Markdown and JSON outputs must be distinct paths",
         )
+        protected = (
+            protected_evidence_paths(forward_manifest)
+            | protected_evidence_paths(reverse_manifest)
+            | {
+                pathlib.Path(__file__).resolve(),
+                pathlib.Path(__file__).resolve().with_name(
+                    "run_native_blas_parity.py"
+                ),
+            }
+        )
+        for output in (markdown_out, json_out):
+            if output is None:
+                continue
+            require(
+                not any(
+                    paths_alias(output, evidence)
+                    for evidence in protected
+                ),
+                "summary output path collides with parity evidence input",
+            )
+        markdown_out = invalidate_output(markdown_out)
+        if json_out is not None:
+            json_out = invalidate_output(json_out)
         forward = load_bundle(
-            pathlib.Path(args.forward_manifest), "stable-forward"
+            forward_manifest, "stable-forward"
         )
         reverse = load_bundle(
-            pathlib.Path(args.reverse_manifest), "stable-reverse"
+            reverse_manifest, "stable-reverse"
         )
         cells = pair_bundles(forward, reverse)
         summary = assessment(forward, reverse, cells)

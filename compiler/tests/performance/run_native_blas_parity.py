@@ -611,8 +611,32 @@ def authenticate_regret(result: dict) -> None:
         "arithmetic-mean-of-forward-and-reverse-pass-medians"
     ):
         raise ValueError("planner-regret aggregation contract changed")
+    candidates = regret.get("candidates", [])
+    expected_variants = [
+        "cpu.reference.f32.v1",
+        "cpu.tiled.f32.v1",
+        "cpu.compiler-vectorized.avx2-fma.f32.v1",
+        "cpu.external.openblas.f32.v1",
+        "cpu.native-packed.avx2-fma.f32.v1",
+        "cpu.native-packed.avx512-fma.f32.v1",
+        "cpu.native-parallel.avx2-fma.f32.v1",
+        "cpu.native-parallel.avx512-fma.f32.v1",
+    ]
+    if (
+        not isinstance(candidates, list)
+        or [
+            candidate.get("variant")
+            for candidate in candidates
+            if isinstance(candidate, dict)
+        ]
+        != expected_variants
+    ):
+        raise ValueError(
+            "planner-regret candidates differ from the complete ordered "
+            "v3 registry"
+        )
     valid_candidates = 0
-    for candidate in regret.get("candidates", []):
+    for candidate in candidates:
         if not isinstance(candidate, dict):
             raise ValueError("planner-regret candidate is malformed")
         if candidate.get("legal"):
@@ -620,6 +644,16 @@ def authenticate_regret(result: dict) -> None:
                 raise ValueError("forced regret candidate was substituted")
             if not candidate.get("plan_authenticated"):
                 raise ValueError("legal regret candidate plan is unauthenticated")
+        elif candidate.get("timing_valid"):
+            raise ValueError("illegal planner-regret candidate was timed")
+        if (
+            candidate.get("legal")
+            and candidate.get("complete_implementation_comparison")
+            and not candidate.get("timing_valid")
+        ):
+            raise ValueError(
+                "comparable legal planner-regret candidate was not timed"
+            )
         if not candidate.get("timing_valid"):
             continue
         valid_candidates += 1
