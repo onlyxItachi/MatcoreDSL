@@ -28,19 +28,6 @@
 #endif
 
 namespace matcore::mdslc::runtime {
-namespace detail {
-
-// Private full-tile entry point kept out of the public runtime header. The
-// exact C symbol exists only so the artifact test can prove that the emitted
-// body still contains the intended AVX-512 register tile.
-extern "C" MATCORE_MDSLC_PACKED_AVX512_TARGET
-    MATCORE_MDSLC_INTERNAL_VISIBILITY void
-    matcore_internal_cpu_packed_avx512_4x32_full_microkernel_f32_m7(
-        const float *packed_a, const float *packed_b0,
-        const float *packed_b1, std::size_t k, float *output,
-        std::size_t output_stride, bool accumulate) noexcept;
-
-}  // namespace detail
 namespace {
 
 // Kept identical to packed AVX2 because CpuPackedBViewV1 describes one common
