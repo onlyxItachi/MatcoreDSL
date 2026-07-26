@@ -34,6 +34,16 @@ REQUIRED_SUITES = {
     "oneshot",
     "regret",
 }
+REVERSE_SUITES = {"complete", "oneshot"}
+FORWARD_MODES = {
+    "complete-hot",
+    "compute-only-hot",
+    "complete-cold",
+    "prepacked-b-hot",
+    "one-shot-hot",
+    "planner-regret-hot",
+}
+REVERSE_MODES = {"complete-hot", "one-shot-hot"}
 EXTERNAL_VARIANT = "cpu.external.openblas.f32.v1"
 
 
@@ -577,7 +587,12 @@ def authenticate_report(
     )
 
 
-def load_bundle(path: pathlib.Path, expected_order: str) -> Bundle:
+def load_bundle(
+    path: pathlib.Path,
+    expected_order: str,
+    expected_suites: set[str],
+    expected_modes: set[str],
+) -> Bundle:
     path = path.resolve()
     manifest = load_json(path, "audit manifest")
     require(manifest.get("schema") == MANIFEST_SCHEMA, "unexpected manifest schema")
@@ -605,8 +620,8 @@ def load_bundle(path: pathlib.Path, expected_order: str) -> Bundle:
         f"expected {expected_order} manifest",
     )
     require(
-        set(manifest.get("suites", [])) == REQUIRED_SUITES,
-        "manifest does not cover every required Milestone 6 suite",
+        set(manifest.get("suites", [])) == expected_suites,
+        f"manifest suite set is not the required {sorted(expected_suites)}",
     )
     for field in ("cases", "skips", "variants", "threads", "environment_overrides"):
         require(field in manifest, f"manifest is missing {field}")
@@ -621,15 +636,8 @@ def load_bundle(path: pathlib.Path, expected_order: str) -> Bundle:
             for record in manifest["cases"]
             if isinstance(record, dict)
         }
-        == {
-            "complete-hot",
-            "compute-only-hot",
-            "complete-cold",
-            "prepacked-b-hot",
-            "one-shot-hot",
-            "planner-regret-hot",
-        },
-        "manifest executable cases do not cover every required audit mode",
+        == expected_modes,
+        f"manifest executable modes are not the required {sorted(expected_modes)}",
     )
     require(
         isinstance(manifest.get("started_unix_seconds"), int)
@@ -696,22 +704,7 @@ def load_bundle(path: pathlib.Path, expected_order: str) -> Bundle:
         require(semantic_key not in cells, "duplicate semantic audit case")
         cells[semantic_key] = cell
         environment = report["environment"]
-        signature_fields = (
-            "os_family",
-            "architecture",
-            "compiler",
-            "compiler_flags",
-            "build_type",
-            "cpu_model",
-            "governor",
-            "frequency_policy",
-            "boost_state",
-            "capability_record",
-            "topology_record",
-            "capability_record_version",
-            "topology_record_version",
-        )
-        signature = tuple(environment.get(field) for field in signature_fields)
+        signature = environment_identity_signature(environment)
         if environment_signature is None:
             environment_signature = signature
             representative_environment = environment
@@ -743,7 +736,6 @@ def compare_bundle_identity(forward: Bundle, reverse: Bundle) -> None:
         "runner_sha256",
         "benchmark_source_commit",
         "benchmark_seed",
-        "suites",
         "variants",
         "threads",
         "warmup",
@@ -757,11 +749,18 @@ def compare_bundle_identity(forward: Bundle, reverse: Bundle) -> None:
             forward.manifest.get(field) == reverse.manifest.get(field),
             f"forward/reverse identity differs for {field}",
         )
-    forward_keys = {case_semantic_key(record) for record in forward.manifest["cases"]}
+    forward_subset_records = [
+        record
+        for record in forward.manifest["cases"]
+        if record["mode"] in REVERSE_MODES
+    ]
+    forward_keys = {
+        case_semantic_key(record) for record in forward_subset_records
+    }
     reverse_keys = {case_semantic_key(record) for record in reverse.manifest["cases"]}
     require(
         forward_keys == reverse_keys,
-        "forward/reverse manifests do not contain the same semantic case set",
+        "reverse manifest is not the exact complete/oneshot forward subset",
     )
     normalize_skips = lambda bundle: {
         (
@@ -775,22 +774,20 @@ def compare_bundle_identity(forward: Bundle, reverse: Bundle) -> None:
         for skip in bundle.manifest["skips"]
     }
     require(
-        normalize_skips(forward) == normalize_skips(reverse),
-        "forward/reverse manifests do not contain the same predeclared skips",
-    )
-    require(
-        forward.states["passed"] + forward.states["reused"]
-        == reverse.states["passed"] + reverse.states["reused"]
-        and forward.states["rejected"] == reverse.states["rejected"]
-        and forward.rejection_categories == reverse.rejection_categories,
-        "forward/reverse accepted/rejected accounting differs",
+        {
+            item
+            for item in normalize_skips(forward)
+            if item[4] in REVERSE_MODES
+        }
+        == normalize_skips(reverse),
+        "reverse predeclared skips are not the exact complete/oneshot subset",
     )
     forward_status = {
         case_semantic_key(record): (
             "accepted" if record["state"] in {"passed", "reused"} else "rejected",
             record.get("rejection_category"),
         )
-        for record in forward.manifest["cases"]
+        for record in forward_subset_records
     }
     reverse_status = {
         case_semantic_key(record): (
@@ -801,11 +798,19 @@ def compare_bundle_identity(forward: Bundle, reverse: Bundle) -> None:
     }
     require(
         forward_status == reverse_status,
-        "forward/reverse per-case execution status differs",
+        "reverse complete/oneshot per-case execution status differs",
     )
     require(
-        set(forward.cells) == set(reverse.cells),
-        "forward/reverse accepted raw case sets differ",
+        environment_identity_signature(forward.environment)
+        == environment_identity_signature(reverse.environment),
+        "forward/reverse benchmark environments differ",
+    )
+    require(
+        {
+            key for key in forward.cells if key[5] in REVERSE_MODES
+        }
+        == set(reverse.cells),
+        "reverse accepted raw cells are not the exact complete/oneshot subset",
     )
 
 
@@ -813,9 +818,9 @@ def pair_cells(forward: Bundle, reverse: Bundle | None) -> dict[tuple, EvidenceC
     if reverse is None:
         return forward.cells
     compare_bundle_identity(forward, reverse)
-    paired: dict[tuple, EvidenceCell] = {}
-    for key, first in forward.cells.items():
-        second = reverse.cells[key]
+    paired = dict(forward.cells)
+    for key, second in reverse.cells.items():
+        first = forward.cells[key]
         require(
             first.actual_threads == second.actual_threads
             and first.placement == second.placement
@@ -867,13 +872,42 @@ def safe_text(value: object) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
+def base_topology_record(environment: dict) -> str:
+    return str(environment.get("topology_record", "")).splitlines()[0]
+
+
+def base_capability_record(environment: dict) -> str:
+    return str(environment.get("capability_record", "")).split(
+        " planner_probe=", 1
+    )[0]
+
+
+def environment_identity_signature(environment: dict) -> tuple:
+    fields = (
+        "os_family",
+        "architecture",
+        "compiler",
+        "compiler_flags",
+        "build_type",
+        "cpu_model",
+        "governor",
+        "frequency_policy",
+        "boost_state",
+        "capability_record",
+        "capability_record_version",
+        "topology_record_version",
+    )
+    return (*tuple(environment.get(field) for field in fields), base_topology_record(environment))
+
+
 def render_report(
     forward: Bundle, reverse: Bundle | None, cells: dict[tuple, EvidenceCell]
 ) -> str:
     manifest = forward.manifest
     environment = forward.environment
     direction = (
-        "paired stable-forward/stable-reverse"
+        "complete/oneshot paired stable-forward/stable-reverse; "
+        "diagnostic/prepack/regret stable-forward only"
         if reverse is not None
         else "stable-forward only"
     )
@@ -885,8 +919,10 @@ def render_report(
             "JSON remains external and untracked."
         ),
         (
-            "Timing entries are arithmetic midpoints of run-order medians with "
-            "the explicit `[minimum, maximum]` direction range."
+            "Complete-hot and one-shot timing entries are arithmetic midpoints "
+            "of run-order medians with the explicit `[minimum, maximum]` "
+            "direction range. Diagnostic, prepack, and regret entries remain "
+            "stable-forward only."
             if reverse is not None
             else "Timing entries use one stable-forward run; `[minimum, maximum]` "
             "therefore repeats that single median."
@@ -948,11 +984,14 @@ def render_report(
             ),
             (
                 f"- Capability record: "
-                f"{safe_text(environment.get('capability_record', 'unknown'))}"
+                f"{safe_text(base_capability_record(environment) or 'unknown')}"
             ),
             (
-                f"- Topology record: "
-                f"{safe_text(environment.get('topology_record', 'unknown'))}"
+                f"- Topology: logical={environment.get('logical_processors', 'unknown')}, "
+                f"physical={environment.get('physical_cores', 'unknown')}, "
+                f"NUMA nodes={environment.get('numa_nodes', 'unknown')}, "
+                f"record SHA-256="
+                f"`{hashlib.sha256(base_topology_record(environment).encode()).hexdigest()}`"
             ),
             "",
         ]
@@ -1041,6 +1080,11 @@ def render_report(
         for cell in cells.values()
         if cell.mode == "complete-hot"
     }
+    forward_complete_lookup = {
+        (cell.shape, cell.variant, cell.requested_threads): cell
+        for cell in forward.cells.values()
+        if cell.mode == "complete-hot"
+    }
     one_shot_ratios = []
     for cell in cells.values():
         if cell.mode != "one-shot-hot":
@@ -1078,7 +1122,7 @@ def render_report(
     for cell in cells.values():
         if cell.mode != "prepacked-b-hot":
             continue
-        baseline = complete_lookup.get(
+        baseline = forward_complete_lookup.get(
             (cell.shape, cell.variant, cell.requested_threads)
         )
         if (
@@ -1133,7 +1177,7 @@ def render_report(
         ratios = []
         mode_cells = [cell for cell in cells.values() if cell.mode == mode]
         for cell in mode_cells:
-            baseline = complete_lookup.get(
+            baseline = forward_complete_lookup.get(
                 (cell.shape, cell.variant, cell.requested_threads)
             )
             if (
@@ -1272,10 +1316,18 @@ def main() -> int:
     output = pathlib.Path(args.markdown_out)
     try:
         forward = load_bundle(
-            pathlib.Path(args.forward_manifest), "stable-forward"
+            pathlib.Path(args.forward_manifest),
+            "stable-forward",
+            REQUIRED_SUITES,
+            FORWARD_MODES,
         )
         reverse = (
-            load_bundle(pathlib.Path(args.reverse_manifest), "stable-reverse")
+            load_bundle(
+                pathlib.Path(args.reverse_manifest),
+                "stable-reverse",
+                REVERSE_SUITES,
+                REVERSE_MODES,
+            )
             if args.reverse_manifest
             else None
         )

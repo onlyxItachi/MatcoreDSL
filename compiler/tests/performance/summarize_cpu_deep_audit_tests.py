@@ -286,6 +286,12 @@ def build_bundle(directory: pathlib.Path, reverse: bool) -> pathlib.Path:
         ("compute-only-hot", NATIVE, 1, 1, 0.0015 * direction_scale),
         ("planner-regret-hot", "auto", 1, 1, 0.002 * direction_scale),
     ]
+    if reverse:
+        specifications = [
+            specification
+            for specification in specifications
+            if specification[0] in {"complete-hot", "one-shot-hot"}
+        ]
     records = []
     for index, (mode, variant, threads, lhs_sequence, seconds) in enumerate(
         specifications
@@ -353,14 +359,18 @@ def build_bundle(directory: pathlib.Path, reverse: bool) -> pathlib.Path:
         "started_unix_seconds": 100,
         "finished_unix_seconds": 200,
         "benchmark": "/synthetic/absolute/path/matcore-bench",
-        "suites": [
-            "cold",
-            "complete",
-            "compute",
-            "oneshot",
-            "prepacked",
-            "regret",
-        ],
+        "suites": (
+            ["complete", "oneshot"]
+            if reverse
+            else [
+                "cold",
+                "complete",
+                "compute",
+                "oneshot",
+                "prepacked",
+                "regret",
+            ]
+        ),
         "variants": [NATIVE, PARALLEL, EXTERNAL],
         "threads": [1, 2, 4],
         "case_order": "stable-reverse" if reverse else "stable-forward",
@@ -431,10 +441,11 @@ def main() -> int:
         output = root / "sanitized report.md"
         summarize(summarizer, forward, reverse, output)
         report = output.read_text(encoding="utf-8")
-        assert "paired stable-forward/stable-reverse" in report
+        assert "complete/oneshot paired stable-forward/stable-reverse" in report
+        assert "diagnostic/prepack/regret stable-forward only" in report
         assert "3.000 [2.000, 4.000]" in report
         assert "| medium-square | 1 | 0.500 |" in report
-        assert "| 4 | 1 | 1.500" in report
+        assert "| 4 | 1 | 1.000" in report
         assert "median diagnostic/hot ratio: 2.000" in report
         assert "median diagnostic/hot ratio: 0.750" in report
         assert "| 1 | 2.000 | 2.000 | 2.000 | 0 |" in report
@@ -497,6 +508,78 @@ def main() -> int:
             expected=2,
         )
         assert "incomplete bundle" in rejected.stderr
+
+        missing_dir = root / "missing-reverse-case"
+        shutil.copytree(reverse_dir, missing_dir)
+        missing_manifest = missing_dir / "manifest.json"
+        missing = json.loads(missing_manifest.read_text(encoding="utf-8"))
+        missing["cases"].pop(
+            next(
+                index
+                for index, record in enumerate(missing["cases"])
+                if record["state"] in {"passed", "reused"}
+                and record["mode"] == "complete-hot"
+            )
+        )
+        missing["plan_sha256"] = plan_digest(missing)
+        missing_manifest.write_text(
+            json.dumps(missing, indent=2) + "\n", encoding="utf-8"
+        )
+        rejected = summarize(
+            summarizer, forward, missing_manifest, root / "missing.md", expected=2
+        )
+        assert "exact complete/oneshot forward subset" in rejected.stderr
+
+        extra_dir = root / "extra-reverse-case"
+        shutil.copytree(reverse_dir, extra_dir)
+        extra_manifest = extra_dir / "manifest.json"
+        extra = json.loads(extra_manifest.read_text(encoding="utf-8"))
+        forward_data = json.loads(forward.read_text(encoding="utf-8"))
+        extra_record = next(
+            dict(record)
+            for record in forward_data["cases"]
+            if record["mode"] == "prepacked-b-hot"
+        )
+        source_raw = forward_dir / extra_record["raw_file"]
+        extra_record["raw_file"] = "extra-prepacked.json"
+        shutil.copy2(source_raw, extra_dir / extra_record["raw_file"])
+        extra_record["sha256"] = file_sha256(extra_dir / extra_record["raw_file"])
+        extra_record["index"] = len(extra["cases"])
+        extra["cases"].append(extra_record)
+        extra["plan_sha256"] = plan_digest(extra)
+        extra_manifest.write_text(
+            json.dumps(extra, indent=2) + "\n", encoding="utf-8"
+        )
+        rejected = summarize(
+            summarizer, forward, extra_manifest, root / "extra.md", expected=2
+        )
+        assert "executable modes are not the required" in rejected.stderr
+
+        mismatch_dir = root / "mismatched-reverse-status"
+        shutil.copytree(reverse_dir, mismatch_dir)
+        mismatch_manifest = mismatch_dir / "manifest.json"
+        mismatch = json.loads(mismatch_manifest.read_text(encoding="utf-8"))
+        mismatch_record = next(
+            record
+            for record in mismatch["cases"]
+            if record["state"] in {"passed", "reused"}
+            and record["mode"] == "complete-hot"
+        )
+        mismatch_record["state"] = "rejected"
+        mismatch_record.pop("sha256")
+        mismatch_record["returncode"] = 2
+        mismatch_record["rejection_category"] = "synthetic-status-mismatch"
+        mismatch_manifest.write_text(
+            json.dumps(mismatch, indent=2) + "\n", encoding="utf-8"
+        )
+        rejected = summarize(
+            summarizer,
+            forward,
+            mismatch_manifest,
+            root / "mismatch.md",
+            expected=2,
+        )
+        assert "per-case execution status differs" in rejected.stderr
 
     print("deep-audit summary contract: synthetic authentication checks passed")
     return 0
