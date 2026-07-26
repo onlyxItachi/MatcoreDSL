@@ -386,6 +386,26 @@ def main() -> int:
                 "user-asserted benchmark provenance was accepted"
             )
 
+        missing_scope = copy.deepcopy(raw_document)
+        del missing_scope["results"][0]["cache_mode"]
+        missing_scope_path = temporary_path / "missing result scope.json"
+        missing_scope_path.write_text(
+            json.dumps(missing_scope), encoding="utf-8"
+        )
+        try:
+            module.authenticate_report(
+                missing_scope_path,
+                case,
+                first["source_commit"],
+                physical_cores,
+            )
+        except ValueError as error:
+            assert "result cache_mode differs" in str(error)
+        else:
+            raise AssertionError(
+                "result missing redundant timing scope was accepted"
+            )
+
         substituted = copy.deepcopy(raw_document)
         substituted["results"][0]["planner_mode"] = "forced"
         substituted["results"][0]["requested_variant"] = module.PACKED_AVX2

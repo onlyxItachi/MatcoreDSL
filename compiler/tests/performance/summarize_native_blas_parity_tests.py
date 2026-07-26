@@ -599,6 +599,28 @@ def main() -> int:
             encoding="utf-8",
         )
 
+        missing_scope = json.loads(pristine_raw.decode("utf-8"))
+        del missing_scope["results"][0]["cache_mode"]
+        first_raw.write_text(
+            json.dumps(missing_scope, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        first_record["sha256"] = sha256(first_raw)
+        forward.write_text(
+            json.dumps(forward_manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        rejected_scope = execute_summary(
+            summarizer_path, forward, reverse, output, expected=2
+        )
+        assert "timing scope contradicts" in rejected_scope.stderr
+        first_raw.write_bytes(pristine_raw)
+        first_record["sha256"] = sha256(first_raw)
+        forward.write_text(
+            json.dumps(forward_manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
         # Updating the manifest's raw digest does not authorize internally
         # inconsistent timing fields.
         timing_tamper = json.loads(pristine_raw.decode("utf-8"))

@@ -953,11 +953,11 @@ def authenticate_report(
     )
     require(
         result.get("timing_rejection_reason") in {"", None}
-        and result.get("cache_mode") in {None, expected_configuration["cache_mode"]}
+        and result.get("cache_mode") == expected_configuration["cache_mode"]
         and result.get("allocation_mode")
-        in {None, expected_configuration["allocation_mode"]}
+        == expected_configuration["allocation_mode"]
         and result.get("packing_mode")
-        in {None, expected_configuration["packing_mode"]},
+        == expected_configuration["packing_mode"],
         "raw result timing scope contradicts its configuration",
     )
     actual_threads = result.get("actual_threads")

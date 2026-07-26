@@ -759,6 +759,11 @@ def authenticate_report(
         raise ValueError("timing, correctness, or final output is unauthenticated")
     if int(result.get("untimed_validation_executions_checked", 0)) < 1:
         raise ValueError("untimed correctness replay is missing")
+    for field in ("cache_mode", "allocation_mode", "packing_mode"):
+        if result.get(field) != configuration[field]:
+            raise ValueError(
+                f"result {field} differs from the authenticated configuration"
+            )
 
     smt_policy, affinity = case_placement(case)
     if (
