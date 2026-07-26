@@ -23,10 +23,13 @@ concrete:
   8.0 ms to 11.0 ms. The cache/barrier cost exceeded the small serial packing
   share.
 
-The accepted policy is therefore deliberately narrow: cooperatively prepare B
-only when execution uses more than one worker, `M <= MC` (`MC=128`), the packed
-image is at least 4 MiB, and more than one NC panel exists. This is the audited
-short-wide region, not a universal packing rule.
+The integration review narrowed the accepted policy twice after a boundary
+matrix exposed non-robust cells. Cooperative preparation now requires more
+than one worker, `M <= 64`, `N >= 4096`, `K >= 1024`, a packed image of at
+least 4 MiB, and more than one NC panel. It then admits only either
+`K >= 4096`, or the very-wide boundary `M <= 32 && N >= 8192`. The rejected
+`M=128` and `32x4096x1024` cells retain serial B preparation. This is a
+measured short-wide rule, not a universal packing policy.
 
 ## Implementation
 
@@ -35,13 +38,15 @@ short-wide region, not a universal packing rule.
   introduced.
 - Persistent workers pack disjoint NC panels directly into their deterministic
   final offsets. A release/acquire phase barrier publishes the complete
-  read-only image before any worker computes.
+  read-only image before any worker computes; an abort flag prevents a future
+  packing invariant failure from stranding peers at the barrier.
 - Packing and compute share one execution-context submission. The callback
   preserves the existing cyclic output-task assignment, K is not split, and C
   ownership remains disjoint.
-- The common v1 `CpuPackedBViewV1` identity, dimensions, packed extent, and
-  provenance are reconstructed before the already-existing backend validator
-  consumes the view.
+- Serial AVX2, serial AVX-512, and cooperative preparation use one private
+  `cpu_packed_b_format.h` contract for block layout, view construction,
+  dimensions, extent, alignment, and provenance. Parallel execution validates
+  that common metadata before submitting work.
 - The private runtime report exposes `packed_b_threads`; zero means the
   submitting thread used the existing serial preparation path.
 - Preflight workspace, alignment, overlap, ISA, thread-count, and nesting
@@ -49,10 +54,13 @@ short-wide region, not a universal packing rule.
 
 ## Correctness and race validation
 
-The focused test adds a `64x1040x1009` case. It crosses NC and KC tails, exceeds
-the 4 MiB gate, requires four workers, compares with the independent
-double-precision oracle, checks output guards, checks `packed_b_threads == 4`,
-and proves packing did not add a second pool submission.
+The focused test activates both AVX2 and AVX-512 at `32x8192x1024`, compares
+each with the independent double-precision oracle, checks output guards,
+checks `packed_b_threads == 4`, and proves packing did not add a second pool
+submission. Separate AVX2 `65x4096x1024` and AVX-512 `32x4096x1024`
+boundaries authenticate `packed_b_threads == 0`. The existing packed-backend
+tests continue to validate KC/NC tails and malformed prepacked views through
+the same shared format helper.
 
 | Configuration | Result |
 | --- | --- |
@@ -100,12 +108,41 @@ Milestone 7 four-thread 3.0x target. Cooperative B packing removes one
 authenticated serial bottleneck; it does not establish native/OpenBLAS parity
 or solve remaining microkernel, A-packing, placement, and scheduling limits.
 
-Raw JSON remains untracked under
-`/home/hamza-usta/.tmp/m7-parallel-performance/`.
+## Integration review and final boundary calibration
+
+An independent review rejected the initial broad activation rule and the
+duplicated format/provenance implementation. Commits `648ef7d`, `4462677`, and
+`4719528` introduced the shared format contract, both-ISA activation tests,
+abortable phase barrier, and the final measured gate described above.
+
+The final clean-commit ABBA confirmation used the same guarded complete-call
+contract with 3 warmups and 7 samples. Four-thread cells were constrained to
+logical CPUs 0-3 and 12-thread cells to logical CPUs 0-11. Baseline remained
+the pre-optimization `6a26994849aadf` build. Ratios below are
+`candidate_GFLOP/s / baseline_GFLOP/s`, each formed from the median of the two
+outer or inner ABBA observations.
+
+| Retained cell | 4 threads | 12 threads |
+| --- | ---: | ---: |
+| `32x8192x1024`, AVX2 | 1.118x | 1.438x |
+| `64x4096x4096`, AVX2 | 1.715x | 1.879x |
+| `32x8192x1024`, AVX-512 | 1.186x | 1.526x |
+| `64x4096x4096`, AVX-512 | 1.720x | 1.809x |
+
+The retained-cell median was 1.621x and the minimum was 1.118x on this host.
+The rejected boundary matrix included `M=128` cells and
+`32x4096x1024`; observed ratios ranged down to 0.816x, which is why those
+regions do not activate the optimization. These are host-bounded calibration
+results, not a claim for other processors.
+
+Final raw JSON is untracked outside every Git worktree under
+`/var/tmp/MatcoreDSL-m7-cooperative-b-final-clean.4VqD1X`.
 
 ## Handoff
 
-Implementation commit: `a008a57e84af17bef7113b108d34141f8a7e3ed7`.
+Initial implementation commit: `a008a57e84af17bef7113b108d34141f8a7e3ed7`.
+Integrated implementation commits: `d13d264`, `648ef7d`, `4462677`, and
+`4719528`.
 
 The integration owner should rerun the complete Release/Debug/sanitizer and
 Windows matrix after resolving overlap with concurrent planner/runtime
