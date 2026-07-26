@@ -244,6 +244,45 @@ def main() -> int:
         rejected_digest = run([*base_command, "--resume"], expected=2)
         assert "resume raw-file digest mismatch" in rejected_digest.stderr
 
+    with tempfile.TemporaryDirectory(
+        prefix="matcore deep audit rejection "
+    ) as temporary:
+        output = pathlib.Path(temporary) / "classified"
+        run(
+            [
+                sys.executable,
+                str(runner),
+                "--bench",
+                str(bench),
+                "--output-dir",
+                str(output),
+                "--suites",
+                "complete",
+                "--variants",
+                "cpu.native-parallel.avx2-fma.f32.v1",
+                "--threads",
+                "2",
+                "--case-order",
+                "stable-reverse",
+                "--warmup",
+                "0",
+                "--iterations",
+                "1",
+                "--timer-floor-us",
+                "1",
+                "--limit",
+                "1",
+            ]
+        )
+        rejection_manifest = json.loads(
+            (output / "manifest.json").read_text(encoding="utf-8")
+        )
+        assert rejection_manifest["cases"][0]["state"] == "rejected"
+        assert (
+            rejection_manifest["cases"][0]["rejection_category"]
+            == "parallel-output-macro-tile-count"
+        )
+
     rejected = run(
         [
             sys.executable,
