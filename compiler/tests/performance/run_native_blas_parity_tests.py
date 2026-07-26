@@ -89,6 +89,11 @@ def main() -> int:
     bench = pathlib.Path(args.bench).resolve()
     repository = runner.parents[3]
     module = load_runner(runner)
+    assert module.MANIFEST_VERSION == 3
+    assert module.PARTITION_INTERPRETATION == {
+        "calibration": "candidate-development-and-validation",
+        "holdout": "declared-validation-not-blind",
+    }
 
     expected_calibration = {
         (96, 96, 96),
@@ -101,7 +106,7 @@ def main() -> int:
         (63, 65, 67),
         (255, 257, 259),
     }
-    expected_holdout = {
+    expected_validation = {
         (128, 128, 128),
         (256, 256, 256),
         (512, 512, 512),
@@ -127,7 +132,7 @@ def main() -> int:
         spec.shape
         for spec in module.PARITY_SHAPES
         if spec.partition == "holdout"
-    } == expected_holdout
+    } == expected_validation
 
     suites = {
         "parity",

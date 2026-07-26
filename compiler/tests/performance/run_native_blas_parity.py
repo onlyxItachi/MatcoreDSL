@@ -25,7 +25,7 @@ import time
 
 
 BENCHMARK_SCHEMA_VERSION = 6
-MANIFEST_VERSION = 2
+MANIFEST_VERSION = 3
 DEFAULT_SEED = 0x4D4154434F524532
 DEFAULT_WARMUP = 5
 DEFAULT_ITERATIONS = 11
@@ -53,9 +53,16 @@ class ShapeSpec:
     shape: tuple[int, int, int]
 
 
-# This is intentionally explicit rather than derived from the Milestone 6
-# matrix.  It is the frozen calibration/holdout authority reviewed before any
-# Milestone 7 candidate measurement.
+# This remains explicit rather than being derived from the Milestone 6 matrix.
+# The string "holdout" is retained as a stable case-key identifier, but it does
+# not mean blind holdout: several shapes had already been used in candidate
+# experiments before this contract was committed. Manifest v3 records that
+# corrected interpretation and prevents older evidence from being reused.
+PARTITION_INTERPRETATION = {
+    "calibration": "candidate-development-and-validation",
+    "holdout": "declared-validation-not-blind",
+}
+
 PARITY_SHAPES: tuple[ShapeSpec, ...] = (
     ShapeSpec("calibration", "medium-square", (96, 96, 96)),
     ShapeSpec("calibration", "medium-square", (192, 192, 192)),
@@ -900,11 +907,12 @@ def plan_fingerprint(
     return canonical_sha256(
         {
             "schema": "matcore.native-blas-parity.plan",
-            "version": 1,
+            "version": 2,
             "suites": sorted(suites),
             "physical_cores": physical_cores,
             "thread_strata": list(thread_strata(physical_cores)),
             "parallel_thread_plan": parallel_thread_plan(physical_cores),
+            "partition_interpretation": PARTITION_INTERPRETATION,
             "case_order": case_order,
             "benchmark": str(executable),
             "benchmark_schema_version": BENCHMARK_SCHEMA_VERSION,
@@ -962,6 +970,7 @@ def manifest_value(
         "physical_cores": physical_cores,
         "thread_strata": list(thread_strata(physical_cores)),
         "parallel_thread_plan": parallel_thread_plan(physical_cores),
+        "partition_interpretation": PARTITION_INTERPRETATION,
         "case_order": case_order,
         "warmup": DEFAULT_WARMUP,
         "iterations": DEFAULT_ITERATIONS,
@@ -1090,6 +1099,7 @@ def main() -> int:
             "benchmark_seed": DEFAULT_SEED,
             "physical_cores": args.physical_cores,
             "thread_strata": list(threads),
+            "partition_interpretation": PARTITION_INTERPRETATION,
         }
         for field, expected in expected_identity.items():
             if prior_manifest.get(field) != expected:

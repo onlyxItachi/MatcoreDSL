@@ -394,6 +394,7 @@ def write_bundle(
         "physical_cores": physical_cores,
         "thread_strata": list(summary.thread_strata(physical_cores)),
         "parallel_thread_plan": parallel_plan,
+        "partition_interpretation": summary.PARTITION_INTERPRETATION,
         "case_order": order,
         "warmup": summary.WARMUP_ITERATIONS,
         "iterations": summary.MEASURED_ITERATIONS,
@@ -444,6 +445,11 @@ def main() -> int:
     summarizer_path = pathlib.Path(args.summarizer).resolve()
     summary = load_module("matcore_native_parity_summary", summarizer_path)
     runner, runner_path = summary.load_runner()
+    assert summary.MANIFEST_VERSION == 3
+    assert summary.SUMMARY_VERSION == 2
+    assert runner.PARTITION_INTERPRETATION == (
+        summary.PARTITION_INTERPRETATION
+    )
     repository = runner_path.parents[3]
     source_commit = run(
         ["git", "-C", str(repository), "rev-parse", "HEAD"]
@@ -497,11 +503,17 @@ def main() -> int:
             (output / "summary.json").read_text(encoding="utf-8")
         )
         assert summary_json["schema"] == summary.SUMMARY_SCHEMA
-        assert summary_json["version"] == 1
+        assert summary_json["version"] == 2
+        assert summary_json["partition_interpretation"] == {
+            "calibration": "candidate-development-and-validation",
+            "holdout": "declared-validation-not-blind",
+        }
         assert summary_json["verdict"] == "passed"
         assert all(item["passed"] for item in summary_json["criteria"])
         assert summary_json["coverage"]["missing_comparisons"] == []
         first_markdown = (output / "summary.md").read_bytes()
+        assert b"validation-not-blind" in first_markdown
+        assert b"No unbiased holdout claim is made" in first_markdown
         first_json = (output / "summary.json").read_bytes()
         execute_summary(
             summarizer_path,

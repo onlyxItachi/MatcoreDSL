@@ -1,6 +1,7 @@
 # Native BLAS parity methodology v1
 
-Status: frozen before Milestone 7 candidate measurements.
+Status: corrected before final Milestone 7 acceptance. The original blind
+holdout claim is withdrawn; the complete declared matrix remains unchanged.
 
 This contract defines the host-bounded evidence required to evaluate native
 MDSLC F32 GEMM against the configured OpenBLAS provider. It does not claim
@@ -32,11 +33,27 @@ regression controls. They are not eligible to establish native parity.
 Compute-only timing remains a diagnostic and is never compared with a complete
 CBLAS call.
 
-## Frozen shape partitions
+## Declared shape partitions and chronology correction
 
-Candidate design and static planner rules may use the calibration partition.
-The holdout partition must not be used to choose a candidate or threshold.
-Both partitions are reported.
+The identifiers `calibration` and `holdout` remain in case keys so evidence
+paths and the complete declared matrix stay stable. They must not be
+misinterpreted as a blind experimental split.
+
+Independent completion review reconstructed the commit chronology and found
+that candidate AVX-512 and AVX2 measurements had already used several shapes
+later labeled `holdout` before this methodology document was committed. A
+cooperative-packing prototype also used `32x8192x1024` to narrow a threshold.
+The latter threshold branch was removed before final evidence collection.
+Manifest v3 records:
+
+```text
+calibration -> candidate-development-and-validation
+holdout     -> declared-validation-not-blind
+```
+
+Both partitions are still reported in full. No shape was removed or moved to
+improve the result, but Milestone 7 makes no unbiased-holdout claim. This
+methodology limitation is part of the final verdict.
 
 ### Calibration
 
@@ -47,7 +64,7 @@ Both partitions are reported.
 | short-wide | `64x4096x4096`, `128x4096x1024` |
 | tail-heavy | `63x65x67`, `255x257x259` |
 
-### Holdout
+### Declared validation (`holdout` case-key identifier)
 
 | Family | Shapes `(M,N,K)` |
 | --- | --- |
@@ -65,7 +82,8 @@ reported but excluded from the medium/large parity aggregate.
 
 Every retained result must:
 
-1. come from a clean, exact source commit and record the benchmark-binary and
+1. use manifest v3, record the corrected partition interpretation, come from
+   a clean exact source commit, and record the benchmark-binary and
    runner digests;
 2. use the same seeded inputs and double-precision correctness oracle;
 3. authenticate the final timed output;

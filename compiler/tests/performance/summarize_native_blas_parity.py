@@ -3,7 +3,7 @@
 """Authenticate, pair, and sanitize Milestone 7 native-BLAS parity evidence.
 
 The benchmark runner keeps raw JSON outside Git.  This summarizer verifies the
-two complete stable-order bundles against the frozen manifest-v2 authority,
+two complete stable-order bundles against the corrected manifest-v3 authority,
 reconstructs every timing and planner-regret aggregate, and emits only
 deterministic path-free Markdown/JSON suitable for review.
 """
@@ -25,11 +25,15 @@ from typing import Iterable
 
 
 MANIFEST_SCHEMA = "matcore.native-blas-parity.manifest"
-MANIFEST_VERSION = 2
+MANIFEST_VERSION = 3
 BENCHMARK_SCHEMA = "matcore.benchmark.cpu.gemm"
 BENCHMARK_VERSION = 6
 SUMMARY_SCHEMA = "matcore.native-blas-parity.summary"
-SUMMARY_VERSION = 1
+SUMMARY_VERSION = 2
+PARTITION_INTERPRETATION = {
+    "calibration": "candidate-development-and-validation",
+    "holdout": "declared-validation-not-blind",
+}
 BENCHMARK_SEED = 0x4D4154434F524532
 WARMUP_ITERATIONS = 5
 MEASURED_ITERATIONS = 11
@@ -316,7 +320,7 @@ def expected_parallel_thread_plan(
 
 
 def expected_cases(runner: object, physical_cores: int) -> list:
-    """Independently reconstruct the complete manifest-v2 matrix."""
+    """Independently reconstruct the complete manifest-v3 matrix."""
     cases = []
     threads = thread_strata(physical_cores)
     for spec in runner.PARITY_SHAPES:
@@ -421,7 +425,7 @@ def expected_cases(runner: object, physical_cores: int) -> list:
     keys = [case.key for case in cases]
     require(
         len(keys) == len(set(keys)),
-        "independent manifest-v2 authority produced duplicate case keys",
+        "independent manifest-v3 authority produced duplicate case keys",
     )
     return cases
 
@@ -436,11 +440,12 @@ def reconstructed_plan_digest(
     return canonical_sha256(
         {
             "schema": "matcore.native-blas-parity.plan",
-            "version": 1,
+            "version": 2,
             "suites": sorted(REQUIRED_SUITES),
             "physical_cores": physical_cores,
             "thread_strata": list(thread_strata(physical_cores)),
             "parallel_thread_plan": parallel_plan,
+            "partition_interpretation": PARTITION_INTERPRETATION,
             "case_order": case_order,
             "benchmark": str(benchmark),
             "benchmark_schema_version": BENCHMARK_VERSION,
@@ -999,7 +1004,7 @@ def authenticate_report(
             and task_count == row_tasks * column_tasks
             and task_count
             == parallel_task_capacity(shape, requested_threads),
-            "parallel task geometry differs from manifest-v2 capacity",
+            "parallel task geometry differs from manifest-v3 capacity",
         )
     else:
         require(
@@ -1117,7 +1122,7 @@ def load_bundle(path: pathlib.Path, expected_order: str) -> Bundle:
     )
     require(
         manifest.get("version") == MANIFEST_VERSION,
-        "native-BLAS parity summary requires manifest v2",
+        "native-BLAS parity summary requires manifest v3",
     )
     require(
         manifest.get("benchmark_schema_version") == BENCHMARK_VERSION,
@@ -1131,7 +1136,7 @@ def load_bundle(path: pathlib.Path, expected_order: str) -> Bundle:
         and manifest.get("iterations") == MEASURED_ITERATIONS
         and manifest.get("timer_floor_us") == TIMER_FLOOR_US
         and manifest.get("max_memory_mib") == MAX_MEMORY_MIB,
-        "manifest timing, seed, or memory contract differs from frozen v2",
+        "manifest timing, seed, or memory contract differs from frozen v3",
     )
     require(
         manifest.get("environment_overrides") == PROVIDER_ENVIRONMENT,
@@ -1167,11 +1172,23 @@ def load_bundle(path: pathlib.Path, expected_order: str) -> Bundle:
     )
 
     runner, runner_path = load_runner()
+    require(
+        getattr(runner, "PARTITION_INTERPRETATION", None)
+        == PARTITION_INTERPRETATION,
+        "runner partition interpretation differs from the corrected "
+        "validation contract",
+    )
+    require(
+        manifest.get("partition_interpretation")
+        == PARTITION_INTERPRETATION,
+        "manifest partition interpretation differs from the corrected "
+        "validation contract",
+    )
     benchmark = authenticate_source_and_tools(manifest, runner_path)
     parallel_plan = expected_parallel_thread_plan(runner, physical_cores)
     require(
         manifest.get("parallel_thread_plan") == parallel_plan,
-        "manifest parallel-thread plan differs from v2 task capacity",
+        "manifest parallel-thread plan differs from v3 task capacity",
     )
     cases = expected_cases(runner, physical_cores)
     if expected_order == "stable-reverse":
@@ -1179,7 +1196,7 @@ def load_bundle(path: pathlib.Path, expected_order: str) -> Bundle:
     records = manifest.get("cases")
     require(
         isinstance(records, list) and len(records) == len(cases),
-        "manifest cases differ from the complete frozen v2 matrix",
+        "manifest cases differ from the complete frozen v3 matrix",
     )
     require(
         manifest.get("plan_sha256")
@@ -1206,7 +1223,7 @@ def load_bundle(path: pathlib.Path, expected_order: str) -> Bundle:
         for field, expected in expected_record_fields(case).items():
             require(
                 record.get(field) == expected,
-                f"manifest cases differ from frozen v2 matrix at {case.key}",
+                f"manifest cases differ from frozen v3 matrix at {case.key}",
             )
         require(
             record["key"] not in seen_keys,
@@ -1758,6 +1775,7 @@ def assessment(
         "schema": SUMMARY_SCHEMA,
         "version": SUMMARY_VERSION,
         "verdict": verdict,
+        "partition_interpretation": PARTITION_INTERPRETATION,
         "source_commit": forward.manifest["source_commit"],
         "benchmark_binary_sha256": forward.manifest[
             "benchmark_binary_sha256"
@@ -1846,6 +1864,12 @@ def render_markdown(summary: dict) -> str:
         "",
         "Native parity counts only native MDSLC kernels. Automatic plans that "
         "select OpenBLAS do not establish native parity.",
+        "",
+        "The case-key partition named `holdout` is retained for evidence "
+        "compatibility, but it is **validation-not-blind**. Candidate "
+        "experiments touched members of that partition before the methodology "
+        "freeze. No unbiased holdout claim is made, and the complete declared "
+        "matrix remains reported.",
         "",
         "## Evidence identity",
         "",
