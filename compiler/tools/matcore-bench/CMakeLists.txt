@@ -156,5 +156,14 @@ if(BUILD_TESTING)
           "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/performance/run_cpu_deep_audit.py"
         --bench "$<TARGET_FILE:matcore-bench>"
     )
+
+    add_test(
+      NAME benchmark.cpu.deep_audit_summary_contract
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/performance/summarize_cpu_deep_audit_tests.py"
+        --summarizer
+          "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/performance/summarize_cpu_deep_audit.py"
+    )
   endif()
 endif()
