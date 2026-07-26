@@ -165,5 +165,17 @@ if(BUILD_TESTING)
         --summarizer
           "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/performance/summarize_cpu_deep_audit.py"
     )
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      add_test(
+        NAME benchmark.cpu.native_blas_parity_runner_contract
+        COMMAND
+          "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/performance/run_native_blas_parity_tests.py"
+          --runner
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/performance/run_native_blas_parity.py"
+          --bench "$<TARGET_FILE:matcore-bench>"
+      )
+    endif()
   endif()
 endif()
