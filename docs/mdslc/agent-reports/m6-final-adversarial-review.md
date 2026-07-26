@@ -197,3 +197,43 @@ overstating physical counters, provider placement, or performance parity and
 provides a defensible experiment queue for Milestone 7.
 
 Final review: **accepted; no unresolved high- or medium-severity finding**.
+
+## Post-review hosted-CI addendum
+
+Reviewed follow-up: `1b2768b` (`test(package): avoid ancestor-path false
+positives`)
+
+Hosted CI configured the consumer build below the repository checkout. CMake
+and Ninja therefore recorded the consumer build's own absolute path in
+generated metadata; the previous scan interpreted its checkout ancestor as a
+producer-source leak.
+
+The fix does not remove repository-path checking from the installed package or
+copied consumer source. Both are still scanned for:
+
+- the canonical repository checkout;
+- disposable producer source;
+- disposable producer build; and
+- deleted staging prefix.
+
+Only generated consumer-build metadata uses the narrower set: disposable
+producer source, producer build, and staging prefix. This is the relevant
+post-install invariant because the consumer build's own legitimate path can be
+below the checkout. Producer source and build are deleted before consumer
+configuration, and the installed prefix is rescanned after execution.
+
+Independent adversarial probes confirmed that repository paths in the installed
+prefix or copied consumer source still reject, producer paths in generated
+consumer metadata still reject, and the consumer build's own in-checkout path
+is accepted. The hosted-like OpenBLAS-disabled in-checkout tests passed:
+
+```text
+package.installed_source_inaccessible         PASS
+package.installed_source_inaccessible_safety  PASS
+```
+
+Repository hygiene and `git diff --check` also passed.
+
+Post-review verdict: **accepted; the change removes an ancestor-path false
+positive without weakening detection of producer source/build/staging
+dependencies. No new high- or medium-severity finding.**
