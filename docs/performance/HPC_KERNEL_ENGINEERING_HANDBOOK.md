@@ -37,11 +37,23 @@ parity claim, or a public API freeze.
   unprivileged `perf stat`; cycles, hardware IPC, cache/TLB events, branch
   misses, stalled cycles, APERF/MPERF, and memory-controller traffic were not
   measured. Static `llvm-mca` output is never treated as a hardware counter.
-- **measured limitation —** The reviewed first full schema-v5 collection was
-  incomplete and the independent fairness-v2 review rejected it pending
-  resume-authentication, one-shot, prepack-preparation, placement, and
-  completion fixes. This handbook therefore uses only bounded accepted
-  measurements and does not invent a completed full-matrix result.
+- **measured historical exclusion —** The first schema-v5 collection stopped
+  at case 567 and the independent fairness-v2 review rejected its resume,
+  one-shot, prepack-preparation, placement, and completeness contracts. That
+  mixed/incomplete bundle remains excluded from every final aggregate.
+- **measured —** The final homogeneous schema-v6 collection identifies source
+  commit `509ef2b775e501783dfa7f2c4aa21e91f513bd6a`, benchmark SHA-256
+  `a5a07cf06b6274aeba50a66c20713847f2d65a28ab28021e6d27e64a941c31f5`,
+  runner SHA-256
+  `be1db49ce5e82d34fc8b455d86c2fe2ad46ea5363a71b0af43b31104f1fd010d`,
+  forward manifest
+  `b3f872bd0085b15a8cd0cfcc7663af2a41f445355a3e3237c979dc52618362c0`,
+  and reverse manifest
+  `4939c0c77586e4115dfe5c1aab1ff044d716e9a5d060c9f2ef52f265634df7f8`.
+- **measured —** It contains 711 executable cases, 583 accepted forward
+  reports, 429 accepted reverse controls, 128 authenticated expected legality
+  rejections, 58 predeclared runtime-bound skips, zero reused reports, and no
+  failed or incomplete state.
 - **derived limitation —** Multi-thread native and OpenBLAS numbers are not
   parity evidence when native workers use authenticated compact physical-core
   placement while OpenBLAS uses an unbound provider team, even if requested
@@ -49,6 +61,8 @@ parity claim, or a public API freeze.
 
 Primary repository evidence:
 
+- [Authenticated CPU deep-audit evidence v1](cpu/cpu-performance-deep-audit-v1.md)
+- [CPU deep-audit findings v1](cpu/cpu-performance-deep-audit-findings-v1.md)
 - [CPU deep-audit methodology](audits/cpu-performance-deep-audit-methodology.md)
 - [GEMM data movement and packing](audits/gemm-data-movement.md)
 - [GEMM microkernel and instruction scheduling](audits/gemm-microkernel-analysis.md)
@@ -58,6 +72,26 @@ Primary repository evidence:
 - [Mature BLAS architecture comparison](audits/blas-architecture-comparison.md)
 - [Benchmark fairness audit v2](audits/benchmark-fairness-v2.md)
 - [Public API pre-freeze decision log](../api/PRE_FREEZE_DECISIONS.md)
+
+### Final authenticated aggregate
+
+- **measured —** For complete-hot, equal-placement single-thread comparisons,
+  the median fastest-native/OpenBLAS throughput ratios are 0.849 large-square,
+  0.868 medium-square, 0.884 short-wide, 0.942 small-square, 0.843 tail-heavy,
+  0.795 tall-skinny, and 1.903 vector-like.
+- **measured —** Allocation-inclusive one-shot time divided by equivalent
+  reused-workspace complete-call time is median 1.063, p95 2.425, and maximum
+  2.621 across 46 comparable cells.
+- **measured —** The prepacked-B aggregate includes one authenticated
+  preparation call. Its median amortized/complete ratios are 1.245, 0.781,
+  0.599, and 0.547 for 1, 4, 16, and 64 repeated A inputs, respectively.
+- **measured —** Comparable-placement planner regret across 24 cells is median
+  1.000, p95 1.159, and maximum 1.213; 45 candidate timings with mismatched
+  thread or placement contracts are excluded.
+- **measured limitation —** Multi-thread OpenBLAS reports configure 2, 4, or
+  12 provider threads but do not authenticate provider CPU placement. Their
+  166.482, 252.490, and 374.638 median GFLOP/s are retained only as unbound
+  diagnostics and have no native/OpenBLAS ratio.
 
 ## 1. MDSLC CPU execution architecture
 
@@ -373,6 +407,15 @@ Primary repository evidence:
 - **measured —** Automatic planning selected two-thread parallel AVX-512 for
   `129x512x512` at 0.635 ms while single-thread packed AVX-512 was fastest at
   0.553 ms, regret 1.148.
+- **measured —** In the final authenticated native-only scaling diagnostic,
+  large-square four-thread execution has median 3.279x speedup and 0.820
+  parallel efficiency over its corresponding one-thread packed-ISA baseline.
+  Twelve-thread large-square execution has median 6.108x speedup and 0.509
+  efficiency. These are native placement-matched diagnostics, not OpenBLAS
+  parity.
+- **measured —** Vector-like native scaling remains weak: median speedup is
+  1.257x at four threads and 1.256x at twelve, consistent with M-only task
+  underexposure.
 - **proposed —** Cost predicted makespan from concrete task waves and worker
   classes, and do not activate a worker whose tail band does not reduce it.
 - **proposed —** Evaluate targeted wakeups, physical-core-first placement,
@@ -434,13 +477,18 @@ Primary repository evidence:
   preparation from each timed call but retains A packing and full compute.
 - **source-backed —** Benchmark sequence mode cycles distinct, aligned A inputs
   against fixed B and independently authenticates every invocation.
-- **measured —** The fairness-v2 review found that the first runner recorded
-  steady-state prepacked execution but not one-time B preparation, so it could
-  not derive an honest amortized end-to-end total.
-- **derived —** Sequence length is not an amortization result unless both the
-  one-time preparation duration and every repeated execution are measured.
-- **proposed —** Record guarded B preparation separately and report
-  `prepare_time + repetitions*execute_time` alongside steady-state execution.
+- **measured historical exclusion —** The rejected schema-v5 runner recorded
+  steady-state prepacked execution without one-time B preparation. Its
+  purported amortization evidence is excluded.
+- **source-backed —** Schema v6 records one separately timed, authenticated B
+  preparation call, steady-state execution, and the derived amortized total
+  `prepare_time + repetitions*execute_time`.
+- **measured —** Across eight cells per sequence length, the median preparation
+  time is 7.785–8.354 ms. The amortized/complete ratio is 1.245 for one
+  execution, then 0.781, 0.599, and 0.547 for 4, 16, and 64 executions.
+- **derived —** The authenticated aggregate crosses break-even between one and
+  four executions. That is evidence for the audited fixed-B set, not a
+  universal prepacking threshold or a direct no-pack crossover.
 - **proposed —** Do not create a process-global cache. Any persistent packed
   object must be owned by an explicit context or caller, authenticate source
   identity and content generation, define invalidation and concurrency, and
@@ -460,10 +508,14 @@ Primary repository evidence:
 - **source-backed —** BLIS 2.1 separates control trees from architecture
   context, exposes pack schemas and microkernel contracts, and supplies
   separate small/skinny paths and loop-level threading choices.
-- **measured —** OpenBLAS was fastest on 26 of 30 accepted single-thread
-  calibration shapes. Native AVX2 reached 135.33 versus 154.54 GFLOP/s at
-  `1024^3`, while native won the K-shallow `4096x4096x64` case at 135.85
-  versus 123.58 GFLOP/s.
+- **measured/derived —** In the final complete comparable single-thread table,
+  OpenBLAS is faster on 30 of 35 cells. The family-median native/OpenBLAS ratio
+  is 0.849 for large square and 0.795 for tall-skinny, while native leads the
+  vector-like family at median 1.903.
+- **measured —** At `1024^3`, the fastest native result is packed AVX2 at
+  131.217 GFLOP/s versus OpenBLAS at 147.119 GFLOP/s, ratio 0.892. The two
+  weakest cells are tall-skinny `4096x64x4096` at 0.749 and
+  `8192x32x1024` at 0.750.
 - **derived —** OpenBLAS does not win because it alone reuses a packed B panel;
   MDSLC already does that. Its broader architecture/shape-specific
   implementation space is the important comparison.
@@ -497,6 +549,10 @@ Pinned upstream evidence:
 - **source-backed —** The deterministic registry records legality, rejection
   reasons, estimated cost, priority, selected variant, workspace, and
   capabilities.
+- **measured —** The final sanitized recomputation compares only candidates
+  with the selected candidate's actual thread count and placement. Across 24
+  cells it reports regret median 1.000, p95 1.159, and maximum 1.213, while
+  visibly excluding 45 mismatched candidate timings.
 - **proposed —** Add private planner inputs for shape path, kernel
   configuration, packing mode, task geometry, waves, actual worker classes,
   placement, packed-object identity, and measured/default dispatch cost.
@@ -524,18 +580,25 @@ Pinned upstream evidence:
   tall-skinny, short-wide, vector-like, tail-heavy, and repeated fixed-B
   families, with diagnostic/calibration/holdout partitions fixed before
   optimization.
-- **measured —** The first attempted full run stopped at case 567 and was
-  rejected by fairness-v2; it must not be used as a complete or parity matrix.
-- **measured —** The same review demonstrated that old resume authentication
-  could mix commits and parameters and that one-shot and prepack-preparation
-  evidence were missing from that attempted collection.
-- **proposed —** A final accepted run must authenticate the benchmark binary,
-  runner, source commit, all timing parameters, provider/environment identity,
-  normalized case plan, and every resumed report.
-- **proposed —** Balance top-level process order across forward/reverse or
-  Latin-square replicates, retain individual samples externally, publish every
-  planned cell as pass/reject/fail/skip, and exclude timer-noise points
-  visibly.
+- **measured historical exclusion —** The first schema-v5 run stopped at case
+  567 and fairness-v2 proved that its resume identity, one-shot, and
+  prepack-preparation contracts were insufficient. It remains excluded from
+  every final aggregate.
+- **source-backed —** The final schema-v6 runner authenticates the benchmark
+  binary, runner, source commit, seed, normalized case plan, environment,
+  measurement options, provider identity, and every accepted raw-file digest;
+  any identity mismatch rejects resume.
+- **measured —** The final forward collection has 583 accepted reports and no
+  reuse. Paired complete-hot/one-shot reverse control has 429 accepted reports
+  and no reuse. All failures and incomplete states are fatal to sanitization.
+- **source-backed —** Complete-hot and one-shot aggregates use arithmetic
+  midpoints of stable-forward and stable-reverse process-order medians and
+  retain their direction range. Diagnostic, prepacked-B, and regret entries
+  remain explicitly forward-only.
+- **source-backed —** Schema-v6 raw reports retain ordered normalized timing
+  samples, one-time prepack duration, complete provenance, and structured
+  rejection categories. The sanitized report publishes every planned cell as
+  passed, rejected, or predeclared skip.
 - **source-backed —** Raw JSON, logs, binaries, profiler databases, and
   disassemblies remain external or under ignored paths; only reviewed
   summaries and SHA-256 inventories belong in Git.
@@ -597,17 +660,18 @@ Pinned upstream evidence:
 
 ### Ranked findings
 
-1. **measured/source-backed — high confidence, high impact:** small-M wide
-   transient execution is dominated by per-call B preparation, padded M work,
-   and a parallel decomposition that cannot use N.
-2. **measured/source-backed — high confidence, high impact:** large parallel
-   execution is constrained by serial full-B packing, M-only 128-row tasks,
-   task-wave imbalance, all-worker wakeups, and topology-insensitive static
-   assignment.
-3. **measured/derived — high confidence, high expected AVX-512 impact:** the
-   AVX-512 kernel retains a 4x16 tile and only four accumulators, so it has the
-   same static 32-FLOP/cycle model ceiling and only a small measured advantage
-   over AVX2.
+1. **measured/source-backed — high confidence, high affected-region impact:**
+   B preparation is measured dominant for repeated M=1/M=8 wide calls. Padded
+   M work and M-only tasking are separate derived structural losses whose
+   shares are not measured.
+2. **source-backed/measured — high structural confidence, high expected
+   parallel-region impact:** parallel execution serially prepares full B, uses
+   M-only 128-row tasks, and exposes task-wave, wakeup, and placement limits.
+   Multi-thread OpenBLAS is unbound, so no provider-relative share is claimed.
+3. **source-backed/static model — high architectural confidence, unmeasured
+   replacement impact:** the AVX-512 kernel retains a 4x16 tile and only four
+   accumulators, giving the same static 32-FLOP/cycle model ceiling as AVX2.
+   A larger tile's complete-call benefit is not established.
 4. **measured — high confidence, medium impact:** every full microtile pays
    edge-buffer initialization and validation/prologue overhead; partial tiles
    compute all padded lanes.
@@ -638,8 +702,10 @@ Pinned upstream evidence:
 7. **proposed —** Evaluate K unrolling, software-pipelined loads, panel
    prefetch, and panel double-buffering only after higher-confidence structural
    changes, with no-prefetch/no-pipeline controls.
-8. **proposed —** Re-run the corrected homogeneous benchmark matrix and a
-   fresh independent fairness review before any native-BLAS parity claim.
+8. **proposed —** Use the authenticated schema-v6 matrix and its frozen
+   calibration/holdout partition as the before-state. Every Milestone 7 change
+   requires a new homogeneous paired collection and independent fairness
+   review before any native-BLAS parity claim.
 
 ### Explicitly unsupported conclusions
 
