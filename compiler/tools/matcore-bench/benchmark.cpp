@@ -987,11 +987,16 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
                      probe_end - probe_begin)
                      .count()));
       std::uint64_t repetitions = 1;
+      const std::uint64_t calibration_target_ns =
+          options.timer_floor_nanoseconds >
+                  std::numeric_limits<std::uint64_t>::max() / 2
+              ? std::numeric_limits<std::uint64_t>::max()
+              : options.timer_floor_nanoseconds * 2;
       if (options.cache_mode == CacheModeV1::hot &&
-          probe_ns < options.timer_floor_nanoseconds) {
+          probe_ns < calibration_target_ns) {
         repetitions = std::min(
             kMaximumAggregateRepetitions,
-            (options.timer_floor_nanoseconds + probe_ns - 1) / probe_ns);
+            (calibration_target_ns + probe_ns - 1) / probe_ns);
         for (int calibration = 0; calibration < 4; ++calibration) {
           const auto begin = std::chrono::steady_clock::now();
           for (std::uint64_t repetition = 0; repetition < repetitions;
@@ -1003,9 +1008,9 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
                      std::chrono::duration_cast<std::chrono::nanoseconds>(
                          end - begin)
                          .count()));
-          if (elapsed_ns >= options.timer_floor_nanoseconds) break;
+          if (elapsed_ns >= calibration_target_ns) break;
           const std::uint64_t multiplier =
-              (options.timer_floor_nanoseconds + elapsed_ns - 1) / elapsed_ns;
+              (calibration_target_ns + elapsed_ns - 1) / elapsed_ns;
           if (repetitions > kMaximumAggregateRepetitions /
                                 std::max<std::uint64_t>(multiplier, 2)) {
             repetitions = kMaximumAggregateRepetitions;
@@ -1013,6 +1018,10 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
           }
           repetitions *= std::max<std::uint64_t>(multiplier, 2);
         }
+        // Retain an additional factor-of-two margin after calibration. The
+        // probe and calibration include first-use effects that can make later
+        // steady-state samples materially faster; without this margin a valid
+        // sample can fall below the caller's timer floor.
         if (repetitions <= kMaximumAggregateRepetitions / 2)
           repetitions *= 2;
       }
