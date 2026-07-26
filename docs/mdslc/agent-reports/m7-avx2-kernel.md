@@ -208,3 +208,18 @@ Performance promotion fails: the retained complete-call evidence shows no
 serial speedup and small stable regressions. No production edit was made by
 this audit lane, but integration should address the stale artifact gate and
 must not count `e778c64` as measured parity progress.
+
+## Integration resolution
+
+The integration branch resolved both medium findings after this independent
+lane froze its evidence:
+
+- `a7f2eff` registered the exact full-tile symbol in
+  `runtime.cpu.packed_avx2_object`, while retaining the checked edge-wrapper
+  inspection. The Windows distribution validator also inspects both symbols.
+- `2b5173f` removed the unproven serial caller routing. The private exact
+  full-tile symbol remains available to the parallel runtime, where the caller
+  has already authenticated complete tile bounds.
+
+Accordingly, the artifact coverage finding is closed and the rejected serial
+promotion is not included in Milestone 7 performance claims.
