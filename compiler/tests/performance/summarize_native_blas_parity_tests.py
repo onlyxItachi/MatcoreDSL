@@ -251,6 +251,7 @@ def raw_report(
         ),
     )
     m, n, k = case.shape
+    configuration = runner.expected_configuration(case)
     result = {
         "m": m,
         "n": n,
@@ -261,6 +262,9 @@ def raw_report(
             "automatic" if case.variant == summary.AUTO else "forced"
         ),
         "complete_implementation_comparison": True,
+        "cache_mode": configuration["cache_mode"],
+        "allocation_mode": configuration["allocation_mode"],
+        "packing_mode": configuration["packing_mode"],
         "timing_valid": True,
         "correctness": True,
         "timed_final_output_authenticated": True,
@@ -306,7 +310,7 @@ def raw_report(
         "accumulation_dtype": "f32",
         "layout": "row-major-contiguous",
         "environment": environment(source_commit, physical_cores),
-        "configuration": runner.expected_configuration(case),
+        "configuration": configuration,
         "results": [result],
     }
 
