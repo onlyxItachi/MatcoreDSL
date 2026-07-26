@@ -176,6 +176,15 @@ if(BUILD_TESTING)
             "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/performance/run_native_blas_parity.py"
           --bench "$<TARGET_FILE:matcore-bench>"
       )
+
+      add_test(
+        NAME benchmark.cpu.native_blas_parity_summary_contract
+        COMMAND
+          "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/performance/summarize_native_blas_parity_tests.py"
+          --summarizer
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/performance/summarize_native_blas_parity.py"
+      )
     endif()
   endif()
 endif()
