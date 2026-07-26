@@ -528,7 +528,6 @@ def plan_fingerprint(
     cases: list[AuditCase],
     skips: list[AuditSkip],
     suites: set[str],
-    families: set[str],
     variants: tuple[str, ...],
     threads: tuple[int, ...],
     warmup: int,
@@ -536,13 +535,15 @@ def plan_fingerprint(
     timer_floor_us: int,
     maximum_memory_mib: int,
     case_order: str,
+    families: set[str] | None = None,
 ) -> str:
+    selected_families = set(SHAPE_FAMILIES) if families is None else families
     return canonical_sha256(
         {
             "schema": "matcore.cpu-performance-deep-audit.plan",
             "version": 1,
             "suites": sorted(suites),
-            "families": sorted(families),
+            "families": sorted(selected_families),
             "variants": list(variants),
             "threads": list(threads),
             "warmup": warmup,
@@ -824,7 +825,6 @@ def main() -> int:
         cases,
         skips,
         suites,
-        families,
         variants,
         threads,
         args.warmup,
@@ -832,6 +832,7 @@ def main() -> int:
         args.timer_floor_us,
         args.max_memory_mib,
         args.case_order,
+        families=families,
     )
     if args.resume and args.dry_run:
         parser.error("--resume cannot be combined with --dry-run")
