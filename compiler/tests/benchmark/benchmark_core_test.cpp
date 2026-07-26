@@ -572,12 +572,14 @@ int main() {
 
   RecordingRunner variable_probe_runner(
       false, RecordingRunner::PlanDrift::none, false, false, false,
-      {std::chrono::microseconds(5000), std::chrono::microseconds(200),
-       std::chrono::microseconds(200)});
+      {std::chrono::microseconds(100'000), std::chrono::microseconds(1'000),
+       std::chrono::microseconds(1'000)});
   auto variable_probe_options = run_options;
   variable_probe_options.requested_variant = "test.selected";
   variable_probe_options.warmup_iterations = 0;
-  variable_probe_options.timer_floor_nanoseconds = 1'000'000;
+  // Keep the synthetic steady-state probes below the calibration target even
+  // when Windows rounds short sleep_for durations to its scheduler quantum.
+  variable_probe_options.timer_floor_nanoseconds = 25'000'000;
   bench::BenchmarkReportV1 variable_probe_report;
   expect(
       bench::run_benchmarks_v1(variable_probe_options, variable_probe_runner,
