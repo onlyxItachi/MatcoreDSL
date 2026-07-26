@@ -134,7 +134,7 @@ if(BUILD_TESTING)
         "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/benchmark/run_benchmark_cli_tests.py"
         --bench "$<TARGET_FILE:matcore-bench>"
         --schema
-          "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/benchmark/matcore-bench-v5.schema.json"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/benchmark/matcore-bench-v6.schema.json"
     )
 
     add_test(

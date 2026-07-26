@@ -621,6 +621,7 @@ TimingStatisticsV1 summarize_timings_v1(std::vector<double> samples_seconds,
                                         std::uint64_t timer_floor_nanoseconds) {
   TimingStatisticsV1 result;
   result.aggregate_repetitions = aggregate_repetitions;
+  result.normalized_samples_seconds = samples_seconds;
   if (samples_seconds.empty() || aggregate_repetitions == 0) {
     result.rejection_reason = "no timing samples";
     return result;
@@ -882,14 +883,56 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
                  static_cast<std::size_t>(rhs_elements), random_state);
 
       bool packing_prepared = false;
-      if (options.packing_mode != PackingModeV1::include) {
+      if (options.packing_mode == PackingModeV1::prepack_b) {
+        auto &preparation = result.prepacked_b_preparation;
+        preparation.requested = true;
+        preparation.input_state =
+            "caller-storage-allocated-unprepared";
+        preparation.timing_scope =
+            "exactly one runner.prepare(prepack_b=true) call; caller-owned "
+            "storage allocation, execution, synchronization, warmup, and "
+            "steady-state repetitions excluded";
+        if (packing_prepared || preparation.preparation_calls != 0 ||
+            result.plan.prepacked_b_bytes == 0 ||
+            prepacked_b.span().size() != result.plan.prepacked_b_bytes) {
+          error = "prepacked-B preparation phase entered with an invalid "
+                  "unprepared caller-storage boundary";
+          return false;
+        }
+        const float *initial_lhs =
+            reinterpret_cast<const float *>(lhs.data());
+        const float *rhs_data =
+            reinterpret_cast<const float *>(rhs.data());
+        const std::span<std::byte> workspace_storage = workspace.span();
+        const std::span<std::byte> prepacked_storage = prepacked_b.span();
+        const auto preparation_begin = std::chrono::steady_clock::now();
+        const bool preparation_succeeded = runner.prepare(
+            result.plan, shape, initial_lhs, rhs_data, workspace_storage,
+            prepacked_storage, true, error);
+        const auto preparation_end = std::chrono::steady_clock::now();
+        preparation.measured = true;
+        preparation.preparation_calls = 1;
+        preparation.preparation_seconds =
+            std::chrono::duration<double>(preparation_end - preparation_begin)
+                .count();
+        if (!preparation_succeeded) return false;
+        if (!std::isfinite(preparation.preparation_seconds) ||
+            preparation.preparation_seconds <= 0.0) {
+          error = "prepacked-B preparation timer produced a non-positive "
+                  "interval";
+          return false;
+        }
+        preparation.authenticated = true;
+        preparation.output_state = "prepared-authenticated";
+        preparation.reason =
+            "runner.prepare returned success exactly once before warmup and "
+            "steady-state execution";
+        packing_prepared = true;
+      } else if (options.packing_mode == PackingModeV1::exclude) {
         if (!runner.prepare(result.plan, shape,
                             reinterpret_cast<const float *>(lhs.data()),
                             reinterpret_cast<const float *>(rhs.data()),
-                            workspace.span(),
-                            prepacked_b.span(),
-                            options.packing_mode == PackingModeV1::prepack_b,
-                            error))
+                            workspace.span(), prepacked_b.span(), false, error))
           return false;
         packing_prepared = true;
       }
@@ -1102,6 +1145,34 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
       result.timing = summarize_timings_v1(
           std::move(samples), aggregate_executions,
           options.timer_floor_nanoseconds);
+      if (result.prepacked_b_preparation.requested) {
+        auto &preparation = result.prepacked_b_preparation;
+        preparation.amortization_executions =
+            options.lhs_sequence_length;
+        if (result.timing.valid) {
+          preparation.steady_state_sequence_seconds =
+              result.timing.median_seconds *
+              static_cast<double>(options.lhs_sequence_length);
+          preparation.amortized_total_sequence_seconds =
+              preparation.preparation_seconds +
+              preparation.steady_state_sequence_seconds;
+          preparation.amortized_per_execution_seconds =
+              preparation.amortized_total_sequence_seconds /
+              static_cast<double>(options.lhs_sequence_length);
+          if (!std::isfinite(preparation.steady_state_sequence_seconds) ||
+              !std::isfinite(
+                  preparation.amortized_total_sequence_seconds) ||
+              !std::isfinite(preparation.amortized_per_execution_seconds)) {
+            error = "prepacked-B amortized timing calculation overflowed";
+            return false;
+          }
+          preparation.amortized_total_valid = true;
+        } else {
+          preparation.reason +=
+              "; amortized total is unavailable because steady-state timing "
+              "was rejected";
+        }
+      }
       final_timed_correctness.timed_final_output_authenticated = true;
       final_timed_correctness.untimed_validation_executions_checked =
           validation_executions;
@@ -1139,6 +1210,8 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
       } else if (result.plan.actual_threads == 1) {
         result.scaling.valid = true;
         result.scaling.baseline_variant = result.plan.selected_variant;
+        result.scaling.one_thread_normalized_samples_seconds =
+            result.timing.normalized_samples_seconds;
         result.scaling.one_thread_median_seconds =
             result.timing.median_seconds;
         result.scaling.speedup_over_one_thread = 1.0;
@@ -1183,6 +1256,8 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
                 "one-thread baseline timing or correctness is invalid";
           } else {
             result.scaling.valid = true;
+            result.scaling.one_thread_normalized_samples_seconds =
+                baseline.timing.normalized_samples_seconds;
             result.scaling.one_thread_median_seconds =
                 baseline.timing.median_seconds;
             result.scaling.speedup_over_one_thread =
@@ -1204,6 +1279,7 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
         bool attempted = false;
         bool timing_valid = false;
         bool correctness_passed = false;
+        std::vector<double> normalized_samples_seconds;
         double median_seconds = 0.0;
         std::uint64_t untimed_validation_executions_checked = 0;
         UntimedValidationPlacementV3 untimed_validation_placement =
@@ -1308,6 +1384,8 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
         }
         measurement.timing_valid = measured.timing.valid;
         measurement.correctness_passed = measured.correctness.passed;
+        measurement.normalized_samples_seconds =
+            measured.timing.normalized_samples_seconds;
         measurement.median_seconds = measured.timing.median_seconds;
         measurement.untimed_validation_executions_checked =
             measured.correctness.untimed_validation_executions_checked;
@@ -1367,6 +1445,10 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
             forward_measurement.untimed_validation_placement;
         candidate.reverse_pass_untimed_validation_placement =
             reverse_measurement.untimed_validation_placement;
+        candidate.forward_pass_normalized_samples_seconds =
+            forward_measurement.normalized_samples_seconds;
+        candidate.reverse_pass_normalized_samples_seconds =
+            reverse_measurement.normalized_samples_seconds;
         candidate.timing_valid = forward_measurement.attempted &&
                                  reverse_measurement.attempted &&
                                  forward_measurement.timing_valid &&
@@ -1456,6 +1538,15 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
 
 void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
   output << std::setprecision(17);
+  const auto emit_sample_vector =
+      [&](const std::vector<double> &samples) {
+        output << "[";
+        for (std::size_t index = 0; index < samples.size(); ++index) {
+          output << samples[index]
+                 << (index + 1 == samples.size() ? "" : ", ");
+        }
+        output << "]";
+      };
   output << "{\n  \"schema\": \"matcore.benchmark.cpu.gemm\",\n"
          << "  \"version\": " << report.schema_version << ",\n"
          << "  \"operation\": ";
@@ -1634,8 +1725,43 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
                             result.untimed_validation_placement));
     output << ",\n      \"minimum_seconds\": " << result.timing.minimum_seconds
            << ",\n      \"median_seconds\": " << result.timing.median_seconds
-           << ",\n      \"p95_seconds\": " << result.timing.p95_seconds
-           << ",\n      \"gflops\": " << result.gflops
+           << ",\n      \"p95_seconds\": " << result.timing.p95_seconds;
+    if (report.schema_version >= kBenchmarkSchemaVersionV6) {
+      output << ",\n      \"normalized_samples_seconds\": ";
+      emit_sample_vector(result.timing.normalized_samples_seconds);
+      const auto &preparation = result.prepacked_b_preparation;
+      output << ",\n      \"prepacked_b_preparation\": {\n"
+             << "        \"requested\": "
+             << (preparation.requested ? "true" : "false")
+             << ",\n        \"measured\": "
+             << (preparation.measured ? "true" : "false")
+             << ",\n        \"authenticated\": "
+             << (preparation.authenticated ? "true" : "false")
+             << ",\n        \"preparation_calls\": "
+             << preparation.preparation_calls
+             << ",\n        \"input_state\": ";
+      json_string(output, preparation.input_state);
+      output << ",\n        \"output_state\": ";
+      json_string(output, preparation.output_state);
+      output << ",\n        \"timing_scope\": ";
+      json_string(output, preparation.timing_scope);
+      output << ",\n        \"preparation_seconds\": "
+             << preparation.preparation_seconds
+             << ",\n        \"amortization_executions\": "
+             << preparation.amortization_executions
+             << ",\n        \"amortized_total_valid\": "
+             << (preparation.amortized_total_valid ? "true" : "false")
+             << ",\n        \"steady_state_sequence_seconds\": "
+             << preparation.steady_state_sequence_seconds
+             << ",\n        \"amortized_total_sequence_seconds\": "
+             << preparation.amortized_total_sequence_seconds
+             << ",\n        \"amortized_per_execution_seconds\": "
+             << preparation.amortized_per_execution_seconds
+             << ",\n        \"reason\": ";
+      json_string(output, preparation.reason);
+      output << "\n      }";
+    }
+    output << ",\n      \"gflops\": " << result.gflops
            << ",\n      \"checksum\": " << result.correctness.checksum
            << ",\n      \"expected_checksum\": "
            << result.correctness.expected_checksum
@@ -1664,6 +1790,11 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
            << (result.scaling.valid ? "true" : "false") << ",\n"
            << "        \"baseline_variant\": ";
     json_string(output, result.scaling.baseline_variant);
+    if (report.schema_version >= kBenchmarkSchemaVersionV6) {
+      output << ",\n        \"one_thread_normalized_samples_seconds\": ";
+      emit_sample_vector(
+          result.scaling.one_thread_normalized_samples_seconds);
+    }
     output << ",\n        \"one_thread_median_seconds\": "
            << result.scaling.one_thread_median_seconds
            << ",\n        \"speedup_over_one_thread\": "
@@ -1741,8 +1872,16 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
              << ", \"timing_valid\": "
              << (candidate.timing_valid ? "true" : "false")
              << ", \"correctness\": "
-             << (candidate.correctness_passed ? "true" : "false")
-             << ", \"forward_pass_median_seconds\": "
+             << (candidate.correctness_passed ? "true" : "false");
+      if (report.schema_version >= kBenchmarkSchemaVersionV6) {
+        output << ", \"forward_pass_normalized_samples_seconds\": ";
+        emit_sample_vector(
+            candidate.forward_pass_normalized_samples_seconds);
+        output << ", \"reverse_pass_normalized_samples_seconds\": ";
+        emit_sample_vector(
+            candidate.reverse_pass_normalized_samples_seconds);
+      }
+      output << ", \"forward_pass_median_seconds\": "
              << candidate.forward_pass_median_seconds
              << ", \"reverse_pass_median_seconds\": "
              << candidate.reverse_pass_median_seconds
