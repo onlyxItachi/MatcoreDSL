@@ -514,6 +514,14 @@ def main() -> int:
         first_markdown = (output / "summary.md").read_bytes()
         assert b"validation-not-blind" in first_markdown
         assert b"No unbiased holdout claim is made" in first_markdown
+        assert b"manifest v3; benchmark v6; sanitized summary v2" in first_markdown
+        assert b"## Measurement contract" in first_markdown
+        assert b"## Planner regret" in first_markdown
+        assert b"## Prepacked-B repeated execution" in first_markdown
+        assert b"## Milestone 6 comparison" in first_markdown
+        assert b"## Weakest measured cells" in first_markdown
+        assert b"## Claims supported" in first_markdown
+        assert b"## Claims explicitly unsupported" in first_markdown
         first_json = (output / "summary.json").read_bytes()
         execute_summary(
             summarizer_path,

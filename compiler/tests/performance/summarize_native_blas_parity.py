@@ -72,6 +72,13 @@ PROVIDER_ENVIRONMENT = {
     "OMP_NUM_THREADS": "1",
     "MKL_NUM_THREADS": "1",
 }
+MILESTONE6_SINGLE_THREAD_FAMILY_MEDIANS = {
+    "medium-square": 0.868,
+    "large-square": 0.849,
+    "tall-skinny": 0.795,
+    "short-wide": 0.884,
+    "tail-heavy": 0.843,
+}
 
 
 class ParityError(RuntimeError):
@@ -1770,12 +1777,26 @@ def assessment(
             ),
         )
     ]
+    weakest_comparisons = sorted(
+        comparison_rows,
+        key=lambda row: (
+            row["native_openblas_ratio"],
+            row["family"],
+            row["shape"],
+            row["threads"],
+        ),
+    )[:5]
     environment = forward.environment
     return {
         "schema": SUMMARY_SCHEMA,
         "version": SUMMARY_VERSION,
         "verdict": verdict,
         "partition_interpretation": PARTITION_INTERPRETATION,
+        "evidence_contract": {
+            "manifest_version": MANIFEST_VERSION,
+            "benchmark_version": BENCHMARK_VERSION,
+            "summary_version": SUMMARY_VERSION,
+        },
         "source_commit": forward.manifest["source_commit"],
         "benchmark_binary_sha256": forward.manifest[
             "benchmark_binary_sha256"
@@ -1786,6 +1807,14 @@ def assessment(
         "reverse_manifest_sha256": reverse.digest,
         "physical_cores": forward.manifest["physical_cores"],
         "parallel_thread_plan": forward.manifest["parallel_thread_plan"],
+        "started_unix_seconds": {
+            "forward": forward.manifest["started_unix_seconds"],
+            "reverse": reverse.manifest["started_unix_seconds"],
+        },
+        "finished_unix_seconds": {
+            "forward": forward.manifest["finished_unix_seconds"],
+            "reverse": reverse.manifest["finished_unix_seconds"],
+        },
         "environment": {
             "cpu_model": environment.get("cpu_model", "unknown"),
             "os_family": environment.get("os_family", "unknown"),
@@ -1830,8 +1859,11 @@ def assessment(
         "multi_large_ratio": multi_metrics,
         "four_thread_large_speedup": four_thread_metrics,
         "planner_regret": regret_metrics,
+        "milestone6_single_thread_family_medians":
+            MILESTONE6_SINGLE_THREAD_FAMILY_MEDIANS,
         "family_thread_ratios": family_thread_metrics,
         "comparisons": comparison_rows,
+        "weakest_comparisons": weakest_comparisons,
         "scaling": scaling,
         "prepacked_b": prepacked,
     }
@@ -1855,6 +1887,7 @@ def metric_text(value: object) -> str:
 
 def render_markdown(summary: dict) -> str:
     environment = summary["environment"]
+    evidence_contract = summary["evidence_contract"]
     lines = [
         "# Native BLAS parity v1",
         "",
@@ -1873,6 +1906,12 @@ def render_markdown(summary: dict) -> str:
         "",
         "## Evidence identity",
         "",
+        (
+            "- Contract versions: "
+            f"manifest v{evidence_contract['manifest_version']}; "
+            f"benchmark v{evidence_contract['benchmark_version']}; "
+            f"sanitized summary v{evidence_contract['summary_version']}."
+        ),
         f"- Source commit: `{summary['source_commit']}`",
         (
             "- Benchmark binary SHA-256: "
@@ -1897,6 +1936,13 @@ def render_markdown(summary: dict) -> str:
             f"- Compiler/build: {safe_text(environment['compiler'])}; "
             f"{safe_text(environment['build_type'])}"
         ),
+        f"- Compiler flags: `{safe_text(environment['compiler_flags'])}`",
+        (
+            "- Frequency state: "
+            f"governor={safe_text(environment['governor'])}; "
+            f"policy={safe_text(environment['frequency_policy'])}; "
+            f"boost={safe_text(environment['boost_state'])}"
+        ),
         (
             f"- OpenBLAS provider: {safe_text(environment['provider_name'])} "
             f"{safe_text(environment['provider_version'])}; "
@@ -1906,10 +1952,33 @@ def render_markdown(summary: dict) -> str:
             f"- Timer: {safe_text(environment['timer_source'])}; "
             f"resolution={safe_text(environment['timer_resolution_ns'])} ns"
         ),
+        (
+            "- Collection Unix seconds: "
+            f"forward={summary['started_unix_seconds']['forward']}.."
+            f"{summary['finished_unix_seconds']['forward']}; "
+            f"reverse={summary['started_unix_seconds']['reverse']}.."
+            f"{summary['finished_unix_seconds']['reverse']}."
+        ),
+        f"- Discovered physical cores: {summary['physical_cores']}.",
         "",
         "Raw reports remain outside Git. Forward/reverse cells are paired by "
         "partition, family, shape, requested thread count, mode, variant, and "
         "repeated-input sequence before aggregation.",
+        "",
+        "## Measurement contract",
+        "",
+        "- Complete-call parity uses hot cache and caller-owned reused "
+        "workspace, excludes allocation, and includes transient packing.",
+        "- Single-thread comparisons use authenticated compact placement. "
+        "Multi-thread comparisons use the same unbound placement and exact "
+        "actual thread count for native and OpenBLAS.",
+        "- The requested 4-thread and physical-core ceilings are reduced only "
+        "to the deterministic output-task capacity recorded in the manifest; "
+        "capacity-limited cells are not relabeled as full-ceiling results.",
+        "- Compute-only measurements are diagnostic and never compared with a "
+        "complete CBLAS call.",
+        "- Every retained sample passed the seeded independent correctness "
+        "oracle and final-output authentication.",
         "",
         "## Milestone 7 acceptance",
         "",
@@ -1977,6 +2046,96 @@ def render_markdown(summary: dict) -> str:
     if not summary["scaling"]:
         lines.append("| none | — | — | — | n/a | n/a |")
 
+    lines.extend(
+        [
+            "",
+            "## Planner regret",
+            "",
+            "| Cells | Median | P95 | Minimum | Maximum |",
+            "|---:|---:|---:|---:|---:|",
+            (
+                f"| {summary['planner_regret']['count']} | "
+                f"{metric_text(summary['planner_regret']['median'])} | "
+                f"{metric_text(summary['planner_regret']['p95'])} | "
+                f"{metric_text(summary['planner_regret']['minimum'])} | "
+                f"{metric_text(summary['planner_regret']['maximum'])} |"
+            ),
+            "",
+            "Automatic plans may select OpenBLAS. Such selections count for "
+            "planner regret but never for native parity.",
+            "",
+            "## Prepacked-B repeated execution",
+            "",
+            "| Partition | Family | M×N×K | Variant | Inputs | Preparation s | "
+            "Steady GFLOP/s | Amortized s |",
+            "|---|---|---|---|---:|---:|---:|---:|",
+        ]
+    )
+    for row in sorted(
+        summary["prepacked_b"],
+        key=lambda item: (
+            item["partition"],
+            item["family"],
+            item["shape"],
+            item["variant"],
+            item["lhs_sequence"],
+        ),
+    ):
+        lines.append(
+            f"| {row['partition']} | {row['family']} | "
+            f"{'×'.join(map(str, row['shape']))} | "
+            f"`{row['variant']}` | {row['lhs_sequence']} | "
+            f"{metric_text(row['preparation_seconds'])} | "
+            f"{metric_text(row['steady_state_gflops'])} | "
+            f"{metric_text(row['amortized_seconds'])} |"
+        )
+    if not summary["prepacked_b"]:
+        lines.append("| none | — | — | — | — | n/a | n/a | n/a |")
+
+    lines.extend(
+        [
+            "",
+            "## Milestone 6 comparison",
+            "",
+            "The historical values below are the sanitized Milestone 6 "
+            "single-thread family medians. They were collected in a separate "
+            "run and are not paired frequency controls for the current run.",
+            "",
+            "| Family | Milestone 6 ratio | Milestone 7 ratio | Delta |",
+            "|---|---:|---:|---:|",
+        ]
+    )
+    current_single = {
+        row["family"]: row["median"]
+        for row in summary["family_thread_ratios"]
+        if row["threads"] == 1
+    }
+    for family, baseline in sorted(
+        summary["milestone6_single_thread_family_medians"].items()
+    ):
+        current = current_single.get(family)
+        delta = None if current is None else float(current) - baseline
+        lines.append(
+            f"| {family} | {baseline:.3f} | {metric_text(current)} | "
+            f"{metric_text(delta)} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Weakest measured cells",
+            "",
+            "| Family | M×N×K | Threads | Native variant | Ratio |",
+            "|---|---|---:|---|---:|",
+        ]
+    )
+    for row in summary["weakest_comparisons"]:
+        lines.append(
+            f"| {row['family']} | {'×'.join(map(str, row['shape']))} | "
+            f"{row['threads']} | `{row['native_variant']}` | "
+            f"{row['native_openblas_ratio']:.3f} |"
+        )
+
     missing = summary["coverage"]["missing_comparisons"]
     lines.extend(
         [
@@ -1995,6 +2154,18 @@ def render_markdown(summary: dict) -> str:
                 f"- Missing complete comparison cells: {len(missing)}."
             ),
             (
+                "- Forward states: "
+                f"{metric_text(summary['coverage']['forward_states'])}."
+            ),
+            (
+                "- Reverse states: "
+                f"{metric_text(summary['coverage']['reverse_states'])}."
+            ),
+            (
+                "- Expected rejection categories: "
+                f"{metric_text(summary['coverage']['rejections'])}."
+            ),
+            (
                 "- Provider thread count is the configured OpenBLAS team size; "
                 "active provider concurrency is not sampled."
             ),
@@ -2007,6 +2178,27 @@ def render_markdown(summary: dict) -> str:
                 "- Results are host-bounded and do not establish universal BLAS "
                 "parity, GPU behavior, or physical multi-node NUMA performance."
             ),
+            "",
+            "## Claims supported",
+            "",
+            "- The reported native/OpenBLAS ratios, absolute GFLOP/s, scaling, "
+            "prepacked-B measurements, and planner regret are reproducible for "
+            "the exact authenticated host, source, binary, and provider.",
+            "- Native parity metrics include only native packed or persistent-"
+            "parallel MDSLC variants; automatic OpenBLAS selections are not "
+            "misclassified as native parity.",
+            "- Exact requested/actual thread equality, placement class, "
+            "packing visibility, and output correctness are authenticated.",
+            "",
+            "## Claims explicitly unsupported",
+            "",
+            "- No universal BLAS-parity, cross-host, cross-provider, GPU, or "
+            "physical multi-node NUMA conclusion is made.",
+            "- The `holdout` identifier is not blind experimental evidence.",
+            "- Provider worker affinity and active concurrency are not sampled; "
+            "multi-thread comparisons use the declared unbound stratum.",
+            "- These measurements do not freeze the public API, ABI, planner "
+            "cost model, private blocking profile, or microkernel symbols.",
             "",
         ]
     )
