@@ -48,8 +48,13 @@ def main() -> int:
             (output / "manifest.json").read_text(encoding="utf-8")
         )
         assert manifest["schema"] == "matcore.cpu-performance-deep-audit.manifest"
-        assert manifest["version"] == 1
+        assert manifest["version"] == 2
         assert manifest["benchmark_schema_version"] == 5
+        assert len(manifest["benchmark_binary_sha256"]) == 64
+        assert len(manifest["runner_sha256"]) == 64
+        assert len(manifest["plan_sha256"]) == 64
+        assert manifest["benchmark_seed"] == 0x4D4154434F524531
+        assert manifest["benchmark_source_commit"] is None
         assert manifest["dry_run"] is True
         assert manifest["threads"] == [1, 2, 4, 12]
         assert manifest["cases"]
@@ -57,6 +62,7 @@ def main() -> int:
 
         keys = [case["key"] for case in manifest["cases"]]
         assert len(keys) == len(set(keys))
+        assert all("--seed" in case["command"] for case in manifest["cases"])
         families = {case["family"] for case in manifest["cases"]}
         assert families == {
             "small-square",
@@ -144,6 +150,61 @@ def main() -> int:
             and case["command"][-1] == "none"
             for case in provider_parallel
         )
+
+    with tempfile.TemporaryDirectory(prefix="matcore deep audit resume ") as temporary:
+        output = pathlib.Path(temporary) / "authenticated"
+        base_command = [
+            sys.executable,
+            str(runner),
+            "--bench",
+            str(bench),
+            "--output-dir",
+            str(output),
+            "--suites",
+            "complete",
+            "--variants",
+            "cpu.reference.f32.v1",
+            "--threads",
+            "1",
+            "--warmup",
+            "0",
+            "--iterations",
+            "1",
+            "--timer-floor-us",
+            "1",
+            "--limit",
+            "1",
+        ]
+        run(base_command)
+        first_manifest = json.loads(
+            (output / "manifest.json").read_text(encoding="utf-8")
+        )
+        assert first_manifest["benchmark_source_commit"]
+        assert first_manifest["cases"][0]["state"] == "passed"
+
+        run([*base_command, "--resume"])
+        resumed_manifest = json.loads(
+            (output / "manifest.json").read_text(encoding="utf-8")
+        )
+        assert resumed_manifest["cases"][0]["state"] == "reused"
+        assert (
+            resumed_manifest["benchmark_source_commit"]
+            == first_manifest["benchmark_source_commit"]
+        )
+
+        changed_contract = base_command.copy()
+        iterations_index = changed_contract.index("--iterations") + 1
+        changed_contract[iterations_index] = "2"
+        rejected_resume = run([*changed_contract, "--resume"], expected=2)
+        assert "resume identity mismatch for plan_sha256" in rejected_resume.stderr
+
+        raw_path = output / resumed_manifest["cases"][0]["raw_file"]
+        raw_path.write_text(
+            raw_path.read_text(encoding="utf-8") + " ",
+            encoding="utf-8",
+        )
+        rejected_digest = run([*base_command, "--resume"], expected=2)
+        assert "resume raw-file digest mismatch" in rejected_digest.stderr
 
     rejected = run(
         [

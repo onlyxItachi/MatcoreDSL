@@ -23,6 +23,8 @@ from typing import Iterable
 
 
 SCHEMA_VERSION = 5
+MANIFEST_VERSION = 2
+DEFAULT_SEED = 0x4D4154434F524531
 VARIANTS = (
     "cpu.reference.f32.v1",
     "cpu.tiled.f32.v1",
@@ -375,6 +377,8 @@ def case_command(
         str(effective_timer_floor_us),
         "--max-memory-mib",
         str(maximum_memory_mib),
+        "--seed",
+        str(DEFAULT_SEED),
         "--alignment",
         "64",
         "--reuse-workspace",
@@ -407,6 +411,84 @@ def sha256(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
+def canonical_sha256(value: object) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def expected_case_configuration(
+    case: AuditCase,
+    warmup: int,
+    iterations: int,
+    timer_floor_us: int,
+    maximum_memory_mib: int,
+) -> dict[str, object]:
+    diagnostic_floor = case.mode in {"complete-cold", "planner-regret-hot"}
+    cache_mode = "cold" if case.mode == "complete-cold" else "hot"
+    packing_mode = (
+        "exclude-packing"
+        if case.mode == "compute-only-hot"
+        else "prepacked-b"
+        if case.mode == "prepacked-b-hot"
+        else "include-packing"
+    )
+    provider_parallel = case.variant == EXTERNAL_VARIANT and case.threads > 1
+    return {
+        "requested_variant": case.variant,
+        "requested_threads": case.threads,
+        "warmup_iterations": warmup,
+        "measured_iterations": iterations,
+        "lhs_sequence_length": case.lhs_sequence,
+        "alignment_bytes": 64,
+        "cache_mode": cache_mode,
+        "allocation_mode": "reuse-workspace",
+        "packing_mode": packing_mode,
+        "smt_policy": (
+            "allow-smt" if provider_parallel else "physical-cores-only"
+        ),
+        "affinity_policy": "none" if provider_parallel else "compact",
+        "maximum_memory_bytes": maximum_memory_mib * 1024 * 1024,
+        "timer_floor_ns": (
+            min(timer_floor_us, 1) if diagnostic_floor else timer_floor_us
+        )
+        * 1000,
+        "seed": DEFAULT_SEED,
+        "compare_one_thread": False,
+        "planner_regret": case.mode == "planner-regret-hot",
+    }
+
+
+def plan_fingerprint(
+    cases: list[AuditCase],
+    skips: list[AuditSkip],
+    suites: set[str],
+    variants: tuple[str, ...],
+    threads: tuple[int, ...],
+    warmup: int,
+    iterations: int,
+    timer_floor_us: int,
+    maximum_memory_mib: int,
+) -> str:
+    return canonical_sha256(
+        {
+            "schema": "matcore.cpu-performance-deep-audit.plan",
+            "version": 1,
+            "suites": sorted(suites),
+            "variants": list(variants),
+            "threads": list(threads),
+            "warmup": warmup,
+            "iterations": iterations,
+            "timer_floor_us": timer_floor_us,
+            "max_memory_mib": maximum_memory_mib,
+            "seed": DEFAULT_SEED,
+            "cases": [dataclasses.asdict(case) for case in cases],
+            "skips": [dataclasses.asdict(skip) for skip in skips],
+        }
+    )
+
+
 def expected_legality_rejection(stderr: str) -> bool:
     return any(
         marker in stderr
@@ -420,7 +502,15 @@ def expected_legality_rejection(stderr: str) -> bool:
     )
 
 
-def authenticate_report(path: pathlib.Path, case: AuditCase) -> dict:
+def authenticate_report(
+    path: pathlib.Path,
+    case: AuditCase,
+    warmup: int,
+    iterations: int,
+    timer_floor_us: int,
+    maximum_memory_mib: int,
+    expected_source_commit: str | None = None,
+) -> dict:
     report = json.loads(path.read_text(encoding="utf-8"))
     if report.get("schema") != "matcore.benchmark.cpu.gemm":
         raise ValueError("unexpected benchmark schema")
@@ -430,9 +520,23 @@ def authenticate_report(path: pathlib.Path, case: AuditCase) -> dict:
         raise ValueError("benchmark source provenance is not clean")
     if report["environment"]["source_worktree_dirty"]:
         raise ValueError("benchmark source worktree was dirty")
+    source_commit = report["environment"].get("source_commit")
+    if not isinstance(source_commit, str) or not source_commit:
+        raise ValueError("benchmark source commit is missing")
+    if expected_source_commit is not None and source_commit != expected_source_commit:
+        raise ValueError(
+            "benchmark source commit does not match the frozen resume identity"
+        )
     configuration = report["configuration"]
-    if configuration["lhs_sequence_length"] != case.lhs_sequence:
-        raise ValueError("left-input sequence metadata mismatch")
+    expected_configuration = expected_case_configuration(
+        case, warmup, iterations, timer_floor_us, maximum_memory_mib
+    )
+    for field, expected in expected_configuration.items():
+        if configuration.get(field) != expected:
+            raise ValueError(
+                f"benchmark configuration mismatch for {field}: "
+                f"expected {expected!r}, found {configuration.get(field)!r}"
+            )
     if len(report["results"]) != 1:
         raise ValueError("one-case audit command emitted multiple results")
     result = report["results"][0]
@@ -476,7 +580,8 @@ def main() -> int:
     executable = pathlib.Path(args.bench).resolve()
     if not executable.is_file():
         parser.error(f"benchmark executable does not exist: {executable}")
-    source_root = pathlib.Path(__file__).resolve().parents[3]
+    runner_path = pathlib.Path(__file__).resolve()
+    source_root = runner_path.parents[3]
     try:
         output_dir = safe_output_directory(
             pathlib.Path(args.output_dir), source_root
@@ -508,6 +613,60 @@ def main() -> int:
         cases = cases[: args.limit]
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / "manifest.json"
+    benchmark_digest = sha256(executable)
+    runner_digest = sha256(runner_path)
+    current_plan_digest = plan_fingerprint(
+        cases,
+        skips,
+        suites,
+        variants,
+        threads,
+        args.warmup,
+        args.iterations,
+        args.timer_floor_us,
+        args.max_memory_mib,
+    )
+    if args.resume and args.dry_run:
+        parser.error("--resume cannot be combined with --dry-run")
+    if not args.resume and any(output_dir.iterdir()):
+        parser.error(
+            "output directory is not empty; use a fresh directory or an "
+            "identity-checked --resume"
+        )
+
+    prior_records: dict[str, dict] = {}
+    frozen_source_commit: str | None = None
+    if args.resume:
+        if not manifest_path.is_file():
+            parser.error("--resume requires an existing manifest.json")
+        try:
+            prior_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            parser.error(f"cannot read resume manifest: {error}")
+        expected_identity = {
+            "schema": "matcore.cpu-performance-deep-audit.manifest",
+            "version": MANIFEST_VERSION,
+            "benchmark_schema_version": SCHEMA_VERSION,
+            "benchmark_binary_sha256": benchmark_digest,
+            "runner_sha256": runner_digest,
+            "plan_sha256": current_plan_digest,
+            "benchmark_seed": DEFAULT_SEED,
+        }
+        for field, expected in expected_identity.items():
+            if prior_manifest.get(field) != expected:
+                parser.error(
+                    f"resume identity mismatch for {field}: expected "
+                    f"{expected!r}, found {prior_manifest.get(field)!r}"
+                )
+        frozen_source_commit = prior_manifest.get("benchmark_source_commit")
+        if not isinstance(frozen_source_commit, str) or not frozen_source_commit:
+            parser.error("resume manifest has no frozen benchmark source commit")
+        for prior in prior_manifest.get("cases", []):
+            key = prior.get("key")
+            if not isinstance(key, str) or key in prior_records:
+                parser.error("resume manifest contains an invalid or duplicate case key")
+            prior_records[key] = prior
+
     environment = os.environ.copy()
     environment.update(
         {
@@ -547,10 +706,30 @@ def main() -> int:
         if args.dry_run:
             records.append(record)
             continue
-        if args.resume and raw_path.exists():
-            report = authenticate_report(raw_path, case)
+        prior_record = prior_records.get(case.key)
+        prior_reusable = (
+            prior_record is not None
+            and prior_record.get("state") in {"passed", "reused"}
+        )
+        if args.resume and prior_reusable:
+            if prior_record.get("raw_file") != raw_path.name:
+                parser.error(f"resume raw-file identity mismatch for {case.key}")
+            if not raw_path.is_file():
+                parser.error(f"resume raw file is missing for {case.key}")
+            raw_digest = sha256(raw_path)
+            if prior_record.get("sha256") != raw_digest:
+                parser.error(f"resume raw-file digest mismatch for {case.key}")
+            report = authenticate_report(
+                raw_path,
+                case,
+                args.warmup,
+                args.iterations,
+                args.timer_floor_us,
+                args.max_memory_mib,
+                frozen_source_commit,
+            )
             record["state"] = "reused"
-            record["sha256"] = sha256(raw_path)
+            record["sha256"] = raw_digest
             record["actual_threads"] = report["results"][0]["actual_threads"]
             record["thread_count_clamped"] = (
                 record["actual_threads"] != case.threads
@@ -577,7 +756,18 @@ def main() -> int:
             if record["state"] == "failed":
                 break
             continue
-        report = authenticate_report(raw_path, case)
+        report = authenticate_report(
+            raw_path,
+            case,
+            args.warmup,
+            args.iterations,
+            args.timer_floor_us,
+            args.max_memory_mib,
+            frozen_source_commit,
+        )
+        report_source_commit = report["environment"]["source_commit"]
+        if frozen_source_commit is None:
+            frozen_source_commit = report_source_commit
         record["state"] = "passed"
         record["sha256"] = sha256(raw_path)
         record["actual_threads"] = report["results"][0]["actual_threads"]
@@ -588,8 +778,13 @@ def main() -> int:
 
     manifest = {
         "schema": "matcore.cpu-performance-deep-audit.manifest",
-        "version": 1,
+        "version": MANIFEST_VERSION,
         "benchmark_schema_version": SCHEMA_VERSION,
+        "benchmark_binary_sha256": benchmark_digest,
+        "runner_sha256": runner_digest,
+        "plan_sha256": current_plan_digest,
+        "benchmark_source_commit": frozen_source_commit,
+        "benchmark_seed": DEFAULT_SEED,
         "started_unix_seconds": started,
         "finished_unix_seconds": int(time.time()),
         "benchmark": str(executable),
