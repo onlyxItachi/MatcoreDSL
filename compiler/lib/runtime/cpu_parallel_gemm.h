@@ -48,6 +48,10 @@ struct CpuParallelGemmReportV1 {
   std::uint32_t version = kCpuParallelGemmVersionV1;
   std::uint32_t requested_threads = 0;
   std::uint32_t actual_threads = 0;
+  // Internal runtime evidence: zero means B was prepared by the submitting
+  // thread before dispatch; values greater than one mean the caller-owned B
+  // image was prepared cooperatively by that many persistent workers.
+  std::uint32_t packed_b_threads = 0;
   std::size_t macro_tile_count = 0;
   std::size_t row_task_count = 0;
   std::size_t column_task_count = 0;

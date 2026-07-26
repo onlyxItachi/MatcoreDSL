@@ -188,7 +188,8 @@ void run_parallel_correctness() {
         runtime::CpuProviderNestingPolicyV1::native_only, &report);
     expect(status == runtime::CpuParallelGemmStatusV1::success,
            "parallel packed execution succeeds");
-    expect(report.actual_threads == 4 && report.macro_tile_count == 4 &&
+    expect(report.actual_threads == 4 && report.packed_b_threads == 0 &&
+               report.macro_tile_count == 4 &&
                report.row_task_count == 4 &&
                report.column_task_count == 1 &&
                report.task_count == 4 &&
@@ -301,6 +302,53 @@ void run_balanced_partition_correctness() {
                             guard_sentinel),
            "adaptive partition owns only its disjoint output rows");
   }
+}
+
+void run_parallel_b_pack_correctness() {
+  if (!runtime::cpu_packed_avx2_runtime_usable_v1()) return;
+  constexpr std::size_t m = 64;
+  constexpr std::size_t k = 1009;
+  constexpr std::size_t n = 1040;
+  constexpr std::size_t guard_elements = 16;
+  constexpr float guard_sentinel = -718.25F;
+  const auto gemm_problem = problem(m, k, n, 64);
+  AlignedBuffer lhs_storage(m * k * sizeof(float));
+  AlignedBuffer rhs_storage(k * n * sizeof(float));
+  AlignedBuffer out_storage(
+      (m * n + 2 * guard_elements) * sizeof(float));
+  float *lhs = lhs_storage.floats();
+  float *rhs = rhs_storage.floats();
+  float *guarded_out = out_storage.floats();
+  float *out = guarded_out + guard_elements;
+  fill(lhs, m * k, 2101);
+  fill(rhs, k * n, 2102);
+  std::fill(guarded_out, guarded_out + m * n + 2 * guard_elements,
+            guard_sentinel);
+  const auto expected = oracle(lhs, rhs, m, k, n);
+
+  auto context = make_context();
+  runtime::CpuParallelGemmWorkspaceRequirementsV1 requirements;
+  expect(runtime::cpu_parallel_packed_avx2_workspace_requirements_v1(
+             gemm_problem, 4, &requirements) ==
+             runtime::CpuParallelGemmStatusV1::success,
+         "parallel B-pack workspace query succeeds");
+  AlignedBuffer workspace(requirements.total_bytes);
+  runtime::CpuParallelGemmReportV1 report;
+  const auto status = runtime::cpu_execute_parallel_packed_avx2_v1(
+      *context, gemm_problem, lhs, rhs, out, workspace.data(),
+      workspace.size(), 4, runtime::CpuProviderNestingPolicyV1::native_only,
+      &report);
+  expect(status == runtime::CpuParallelGemmStatusV1::success &&
+             report.actual_threads == 4 && report.packed_b_threads == 4 &&
+             report.context_submission == 1,
+         "large B is packed cooperatively in the single persistent submission");
+  expect(close(out, m * n, expected),
+         "parallel B-pack result matches double-precision oracle");
+  expect(guards_unchanged(guarded_out, m * n + 2 * guard_elements,
+                          guard_elements, guard_sentinel),
+         "parallel B-pack execution preserves output guards");
+  expect(context->info().completed_submissions == 1,
+         "parallel packing does not add a second worker-pool submission");
 }
 
 void run_low_alignment_row_only_correctness() {
@@ -536,6 +584,7 @@ void run_parallel_avx512_correctness() {
 int main() {
   run_parallel_correctness();
   run_balanced_partition_correctness();
+  run_parallel_b_pack_correctness();
   run_low_alignment_row_only_correctness();
   rejection_preserves_output();
   run_parallel_avx512_correctness();
