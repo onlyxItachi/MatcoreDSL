@@ -98,8 +98,11 @@ DIAGNOSTIC_SHAPES: tuple[ShapeSpec, ...] = (
 )
 
 # The benchmark's built-in regret measurement times every legal registry
-# candidate in both directions.  Keep that diagnostic bounded; the complete
-# forced and automatic cases cover the entire parity envelope.
+# candidate in both directions. Keep that diagnostic bounded because forcing
+# scalar candidates on the largest shapes is not a practical acceptance run.
+# Complete forced/automatic parity cases do not reconstruct full-registry
+# regret, so the final report must label this scope as bounded diagnostic
+# evidence rather than full-envelope planner acceptance.
 REGRET_SHAPES = frozenset(
     {
         (96, 96, 96),

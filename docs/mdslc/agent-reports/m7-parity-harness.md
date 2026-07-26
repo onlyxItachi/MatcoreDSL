@@ -21,11 +21,23 @@ the original case-key identifiers while recording their honest chronology:
 `calibration` means candidate development and validation, and `holdout` means
 declared validation that is not blind.
 
+The bounded regret suite times every legal registry candidate only on eleven
+medium/tail shapes. Complete automatic and forced parity cases do not
+reconstruct full-registry regret on the remaining shapes. Final acceptance
+must therefore report bounded regret as diagnostic and leave the declared
+full-envelope regret criterion unmet.
+
 Every retained multi-thread parity case uses the same
 `allow-smt`/`affinity=none` placement for native and OpenBLAS candidates. Every
 retained forced result must use exactly the requested thread count and exact
 stable variant ID. A clamped result or substituted implementation is a failure,
 not evidence.
+
+Requested 4-thread and physical-core ceilings whose native output-task capacity
+is smaller are represented only at that smaller exact capacity; capacity one
+has no multi-thread comparison. This is a fair exact-thread matrix, but not
+complete evidence at every originally declared ceiling. The final summarizer
+must report both scopes and leave full declared-ceiling coverage unmet.
 
 The runner authenticates:
 

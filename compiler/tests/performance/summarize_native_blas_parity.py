@@ -1648,6 +1648,56 @@ def assessment(
         and cell.planner_regret is not None
     ]
     regret_metrics = metric_summary(regrets)
+    regret_shapes = sorted(
+        {
+            cell.shape
+            for cell in cells.values()
+            if cell.mode == "planner-regret-hot"
+            and cell.planner_regret is not None
+        }
+    )
+    declared_parity_shapes = sorted(
+        {comparison.shape for comparison in comparisons}
+    )
+    regret_shape_coverage = {
+        "measured_shapes": len(regret_shapes),
+        "declared_shapes": len(declared_parity_shapes),
+        "missing_shapes": [
+            list(shape)
+            for shape in declared_parity_shapes
+            if shape not in set(regret_shapes)
+        ],
+        "scope": "bounded-diagnostic-not-full-envelope",
+    }
+    full_regret_coverage = regret_shapes == declared_parity_shapes
+    ceiling_reductions = []
+    exact_ceiling_cells = 0
+    expected_ceiling_cells = 0
+    for row in forward.manifest["parallel_thread_plan"]:
+        for ceiling, capacity in zip(
+            row["requested_ceilings"],
+            row["task_capacities"],
+            strict=True,
+        ):
+            expected_ceiling_cells += 1
+            if capacity == ceiling:
+                exact_ceiling_cells += 1
+                continue
+            ceiling_reductions.append(
+                {
+                    "partition": row["partition"],
+                    "family": row["family"],
+                    "shape": row["shape"],
+                    "requested_ceiling": ceiling,
+                    "task_capacity": capacity,
+                }
+            )
+    declared_ceiling_coverage = {
+        "expected_cells": expected_ceiling_cells,
+        "exact_cells": exact_ceiling_cells,
+        "reduced_or_omitted_cells": ceiling_reductions,
+        "scope": "declared-4-and-physical-core-ceilings",
+    }
     square_metrics = metric_summary(square_single)
     multi_metrics = metric_summary(large_multi)
     four_thread_metrics = metric_summary(large_four_speedups)
@@ -1702,24 +1752,38 @@ def assessment(
             and float(four_thread_metrics["median"]) >= 3.00,
         },
         {
-            "id": "planner-regret",
+            "id": "planner-regret-bounded-diagnostic",
             "threshold": "median <= 1.05, p95 <= 1.15, maximum <= 1.35",
             "measured": regret_metrics,
             "passed": regret_metrics["median"] is not None
             and float(regret_metrics["median"]) <= 1.05
             and float(regret_metrics["p95"]) <= 1.15
             and float(regret_metrics["maximum"]) <= 1.35,
+            "acceptance": False,
         },
         {
-            "id": "no-catastrophic-regret",
-            "threshold": "maximum <= 2.00",
-            "measured": regret_metrics["maximum"],
-            "passed": regret_metrics["maximum"] is not None
+            "id": "planner-regret-full-envelope-coverage",
+            "threshold": (
+                "every declared parity shape has complete-registry regret"
+            ),
+            "measured": regret_shape_coverage,
+            "passed": full_regret_coverage,
+        },
+        {
+            "id": "no-catastrophic-regret-full-envelope",
+            "threshold": "maximum <= 2.00 across the declared parity envelope",
+            "measured": (
+                regret_metrics["maximum"]
+                if full_regret_coverage
+                else "not established outside bounded diagnostic shapes"
+            ),
+            "passed": full_regret_coverage
+            and regret_metrics["maximum"] is not None
             and float(regret_metrics["maximum"]) <= 2.00,
         },
         {
-            "id": "complete-comparison-coverage",
-            "threshold": "all declared shape/thread cells comparable",
+            "id": "exact-capacity-comparison-coverage",
+            "threshold": "all planned exact task-capacity cells comparable",
             "measured": {
                 "expected": len(expected_keys),
                 "accepted": len(actual_keys),
@@ -1727,8 +1791,24 @@ def assessment(
             },
             "passed": actual_keys == expected_keys,
         },
+        {
+            "id": "declared-thread-ceiling-coverage",
+            "threshold": (
+                "every shape compares exact 4-thread and physical-core teams"
+            ),
+            "measured": {
+                "expected": expected_ceiling_cells,
+                "exact": exact_ceiling_cells,
+                "reduced_or_omitted": len(ceiling_reductions),
+            },
+            "passed": not ceiling_reductions,
+        },
     ]
-    performance_pass = all(item["passed"] for item in criteria)
+    performance_pass = all(
+        item["passed"]
+        for item in criteria
+        if item.get("acceptance", True)
+    )
     if not comparisons or not square_single or not regrets:
         verdict = "failed"
     elif performance_pass:
@@ -1858,6 +1938,8 @@ def assessment(
         "multi_large_ratio": multi_metrics,
         "four_thread_large_speedup": four_thread_metrics,
         "planner_regret": regret_metrics,
+        "planner_regret_coverage": regret_shape_coverage,
+        "declared_thread_ceiling_coverage": declared_ceiling_coverage,
         "milestone6_single_thread_family_medians":
             MILESTONE6_SINGLE_THREAD_FAMILY_MEDIANS,
         "family_thread_ratios": family_thread_metrics,
@@ -1985,10 +2067,18 @@ def render_markdown(summary: dict) -> str:
         "|---|---|---|---|",
     ]
     for criterion in summary["criteria"]:
+        if not criterion.get("acceptance", True):
+            result = (
+                "DIAGNOSTIC PASS"
+                if criterion["passed"]
+                else "DIAGNOSTIC NOT MET"
+            )
+        else:
+            result = "PASS" if criterion["passed"] else "NOT MET"
         lines.append(
             f"| `{criterion['id']}` | {criterion['threshold']} | "
             f"{metric_text(criterion['measured'])} | "
-            f"{'PASS' if criterion['passed'] else 'NOT MET'} |"
+            f"{result} |"
         )
 
     lines.extend(
@@ -2058,6 +2148,14 @@ def render_markdown(summary: dict) -> str:
                 f"{metric_text(summary['planner_regret']['p95'])} | "
                 f"{metric_text(summary['planner_regret']['minimum'])} | "
                 f"{metric_text(summary['planner_regret']['maximum'])} |"
+            ),
+            "",
+            (
+                "Coverage: "
+                f"{summary['planner_regret_coverage']['measured_shapes']} of "
+                f"{summary['planner_regret_coverage']['declared_shapes']} "
+                "declared shapes. This is bounded diagnostic evidence, not "
+                "full-envelope planner-regret acceptance."
             ),
             "",
             "Automatic plans may select OpenBLAS. Such selections count for "
@@ -2163,6 +2261,14 @@ def render_markdown(summary: dict) -> str:
             (
                 "- Expected rejection categories: "
                 f"{metric_text(summary['coverage']['rejections'])}."
+            ),
+            (
+                "- Declared 4-thread/physical-core ceiling cells: "
+                f"{summary['declared_thread_ceiling_coverage']['exact_cells']} "
+                "exact of "
+                f"{summary['declared_thread_ceiling_coverage']['expected_cells']}; "
+                f"{len(summary['declared_thread_ceiling_coverage']['reduced_or_omitted_cells'])} "
+                "were reduced or omitted by native task capacity."
             ),
             (
                 "- Provider thread count is the configured OpenBLAS team size; "

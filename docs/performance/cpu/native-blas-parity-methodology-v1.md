@@ -106,6 +106,13 @@ planner's 128-row, 256-column, cacheline-safe, work-floor model. Every forced
 comparison still requires exact requested/actual equality; silent thread
 clamping remains invalid evidence.
 
+When task capacity is below a requested 4-thread or physical-core ceiling, the
+runner compares both implementations at the smaller exact capacity or omits a
+multi-thread cell when capacity is one. This preserves equal-thread fairness,
+but it does not establish performance at the original requested ceiling. The
+summarizer reports exact-capacity coverage separately and leaves the complete
+declared-ceiling coverage gate unmet.
+
 ## Metrics
 
 For each shape/thread/mode cell:
@@ -121,6 +128,14 @@ Forward and reverse passes are paired per cell before family aggregation.
 Median, nearest-rank p95, minimum, and maximum are reported. Timer-noise cells
 are listed and excluded from aggregate claims rather than silently removed.
 
+The built-in complete-registry planner-regret timing is deliberately bounded
+to eleven medium/tail shapes because forcing scalar candidates on the largest
+declared problems is not a practical acceptance run. Automatic and parity
+cases cover the complete shape matrix but do not time every legal registry
+candidate, so they cannot reconstruct exact full-registry regret. The bounded
+regret values are diagnostic; the full-envelope regret gate remains not met in
+Milestone 7 rather than being inferred.
+
 ## Acceptance thresholds
 
 The declared Milestone 7 targets are:
@@ -132,8 +147,8 @@ The declared Milestone 7 targets are:
   actual thread count;
 - four-thread native speedup at least `3.0x` for sufficiently large GEMM;
 - planner regret median at most `1.05`, p95 at most `1.15`, and maximum at most
-  `1.35` inside the parity envelope;
-- no automatic-selection regret above `2.0`.
+  `1.35` inside the complete declared parity envelope;
+- no automatic-selection regret above `2.0` across that complete envelope.
 
 If these thresholds are not met after correct evidence-backed implementation,
 the milestone is reported as partial. Shapes, timing modes, or comparators must

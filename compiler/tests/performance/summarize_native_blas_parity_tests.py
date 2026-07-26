@@ -497,7 +497,6 @@ def main() -> int:
             forward,
             reverse,
             output,
-            require_pass=True,
         )
         summary_json = json.loads(
             (output / "summary.json").read_text(encoding="utf-8")
@@ -508,8 +507,28 @@ def main() -> int:
             "calibration": "candidate-development-and-validation",
             "holdout": "declared-validation-not-blind",
         }
-        assert summary_json["verdict"] == "passed"
-        assert all(item["passed"] for item in summary_json["criteria"])
+        assert summary_json["verdict"] == "partially-passed"
+        criteria = {
+            item["id"]: item for item in summary_json["criteria"]
+        }
+        assert criteria["planner-regret-bounded-diagnostic"]["passed"]
+        assert not criteria[
+            "planner-regret-bounded-diagnostic"
+        ]["acceptance"]
+        assert not criteria[
+            "planner-regret-full-envelope-coverage"
+        ]["passed"]
+        assert not criteria[
+            "no-catastrophic-regret-full-envelope"
+        ]["passed"]
+        assert criteria["exact-capacity-comparison-coverage"]["passed"]
+        assert not criteria["declared-thread-ceiling-coverage"]["passed"]
+        assert summary_json["planner_regret_coverage"]["scope"] == (
+            "bounded-diagnostic-not-full-envelope"
+        )
+        assert summary_json["declared_thread_ceiling_coverage"][
+            "reduced_or_omitted_cells"
+        ]
         assert summary_json["coverage"]["missing_comparisons"] == []
         first_markdown = (output / "summary.md").read_bytes()
         assert b"validation-not-blind" in first_markdown
@@ -522,6 +541,16 @@ def main() -> int:
         assert b"## Weakest measured cells" in first_markdown
         assert b"## Claims supported" in first_markdown
         assert b"## Claims explicitly unsupported" in first_markdown
+        assert b"bounded diagnostic evidence" in first_markdown
+        required = execute_summary(
+            summarizer_path,
+            forward,
+            reverse,
+            output,
+            expected=1,
+            require_pass=True,
+        )
+        assert "verdict=partially-passed" in required.stdout
         first_json = (output / "summary.json").read_bytes()
         execute_summary(
             summarizer_path,
