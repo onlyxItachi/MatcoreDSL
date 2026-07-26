@@ -106,6 +106,13 @@ CpuPackedGemmStatusV1 cpu_execute_packed_avx2_prepacked_b_v1(
 
 namespace detail {
 
+// Private prevalidated full-tile callback shared by serial and parallel packed
+// executors. This is not an installed ABI. Callers must prove a complete 4x16
+// output tile, nonzero K, valid packed-panel extents, and usable AVX2/FMA state.
+extern "C" void matcore_cpu_packed_avx2_4x16_full_microkernel_f32_v2(
+    const float *packed_a, const float *packed_b, std::size_t k,
+    float *output, std::size_t output_stride, bool accumulate) noexcept;
+
 // This symbol is deliberately isolated for exact machine-code inspection. It
 // is an internal implementation detail despite its stable C linkage name.
 extern "C" void matcore_cpu_packed_avx2_4x16_microkernel_f32_v1(
