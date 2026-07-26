@@ -60,10 +60,41 @@ correctness, and passes its declared acceptance suite.
     ZIP candidate pass. AVX-512 runtime remains unavailable on the hosted CPU,
     Windows OpenBLAS is omitted, multi-node NUMA is synthetic-only, and the VC
     Redistributable remains an external prerequisite.
+13. **CPU performance deep audit — locally accepted; publication pending.**
+    Schema-v6 forward/reverse evidence is fail-closed and reproducible;
+    packing/data movement, microkernel scheduling, cache/roofline limits,
+    persistent parallel execution, benchmark fairness, BLAS architecture, and
+    future GEMV/GEVM backend design have independent audit records. Fresh
+    Release, Debug, OpenBLAS-disabled, supported sanitizer, package,
+    source-inaccessible consumer, native artifact, legacy, and hygiene gates
+    pass. Hardware counters were blocked, controlled multi-thread OpenBLAS
+    placement was not established, and native BLAS parity is not claimed.
 
 The architecture verdict is **passed for the standalone native CPU
 frontend/runtime vertical slice**. The AST-JSON producer remains an explicitly
 selected compatibility oracle only; it is never a fallback from native.
+
+## Milestone 6 local acceptance
+
+The bounded CPU Performance Deep Audit has passed its local integration and
+independent-review gates. Its authenticated evidence explains weak native
+regions without changing production planner behavior:
+
+- medium/large square and tail-heavy native throughput remains below the
+  matched single-thread OpenBLAS baseline;
+- tall-skinny is the weakest declared regular family;
+- one static microkernel/blocking family constrains the native implementation
+  space;
+- transient packing dominates vector-like one-shot work;
+- parallel work is decomposed only into 128-row M bands, constraining
+  short-wide shapes and creating row-boundary imbalance;
+- full B preparation remains serial, and comparable multi-thread provider
+  placement was not established.
+
+The audit proposes measured experiments for Milestone 7; it does not itself
+promote a kernel, alter planner thresholds, expose GEMV/GEVM, or freeze the
+public API. Before Milestone 7 begins, Milestone 6 must still pass the normal
+PR/hosted-check/merge/tag publication gate.
 
 ## Milestone 5 published Linux gate and focused Windows validation
 
@@ -93,18 +124,18 @@ is inferred from Linux evidence.
 
 ## Next three exact engineering tasks
 
-1. **Broaden CPU hardware validation without changing support claims.** Run the
-   existing gates on a physical multi-node host and on a Windows host with
-   OS-usable AVX-512 before promoting either status beyond synthetic or
-   compile-only evidence.
-2. **Harden Windows distribution operations.** Validate the ZIP on a clean
-   machine with the declared VC Redistributable prerequisite, then decide
-   whether signing and an installer format belong in a separate release
-   milestone. Keep OpenBLAS optional and provider-authenticated.
-3. **Choose the next semantic operation deliberately.** Add `gemv` first only
-   with a typed IR contract, legality, planner variants, stable C ABI,
-   diagnostics, package tests, and bounded Linux/Windows execution evidence.
-   Do not begin GPU work implicitly.
+1. **Publish Milestone 6 normally.** Open the non-draft PR to `main`, require
+   hosted Linux and Windows checks, merge normally only after they pass, create
+   immutable tag `mdslc-cpu-performance-audit-v1`, and close the tracker.
+2. **Start Milestone 7 from updated clean `main`.** Evaluate the audit-ranked
+   full-tile/microkernel, ISA-specific blocking, tall/short rectangular,
+   shared/prepacked-B, and two-dimensional tasking experiments independently;
+   retain only measured improvements.
+3. **Calibrate and validate the resulting native parity envelope.** Compare
+   native variants and OpenBLAS under equal single-/multi-thread placement,
+   keep allocation and packing visible, harden planner regret, run all
+   correctness/sanitizer/package/Windows gates, and report partial status
+   rather than changing the envelope if the declared targets are not met.
 
 ## Later operation and lowering milestones
 
