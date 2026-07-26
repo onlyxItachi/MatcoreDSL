@@ -15,6 +15,8 @@ namespace matcore::mdslc::bench {
 inline constexpr std::uint32_t kBenchmarkSchemaVersionV2 = 2;
 inline constexpr std::uint32_t kBenchmarkSchemaVersionV3 = 3;
 inline constexpr std::uint32_t kBenchmarkSchemaVersionV4 = 4;
+inline constexpr std::uint32_t kBenchmarkSchemaVersionV5 = 5;
+inline constexpr std::uint32_t kBenchmarkSchemaVersionV6 = 6;
 inline constexpr std::uint64_t kDefaultMaximumMemoryBytes =
     UINT64_C(2) * 1024 * 1024 * 1024;
 inline constexpr std::uint64_t kDefaultTimerFloorNanoseconds = 1'000'000;
@@ -58,6 +60,7 @@ struct BenchmarkOptionsV1 {
   std::uint32_t requested_threads = 1;
   std::uint32_t warmup_iterations = 2;
   std::uint32_t measured_iterations = 9;
+  std::uint32_t lhs_sequence_length = 1;
   std::uint32_t alignment_bytes = 64;
   CacheModeV1 cache_mode = CacheModeV1::hot;
   AllocationModeV1 allocation_mode = AllocationModeV1::reuse_workspace;
@@ -168,9 +171,30 @@ struct TimingStatisticsV1 {
   bool valid = false;
   std::string rejection_reason;
   std::uint64_t aggregate_repetitions = 1;
+  // One sample per measured iteration, in collection order, normalized to one
+  // complete GEMM invocation. The aggregate timer boundary and repetition
+  // count remain separately reported.
+  std::vector<double> normalized_samples_seconds;
   double minimum_seconds = 0.0;
   double median_seconds = 0.0;
   double p95_seconds = 0.0;
+};
+
+struct PrepackedBPreparationTimingV6 {
+  bool requested = false;
+  bool measured = false;
+  bool authenticated = false;
+  std::uint32_t preparation_calls = 0;
+  std::string input_state = "not-requested";
+  std::string output_state = "not-requested";
+  std::string timing_scope = "not-requested";
+  double preparation_seconds = 0.0;
+  std::uint64_t amortization_executions = 0;
+  bool amortized_total_valid = false;
+  double steady_state_sequence_seconds = 0.0;
+  double amortized_total_sequence_seconds = 0.0;
+  double amortized_per_execution_seconds = 0.0;
+  std::string reason = "prepacked-B preparation was not requested";
 };
 
 enum class TimingAggregationBoundaryV3 : std::uint8_t {
@@ -195,6 +219,7 @@ struct ScalingResultV2 {
   bool requested = false;
   bool valid = false;
   std::string baseline_variant;
+  std::vector<double> one_thread_normalized_samples_seconds;
   double one_thread_median_seconds = 0.0;
   double speedup_over_one_thread = 0.0;
   double parallel_efficiency = 0.0;
@@ -231,6 +256,8 @@ struct RegretCandidateResultV3 {
   bool plan_authenticated = false;
   bool timing_valid = false;
   bool correctness_passed = false;
+  std::vector<double> forward_pass_normalized_samples_seconds;
+  std::vector<double> reverse_pass_normalized_samples_seconds;
   double forward_pass_median_seconds = 0.0;
   double reverse_pass_median_seconds = 0.0;
   std::uint64_t forward_pass_untimed_validation_executions_checked = 0;
@@ -269,6 +296,7 @@ struct BenchmarkResultV1 {
   TimingAggregationBoundaryV3 timing_aggregation_boundary =
       TimingAggregationBoundaryV3::one_clock_pair_per_aggregate_block;
   TimingStatisticsV1 timing;
+  PrepackedBPreparationTimingV6 prepacked_b_preparation;
   CorrectnessResultV1 correctness;
   double gflops = 0.0;
   ScalingResultV2 scaling;
@@ -298,7 +326,7 @@ struct BenchmarkEnvironmentV1 {
 };
 
 struct BenchmarkReportV1 {
-  std::uint32_t schema_version = kBenchmarkSchemaVersionV4;
+  std::uint32_t schema_version = kBenchmarkSchemaVersionV6;
   std::string operation = "matcore.gemm";
   std::string dtype = "f32";
   std::string accumulation_dtype = "f32";

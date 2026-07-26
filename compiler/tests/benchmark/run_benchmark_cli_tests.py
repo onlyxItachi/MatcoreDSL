@@ -39,13 +39,35 @@ def require_report_shape(report: dict, schema: dict) -> None:
     assert all(field in report["results"][0] for field in result_required)
 
 
+def require_normalized_samples(result: dict, measured_iterations: int) -> None:
+    samples = result["normalized_samples_seconds"]
+    assert len(samples) == measured_iterations
+    assert all(math.isfinite(sample) and sample > 0 for sample in samples)
+    ordered = sorted(samples)
+    assert result["minimum_seconds"] == ordered[0]
+    assert result["median_seconds"] == ordered[len(ordered) // 2]
+    p95_index = math.ceil(len(ordered) * 0.95) - 1
+    assert result["p95_seconds"] == ordered[p95_index]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--bench", required=True)
     parser.add_argument("--schema", required=True)
     args = parser.parse_args()
     executable = pathlib.Path(args.bench).resolve()
-    schema = json.loads(pathlib.Path(args.schema).read_text(encoding="utf-8"))
+    schema_path = pathlib.Path(args.schema)
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    assert schema["properties"]["version"]["const"] == 6
+    v5_schema = json.loads(
+        schema_path.with_name("matcore-bench-v5.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert v5_schema["properties"]["version"]["const"] == 5
+    assert "normalized_samples_seconds" not in v5_schema["$defs"]["result"][
+        "required"
+    ]
 
     variants = run([str(executable), "--list-variants"]).stdout.splitlines()
     assert variants == [
@@ -118,8 +140,20 @@ def main() -> int:
         assert result["minimum_seconds"] > 0
         assert result["median_seconds"] > 0
         assert result["p95_seconds"] >= result["median_seconds"]
+        require_normalized_samples(result, measured_iterations=3)
+        preparation = result["prepacked_b_preparation"]
+        assert preparation["requested"] is False
+        assert preparation["measured"] is False
+        assert preparation["authenticated"] is False
+        assert preparation["preparation_calls"] == 0
+        assert preparation["input_state"] == "not-requested"
+        assert preparation["output_state"] == "not-requested"
+        assert preparation["preparation_seconds"] == 0
+        assert preparation["amortization_executions"] == 0
+        assert preparation["amortized_total_valid"] is False
         assert math.isfinite(result["gflops"]) and result["gflops"] > 0
         assert report["configuration"]["alignment_bytes"] == 4
+        assert report["configuration"]["lhs_sequence_length"] == 1
         assert report["configuration"]["compare_one_thread"] is False
         assert report["configuration"]["planner_regret"] is False
         assert report["configuration"]["smt_policy"] == "physical-cores-only"
@@ -169,6 +203,45 @@ def main() -> int:
         assert result["planner_regret"]["requested"] is False
         assert result["complete_implementation_comparison"] is True
         assert "complete implementation call" in result["timing_scope"]
+
+        sequence_output = pathlib.Path(temporary) / "fixed B sequence.json"
+        run(
+            [
+                str(executable),
+                "--m",
+                "2",
+                "--n",
+                "3",
+                "--k",
+                "2",
+                "--variant",
+                "cpu.reference.f32.v1",
+                "--lhs-sequence",
+                "4",
+                "--warmup",
+                "0",
+                "--iterations",
+                "2",
+                "--timer-floor-us",
+                "1",
+                "--guard",
+                "--json-out",
+                str(sequence_output),
+            ]
+        )
+        sequence_report = json.loads(
+            sequence_output.read_text(encoding="utf-8")
+        )
+        require_report_shape(sequence_report, schema)
+        sequence_result = sequence_report["results"][0]
+        assert sequence_report["configuration"]["lhs_sequence_length"] == 4
+        assert sequence_result["aggregate_repetitions"] >= 4
+        assert sequence_result["aggregate_repetitions"] % 4 == 0
+        require_normalized_samples(sequence_result, measured_iterations=2)
+        assert sequence_result["untimed_validation_executions_checked"] >= 8
+        assert "distinct-left-inputs=4" in sequence_result[
+            "untimed_validation_scope"
+        ]
 
         if report["environment"]["physical_cores"] >= 2:
             for policy in ("compact", "scatter", "local-first"):
@@ -371,7 +444,8 @@ def main() -> int:
                 [
                     str(executable), "--m", "127", "--n", "129", "--k", "131",
                     "--variant", "cpu.native-packed.avx2-fma.f32.v1",
-                    "--prepack-b", "--warmup", "0", "--iterations", "1",
+                    "--prepack-b", "--lhs-sequence", "4",
+                    "--warmup", "0", "--iterations", "3",
                     "--timer-floor-us", "1", "--guard", "--json-out",
                     str(prepacked_output),
                 ]
@@ -379,6 +453,40 @@ def main() -> int:
             prepacked_result = json.loads(prepacked_output.read_text(encoding="utf-8"))["results"][0]
             assert prepacked_result["packing_mode"] == "prepacked-b"
             assert "transient A packing" in prepacked_result["timing_scope"]
+            require_normalized_samples(
+                prepacked_result, measured_iterations=3
+            )
+            preparation = prepacked_result["prepacked_b_preparation"]
+            assert preparation["requested"] is True
+            assert preparation["measured"] is True
+            assert preparation["authenticated"] is True
+            assert preparation["preparation_calls"] == 1
+            assert preparation["input_state"] == (
+                "caller-storage-allocated-unprepared"
+            )
+            assert preparation["output_state"] == "prepared-authenticated"
+            assert preparation["preparation_seconds"] > 0
+            assert preparation["amortization_executions"] == 4
+            assert preparation["amortized_total_valid"] is True
+            assert math.isclose(
+                preparation["steady_state_sequence_seconds"],
+                prepacked_result["median_seconds"] * 4,
+                rel_tol=1e-15,
+            )
+            assert math.isclose(
+                preparation["amortized_total_sequence_seconds"],
+                preparation["preparation_seconds"]
+                + preparation["steady_state_sequence_seconds"],
+                rel_tol=1e-15,
+            )
+            assert math.isclose(
+                preparation["amortized_per_execution_seconds"],
+                preparation["amortized_total_sequence_seconds"] / 4,
+                rel_tol=1e-15,
+            )
+            assert "exactly one runner.prepare(prepack_b=true) call" in (
+                preparation["timing_scope"]
+            )
         else:
             assert "AVX2" in packed_compute.stderr or "unavailable" in packed_compute.stderr
 
@@ -395,6 +503,10 @@ def main() -> int:
         assert scaling["requested"] is True
         assert scaling["valid"] is True
         assert scaling["baseline_variant"] == "cpu.reference.f32.v1"
+        assert len(scaling["one_thread_normalized_samples_seconds"]) == 1
+        assert scaling["one_thread_normalized_samples_seconds"][0] == (
+            scaling["one_thread_median_seconds"]
+        )
         assert scaling["speedup_over_one_thread"] == 1.0
         assert scaling["parallel_efficiency"] == 1.0
 
@@ -464,6 +576,18 @@ def main() -> int:
                 ] == "before-timing"
                 assert candidate["forward_pass_median_seconds"] > 0
                 assert candidate["reverse_pass_median_seconds"] > 0
+                assert len(
+                    candidate["forward_pass_normalized_samples_seconds"]
+                ) == 1
+                assert len(
+                    candidate["reverse_pass_normalized_samples_seconds"]
+                ) == 1
+                assert candidate[
+                    "forward_pass_normalized_samples_seconds"
+                ][0] == candidate["forward_pass_median_seconds"]
+                assert candidate[
+                    "reverse_pass_normalized_samples_seconds"
+                ][0] == candidate["reverse_pass_median_seconds"]
                 assert math.isclose(
                     candidate["balanced_estimate_seconds"],
                     (
@@ -661,6 +785,23 @@ def main() -> int:
         expected=1,
     )
     assert "compute diagnostics require reusable workspace" in invalid_compute_allocation.stderr
+
+    invalid_compute_sequence = run(
+        [
+            str(executable),
+            "--m",
+            "2",
+            "--n",
+            "2",
+            "--k",
+            "2",
+            "--exclude-packing",
+            "--lhs-sequence",
+            "2",
+        ],
+        expected=1,
+    )
+    assert "one prepared left input" in invalid_compute_sequence.stderr
 
     misleading_exclusion = run(
         [

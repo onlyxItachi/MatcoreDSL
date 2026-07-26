@@ -56,7 +56,7 @@ set(MATCORE_BENCH_PROVENANCE_DIR
   "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(MATCORE_BENCH_PROVENANCE_HEADER
   "${MATCORE_BENCH_PROVENANCE_DIR}/matcore_bench_provenance.h")
-add_custom_target(matcore_benchmark_provenance_v4
+add_custom_target(matcore_benchmark_provenance_v5
   COMMAND "${CMAKE_COMMAND}"
     "-DMATCORE_BENCH_PROVENANCE_OUTPUT=${MATCORE_BENCH_PROVENANCE_HEADER}"
     "-DMATCORE_BENCH_SOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/../../.."
@@ -84,7 +84,7 @@ add_library(matcore_benchmark_core_v1 STATIC
   benchmark.cpp
   planner_runner.cpp
 )
-add_dependencies(matcore_benchmark_core_v1 matcore_benchmark_provenance_v4)
+add_dependencies(matcore_benchmark_core_v1 matcore_benchmark_provenance_v5)
 target_compile_features(matcore_benchmark_core_v1 PUBLIC cxx_std_20)
 mdslc_target_enable_warnings(matcore_benchmark_core_v1 WERROR)
 target_include_directories(matcore_benchmark_core_v1
@@ -134,7 +134,7 @@ if(BUILD_TESTING)
         "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/benchmark/run_benchmark_cli_tests.py"
         --bench "$<TARGET_FILE:matcore-bench>"
         --schema
-          "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/benchmark/matcore-bench-v4.schema.json"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/benchmark/matcore-bench-v6.schema.json"
     )
 
     add_test(
@@ -145,6 +145,25 @@ if(BUILD_TESTING)
         --cmake "${CMAKE_COMMAND}"
         --generator-script
           "${CMAKE_CURRENT_SOURCE_DIR}/GenerateBenchmarkProvenance.cmake"
+    )
+
+    add_test(
+      NAME benchmark.cpu.deep_audit_runner_contract
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/performance/run_cpu_deep_audit_tests.py"
+        --runner
+          "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/performance/run_cpu_deep_audit.py"
+        --bench "$<TARGET_FILE:matcore-bench>"
+    )
+
+    add_test(
+      NAME benchmark.cpu.deep_audit_summary_contract
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/performance/summarize_cpu_deep_audit_tests.py"
+        --summarizer
+          "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/performance/summarize_cpu_deep_audit.py"
     )
   endif()
 endif()

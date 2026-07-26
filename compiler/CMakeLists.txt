@@ -567,5 +567,40 @@ if(BUILD_TESTING)
         --nm "${MDSLC_PACKAGE_NM_EXECUTABLE}"
         --readobj "${MDSLC_PACKAGE_READOBJ_EXECUTABLE}"
     )
+
+    if(NOT WIN32 AND MDSLC_ENABLE_NATIVE_FRONTEND)
+      find_program(MDSLC_PACKAGE_GIT_EXECUTABLE NAMES git REQUIRED)
+      add_test(
+        NAME package.installed_source_inaccessible
+        COMMAND
+          "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/package/run_source_inaccessible_consumer.py"
+          --cmake "${CMAKE_COMMAND}"
+          --git "${MDSLC_PACKAGE_GIT_EXECUTABLE}"
+          --repository-root "${CMAKE_CURRENT_SOURCE_DIR}/.."
+          --expected-build-root "${CMAKE_BINARY_DIR}"
+          --test-root
+            "${CMAKE_BINARY_DIR}/tests/installed-source-inaccessible"
+          --c-compiler "${CMAKE_C_COMPILER}"
+          --cxx-compiler "${CMAKE_CXX_COMPILER}"
+          --clangxx "${MDSLC_CLANGXX_EXECUTABLE}"
+          --llvm-dir "${LLVM_DIR}"
+          --clang-dir "${Clang_DIR}"
+      )
+      set_tests_properties(
+        package.installed_source_inaccessible
+        PROPERTIES
+          RUN_SERIAL TRUE
+          TIMEOUT 600
+      )
+      add_test(
+        NAME package.installed_source_inaccessible_safety
+        COMMAND
+          "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/package/run_source_inaccessible_consumer_safety_tests.py"
+          --script
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/package/run_source_inaccessible_consumer.py"
+      )
+    endif()
   endif()
 endif()

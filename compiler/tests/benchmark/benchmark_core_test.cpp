@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -12,6 +13,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -94,11 +96,13 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
   explicit RecordingRunner(bool fail_reverse_selected = false,
                            PlanDrift drift = PlanDrift::none,
                            bool corrupt_forward_validation = false,
-                           bool corrupt_reverse_validation = false)
+                           bool corrupt_reverse_validation = false,
+                           bool fail_prepacked_b_prepare = false)
       : fail_reverse_selected_(fail_reverse_selected),
         drift_(drift),
         corrupt_forward_validation_(corrupt_forward_validation),
-        corrupt_reverse_validation_(corrupt_reverse_validation) {}
+        corrupt_reverse_validation_(corrupt_reverse_validation),
+        fail_prepacked_b_prepare_(fail_prepacked_b_prepare) {}
 
   bench::RunnerEnvironmentV1 environment() const override { return {}; }
 
@@ -108,7 +112,7 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
 
   bench::RunnerPlanV1 plan(
       const bench::GemmShapeV1 &, std::uint32_t, std::uint32_t,
-      std::string_view requested_variant, bench::PackingModeV1,
+      std::string_view requested_variant, bench::PackingModeV1 packing_mode,
       bench::SmtPolicyV2, bench::AffinityPolicyV2) const override {
     plan_requests_.emplace_back(requested_variant);
     bench::RunnerPlanV1 result;
@@ -123,6 +127,10 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
     result.planner_version = 3;
     result.actual_threads = 1;
     result.workspace_alignment = 1;
+    if (packing_mode == bench::PackingModeV1::prepack_b) {
+      result.prepacked_b_bytes = 64;
+      result.supports_prepacked_b = true;
+    }
     if (requested_variant == "test.selected") {
       ++selected_plan_count_;
       if (selected_plan_count_ == 2) {
@@ -191,15 +199,40 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
 
   bool prepare(const bench::RunnerPlanV1 &, const bench::GemmShapeV1 &,
                const float *, const float *, std::span<std::byte>,
-               std::span<std::byte>, bool, std::string &) const override {
+               std::span<std::byte> prepacked_b, bool prepack_b,
+               std::string &error) const override {
+    ++prepare_calls_;
+    if (prepack_b) {
+      ++prepacked_b_prepare_calls_;
+      if (fail_prepacked_b_prepare_) {
+        error = "recording runner injected prepacked-B preparation failure";
+        return false;
+      }
+      if (prepacked_b.empty()) {
+        error = "recording runner requires caller-owned prepacked-B storage";
+        return false;
+      }
+      prepacked_b.front() = std::byte{0x5a};
+      // The production contract rejects a non-positive preparation interval.
+      // This test double otherwise completes quickly enough to fit within one
+      // steady-clock tick on Windows runners, so make the synthetic preparation
+      // deliberately measurable without changing the timed execution path.
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
     return true;
   }
 
   bool execute(const bench::RunnerPlanV1 &plan,
                const bench::GemmShapeV1 &shape, const float *lhs,
                const float *rhs, float *output, std::span<std::byte>,
-               std::span<const std::byte>, bool,
+               std::span<const std::byte> prepacked_b, bool packing_is_prepared,
                std::string &error) const override {
+    if (plan.supports_prepacked_b && plan.prepacked_b_bytes != 0 &&
+        (!packing_is_prepared || prepacked_b.empty() ||
+         prepacked_b.front() != std::byte{0x5a})) {
+      error = "recording runner observed an unauthenticated prepacked-B state";
+      return false;
+    }
     const auto state =
         std::dynamic_pointer_cast<const ExecutionState>(plan.state);
     if (state != nullptr && state->fail) {
@@ -235,13 +268,20 @@ class RecordingRunner final : public bench::GemmRunnerV1 {
   const std::vector<std::string> &plan_requests() const noexcept {
     return plan_requests_;
   }
+  std::uint32_t prepare_calls() const noexcept { return prepare_calls_; }
+  std::uint32_t prepacked_b_prepare_calls() const noexcept {
+    return prepacked_b_prepare_calls_;
+  }
 
  private:
   bool fail_reverse_selected_ = false;
   PlanDrift drift_ = PlanDrift::none;
   bool corrupt_forward_validation_ = false;
   bool corrupt_reverse_validation_ = false;
+  bool fail_prepacked_b_prepare_ = false;
   mutable std::uint32_t selected_plan_count_ = 0;
+  mutable std::uint32_t prepare_calls_ = 0;
+  mutable std::uint32_t prepacked_b_prepare_calls_ = 0;
   mutable std::vector<std::string> plan_requests_;
 };
 
@@ -291,6 +331,18 @@ int main() {
              error.find("compute diagnostics require reusable workspace") !=
                  std::string::npos,
          "compute-only packing exclusion cannot include one-shot allocation");
+  auto invalid_sequence = options;
+  invalid_sequence.lhs_sequence_length = 0;
+  expect(!bench::validate_options_v1(invalid_sequence, error) &&
+             error.find("sequence length must be positive") !=
+                 std::string::npos,
+         "zero-length left-input sequence is rejected");
+  invalid_sequence = options;
+  invalid_sequence.lhs_sequence_length = 2;
+  invalid_sequence.packing_mode = bench::PackingModeV1::exclude;
+  expect(!bench::validate_options_v1(invalid_sequence, error) &&
+             error.find("one prepared left input") != std::string::npos,
+         "compute-only prepared-A mode rejects multiple left inputs");
 
   bench::RunnerPlanV1 zero_workspace_plan;
   zero_workspace_plan.legal = true;
@@ -300,6 +352,14 @@ int main() {
                                                options, bytes, error) &&
              bytes >= (4 * 6 + 6 * 5 + 4 * 5) * sizeof(float),
          "memory accounting includes all matrices");
+  const std::uint64_t single_lhs_bytes = bytes;
+  auto sequence_memory = options;
+  sequence_memory.lhs_sequence_length = 4;
+  expect(bench::checked_memory_requirement_v1(
+             {4, 5, 6}, zero_workspace_plan, sequence_memory, bytes, error) &&
+             bytes == single_lhs_bytes + 3 * 128,
+         "memory accounting includes every distinct, 64-byte-aligned left "
+         "input exactly once");
   auto tiny_limit = options;
   tiny_limit.maximum_memory_bytes = 16;
   expect(!bench::checked_memory_requirement_v1(
@@ -343,8 +403,11 @@ int main() {
       bench::summarize_timings_v1({0.002, 0.001, 0.004, 0.003}, 1, 1000);
   expect(statistics.valid && statistics.minimum_seconds == 0.001 &&
              statistics.median_seconds == 0.003 &&
-             statistics.p95_seconds == 0.004,
-         "timing statistics use sorted minimum, median, and nearest-rank p95");
+             statistics.p95_seconds == 0.004 &&
+             statistics.normalized_samples_seconds ==
+                 std::vector<double>({0.002, 0.001, 0.004, 0.003}),
+         "timing statistics use sorted minimum, median, and nearest-rank p95 "
+         "while retaining normalized samples in collection order");
   const auto too_short =
       bench::summarize_timings_v1({1.0e-7}, 1, 1'000'000);
   expect(!too_short.valid && too_short.minimum_seconds == 1.0e-7 &&
@@ -472,6 +535,7 @@ int main() {
   expect(bench::run_benchmarks_v1(run_options, *runner, report, error),
          "reference runner completes a bounded benchmark");
   expect(report.results.size() == 1 &&
+             report.schema_version == bench::kBenchmarkSchemaVersionV6 &&
              report.results[0].plan.selected_variant ==
                  "cpu.reference.f32.v1" &&
              report.results[0].correctness.passed &&
@@ -485,6 +549,11 @@ int main() {
              report.results[0].correctness.timed_final_output_authenticated &&
              report.results[0].correctness
                      .untimed_validation_executions_checked >= 3 &&
+             report.results[0].timing.normalized_samples_seconds.size() ==
+                 run_options.measured_iterations &&
+             !report.results[0].prepacked_b_preparation.requested &&
+             !report.results[0].prepacked_b_preparation.measured &&
+             report.results[0].prepacked_b_preparation.preparation_calls == 0 &&
              report.results[0].correctness.untimed_validation_scope.find(
                  "separate untimed validation phase") != std::string::npos &&
              bench::timing_aggregation_boundary_name_v3(
@@ -492,12 +561,86 @@ int main() {
                  "one-clock-pair-per-aggregate-repetition-block",
          "benchmark result identifies the variant and passes independent oracle");
 
+  auto sequence_options = run_options;
+  sequence_options.lhs_sequence_length = 4;
+  bench::BenchmarkReportV1 sequence_report;
+  expect(bench::run_benchmarks_v1(sequence_options, *runner, sequence_report,
+                                  error) &&
+             sequence_report.results[0].correctness.passed &&
+             sequence_report.results[0].timing.aggregate_repetitions >= 4 &&
+             sequence_report.results[0].timing.aggregate_repetitions % 4 == 0 &&
+             sequence_report.results[0].correctness
+                     .untimed_validation_executions_checked >=
+                 sequence_options.measured_iterations * 4 &&
+             sequence_report.results[0].correctness.untimed_validation_scope
+                     .find("distinct-left-inputs=4") != std::string::npos,
+         "fixed-B sequence timing cycles four distinct left inputs and "
+         "oracle-checks every invocation");
+
+  RecordingRunner prepacked_runner;
+  auto prepacked_options = run_options;
+  prepacked_options.requested_variant = "test.selected";
+  prepacked_options.packing_mode = bench::PackingModeV1::prepack_b;
+  prepacked_options.lhs_sequence_length = 4;
+  bench::BenchmarkReportV1 prepacked_report;
+  const bool prepacked_ran = bench::run_benchmarks_v1(
+      prepacked_options, prepacked_runner, prepacked_report, error);
+  bool prepacked_metadata_valid = false;
+  if (prepacked_ran && prepacked_report.results.size() == 1) {
+    const auto &prepacked_result = prepacked_report.results.front();
+    const auto &preparation = prepacked_result.prepacked_b_preparation;
+    prepacked_metadata_valid =
+        preparation.requested && preparation.measured &&
+        preparation.authenticated && preparation.preparation_calls == 1 &&
+        preparation.input_state == "caller-storage-allocated-unprepared" &&
+        preparation.output_state == "prepared-authenticated" &&
+        preparation.preparation_seconds > 0.0 &&
+        preparation.amortization_executions == 4 &&
+        preparation.amortized_total_valid &&
+        preparation.steady_state_sequence_seconds ==
+            prepacked_result.timing.median_seconds * 4.0 &&
+        preparation.amortized_total_sequence_seconds ==
+            preparation.preparation_seconds +
+                preparation.steady_state_sequence_seconds &&
+        preparation.amortized_per_execution_seconds ==
+            preparation.amortized_total_sequence_seconds / 4.0 &&
+        preparation.timing_scope.find(
+            "exactly one runner.prepare(prepack_b=true) call") !=
+            std::string::npos;
+  }
+  expect(prepacked_ran && prepacked_runner.prepare_calls() == 1 &&
+             prepacked_runner.prepacked_b_prepare_calls() == 1 &&
+             prepacked_metadata_valid,
+         "prepacked-B preparation is authenticated and timed exactly once "
+         "outside steady-state execution, with explicit sequence amortization");
+
+  RecordingRunner failed_preparation_runner(
+      /*fail_reverse_selected=*/false, RecordingRunner::PlanDrift::none,
+      /*corrupt_forward_validation=*/false,
+      /*corrupt_reverse_validation=*/false,
+      /*fail_prepacked_b_prepare=*/true);
+  bench::BenchmarkReportV1 failed_preparation_report;
+  std::string failed_preparation_error;
+  expect(!bench::run_benchmarks_v1(
+             prepacked_options, failed_preparation_runner,
+             failed_preparation_report, failed_preparation_error) &&
+             failed_preparation_runner.prepacked_b_prepare_calls() == 1 &&
+             failed_preparation_report.results.empty() &&
+             failed_preparation_error.find(
+                 "injected prepacked-B preparation failure") !=
+                 std::string::npos,
+         "failed prepacked-B preparation is not authenticated and emits no "
+         "benchmark result");
+
   auto scaling_options = run_options;
   scaling_options.compare_one_thread = true;
   bench::BenchmarkReportV1 scaling_report;
   expect(bench::run_benchmarks_v1(scaling_options, *runner, scaling_report,
                                   error) &&
              scaling_report.results[0].scaling.valid &&
+             scaling_report.results[0]
+                     .scaling.one_thread_normalized_samples_seconds.size() ==
+                 scaling_options.measured_iterations &&
              scaling_report.results[0].scaling.speedup_over_one_thread == 1.0 &&
              scaling_report.results[0].scaling.parallel_efficiency == 1.0,
          "explicit one-thread comparison records a deterministic unit baseline");
@@ -555,6 +698,10 @@ int main() {
                  selected_candidate->balanced_estimate_seconds &&
              selected_candidate->forward_pass_median_seconds > 0.0 &&
              selected_candidate->reverse_pass_median_seconds > 0.0 &&
+             selected_candidate->forward_pass_normalized_samples_seconds
+                     .size() == balanced_options.measured_iterations &&
+             selected_candidate->reverse_pass_normalized_samples_seconds
+                     .size() == balanced_options.measured_iterations &&
              selected_candidate->balanced_estimate_seconds ==
                  std::midpoint(
                      selected_candidate->forward_pass_median_seconds,
@@ -582,6 +729,12 @@ int main() {
              balanced_json.find("\"forward_pass_median_seconds\"") !=
                  std::string::npos &&
              balanced_json.find("\"reverse_pass_median_seconds\"") !=
+                 std::string::npos &&
+             balanced_json.find(
+                 "\"forward_pass_normalized_samples_seconds\"") !=
+                 std::string::npos &&
+             balanced_json.find(
+                 "\"reverse_pass_normalized_samples_seconds\"") !=
                  std::string::npos &&
              balanced_json.find("\"balanced_estimate_seconds\"") !=
                  std::string::npos &&
@@ -788,7 +941,17 @@ int main() {
   const std::string json = encoded.str();
   expect(json.find("\"schema\": \"matcore.benchmark.cpu.gemm\"") !=
                  std::string::npos &&
-             json.find("\"version\": 4") != std::string::npos &&
+             json.find("\"version\": 6") != std::string::npos &&
+             json.find("\"lhs_sequence_length\": 1") !=
+                 std::string::npos &&
+             json.find("\"normalized_samples_seconds\"") !=
+                 std::string::npos &&
+             json.find("\"prepacked_b_preparation\"") !=
+                 std::string::npos &&
+             json.find("\"one_thread_normalized_samples_seconds\"") !=
+                 std::string::npos &&
+             json.find("\"preparation_calls\": 0") !=
+                 std::string::npos &&
              json.find("\"source_worktree_dirty\"") !=
                  std::string::npos &&
              json.find("\"source_provenance_state\"") !=
@@ -812,6 +975,30 @@ int main() {
              json.find("\"timing_scope\"") != std::string::npos &&
              json.find("\"timer_resolution_ns\"") != std::string::npos,
          "JSON output carries schema, correctness, and timer metadata");
+
+  auto v5_compatibility_report = report;
+  v5_compatibility_report.schema_version = bench::kBenchmarkSchemaVersionV5;
+  std::ostringstream v5_compatibility_encoded;
+  bench::write_json_v1(v5_compatibility_report, v5_compatibility_encoded);
+  const std::string v5_compatibility_json =
+      v5_compatibility_encoded.str();
+  expect(v5_compatibility_json.find("\"version\": 5") !=
+                 std::string::npos &&
+             v5_compatibility_json.find("\"normalized_samples_seconds\"") ==
+                 std::string::npos &&
+             v5_compatibility_json.find("\"prepacked_b_preparation\"") ==
+                 std::string::npos &&
+             v5_compatibility_json.find(
+                 "\"one_thread_normalized_samples_seconds\"") ==
+                 std::string::npos &&
+             v5_compatibility_json.find(
+                 "\"forward_pass_normalized_samples_seconds\"") ==
+                 std::string::npos &&
+             v5_compatibility_json.find(
+                 "\"reverse_pass_normalized_samples_seconds\"") ==
+                 std::string::npos,
+         "explicit schema-v5 serialization remains compatible and omits "
+         "schema-v6-only timing fields");
 
   bench::BenchmarkEnvironmentV1 provenance;
   provenance.source_commit = std::string(40, 'a');

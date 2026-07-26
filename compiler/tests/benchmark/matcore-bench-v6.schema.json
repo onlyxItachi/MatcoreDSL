@@ -1,0 +1,405 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://matcoredsl.invalid/schema/matcore-bench-v6.json",
+  "title": "MDSLC CPU GEMM benchmark report v6",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "version", "operation", "dtype", "accumulation_dtype",
+    "layout", "environment", "configuration", "results"
+  ],
+  "properties": {
+    "schema": {"const": "matcore.benchmark.cpu.gemm"},
+    "version": {"const": 6},
+    "operation": {"const": "matcore.gemm"},
+    "dtype": {"const": "f32"},
+    "accumulation_dtype": {"const": "f32"},
+    "layout": {"const": "row-major-contiguous"},
+    "environment": {"$ref": "#/$defs/environment"},
+    "configuration": {"$ref": "#/$defs/configuration"},
+    "results": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/result"}
+    }
+  },
+  "$defs": {
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "os_family", "architecture", "compiler", "compiler_flags",
+        "build_type", "cpu_model", "governor", "frequency_policy",
+        "boost_state", "cpu_affinity", "hardware_threads", "source_commit",
+        "source_worktree_dirty", "source_provenance_state",
+        "source_provenance_origin",
+        "timer_source", "timer_resolution_ns", "timestamp_unix_seconds",
+        "capability_record", "capability_runtime_validation_source",
+        "topology_record", "capability_record_version",
+        "topology_record_version", "topology_discovery_complete",
+        "logical_processors", "physical_cores", "numa_nodes",
+        "persistent_execution_context", "execution_context_workers",
+        "execution_context_workers_started", "execution_context_submissions",
+        "available_processors", "worker_affinity_applied",
+        "worker_affinity_user_requested", "worker_affinity_policy_induced",
+        "worker_affinity_source", "provider_name", "provider_version",
+        "provider_config"
+      ],
+      "properties": {
+        "os_family": {"type": "string", "minLength": 1},
+        "architecture": {"type": "string", "minLength": 1},
+        "compiler": {"type": "string", "minLength": 1},
+        "compiler_flags": {"type": "string"},
+        "build_type": {"type": "string", "minLength": 1},
+        "cpu_model": {"type": "string", "minLength": 1},
+        "governor": {"type": "string", "minLength": 1},
+        "frequency_policy": {"type": "string", "minLength": 1},
+        "boost_state": {"type": "string", "minLength": 1},
+        "cpu_affinity": {"type": "string", "minLength": 1},
+        "hardware_threads": {"type": "integer", "minimum": 0},
+        "source_commit": {"type": "string", "minLength": 1},
+        "source_worktree_dirty": {"type": "boolean"},
+        "source_provenance_state": {"enum": ["clean", "dirty", "unknown"]},
+        "source_provenance_origin": {
+          "enum": ["git-worktree", "explicit-override", "unavailable"]
+        },
+        "timer_source": {"type": "string", "minLength": 1},
+        "timer_resolution_ns": {"type": "integer", "minimum": 1},
+        "timestamp_unix_seconds": {"type": "integer", "minimum": 0},
+        "capability_record": {"type": "string", "minLength": 1},
+        "capability_runtime_validation_source": {"type": "string", "minLength": 1},
+        "topology_record": {"type": "string", "minLength": 1},
+        "capability_record_version": {"const": 2},
+        "topology_record_version": {"const": 1},
+        "topology_discovery_complete": {"type": "boolean"},
+        "logical_processors": {"type": "integer", "minimum": 0},
+        "physical_cores": {"type": "integer", "minimum": 0},
+        "numa_nodes": {"type": "integer", "minimum": 0},
+        "persistent_execution_context": {"type": "boolean"},
+        "execution_context_workers": {"type": "integer", "minimum": 0},
+        "execution_context_workers_started": {"type": "integer", "minimum": 0},
+        "execution_context_submissions": {"type": "integer", "minimum": 0},
+        "available_processors": {"type": "integer", "minimum": 1},
+        "worker_affinity_applied": {"type": "boolean"},
+        "worker_affinity_user_requested": {"type": "boolean"},
+        "worker_affinity_policy_induced": {"type": "boolean"},
+        "worker_affinity_source": {"type": "string", "minLength": 1},
+        "provider_name": {"type": "string", "minLength": 1},
+        "provider_version": {"type": "string", "minLength": 1},
+        "provider_config": {"type": "string"}
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile", "requested_variant", "requested_threads",
+        "warmup_iterations", "measured_iterations", "lhs_sequence_length",
+        "alignment_bytes",
+        "cache_mode", "allocation_mode", "packing_mode", "smt_policy",
+        "affinity_policy", "maximum_memory_bytes", "timer_floor_ns", "seed",
+        "compare_one_thread", "planner_regret"
+      ],
+      "properties": {
+        "profile": {"enum": ["custom", "quick", "standard", "full"]},
+        "requested_variant": {"type": "string", "minLength": 1},
+        "requested_threads": {"type": "integer", "minimum": 1},
+        "warmup_iterations": {"type": "integer", "minimum": 0},
+        "measured_iterations": {"type": "integer", "minimum": 1},
+        "lhs_sequence_length": {"type": "integer", "minimum": 1},
+        "alignment_bytes": {"type": "integer", "minimum": 4},
+        "cache_mode": {"enum": ["hot", "cold"]},
+        "allocation_mode": {"enum": ["reuse-workspace", "include-allocation"]},
+        "packing_mode": {"enum": ["include-packing", "exclude-packing", "prepacked-b"]},
+        "smt_policy": {"enum": ["physical-cores-only", "allow-smt"]},
+        "affinity_policy": {"enum": ["none", "compact", "scatter", "local-first"]},
+        "maximum_memory_bytes": {"type": "integer", "minimum": 1},
+        "timer_floor_ns": {"type": "integer", "minimum": 1},
+        "seed": {"type": "integer", "minimum": 0},
+        "compare_one_thread": {"type": "boolean"},
+        "planner_regret": {"type": "boolean"}
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "m", "n", "k", "requested_variant", "selected_variant",
+        "selection_reason", "plan_diagnostic", "timing_scope",
+        "complete_implementation_comparison", "planner_mode",
+        "planner_version", "actual_threads", "workspace_bytes",
+        "shared_workspace_bytes", "per_worker_workspace_bytes",
+        "workspace_alignment", "prepacked_b_bytes", "packing_required",
+        "supports_prepacked_b", "persistent_execution_context", "smt_policy",
+        "affinity_policy", "worker_affinity_applied",
+        "worker_affinity_user_requested", "worker_affinity_policy_induced",
+        "affinity_diagnostic", "alignment_bytes", "lhs_stride", "rhs_stride",
+        "output_stride", "estimated_memory_bytes", "cache_mode",
+        "allocation_mode", "packing_mode", "timing_valid",
+        "timing_rejection_reason", "aggregate_repetitions",
+        "timing_aggregation_boundary", "untimed_validation_placement",
+        "minimum_seconds", "median_seconds", "p95_seconds",
+        "normalized_samples_seconds", "prepacked_b_preparation",
+        "gflops", "checksum",
+        "expected_checksum", "correctness", "oracle_mode", "checked_elements",
+        "maximum_absolute_error", "maximum_allowed_error",
+        "timed_final_output_authenticated",
+        "untimed_validation_executions_checked", "untimed_validation_scope",
+        "correctness_reason", "scaling", "planner_regret"
+      ],
+      "properties": {
+        "m": {"type": "integer", "minimum": 1},
+        "n": {"type": "integer", "minimum": 1},
+        "k": {"type": "integer", "minimum": 1},
+        "requested_variant": {"type": "string", "minLength": 1},
+        "selected_variant": {"type": "string", "minLength": 1},
+        "selection_reason": {"type": "string", "minLength": 1},
+        "plan_diagnostic": {"type": "string", "minLength": 1},
+        "timing_scope": {"type": "string", "minLength": 1},
+        "complete_implementation_comparison": {"type": "boolean"},
+        "planner_mode": {"enum": ["automatic", "forced"]},
+        "planner_version": {"const": 3},
+        "actual_threads": {"type": "integer", "minimum": 1},
+        "workspace_bytes": {"type": "integer", "minimum": 0},
+        "shared_workspace_bytes": {"type": "integer", "minimum": 0},
+        "per_worker_workspace_bytes": {"type": "integer", "minimum": 0},
+        "workspace_alignment": {"type": "integer", "minimum": 1},
+        "prepacked_b_bytes": {"type": "integer", "minimum": 0},
+        "packing_required": {"type": "boolean"},
+        "supports_prepacked_b": {"type": "boolean"},
+        "persistent_execution_context": {"type": "boolean"},
+        "smt_policy": {"enum": ["physical-cores-only", "allow-smt"]},
+        "affinity_policy": {"enum": ["none", "compact", "scatter", "local-first"]},
+        "worker_affinity_applied": {"type": "boolean"},
+        "worker_affinity_user_requested": {"type": "boolean"},
+        "worker_affinity_policy_induced": {"type": "boolean"},
+        "affinity_diagnostic": {"type": "string", "minLength": 1},
+        "alignment_bytes": {"type": "integer", "minimum": 4},
+        "lhs_stride": {"type": "integer", "minimum": 1},
+        "rhs_stride": {"type": "integer", "minimum": 1},
+        "output_stride": {"type": "integer", "minimum": 1},
+        "estimated_memory_bytes": {"type": "integer", "minimum": 1},
+        "cache_mode": {"enum": ["hot", "cold"]},
+        "allocation_mode": {"enum": ["reuse-workspace", "include-allocation"]},
+        "packing_mode": {"enum": ["include-packing", "exclude-packing", "prepacked-b"]},
+        "timing_valid": {"type": "boolean"},
+        "timing_rejection_reason": {"type": "string"},
+        "aggregate_repetitions": {"type": "integer", "minimum": 1},
+        "timing_aggregation_boundary": {
+          "const": "one-clock-pair-per-aggregate-repetition-block"
+        },
+        "untimed_validation_placement": {
+          "enum": ["after-timing", "before-timing"]
+        },
+        "minimum_seconds": {"type": "number", "minimum": 0},
+        "median_seconds": {"type": "number", "minimum": 0},
+        "p95_seconds": {"type": "number", "minimum": 0},
+        "normalized_samples_seconds": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "number", "exclusiveMinimum": 0}
+        },
+        "prepacked_b_preparation": {
+          "$ref": "#/$defs/prepacked_b_preparation"
+        },
+        "gflops": {"type": "number", "minimum": 0},
+        "checksum": {"type": "number"},
+        "expected_checksum": {"type": "number"},
+        "correctness": {"type": "boolean"},
+        "oracle_mode": {"enum": ["full-double", "sampled-double-plus-checksum"]},
+        "checked_elements": {"type": "integer", "minimum": 1},
+        "maximum_absolute_error": {"type": "number", "minimum": 0},
+        "maximum_allowed_error": {"type": "number", "minimum": 0},
+        "timed_final_output_authenticated": {"type": "boolean"},
+        "untimed_validation_executions_checked": {"type": "integer", "minimum": 1},
+        "untimed_validation_scope": {"type": "string", "minLength": 1},
+        "correctness_reason": {"type": "string", "minLength": 1},
+        "scaling": {"$ref": "#/$defs/scaling"},
+        "planner_regret": {"$ref": "#/$defs/planner_regret"}
+      }
+    },
+    "prepacked_b_preparation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested", "measured", "authenticated", "preparation_calls",
+        "input_state", "output_state", "timing_scope",
+        "preparation_seconds", "amortization_executions",
+        "amortized_total_valid", "steady_state_sequence_seconds",
+        "amortized_total_sequence_seconds",
+        "amortized_per_execution_seconds", "reason"
+      ],
+      "properties": {
+        "requested": {"type": "boolean"},
+        "measured": {"type": "boolean"},
+        "authenticated": {"type": "boolean"},
+        "preparation_calls": {"type": "integer", "minimum": 0, "maximum": 1},
+        "input_state": {
+          "enum": ["not-requested", "caller-storage-allocated-unprepared"]
+        },
+        "output_state": {
+          "enum": ["not-requested", "prepared-authenticated"]
+        },
+        "timing_scope": {"type": "string", "minLength": 1},
+        "preparation_seconds": {"type": "number", "minimum": 0},
+        "amortization_executions": {"type": "integer", "minimum": 0},
+        "amortized_total_valid": {"type": "boolean"},
+        "steady_state_sequence_seconds": {"type": "number", "minimum": 0},
+        "amortized_total_sequence_seconds": {"type": "number", "minimum": 0},
+        "amortized_per_execution_seconds": {"type": "number", "minimum": 0},
+        "reason": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"requested": {"const": true}},
+            "required": ["requested"]
+          },
+          "then": {
+            "properties": {
+              "measured": {"const": true},
+              "authenticated": {"const": true},
+              "preparation_calls": {"const": 1},
+              "input_state": {
+                "const": "caller-storage-allocated-unprepared"
+              },
+              "output_state": {"const": "prepared-authenticated"},
+              "preparation_seconds": {"exclusiveMinimum": 0},
+              "amortization_executions": {"minimum": 1}
+            }
+          },
+          "else": {
+            "properties": {
+              "measured": {"const": false},
+              "authenticated": {"const": false},
+              "preparation_calls": {"const": 0},
+              "input_state": {"const": "not-requested"},
+              "output_state": {"const": "not-requested"},
+              "preparation_seconds": {"const": 0},
+              "amortization_executions": {"const": 0},
+              "amortized_total_valid": {"const": false},
+              "steady_state_sequence_seconds": {"const": 0},
+              "amortized_total_sequence_seconds": {"const": 0},
+              "amortized_per_execution_seconds": {"const": 0}
+            }
+          }
+        }
+      ]
+    },
+    "scaling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested", "valid", "baseline_variant",
+        "one_thread_normalized_samples_seconds",
+        "one_thread_median_seconds", "speedup_over_one_thread",
+        "parallel_efficiency", "reason"
+      ],
+      "properties": {
+        "requested": {"type": "boolean"},
+        "valid": {"type": "boolean"},
+        "baseline_variant": {"type": "string"},
+        "one_thread_normalized_samples_seconds": {
+          "type": "array",
+          "items": {"type": "number", "exclusiveMinimum": 0}
+        },
+        "one_thread_median_seconds": {"type": "number", "minimum": 0},
+        "speedup_over_one_thread": {"type": "number", "minimum": 0},
+        "parallel_efficiency": {"type": "number", "minimum": 0},
+        "reason": {"type": "string"}
+      }
+    },
+    "regret_candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "variant", "selected_variant", "legal", "reason",
+        "complete_implementation_comparison", "planner_version", "timing_scope",
+        "actual_threads", "workspace_bytes", "shared_workspace_bytes",
+        "per_worker_workspace_bytes", "workspace_alignment", "prepacked_b_bytes",
+        "packing_required", "supports_prepacked_b",
+        "persistent_execution_context", "smt_policy", "affinity_policy",
+        "worker_affinity_applied", "worker_affinity_user_requested",
+        "worker_affinity_policy_induced", "affinity_diagnostic",
+        "plan_authenticated", "timing_valid", "correctness",
+        "forward_pass_normalized_samples_seconds",
+        "reverse_pass_normalized_samples_seconds",
+        "forward_pass_median_seconds", "reverse_pass_median_seconds",
+        "forward_pass_untimed_validation_executions_checked",
+        "reverse_pass_untimed_validation_executions_checked",
+        "forward_pass_untimed_validation_placement",
+        "reverse_pass_untimed_validation_placement",
+        "balanced_estimate_seconds",
+        "measurement_reason"
+      ],
+      "properties": {
+        "variant": {"type": "string", "minLength": 1},
+        "selected_variant": {"type": "string"},
+        "legal": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "complete_implementation_comparison": {"type": "boolean"},
+        "planner_version": {"type": "integer", "minimum": 0},
+        "timing_scope": {"type": "string"},
+        "actual_threads": {"type": "integer", "minimum": 1},
+        "workspace_bytes": {"type": "integer", "minimum": 0},
+        "shared_workspace_bytes": {"type": "integer", "minimum": 0},
+        "per_worker_workspace_bytes": {"type": "integer", "minimum": 0},
+        "workspace_alignment": {"type": "integer", "minimum": 1},
+        "prepacked_b_bytes": {"type": "integer", "minimum": 0},
+        "packing_required": {"type": "boolean"},
+        "supports_prepacked_b": {"type": "boolean"},
+        "persistent_execution_context": {"type": "boolean"},
+        "smt_policy": {"type": "string"},
+        "affinity_policy": {"type": "string"},
+        "worker_affinity_applied": {"type": "boolean"},
+        "worker_affinity_user_requested": {"type": "boolean"},
+        "worker_affinity_policy_induced": {"type": "boolean"},
+        "affinity_diagnostic": {"type": "string"},
+        "plan_authenticated": {"type": "boolean"},
+        "timing_valid": {"type": "boolean"},
+        "correctness": {"type": "boolean"},
+        "forward_pass_normalized_samples_seconds": {
+          "type": "array",
+          "items": {"type": "number", "exclusiveMinimum": 0}
+        },
+        "reverse_pass_normalized_samples_seconds": {
+          "type": "array",
+          "items": {"type": "number", "exclusiveMinimum": 0}
+        },
+        "forward_pass_median_seconds": {"type": "number", "minimum": 0},
+        "reverse_pass_median_seconds": {"type": "number", "minimum": 0},
+        "forward_pass_untimed_validation_executions_checked": {"type": "integer", "minimum": 0},
+        "reverse_pass_untimed_validation_executions_checked": {"type": "integer", "minimum": 0},
+        "forward_pass_untimed_validation_placement": {"const": "after-timing"},
+        "reverse_pass_untimed_validation_placement": {"const": "before-timing"},
+        "balanced_estimate_seconds": {"type": "number", "minimum": 0},
+        "measurement_reason": {"type": "string"}
+      }
+    },
+    "planner_regret": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested", "valid", "aggregation_method", "fastest_legal_variant",
+        "fastest_legal_balanced_estimate_seconds",
+        "selected_balanced_estimate_seconds", "regret", "reason", "candidates"
+      ],
+      "properties": {
+        "requested": {"type": "boolean"},
+        "valid": {"type": "boolean"},
+        "aggregation_method": {
+          "const": "arithmetic-mean-of-forward-and-reverse-pass-medians"
+        },
+        "fastest_legal_variant": {"type": "string"},
+        "fastest_legal_balanced_estimate_seconds": {"type": "number", "minimum": 0},
+        "selected_balanced_estimate_seconds": {"type": "number", "minimum": 0},
+        "regret": {"type": "number", "minimum": 0},
+        "reason": {"type": "string"},
+        "candidates": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/regret_candidate"}
+        }
+      }
+    }
+  }
+}

@@ -1,8 +1,13 @@
 # MDSLC native frontend status
 
-Status date: 2026-07-22
+Status date: 2026-07-26
 
-- Canonical `main` and completed Milestone 5 merge:
+- Rewritten canonical `origin/main` at the Milestone 6 branch point:
+  `951239f1bee5541a4cf5ad72fab2192de07cf89d`
+- Milestone 6 integration branch: `mdslc/cpu-performance-deep-audit`
+- Milestone 6 locally accepted review head:
+  `ed9546c4fbe2af4013600ff7c9d41b357a7aa239`
+- Completed Milestone 5 merge before history sanitation:
   `091d74072a710389b4a8e9d51f696ad9773021e6`
 - Focused Windows validation branch: `mdslc/windows-x64-v1`
 - Milestone 5 GitHub milestone / umbrella issue: `#3` / `#9`
@@ -20,6 +25,56 @@ Status date: 2026-07-22
   later controlled history sanitation preserved its source tree while
   remapping commit IDs.
 - Milestone 3 tracker: GitHub milestone `#1`, completed
+
+## Milestone 6 CPU performance deep audit
+
+**Milestone 6 has passed its local integration and independent-review gates
+for the bounded audit scope. Normal PR publication, hosted checks, normal
+merge, immutable tagging, and tracker closure remain pending.**
+
+The final schema-v6 collection is authenticated by immutable external
+manifests. The forward order contains 711 executable cases: 583 accepted raw
+reports, 128 exact legality rejections, and 58 predeclared runtime-bound
+skips. Its manifest SHA-256 is
+`b3f872bd0085b15a8cd0cfcc7663af2a41f445355a3e3237c979dc52618362c0`.
+The paired complete/one-shot reverse control contains 539 cases: 429 accepted
+reports, 110 exact legality rejections, and 49 skips. Its manifest SHA-256 is
+`4939c0c77586e4115dfe5c1aab1ff044d716e9a5d060c9f2ef52f265634df7f8`.
+The fail-closed summarizer reconstructs the frozen case matrix and
+authenticates measurement configuration, commands, raw hashes, expected
+rejections, and selected variants.
+
+On the declared Ryzen AI 9 HX 370 host, single-thread fastest-native/OpenBLAS
+median throughput ratios were 0.868 for medium square, 0.849 for large square,
+0.884 for short-wide, 0.843 for tail-heavy, and 0.795 for tall-skinny shapes.
+Vector-like shapes favored existing native paths, but that is not a general
+GEMM parity result. The weakest declared cells were the tall-skinny
+`4096x64x4096` and `8192x32x1024` cases at approximately 0.75. Complete
+comparable-placement planner regret was median 1.000, p95 1.159, and maximum
+1.213. These are host/provider-specific audit measurements.
+
+The ranked findings identify the narrow microkernel/blocking implementation
+space, transient packing for vector-like calls, M-only 128-row parallel
+tasking, serial full-B preparation, and missing task-wave/placement detail as
+the most actionable Milestone 7 experiment areas. No production planner,
+kernel selection, runtime ABI, or public API behavior changed in Milestone 6.
+
+Fresh Release, Debug, and OpenBLAS-disabled configurations each completed
+48/48 CTest tests successfully. The supported ASan/UBSan set passed 17/17,
+TSan shared-state coverage passed 4/4, the source-inaccessible installed
+consumer and safety gates passed, the native `.mdsl -> ELF .o -> executable`
+proof printed `MDSLC CPU GEMM PASS`, and the legacy frontend contract passed
+14/14 checks. The installed-prefix absolute-path scan, repository hygiene, and
+`git diff --check` passed.
+
+Physical hardware counters were unavailable because
+`kernel.perf_event_paranoid=4`. Multi-thread OpenBLAS concurrency and placement
+were not authenticated and remain diagnostic-only. The audit therefore makes
+no hardware-counter causal-share claim and no native-BLAS-parity claim.
+Evidence and the accepted independent review are recorded in
+`docs/performance/HPC_KERNEL_ENGINEERING_HANDBOOK.md`,
+`docs/performance/cpu/cpu-performance-deep-audit-v1.md`, and
+`docs/mdslc/agent-reports/m6-final-adversarial-review.md`.
 
 ## Milestone 5 advanced CPU backend
 
