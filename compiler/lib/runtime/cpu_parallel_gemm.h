@@ -72,11 +72,14 @@ CpuParallelGemmStatusV1 cpu_parallel_packed_avx512_workspace_requirements_v1(
     std::uint32_t execution_threads,
     CpuParallelGemmWorkspaceRequirementsV1 *requirements) noexcept;
 
-// Executes independent MC-row bands with a deterministic cyclic assignment:
-// task t is owned by worker (t % actual_threads). The complete workspace is a
-// caller-owned arena containing one shared immutable packed-B image followed
-// by cache-line-aligned, non-overlapping transient-A worker slices. B packing
-// happens once before dispatch and remains part of end-to-end execution.
+// Executes independent rectangles from the deterministic shared M/N task
+// planner. Task t is owned by worker (t % actual_threads). The complete
+// workspace is a caller-owned arena containing one shared immutable packed-B
+// image followed by cache-line-aligned, non-overlapping transient-A worker
+// slices. B packing remains part of end-to-end execution: it is ordinarily
+// completed by the submitting thread before dispatch, while a narrow
+// authenticated envelope cooperatively prepares disjoint final B panels and
+// publishes them before compute.
 CpuParallelGemmStatusV1 cpu_execute_parallel_packed_avx2_v1(
     CpuExecutionContextV1 &context,
     const planner::CpuGemmProblemV1 &problem, const float *lhs,
