@@ -202,9 +202,9 @@ threads and diagnostics cannot drift from execution.
 
 ## Cooperative B preparation
 
-Ordinary parallel execution prepares B serially before dispatch. The accepted
-Milestone 7 path cooperatively prepares disjoint final NC panels only in a
-measured short-wide envelope:
+Ordinary production parallel execution prepares B serially before dispatch.
+Milestone 7 prototyped cooperative preparation of disjoint final NC panels in
+this candidate short-wide envelope:
 
 - more than one worker;
 - `M <= 64`, `N >= 4096`, and `K >= 4096`;
@@ -216,9 +216,10 @@ publishes the complete read-only image before compute. An abort state prevents
 future packing-invariant failure from deadlocking peers. Packing and compute
 share one context submission and no extra pool.
 
-This rule is host-bounded measured calibration, not a universal constant.
-Boundary shapes rejected by the calibration retain serial preparation. The
-path is within-call cooperative preparation; it is not a cross-call
+Independent final review found that one retained calibration shape did not
+authenticate the complete activation boundary. Production selection is
+therefore dormant and all shapes retain serial preparation. The private
+candidate remains within-call cooperative preparation; it is not a cross-call
 parallel-prepacked-B API.
 
 ## Planner and selection requirements

@@ -137,10 +137,11 @@ regret values are diagnostic; the full-envelope regret gate remains not met in
 Milestone 7 rather than being inferred.
 
 The deterministic summarizer therefore distinguishes its bounded
-paired-measurement assessment from the manual milestone disposition. Bounded
-regret, full-envelope regret coverage, catastrophic-regret coverage, and
-original 4-/physical-core ceiling coverage are non-acceptance diagnostics in
-the summary. A summary `passed` result means only that every
+paired-measurement assessment from the manual milestone disposition. Measured
+bounded regret is acceptance-enabled, so adverse regret in those eleven shapes
+fails the summary. Full-envelope regret coverage, catastrophic-regret coverage,
+and original 4-/physical-core ceiling coverage remain non-acceptance
+diagnostics. A summary `passed` result means only that every
 acceptance-enabled measured row passed; it cannot by itself complete Milestone
 7. Complete milestone acceptance still requires the full-envelope and original
 thread-ceiling evidence below.

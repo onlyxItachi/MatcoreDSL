@@ -76,10 +76,10 @@ CpuParallelGemmStatusV1 cpu_parallel_packed_avx512_workspace_requirements_v1(
 // planner. Task t is owned by worker (t % actual_threads). The complete
 // workspace is a caller-owned arena containing one shared immutable packed-B
 // image followed by cache-line-aligned, non-overlapping transient-A worker
-// slices. B packing remains part of end-to-end execution: it is ordinarily
-// completed by the submitting thread before dispatch, while a narrow
-// authenticated envelope cooperatively prepares disjoint final B panels and
-// publishes them before compute.
+// slices. B packing remains part of end-to-end execution and is completed by
+// the submitting thread before dispatch. Private cooperative-preparation
+// infrastructure is deliberately dormant until a final-checkpoint boundary
+// matrix authenticates a complete activation region.
 CpuParallelGemmStatusV1 cpu_execute_parallel_packed_avx2_v1(
     CpuExecutionContextV1 &context,
     const planner::CpuGemmProblemV1 &problem, const float *lhs,

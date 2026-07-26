@@ -41,9 +41,10 @@ declared family and exact thread count, the full comparison matrix, native
 scaling, prepacked-B evidence, planner regret, missing comparisons, and each
 Milestone 7 acceptance threshold. `--require-pass` turns a valid non-passing
 performance result into exit status 1, while malformed or incomplete evidence
-uses exit status 2. The bounded regret and capacity-limited thread strata are
-reported as non-acceptance diagnostics; full-envelope regret and every
-original thread ceiling remain separate manual Milestone 7 gates.
+uses exit status 2. Measured bounded regret is acceptance-enabled, so adverse
+values fail the bounded summary. Full-envelope regret coverage and
+capacity-limited original thread ceilings remain separate manual Milestone 7
+gates.
 
 The ratio gate is intentionally not satisfied by an automatic plan that chose
 OpenBLAS. Native parity uses only packed or persistent-parallel MDSLC

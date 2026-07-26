@@ -1778,7 +1778,6 @@ def assessment(
             and float(regret_metrics["median"]) <= 1.05
             and float(regret_metrics["p95"]) <= 1.15
             and float(regret_metrics["maximum"]) <= 1.35,
-            "acceptance": False,
         },
         {
             "id": "planner-regret-full-envelope-coverage",
@@ -1891,6 +1890,10 @@ def assessment(
         "schema": SUMMARY_SCHEMA,
         "version": SUMMARY_VERSION,
         "verdict": verdict,
+        "verdict_scope": "bounded-paired-measurement-assessment",
+        "milestone_disposition": (
+            "requires-manual-full-envelope-and-thread-ceiling-review"
+        ),
         "partition_interpretation": PARTITION_INTERPRETATION,
         "evidence_contract": {
             "manifest_version": MANIFEST_VERSION,
@@ -1997,7 +2000,7 @@ def render_markdown(summary: dict) -> str:
         "",
         "Status: authenticated paired Milestone 7 evidence.",
         "",
-        f"**Verdict: {summary['verdict']}**",
+        f"**Bounded assessment verdict: {summary['verdict']}**",
         "",
         "Native parity counts only native MDSLC kernels. Automatic plans that "
         "select OpenBLAS do not establish native parity.",
@@ -2410,7 +2413,8 @@ def main() -> int:
         return 2
     print(
         f"matcore native-BLAS parity summary: {len(cells)} paired raw cells; "
-        f"verdict={summary['verdict']}; markdown={args.markdown_out}"
+        f"bounded-verdict={summary['verdict']}; "
+        f"markdown={args.markdown_out}"
     )
     if args.require_pass and summary["verdict"] != "passed":
         return 1

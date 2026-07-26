@@ -93,9 +93,13 @@ def planner_regret(
     selected_variant: str,
     seconds: float,
     requested_threads: int,
+    regret_multiplier: float = 1.0,
 ) -> dict:
-    selected_samples = samples(seconds)
-    slower_samples = samples(seconds * 1.08)
+    selected_samples = samples(seconds * regret_multiplier)
+    alternative_seconds = (
+        seconds * 1.08 if regret_multiplier == 1.0 else seconds
+    )
+    alternative_samples = samples(alternative_seconds)
 
     def candidate(variant: str, values: list[float]) -> dict:
         ordered = sorted(values)
@@ -133,18 +137,27 @@ def planner_regret(
         candidate(selected_variant, selected_samples),
         candidate(
             "cpu.native-packed.avx2-fma.f32.v1",
-            slower_samples,
+            alternative_samples,
         ),
     ]
+    fastest_variant = (
+        selected_variant
+        if regret_multiplier == 1.0
+        else "cpu.native-packed.avx2-fma.f32.v1"
+    )
+    fastest_seconds = (
+        seconds if regret_multiplier == 1.0 else alternative_seconds
+    )
+    selected_seconds = seconds * regret_multiplier
     return {
         "requested": True,
         "valid": True,
         "aggregation_method":
         "arithmetic-mean-of-forward-and-reverse-pass-medians",
-        "fastest_legal_variant": selected_variant,
-        "fastest_legal_balanced_estimate_seconds": seconds,
-        "selected_balanced_estimate_seconds": seconds,
-        "regret": 1.0,
+        "fastest_legal_variant": fastest_variant,
+        "fastest_legal_balanced_estimate_seconds": fastest_seconds,
+        "selected_balanced_estimate_seconds": selected_seconds,
+        "regret": selected_seconds / fastest_seconds,
         "reason": "synthetic authenticated contract fixture",
         "candidates": candidates,
     }
@@ -193,6 +206,7 @@ def raw_report(
     physical_cores: int,
     order_factor: float,
     native_ratio_scale: float = 1.0,
+    planner_regret_multiplier: float = 1.0,
 ) -> dict:
     seconds = variant_seconds(
         summary, case, order_factor, native_ratio_scale
@@ -302,7 +316,11 @@ def raw_report(
         "prepacked_b_preparation": preparation,
         "planner_regret": (
             planner_regret(
-                summary, selected_variant, seconds, case.threads
+                summary,
+                selected_variant,
+                seconds,
+                case.threads,
+                planner_regret_multiplier,
             )
             if requested_regret
             else {"requested": False}
@@ -331,6 +349,7 @@ def write_bundle(
     runner_path: pathlib.Path,
     physical_cores: int,
     native_ratio_scale: float = 1.0,
+    planner_regret_multiplier: float = 1.0,
     directory_name: str | None = None,
 ) -> pathlib.Path:
     directory = root / (directory_name or order)
@@ -351,6 +370,7 @@ def write_bundle(
             physical_cores,
             order_factor,
             native_ratio_scale,
+            planner_regret_multiplier,
         )
         raw_path.write_text(
             json.dumps(document, sort_keys=True) + "\n",
@@ -526,13 +546,19 @@ def main() -> int:
             "holdout": "declared-validation-not-blind",
         }
         assert summary_json["verdict"] == "passed"
+        assert summary_json["verdict_scope"] == (
+            "bounded-paired-measurement-assessment"
+        )
+        assert summary_json["milestone_disposition"] == (
+            "requires-manual-full-envelope-and-thread-ceiling-review"
+        )
         criteria = {
             item["id"]: item for item in summary_json["criteria"]
         }
         assert criteria["planner-regret-bounded-diagnostic"]["passed"]
-        assert not criteria[
+        assert criteria[
             "planner-regret-bounded-diagnostic"
-        ]["acceptance"]
+        ].get("acceptance", True)
         assert not criteria[
             "planner-regret-full-envelope-coverage"
         ]["passed"]
@@ -562,7 +588,6 @@ def main() -> int:
         assert b"No unbiased holdout claim is made" in first_markdown
         assert b"manifest v3; benchmark v6; sanitized summary v3" in first_markdown
         assert b"## Measurement contract" in first_markdown
-        assert b"## Planner regret" in first_markdown
         assert b"## Prepacked-B repeated execution" in first_markdown
         assert b"## Milestone 6 comparison" in first_markdown
         assert b"## Weakest measured cells" in first_markdown
@@ -576,7 +601,7 @@ def main() -> int:
             output,
             require_pass=True,
         )
-        assert "verdict=passed" in required.stdout
+        assert "bounded-verdict=passed" in required.stdout
         first_json = (output / "summary.json").read_bytes()
         execute_summary(
             summarizer_path,
@@ -621,7 +646,43 @@ def main() -> int:
             expected=1,
             require_pass=True,
         )
-        assert "verdict=failed" in adverse.stdout
+        assert "bounded-verdict=failed" in adverse.stdout
+
+        regret_adverse_forward = write_bundle(
+            root,
+            "stable-forward",
+            summary,
+            runner,
+            benchmark,
+            source_commit,
+            runner_path,
+            physical_cores,
+            planner_regret_multiplier=3.0,
+            directory_name="regret-adverse-forward",
+        )
+        regret_adverse_reverse = write_bundle(
+            root,
+            "stable-reverse",
+            summary,
+            runner,
+            benchmark,
+            source_commit,
+            runner_path,
+            physical_cores,
+            planner_regret_multiplier=3.0,
+            directory_name="regret-adverse-reverse",
+        )
+        regret_adverse_output = root / "regret-adverse-summary"
+        regret_adverse_output.mkdir()
+        regret_adverse = execute_summary(
+            summarizer_path,
+            regret_adverse_forward,
+            regret_adverse_reverse,
+            regret_adverse_output,
+            expected=1,
+            require_pass=True,
+        )
+        assert "bounded-verdict=failed" in regret_adverse.stdout
 
         forward_manifest = json.loads(forward.read_text(encoding="utf-8"))
         reverse_manifest = json.loads(reverse.read_text(encoding="utf-8"))

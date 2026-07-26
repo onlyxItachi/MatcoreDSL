@@ -89,7 +89,7 @@ ASan/UBSan used `detect_leaks=1`, `halt_on_error=1`, and stack traces.
 ## Bounded ABBA evidence
 
 Both binaries were clean Release builds. Baseline was `6a26994849aadf`; the
-accepted implementation was `a008a57e84af`. Each process was constrained with
+candidate implementation was `a008a57e84af`. Each process was constrained with
 `taskset -c 0-3`; the native context used compact affinity, four physical
 workers, 3 warmups, 7 measured samples, a 2 ms timer floor, hot cache, complete
 packing, and the benchmark guard. The host was an AMD Ryzen AI 9 HX 370
@@ -103,8 +103,8 @@ these are bounded host diagnostics rather than universal calibration data.
 | `1024x1024x1024`, AVX2 | 8.946 ms | 8.990 ms | 240.06 | 238.87 |
 | `1024x1024x1024`, AVX-512 | 8.011 ms | 8.691 ms | 268.07 | 247.10 |
 
-Every short-wide B sample was faster than every corresponding baseline sample.
-The retained median improvements were 1.80x for AVX2 and 1.68x for AVX-512.
+The cell medians favored the candidate by 1.80x for AVX2 and 1.68x for
+AVX-512. No sample-level win/loss claim is retained.
 The square path does not activate cooperative packing; its noisier AVX-512
 samples are not evidence of a code-path effect and no square performance claim
 is made.
@@ -150,11 +150,11 @@ outer or inner ABBA observations.
 | `32x8192x1024`, AVX-512 | 1.186x | 1.526x |
 | `64x4096x4096`, AVX-512 | 1.720x | 1.809x |
 
-The `64x4096x4096` calibration cell remains valid support for the retained
-`K >= 4096` rule: 4-/12-thread gains were 1.715x/1.879x for AVX2 and
-1.720x/1.809x for AVX-512. The `32x8192x1024` rows are preserved above only
-to disclose the experiment chronology; they are not accepted as calibration
-or blind holdout evidence and their production threshold branch was removed.
+The `64x4096x4096` calibration cell reported 4-/12-thread gains of
+1.715x/1.879x for AVX2 and 1.720x/1.809x for AVX-512. It does not establish a
+retained production rule. The `32x8192x1024` rows are preserved above only to
+disclose the experiment chronology; they are not accepted as calibration or
+blind holdout evidence and their production threshold branch was removed.
 The broader rejected matrix observed ratios down to 0.816x. These are
 host-bounded diagnostics, not a claim for other processors.
 
