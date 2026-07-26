@@ -725,19 +725,14 @@ def authenticate_planner_regret(
                 and candidate.get("plan_authenticated") is True,
                 "forced planner-regret candidate was substituted",
             )
-        require(
-            candidate.get("timing_valid") is False
-            if not candidate.get("legal")
-            else True,
-            "illegal planner-regret candidate was timed",
+        comparable = bool(
+            candidate.get("legal")
+            and candidate.get("complete_implementation_comparison")
         )
         require(
-            not (
-                candidate.get("legal")
-                and candidate.get("complete_implementation_comparison")
-                and candidate.get("timing_valid") is not True
-            ),
-            "comparable legal planner-regret candidate was not timed",
+            candidate.get("timing_valid") is comparable,
+            "planner-regret timing validity differs from legal complete-call "
+            "comparability",
         )
         if not candidate.get("timing_valid"):
             continue

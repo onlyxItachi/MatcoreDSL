@@ -731,6 +731,11 @@ def main() -> int:
         for mutation, expected_message in (
             ("omit", "complete ordered v3 registry"),
             ("duplicate", "complete ordered v3 registry"),
+            (
+                "non-comparable-timed",
+                "timing validity differs from legal complete-call "
+                "comparability",
+            ),
         ):
             regret_document = json.loads(
                 pristine_regret_raw.decode("utf-8")
@@ -740,8 +745,16 @@ def main() -> int:
             ]["candidates"]
             if mutation == "omit":
                 candidates.pop()
-            else:
+            elif mutation == "duplicate":
                 candidates[-1] = copy.deepcopy(candidates[0])
+            else:
+                original_variant = candidates[-1]["variant"]
+                candidates[-1] = copy.deepcopy(candidates[0])
+                candidates[-1]["variant"] = original_variant
+                candidates[-1]["selected_variant"] = original_variant
+                candidates[-1][
+                    "complete_implementation_comparison"
+                ] = False
             regret_raw.write_text(
                 json.dumps(regret_document, sort_keys=True) + "\n",
                 encoding="utf-8",

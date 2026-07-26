@@ -644,15 +644,14 @@ def authenticate_regret(result: dict) -> None:
                 raise ValueError("forced regret candidate was substituted")
             if not candidate.get("plan_authenticated"):
                 raise ValueError("legal regret candidate plan is unauthenticated")
-        elif candidate.get("timing_valid"):
-            raise ValueError("illegal planner-regret candidate was timed")
-        if (
+        comparable = bool(
             candidate.get("legal")
             and candidate.get("complete_implementation_comparison")
-            and not candidate.get("timing_valid")
-        ):
+        )
+        if candidate.get("timing_valid") is not comparable:
             raise ValueError(
-                "comparable legal planner-regret candidate was not timed"
+                "planner-regret timing validity differs from legal "
+                "complete-call comparability"
             )
         if not candidate.get("timing_valid"):
             continue
