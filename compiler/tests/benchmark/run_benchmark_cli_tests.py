@@ -120,6 +120,7 @@ def main() -> int:
         assert result["p95_seconds"] >= result["median_seconds"]
         assert math.isfinite(result["gflops"]) and result["gflops"] > 0
         assert report["configuration"]["alignment_bytes"] == 4
+        assert report["configuration"]["lhs_sequence_length"] == 1
         assert report["configuration"]["compare_one_thread"] is False
         assert report["configuration"]["planner_regret"] is False
         assert report["configuration"]["smt_policy"] == "physical-cores-only"
@@ -169,6 +170,44 @@ def main() -> int:
         assert result["planner_regret"]["requested"] is False
         assert result["complete_implementation_comparison"] is True
         assert "complete implementation call" in result["timing_scope"]
+
+        sequence_output = pathlib.Path(temporary) / "fixed B sequence.json"
+        run(
+            [
+                str(executable),
+                "--m",
+                "2",
+                "--n",
+                "3",
+                "--k",
+                "2",
+                "--variant",
+                "cpu.reference.f32.v1",
+                "--lhs-sequence",
+                "4",
+                "--warmup",
+                "0",
+                "--iterations",
+                "2",
+                "--timer-floor-us",
+                "1",
+                "--guard",
+                "--json-out",
+                str(sequence_output),
+            ]
+        )
+        sequence_report = json.loads(
+            sequence_output.read_text(encoding="utf-8")
+        )
+        require_report_shape(sequence_report, schema)
+        sequence_result = sequence_report["results"][0]
+        assert sequence_report["configuration"]["lhs_sequence_length"] == 4
+        assert sequence_result["aggregate_repetitions"] >= 4
+        assert sequence_result["aggregate_repetitions"] % 4 == 0
+        assert sequence_result["untimed_validation_executions_checked"] >= 8
+        assert "distinct-left-inputs=4" in sequence_result[
+            "untimed_validation_scope"
+        ]
 
         if report["environment"]["physical_cores"] >= 2:
             for policy in ("compact", "scatter", "local-first"):
@@ -661,6 +700,23 @@ def main() -> int:
         expected=1,
     )
     assert "compute diagnostics require reusable workspace" in invalid_compute_allocation.stderr
+
+    invalid_compute_sequence = run(
+        [
+            str(executable),
+            "--m",
+            "2",
+            "--n",
+            "2",
+            "--k",
+            "2",
+            "--exclude-packing",
+            "--lhs-sequence",
+            "2",
+        ],
+        expected=1,
+    )
+    assert "one prepared left input" in invalid_compute_sequence.stderr
 
     misleading_exclusion = run(
         [

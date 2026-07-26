@@ -44,6 +44,15 @@ bool checked_multiply(std::uint64_t lhs, std::uint64_t rhs,
   return true;
 }
 
+bool checked_round_up(std::uint64_t value, std::uint64_t multiple,
+                      std::uint64_t &result) noexcept {
+  if (multiple == 0) return false;
+  const std::uint64_t remainder = value % multiple;
+  return remainder == 0
+             ? (result = value, true)
+             : checked_add(value, multiple - remainder, result);
+}
+
 bool checked_aligned_buffer_allocation(std::uint64_t payload_bytes,
                                        std::uint64_t alignment,
                                        std::uint64_t &allocation_bytes) noexcept {
@@ -487,6 +496,10 @@ bool validate_options_v1(BenchmarkOptionsV1 &options, std::string &error) {
     error = "measured iteration count must be positive";
     return false;
   }
+  if (options.lhs_sequence_length == 0) {
+    error = "left-input sequence length must be positive";
+    return false;
+  }
   if (options.alignment_bytes < alignof(float) ||
       !std::has_single_bit(options.alignment_bytes)) {
     error = "alignment must be a power of two and at least 4 bytes";
@@ -508,6 +521,12 @@ bool validate_options_v1(BenchmarkOptionsV1 &options, std::string &error) {
   if (options.packing_mode == PackingModeV1::exclude &&
       options.allocation_mode == AllocationModeV1::include_allocation) {
     error = "packing-excluded compute diagnostics require reusable workspace";
+    return false;
+  }
+  if (options.packing_mode == PackingModeV1::exclude &&
+      options.lhs_sequence_length != 1) {
+    error =
+        "packing-excluded compute diagnostics require one prepared left input";
     return false;
   }
   if (options.planner_regret && options.requested_variant != "auto") {
@@ -534,6 +553,9 @@ bool checked_memory_requirement_v1(const GemmShapeV1 &shape,
     return false;
   }
   std::uint64_t lhs_bytes = 0;
+  std::uint64_t lhs_sequence_bytes = 0;
+  std::uint64_t lhs_sequence_stride_bytes = 0;
+  std::uint64_t lhs_sequence_prefix_bytes = 0;
   std::uint64_t rhs_bytes = 0;
   std::uint64_t output_bytes = 0;
   std::uint64_t lhs_allocation = 0;
@@ -546,9 +568,16 @@ bool checked_memory_requirement_v1(const GemmShapeV1 &shape,
   const auto workspace_alignment = static_cast<std::uint64_t>(
       std::max<std::uint32_t>(plan.workspace_alignment, 1U));
   if (!checked_multiply(lhs, sizeof(float), lhs_bytes) ||
+      !checked_round_up(lhs_bytes, matrix_alignment,
+                        lhs_sequence_stride_bytes) ||
+      !checked_multiply(lhs_sequence_stride_bytes,
+                        options.lhs_sequence_length - 1,
+                        lhs_sequence_prefix_bytes) ||
+      !checked_add(lhs_sequence_prefix_bytes, lhs_bytes,
+                   lhs_sequence_bytes) ||
       !checked_multiply(rhs, sizeof(float), rhs_bytes) ||
       !checked_multiply(output, sizeof(float), output_bytes) ||
-      !checked_aligned_buffer_allocation(lhs_bytes, matrix_alignment,
+      !checked_aligned_buffer_allocation(lhs_sequence_bytes, matrix_alignment,
                                          lhs_allocation) ||
       !checked_aligned_buffer_allocation(rhs_bytes, matrix_alignment,
                                          rhs_allocation) ||
@@ -800,8 +829,24 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
       error = "matrix element count overflows";
       return false;
     }
+    std::uint64_t lhs_bytes = 0;
+    std::uint64_t lhs_sequence_stride_bytes = 0;
+    std::uint64_t lhs_sequence_prefix_bytes = 0;
+    std::uint64_t lhs_sequence_bytes = 0;
+    if (!checked_multiply(lhs_elements, sizeof(float), lhs_bytes) ||
+        !checked_round_up(lhs_bytes, options.alignment_bytes,
+                          lhs_sequence_stride_bytes) ||
+        !checked_multiply(lhs_sequence_stride_bytes,
+                          options.lhs_sequence_length - 1,
+                          lhs_sequence_prefix_bytes) ||
+        !checked_add(lhs_sequence_prefix_bytes, lhs_bytes,
+                     lhs_sequence_bytes) ||
+        lhs_sequence_bytes > std::numeric_limits<std::size_t>::max()) {
+      error = "left-input sequence byte count overflows";
+      return false;
+    }
     try {
-      AlignedBuffer lhs(static_cast<std::size_t>(lhs_elements * sizeof(float)),
+      AlignedBuffer lhs(static_cast<std::size_t>(lhs_sequence_bytes),
                         options.alignment_bytes, true);
       AlignedBuffer rhs(static_cast<std::size_t>(rhs_elements * sizeof(float)),
                         options.alignment_bytes, true);
@@ -826,8 +871,13 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
                                    static_cast<std::uint64_t>(shape.m) ^
                                    (static_cast<std::uint64_t>(shape.n) << 17) ^
                                    (static_cast<std::uint64_t>(shape.k) << 33);
-      fill_input(reinterpret_cast<float *>(lhs.data()),
-                 static_cast<std::size_t>(lhs_elements), random_state);
+      for (std::uint32_t input = 0;
+           input < options.lhs_sequence_length; ++input) {
+        float *input_data = reinterpret_cast<float *>(
+            lhs.data() + input * lhs_sequence_stride_bytes);
+        fill_input(input_data, static_cast<std::size_t>(lhs_elements),
+                   random_state);
+      }
       fill_input(reinterpret_cast<float *>(rhs.data()),
                  static_cast<std::size_t>(rhs_elements), random_state);
 
@@ -846,7 +896,14 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
 
       std::unique_ptr<AlignedBuffer> one_shot_output;
       std::unique_ptr<AlignedBuffer> one_shot_workspace;
+      std::uint64_t invocation_index = 0;
+      const float *last_lhs =
+          reinterpret_cast<const float *>(lhs.data());
       const auto invoke = [&]() -> bool {
+        const auto lhs_index =
+            invocation_index % options.lhs_sequence_length;
+        const float *active_lhs = reinterpret_cast<const float *>(
+            lhs.data() + lhs_index * lhs_sequence_stride_bytes);
         AlignedBuffer *active_output = &output;
         AlignedBuffer *active_workspace = &workspace;
         RunnerPlanV1 active_plan = result.plan;
@@ -888,7 +945,7 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
         bool prepared = packing_prepared;
         if (options.packing_mode == PackingModeV1::include) {
           if (!runner.prepare(active_plan, shape,
-                              reinterpret_cast<const float *>(lhs.data()),
+                              active_lhs,
                               reinterpret_cast<const float *>(rhs.data()),
                               active_workspace->span(), prepacked_b.span(), false,
                               error))
@@ -896,23 +953,33 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
           prepared = true;
         }
         if (!runner.execute(active_plan, shape,
-                            reinterpret_cast<const float *>(lhs.data()),
+                            active_lhs,
                             reinterpret_cast<const float *>(rhs.data()),
                             reinterpret_cast<float *>(active_output->data()),
                             active_workspace->span(), prepacked_b.span(), prepared,
                             error))
           return false;
-        return runner.synchronize(error);
+        if (!runner.synchronize(error)) return false;
+        last_lhs = active_lhs;
+        ++invocation_index;
+        return true;
+      };
+
+      const auto invoke_sequence = [&]() -> bool {
+        for (std::uint32_t input = 0; input < options.lhs_sequence_length;
+             ++input)
+          if (!invoke()) return false;
+        return true;
       };
 
       for (std::uint32_t warmup = 0; warmup < options.warmup_iterations; ++warmup) {
         if (options.cache_mode == CacheModeV1::cold) evict_cache(cold_cache);
-        if (!invoke()) return false;
+        if (!invoke_sequence()) return false;
       }
 
       if (options.cache_mode == CacheModeV1::cold) evict_cache(cold_cache);
       const auto probe_begin = std::chrono::steady_clock::now();
-      if (!invoke()) return false;
+      if (!invoke_sequence()) return false;
       const auto probe_end = std::chrono::steady_clock::now();
       const auto probe_ns = std::max<std::uint64_t>(
           1, static_cast<std::uint64_t>(
@@ -929,7 +996,7 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
           const auto begin = std::chrono::steady_clock::now();
           for (std::uint64_t repetition = 0; repetition < repetitions;
                ++repetition)
-            if (!invoke()) return false;
+            if (!invoke_sequence()) return false;
           const auto end = std::chrono::steady_clock::now();
           const auto elapsed_ns = std::max<std::uint64_t>(
               1, static_cast<std::uint64_t>(
@@ -955,14 +1022,22 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
                    ? reinterpret_cast<const float *>(one_shot_output->data())
                    : reinterpret_cast<const float *>(output.data());
       };
-      const std::uint64_t validation_executions =
-          static_cast<std::uint64_t>(options.measured_iterations) * repetitions;
+      std::uint64_t aggregate_executions = 0;
+      std::uint64_t validation_executions = 0;
+      if (!checked_multiply(repetitions, options.lhs_sequence_length,
+                            aggregate_executions) ||
+          !checked_multiply(options.measured_iterations,
+                            aggregate_executions,
+                            validation_executions)) {
+        error = "benchmark execution count overflows";
+        return false;
+      }
       const auto run_untimed_validation = [&]() -> bool {
         for (std::uint64_t validation = 0; validation < validation_executions;
              ++validation) {
           if (!invoke()) return false;
           const CorrectnessResultV1 validation_result = verify_output(
-              shape, reinterpret_cast<const float *>(lhs.data()),
+              shape, last_lhs,
               reinterpret_cast<const float *>(rhs.data()),
               active_output_data());
           if (!validation_result.passed) {
@@ -992,15 +1067,16 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
         const auto begin = std::chrono::steady_clock::now();
         for (std::uint64_t repetition = 0; repetition < repetitions;
              ++repetition)
-          if (!invoke()) return false;
+          if (!invoke_sequence()) return false;
         const auto end = std::chrono::steady_clock::now();
         const double aggregate_seconds =
             std::chrono::duration<double>(end - begin).count();
-        samples.push_back(aggregate_seconds / static_cast<double>(repetitions));
+        samples.push_back(aggregate_seconds /
+                          static_cast<double>(aggregate_executions));
       }
 
       CorrectnessResultV1 final_timed_correctness = verify_output(
-          shape, reinterpret_cast<const float *>(lhs.data()),
+          shape, last_lhs,
           reinterpret_cast<const float *>(rhs.data()), active_output_data());
       if (!final_timed_correctness.passed) {
         error = "final timed output correctness failed for " +
@@ -1015,7 +1091,8 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
         return false;
 
       result.timing = summarize_timings_v1(
-          std::move(samples), repetitions, options.timer_floor_nanoseconds);
+          std::move(samples), aggregate_executions,
+          options.timer_floor_nanoseconds);
       final_timed_correctness.timed_final_output_authenticated = true;
       final_timed_correctness.untimed_validation_executions_checked =
           validation_executions;
@@ -1026,7 +1103,8 @@ bool run_benchmarks_v1(const BenchmarkOptionsV1 &unvalidated_options,
           std::string(untimed_validation_placement_name_v3(
               options.untimed_validation_placement)) +
           "; the final timed output was authenticated immediately after "
-          "timing";
+          "timing; distinct-left-inputs=" +
+          std::to_string(options.lhs_sequence_length);
       result.correctness = std::move(final_timed_correctness);
       if (result.timing.valid) {
         const long double operations =
@@ -1457,6 +1535,8 @@ void write_json_v1(const BenchmarkReportV1 &report, std::ostream &output) {
   output << ",\n    \"requested_threads\": " << report.options.requested_threads
          << ",\n    \"warmup_iterations\": " << report.options.warmup_iterations
          << ",\n    \"measured_iterations\": " << report.options.measured_iterations
+         << ",\n    \"lhs_sequence_length\": "
+         << report.options.lhs_sequence_length
          << ",\n    \"alignment_bytes\": " << report.options.alignment_bytes
          << ",\n    \"cache_mode\": "; json_string(output, cache_mode_name_v1(report.options.cache_mode));
   output << ",\n    \"allocation_mode\": ";

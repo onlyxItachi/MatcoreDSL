@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+
+import argparse
+import json
+import pathlib
+import subprocess
+import sys
+import tempfile
+
+
+def run(command: list[str], expected: int = 0) -> subprocess.CompletedProcess[str]:
+    completed = subprocess.run(command, text=True, capture_output=True, check=False)
+    if completed.returncode != expected:
+        raise AssertionError(
+            f"command returned {completed.returncode}, expected {expected}: {command}\n"
+            f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+        )
+    return completed
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--runner", required=True)
+    parser.add_argument("--bench", required=True)
+    args = parser.parse_args()
+    runner = pathlib.Path(args.runner).resolve()
+    bench = pathlib.Path(args.bench).resolve()
+    repository = runner.parents[3]
+
+    with tempfile.TemporaryDirectory(prefix="matcore deep audit plan ") as temporary:
+        output = pathlib.Path(temporary) / "raw output"
+        run(
+            [
+                sys.executable,
+                str(runner),
+                "--bench",
+                str(bench),
+                "--output-dir",
+                str(output),
+                "--suites",
+                "all",
+                "--threads",
+                "1,2,4,12",
+                "--dry-run",
+            ]
+        )
+        manifest = json.loads(
+            (output / "manifest.json").read_text(encoding="utf-8")
+        )
+        assert manifest["schema"] == "matcore.cpu-performance-deep-audit.manifest"
+        assert manifest["version"] == 1
+        assert manifest["benchmark_schema_version"] == 5
+        assert manifest["dry_run"] is True
+        assert manifest["threads"] == [1, 2, 4, 12]
+        assert manifest["cases"]
+        assert manifest["skips"]
+
+        keys = [case["key"] for case in manifest["cases"]]
+        assert len(keys) == len(set(keys))
+        families = {case["family"] for case in manifest["cases"]}
+        assert families == {
+            "small-square",
+            "medium-square",
+            "large-square",
+            "tall-skinny",
+            "short-wide",
+            "vector-like",
+            "tail-heavy",
+        }
+        partitions = {case["partition"] for case in manifest["cases"]}
+        assert partitions == {"diagnostic", "calibration", "holdout"}
+        shapes = {tuple(case["shape"]) for case in manifest["cases"]}
+        assert (4096, 4096, 4096) in shapes
+        assert (4096, 64, 4096) in shapes
+        assert (64, 4096, 4096) in shapes
+        assert (1, 4096, 4096) in shapes
+        assert (511, 513, 515) in shapes
+
+        prepacked = [
+            case for case in manifest["cases"] if case["mode"] == "prepacked-b-hot"
+        ]
+        assert {case["lhs_sequence"] for case in prepacked} == {1, 4, 16, 64}
+        assert all(case["variant"].startswith("cpu.native-") for case in prepacked)
+        compute = [
+            case for case in manifest["cases"] if case["mode"] == "compute-only-hot"
+        ]
+        assert {
+            case["variant"] for case in compute
+        } == {
+            "cpu.native-packed.avx2-fma.f32.v1",
+            "cpu.native-packed.avx512-fma.f32.v1",
+        }
+        assert all("--exclude-packing" in case["command"] for case in compute)
+
+        reference_large_skip = [
+            skip
+            for skip in manifest["skips"]
+            if skip["shape"] == [4096, 4096, 4096]
+            and skip["variant"] == "cpu.reference.f32.v1"
+        ]
+        assert reference_large_skip
+        assert all(
+            "audit runtime bound" in skip["reason"] for skip in reference_large_skip
+        )
+
+        parallel = [
+            case
+            for case in manifest["cases"]
+            if case["variant"] == "cpu.native-parallel.avx2-fma.f32.v1"
+            and case["mode"] == "complete-hot"
+        ]
+        assert {case["threads"] for case in parallel} == {2, 4, 12}
+        assert all(
+            "--physical-cores-only" in case["command"]
+            and case["command"][-1] == "compact"
+            for case in parallel
+        )
+        provider_parallel = [
+            case
+            for case in manifest["cases"]
+            if case["variant"] == "cpu.external.openblas.f32.v1"
+            and case["threads"] > 1
+            and case["mode"] == "complete-hot"
+        ]
+        assert provider_parallel
+        assert all(
+            "--allow-smt" in case["command"]
+            and case["command"][-1] == "none"
+            for case in provider_parallel
+        )
+
+    rejected = run(
+        [
+            sys.executable,
+            str(runner),
+            "--bench",
+            str(bench),
+            "--output-dir",
+            str(repository / "docs" / "forbidden raw audit"),
+            "--dry-run",
+        ],
+        expected=2,
+    )
+    assert "must be under ignored benchmark_reports/" in rejected.stderr
+
+    print("matcore CPU deep-audit runner contract PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -33,6 +33,7 @@ void usage(std::ostream &output) {
       "Measurement contract:\n"
       "  --warmup N               untimed warmup executions (default: 2)\n"
       "  --iterations N           measured aggregate samples (default: 9)\n"
+      "  --lhs-sequence N          cycle through N distinct A inputs with fixed B\n"
       "  --hot-cache              hot-cache aggregate timing (default)\n"
       "  --cold-cache             best-effort 64 MiB eviction before each sample\n"
       "  --include-packing        packing occurs inside each interval (default)\n"
@@ -180,6 +181,7 @@ std::optional<ParsedCommandLine> parse_command_line(int argc, char **argv) {
         argument == "--m" || argument == "--n" || argument == "--k" ||
         argument == "--variant" || argument == "--threads" ||
         argument == "--warmup" || argument == "--iterations" ||
+        argument == "--lhs-sequence" ||
         argument == "--alignment" || argument == "--json-out" ||
         argument == "--affinity" ||
         argument == "--max-memory-mib" || argument == "--timer-floor-us" ||
@@ -217,6 +219,11 @@ std::optional<ParsedCommandLine> parse_command_line(int argc, char **argv) {
     } else if (argument == "--iterations") {
       if (!parse_integer(*value, parsed.options.measured_iterations)) {
         std::cerr << "matcore-bench: iterations must be positive\n";
+        return std::nullopt;
+      }
+    } else if (argument == "--lhs-sequence") {
+      if (!parse_integer(*value, parsed.options.lhs_sequence_length)) {
+        std::cerr << "matcore-bench: lhs-sequence must be positive\n";
         return std::nullopt;
       }
     } else if (argument == "--alignment") {
@@ -302,6 +309,7 @@ int main(int argc, char **argv) {
               << " k=" << result.shape.k
               << " variant=" << result.plan.selected_variant
               << " threads=" << result.plan.actual_threads
+              << " lhs_sequence=" << report.options.lhs_sequence_length
               << " smt_policy=" << result.plan.smt_policy
               << " affinity_policy=" << result.plan.affinity_policy
               << " worker_affinity_applied="

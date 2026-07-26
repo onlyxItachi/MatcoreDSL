@@ -291,6 +291,18 @@ int main() {
              error.find("compute diagnostics require reusable workspace") !=
                  std::string::npos,
          "compute-only packing exclusion cannot include one-shot allocation");
+  auto invalid_sequence = options;
+  invalid_sequence.lhs_sequence_length = 0;
+  expect(!bench::validate_options_v1(invalid_sequence, error) &&
+             error.find("sequence length must be positive") !=
+                 std::string::npos,
+         "zero-length left-input sequence is rejected");
+  invalid_sequence = options;
+  invalid_sequence.lhs_sequence_length = 2;
+  invalid_sequence.packing_mode = bench::PackingModeV1::exclude;
+  expect(!bench::validate_options_v1(invalid_sequence, error) &&
+             error.find("one prepared left input") != std::string::npos,
+         "compute-only prepared-A mode rejects multiple left inputs");
 
   bench::RunnerPlanV1 zero_workspace_plan;
   zero_workspace_plan.legal = true;
@@ -300,6 +312,14 @@ int main() {
                                                options, bytes, error) &&
              bytes >= (4 * 6 + 6 * 5 + 4 * 5) * sizeof(float),
          "memory accounting includes all matrices");
+  const std::uint64_t single_lhs_bytes = bytes;
+  auto sequence_memory = options;
+  sequence_memory.lhs_sequence_length = 4;
+  expect(bench::checked_memory_requirement_v1(
+             {4, 5, 6}, zero_workspace_plan, sequence_memory, bytes, error) &&
+             bytes == single_lhs_bytes + 3 * 128,
+         "memory accounting includes every distinct, 64-byte-aligned left "
+         "input exactly once");
   auto tiny_limit = options;
   tiny_limit.maximum_memory_bytes = 16;
   expect(!bench::checked_memory_requirement_v1(
@@ -491,6 +511,22 @@ int main() {
                  report.results[0].timing_aggregation_boundary) ==
                  "one-clock-pair-per-aggregate-repetition-block",
          "benchmark result identifies the variant and passes independent oracle");
+
+  auto sequence_options = run_options;
+  sequence_options.lhs_sequence_length = 4;
+  bench::BenchmarkReportV1 sequence_report;
+  expect(bench::run_benchmarks_v1(sequence_options, *runner, sequence_report,
+                                  error) &&
+             sequence_report.results[0].correctness.passed &&
+             sequence_report.results[0].timing.aggregate_repetitions >= 4 &&
+             sequence_report.results[0].timing.aggregate_repetitions % 4 == 0 &&
+             sequence_report.results[0].correctness
+                     .untimed_validation_executions_checked >=
+                 sequence_options.measured_iterations * 4 &&
+             sequence_report.results[0].correctness.untimed_validation_scope
+                     .find("distinct-left-inputs=4") != std::string::npos,
+         "fixed-B sequence timing cycles four distinct left inputs and "
+         "oracle-checks every invocation");
 
   auto scaling_options = run_options;
   scaling_options.compare_one_thread = true;
@@ -788,7 +824,9 @@ int main() {
   const std::string json = encoded.str();
   expect(json.find("\"schema\": \"matcore.benchmark.cpu.gemm\"") !=
                  std::string::npos &&
-             json.find("\"version\": 4") != std::string::npos &&
+             json.find("\"version\": 5") != std::string::npos &&
+             json.find("\"lhs_sequence_length\": 1") !=
+                 std::string::npos &&
              json.find("\"source_worktree_dirty\"") !=
                  std::string::npos &&
              json.find("\"source_provenance_state\"") !=

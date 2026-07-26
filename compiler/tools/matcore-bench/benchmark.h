@@ -15,6 +15,7 @@ namespace matcore::mdslc::bench {
 inline constexpr std::uint32_t kBenchmarkSchemaVersionV2 = 2;
 inline constexpr std::uint32_t kBenchmarkSchemaVersionV3 = 3;
 inline constexpr std::uint32_t kBenchmarkSchemaVersionV4 = 4;
+inline constexpr std::uint32_t kBenchmarkSchemaVersionV5 = 5;
 inline constexpr std::uint64_t kDefaultMaximumMemoryBytes =
     UINT64_C(2) * 1024 * 1024 * 1024;
 inline constexpr std::uint64_t kDefaultTimerFloorNanoseconds = 1'000'000;
@@ -58,6 +59,7 @@ struct BenchmarkOptionsV1 {
   std::uint32_t requested_threads = 1;
   std::uint32_t warmup_iterations = 2;
   std::uint32_t measured_iterations = 9;
+  std::uint32_t lhs_sequence_length = 1;
   std::uint32_t alignment_bytes = 64;
   CacheModeV1 cache_mode = CacheModeV1::hot;
   AllocationModeV1 allocation_mode = AllocationModeV1::reuse_workspace;
@@ -298,7 +300,7 @@ struct BenchmarkEnvironmentV1 {
 };
 
 struct BenchmarkReportV1 {
-  std::uint32_t schema_version = kBenchmarkSchemaVersionV4;
+  std::uint32_t schema_version = kBenchmarkSchemaVersionV5;
   std::string operation = "matcore.gemm";
   std::string dtype = "f32";
   std::string accumulation_dtype = "f32";
