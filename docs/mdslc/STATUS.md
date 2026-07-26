@@ -49,9 +49,9 @@ Four bounded cell-median point estimates at cooperative-packing checkpoint
 `4719528354575f5aff74def97b534e763cb2033c` favored the candidate by
 1.715--1.879x for AVX2 and 1.720--1.809x for AVX-512 versus intra-Milestone-7
 checkpoint `6a26994849aadf738910e18a0cebb66ea9b238dc`. They are not direct
-Milestone 5 or exact-final-checkpoint evidence. An intermediate `a008a57`
+Milestone 5 or final-code-checkpoint evidence. An intermediate `a008a57`
 diagnostic measured 2.14x AVX2 and 1.82x AVX-512 four-thread speedup, but later
-runtime changes mean exact final-checkpoint scaling remains unestablished. A
+runtime changes mean final-code-checkpoint scaling remains unestablished. A
 proposed serial AVX2 full-tile routing change was 0.62--2.47% slower on stable
 complete calls and was reverted rather than counted as progress.
 
@@ -66,12 +66,14 @@ records 258/368 cases, but no complete forward/reverse pair exists and the
 summarizer emitted no performance verdict. Full native/OpenBLAS family ratios
 and full-envelope regret are therefore unestablished.
 
-Exact local validation at implementation/test checkpoint `2863253` passed
+Exact local validation at final code checkpoint `b0f5cb7` passed
 Release 50/50, Debug 50/50, OpenBLAS-disabled 50/50, ASan/UBSan 19/19, TSan
 4/4, package/consumer 4/4, ISA artifacts 3/3, the native
 `.mdsl -> ELF .o -> executable` proof, repository hygiene, and the 14-case
 legacy frontend contract. The OpenBLAS-disabled forced request failed closed.
-Hosted Linux, Windows x64, and hygiene checks remain a pull-request gate.
+Independent static review found no unresolved high- or medium-severity code
+finding. Hosted Linux, Windows x64, and hygiene checks remain a pull-request
+gate.
 
 The bounded disposition is documented in
 `docs/performance/cpu/native-blas-parity-v1.md` and

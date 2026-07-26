@@ -114,7 +114,7 @@ or evaluated its native BLAS parity gate:
   timing scope, placement, result, and coverage mismatches;
 - Release, Debug, OpenBLAS-disabled, sanitizer, package, native compiler,
   hygiene, and legacy gates pass; but
-- an intermediate short-wide diagnostic remained below 3.0x, exact final-tip
+- an intermediate short-wide diagnostic remained below 3.0x, exact final-code
   scaling is unestablished, and shared host contention prevented a complete
   authenticated forward/reverse parity matrix.
 

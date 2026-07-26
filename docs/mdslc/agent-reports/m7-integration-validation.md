@@ -6,20 +6,23 @@ Date: 2026-07-26
 
 - Base: `ddda3ccf628dae60bdb7f57d68d024fd02168fcb`
   (`mdslc-cpu-performance-audit-v1`).
-- Frozen implementation and test checkpoint:
+- Final locally validated code checkpoint:
+  `b0f5cb7ba851d0e71ac22849b2845a6c918c22f0`.
+- Incomplete performance-collection checkpoint:
   `2863253d1f2b06a943c2028ae298d0381d15ddf4`.
-- Final-review safety checkpoints: `0fe66e7` (dormant under-measured
-  cooperative packing) and `c2d0c9f` (self-authenticating summary v3 with
-  adverse-evidence failure semantics).
+- Final-review safety commits from `0fe66e7` through `b0f5cb7` make
+  under-measured cooperative packing dormant, fail closed on incomplete or
+  adverse evidence, invalidate stale summaries, authenticate the complete
+  planner registry, and enforce timing/comparability equivalence.
 - Branch: `mdslc/native-blas-parity-v1`.
 - Local integration verdict: non-performance implementation gates passed; the
   Milestone 7 performance envelope was not established. The overall milestone
   disposition is manually **partial**, not a parity-summarizer verdict.
 
 The candidate can be reviewed as bounded CPU-kernel, parallel-runtime,
-diagnostics, and evidence hardening. Any merge remains conditional on the
-independent-review resolutions and hosted gates. It must not be described as
-completed native BLAS parity.
+diagnostics, and evidence hardening. The local independent-review resolutions
+are complete; any merge remains conditional on hosted gates. It must not be
+described as completed native BLAS parity.
 
 ## Exact local build and test matrix
 
@@ -28,13 +31,13 @@ were used with build parallelism two.
 
 | Configuration | Result |
 | --- | ---: |
-| Release, OpenBLAS 0.3.32 required | 50/50 CTest passed; operator-recorded 133.34 s |
-| Debug, OpenBLAS 0.3.32 required | 50/50 CTest passed; operator-recorded 199.43 s |
-| Release, OpenBLAS explicitly disabled | 50/50 CTest passed; operator-recorded 122.23 s |
-| ASan+UBSan supported scope | 19/19 passed; operator-recorded 20.16 s |
-| TSan shared-state scope | 4/4 passed; operator-recorded 7.40 s |
-| Installed package/consumer verbose rerun | 4/4 passed; operator-recorded 19.66 s |
-| Exact Release ISA artifact rerun | 3/3 passed |
+| Release, OpenBLAS 0.3.32 required | 50/50 CTest passed; 135.78 s |
+| Debug, OpenBLAS 0.3.32 required | 50/50 CTest passed independently; 209.05 s |
+| Release, OpenBLAS explicitly disabled | 50/50 CTest passed independently; 125.55 s |
+| ASan+UBSan supported scope | 19/19 passed; 4.54 s |
+| TSan shared-state scope | 4/4 passed; 9.11 s |
+| Installed package/consumer verbose rerun | 4/4 passed; 20.17 s |
+| Exact Release ISA artifact rerun | 3/3 passed; 0.24 s |
 
 The OpenBLAS-disabled forced-provider request exited 1, selected no variant,
 reported `OpenBLAS CBLAS adapter is not linked`, and left no OpenBLAS
@@ -44,11 +47,19 @@ ASan/UBSan used `detect_leaks=1`, fail-fast behavior, strict string checks, and
 UBSan stack traces. TSan used fail-fast and deadlock-stack reporting. No
 sanitizer diagnostic was emitted.
 
+An initial blanket CTest invocation in each sanitizer build reached two
+unsupported child-link probes. Those probes deliberately invoke an external
+uninstrumented compiler and do not forward the sanitizer runtime when linking
+against the instrumented shared library, so they failed with unresolved
+sanitizer symbols. They are not counted as sanitizer gates. The corrected
+declared ASan/UBSan 19-test runtime scope and TSan four-test shared-state scope
+then passed as shown above.
+
 ## Native compiler/artifact proof
 
-The exact Release `mdslc++` compiled `compiler/examples/gemm_v0.mdsl` with
-`--save-temps -c`. Ordinary Clang 21 linked the resulting object against the
-runtime. Execution printed:
+The Release `mdslc++` from checkpoint `b0f5cb7` compiled
+`compiler/examples/gemm_v0.mdsl` with `--save-temps -c`. Ordinary Clang 21
+linked the resulting object against the runtime. Execution printed:
 
 ```text
 host-before
@@ -102,10 +113,11 @@ finished on the shared host. Operator/external host-quiescence monitoring
 stopped collection when unrelated multi-process workloads became active.
 
 The frozen 12-core plan contains 368 cases per order. An external, untracked
-authenticated resumable forward receipt at the exact checkpoint has SHA-256
+authenticated resumable forward receipt at the pre-final-review checkpoint has
+SHA-256
 `26e75ecbcfbb19d024fa8a5fa9790b65a2deb5743b39f16a4f22dd39381cfe69`
 and records 258 cases (`252` reused and `6` newly passed). No complete
-exact-checkpoint forward/reverse pair is available, so the summarizer emitted
+same-checkpoint forward/reverse pair is available, so the summarizer emitted
 no performance verdict and the partial receipt is not used for quantitative
 parity acceptance.
 
@@ -116,9 +128,10 @@ Four bounded ABBA cell-median point estimates at cooperative-packing checkpoint
 `6a26994849aadf738910e18a0cebb66ea9b238dc`. No geometric mean, confidence
 interval, or sample-level win/loss claim is available. An intermediate
 `a008a57` diagnostic measured 2.14x and 1.82x four-thread speedup, but later
-runtime hardening prevents attributing those numbers to the exact final
-checkpoint. Final-checkpoint scaling, direct Milestone 5 improvement, complete
-native/OpenBLAS ratios, and full-envelope planner regret remain unestablished.
+runtime hardening prevents attributing those numbers to the final code
+checkpoint. Final-code-checkpoint scaling, direct Milestone 5 improvement,
+complete native/OpenBLAS ratios, and full-envelope planner regret remain
+unestablished.
 
 ## Windows and hosted status
 

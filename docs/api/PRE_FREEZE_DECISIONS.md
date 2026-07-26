@@ -238,8 +238,8 @@ an existing exported symbol.
 
 ## Milestone 7 bounded disposition
 
-The local Milestone 7 implementation/test checkpoint is `2863253`; the
-candidate bounded disposition pending independent and hosted gates is
+The final locally validated Milestone 7 code checkpoint is `b0f5cb7`; the
+candidate bounded disposition pending hosted gates is
 [native-blas-parity-v1.md](../performance/cpu/native-blas-parity-v1.md).
 
 The private backend work validates that task geometry, packed-B preparation,

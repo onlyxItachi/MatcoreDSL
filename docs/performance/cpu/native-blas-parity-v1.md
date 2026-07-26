@@ -8,10 +8,10 @@ Performance acceptance: **not evaluated / not established** because no
 complete authenticated forward/reverse pair exists. This is not a verdict
 emitted by the parity summarizer.
 
-This report is the candidate local Milestone 7 disposition pending independent
-review resolution and hosted gates. It does not claim general BLAS parity. The
-implementation,
-correctness, artifact, ABI, package, and sanitizer gates pass. Four bounded
+This report is the candidate local Milestone 7 disposition pending hosted
+gates. It does not claim general BLAS parity. The implementation, correctness,
+artifact, ABI, package, sanitizer, and local independent-review gates pass.
+Four bounded
 short-wide diagnostic cell medians favored cooperative B preparation. The
 complete declared native/OpenBLAS parity envelope was not established.
 
@@ -24,8 +24,10 @@ complete declared native/OpenBLAS parity envelope was not established.
 - Operating system: Ubuntu Linux, x86-64.
 - Compiler/tooling: Clang/LLVM 21.1.8, Release and Debug.
 - External provider: OpenBLAS 0.3.32, pthread, LP64 CBLAS.
-- Incomplete physical-run implementation/contract checkpoint:
+- Incomplete physical-run pre-final-review checkpoint:
   `2863253d1f2b06a943c2028ae298d0381d15ddf4`.
+- Final locally validated code checkpoint:
+  `b0f5cb7ba851d0e71ac22849b2845a6c918c22f0`.
 - Exact Release benchmark SHA-256:
   `61028379491877db4383cc73359dcce009e0d96d36f85ad471ae30ceab1fb8b9`.
 - Runner SHA-256:
@@ -35,16 +37,18 @@ complete declared native/OpenBLAS parity envelope was not established.
 - Frozen forward plan SHA-256:
   `c050c6a8d700abdc89f6a7aaee6898b510948cf59cc1f2c831b8542b7b1c09fc`.
 
-These hashes identify the incomplete exact-tip sweep only. The historical ABBA
-and S-P-P-S diagnostics below carry their own source checkpoints and are not
-results from this benchmark binary.
+These hashes identify the incomplete pre-final-review sweep only. The
+historical ABBA and S-P-P-S diagnostics below carry their own source
+checkpoints and are not results from this benchmark binary.
 
-Final-review commits `0fe66e7` and `c2d0c9f` subsequently made cooperative
-packing dormant and replaced summary-v2 partial semantics with the
-self-authenticating summary-v3 bounded assessment. The reviewed v3 summarizer
-has SHA-256
-`048e0c9e642e58270eda9d780aedc9a503ccbbc0518ebcf18807fb80d21a7e72`
-and Git blob `cb16bc96f56330ac352ce30d08918f7cd98854aa`. It intentionally rejects
+Final-review commits from `0fe66e7` through `b0f5cb7` subsequently made
+cooperative packing dormant, replaced summary-v2 partial semantics with the
+self-authenticating summary-v3 bounded assessment, invalidated stale outputs
+on rejection, authenticated the complete ordered planner registry, and
+required timing validity to match legal complete-call comparability. The
+reviewed v3 summarizer has SHA-256
+`e92a5c7198cb7c56988a2b2ab54c5a79da1609fcf105256bfddf91ebfcde96fb`
+and Git blob `191e68a2c6a8ea1954454e811ea147a690c48e08`. It intentionally rejects
 the earlier incomplete receipt and must be used for any future complete
 collection.
 
@@ -130,11 +134,11 @@ not omitted from the envelope.
 The frozen 12-core matrix contains 368 cases in each stable order.
 Operator/external host-quiescence monitoring stopped collection when unrelated
 multi-process workloads became active on the shared host. An external,
-untracked authenticated resumable forward receipt at the exact checkpoint has
-SHA-256
+untracked authenticated resumable forward receipt at the pre-final-review
+checkpoint has SHA-256
 `26e75ecbcfbb19d024fa8a5fa9790b65a2deb5743b39f16a4f22dd39381cfe69`
 and records 258/368 cases (`252` reused and `6` newly passed). No complete
-exact-checkpoint forward/reverse pair was produced.
+same-checkpoint forward/reverse pair was produced.
 
 The incomplete manifest is not summarized, committed, or used for a
 performance claim. There is therefore no final table of per-shape
@@ -155,7 +159,7 @@ requested four-thread and physical-core ceiling.
 | Every declared core-family median >= 0.75 or approved limitation | not established | complete paired matrix unavailable |
 | Native equals or beats OpenBLAS on one meaningful family | not established | no complete matched-provider family aggregate |
 | Multi-thread large-shape median native/OpenBLAS ratio >= 0.85 | not established | complete paired matrix unavailable |
-| Four-thread native speedup >= 3.0x | not established at exact final checkpoint | intermediate `a008a57` diagnostic was 2.14x AVX2 / 1.82x AVX-512, below target |
+| Four-thread native speedup >= 3.0x | not established at the final code checkpoint | intermediate `a008a57` diagnostic was 2.14x AVX2 / 1.82x AVX-512, below target |
 | Physical-core execution improves over one thread | not established over complete envelope | bounded individual diagnostics only |
 | Planner median/p95/max regret <= 1.05/1.15/1.35 | not established over full envelope | only eleven-shape diagnostic registry coverage exists |
 | No automatic regret above 2.0 | not established over full envelope | incomplete full-registry coverage |
@@ -163,7 +167,7 @@ requested four-thread and physical-core ceiling.
 
 The bounded cooperative-packing diagnostic reported large positive point
 estimates relative to the pre-optimization Milestone 7 checkpoint; improvement
-over Milestone 5 and at the exact final checkpoint is not established.
+over Milestone 5 and at the final code checkpoint is not established.
 
 Because mandatory performance criteria are not established, changing
 the shape envelope, counting OpenBLAS-selected automatic plans as native
