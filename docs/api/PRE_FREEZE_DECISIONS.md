@@ -209,10 +209,11 @@ questions above, freeze an API, or assert final native-BLAS parity.
 - The deterministic parallel planner now represents M-only, N-only, and
   two-dimensional output-task grids. It does not split K or change the
   accumulation order for one output element.
-- A narrow, measured short-wide path cooperatively prepares disjoint final B
-  panels inside one persistent execution-context submission. This is
-  within-call preparation with a publication barrier, not a caller-owned
-  cross-call parallel-prepacking API.
+- Private infrastructure can cooperatively prepare disjoint final B panels
+  inside one persistent execution-context submission. Final review found the
+  broad activation region under-measured, so production selection is dormant.
+  This remains within-call candidate preparation with a publication barrier,
+  not a caller-owned cross-call parallel-prepacking API.
 - The internal packed-B format/provenance model consolidates layout and storage
   authentication, but it still cannot prove that source contents remain
   immutable. It is not a general public transformed-operand object.
@@ -237,8 +238,8 @@ an existing exported symbol.
 
 ## Milestone 7 bounded disposition
 
-The final local Milestone 7 implementation/test checkpoint is `2863253`; the
-authoritative bounded performance disposition is
+The local Milestone 7 implementation/test checkpoint is `2863253`; the
+candidate bounded disposition pending independent and hosted gates is
 [native-blas-parity-v1.md](../performance/cpu/native-blas-parity-v1.md).
 
 The private backend work validates that task geometry, packed-B preparation,
@@ -252,8 +253,9 @@ The result is nevertheless **not ready for API/ABI/backend-contract freeze**:
 
 - the complete native/OpenBLAS parity envelope and full-registry planner regret
   were not established;
-- the measured four-thread short-wide path remains below the declared 3.0x
-  speedup target;
+- an intermediate four-thread short-wide diagnostic remained below the
+  declared 3.0x target, while exact final-checkpoint scaling remains
+  unestablished;
 - caller-visible transformed-operand identity, content immutability, lifetime,
   invalidation, and size bounds remain undecided;
 - exact task grids and capacity-limited requested/actual thread reporting need

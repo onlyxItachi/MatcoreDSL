@@ -8,13 +8,18 @@ Date: 2026-07-26
   (`mdslc-cpu-performance-audit-v1`).
 - Frozen implementation and test checkpoint:
   `2863253d1f2b06a943c2028ae298d0381d15ddf4`.
+- Final-review safety checkpoints: `0fe66e7` (dormant under-measured
+  cooperative packing) and `c2d0c9f` (self-authenticating summary v3 with
+  adverse-evidence failure semantics).
 - Branch: `mdslc/native-blas-parity-v1`.
-- Local integration verdict: implementation gates passed; Milestone 7
-  performance envelope **partially passed**.
+- Local integration verdict: non-performance implementation gates passed; the
+  Milestone 7 performance envelope was not established. The overall milestone
+  disposition is manually **partial**, not a parity-summarizer verdict.
 
-The implementation can be reviewed and merged as bounded CPU-kernel,
-parallel-runtime, diagnostics, and evidence hardening. It must not be described
-as completed native BLAS parity.
+The candidate can be reviewed as bounded CPU-kernel, parallel-runtime,
+diagnostics, and evidence hardening. Any merge remains conditional on the
+independent-review resolutions and hosted gates. It must not be described as
+completed native BLAS parity.
 
 ## Exact local build and test matrix
 
@@ -23,12 +28,12 @@ were used with build parallelism two.
 
 | Configuration | Result |
 | --- | ---: |
-| Release, OpenBLAS 0.3.32 required | 50/50 CTest passed in 133.34 s |
-| Debug, OpenBLAS 0.3.32 required | 50/50 CTest passed in 199.43 s |
-| Release, OpenBLAS explicitly disabled | 50/50 CTest passed in 122.23 s |
-| ASan+UBSan supported scope | 19/19 passed in 20.16 s |
-| TSan shared-state scope | 4/4 passed in 7.40 s |
-| Installed package/consumer verbose rerun | 4/4 passed in 19.66 s |
+| Release, OpenBLAS 0.3.32 required | 50/50 CTest passed; operator-recorded 133.34 s |
+| Debug, OpenBLAS 0.3.32 required | 50/50 CTest passed; operator-recorded 199.43 s |
+| Release, OpenBLAS explicitly disabled | 50/50 CTest passed; operator-recorded 122.23 s |
+| ASan+UBSan supported scope | 19/19 passed; operator-recorded 20.16 s |
+| TSan shared-state scope | 4/4 passed; operator-recorded 7.40 s |
+| Installed package/consumer verbose rerun | 4/4 passed; operator-recorded 19.66 s |
 | Exact Release ISA artifact rerun | 3/3 passed |
 
 The OpenBLAS-disabled forced-provider request exited 1, selected no variant,
@@ -60,7 +65,7 @@ three component objects, combined relocatable object, and executable.
 
 ## Exact ISA evidence
 
-Release artifact checks reported:
+The operator-recorded Release artifact checks reported:
 
 - AVX2 checked edge: 100 YMM operands and 16 packed-FMA sites;
 - AVX2 full tile: 14 distinct YMM registers, eight packed-FMA sites, no stack
@@ -93,27 +98,34 @@ AVX2 or AVX-512.
 
 The parity runner, summarizer, and their adversarial contracts pass in both
 Release and Debug. Complete physical performance collection could not be
-finished on the shared host: unrelated Codex sessions repeatedly launched
-multi-process compiler, pytest, checksum, and physical-device validation
-workloads after quiet prechecks.
+finished on the shared host. Operator/external host-quiescence monitoring
+stopped collection when unrelated multi-process workloads became active.
 
-Four uninterrupted forward candidates were rejected by the interference
-guard. A later authenticated resumable manifest reached 258/368 forward cases,
-but there was no complete forward manifest and no reverse manifest. The
-incomplete manifest is not used for quantitative parity acceptance.
+The frozen 12-core plan contains 368 cases per order. An external, untracked
+authenticated resumable forward receipt at the exact checkpoint has SHA-256
+`26e75ecbcfbb19d024fa8a5fa9790b65a2deb5743b39f16a4f22dd39381cfe69`
+and records 258 cases (`252` reused and `6` newly passed). No complete
+exact-checkpoint forward/reverse pair is available, so the summarizer emitted
+no performance verdict and the partial receipt is not used for quantitative
+parity acceptance.
 
-Retained bounded ABBA evidence shows a real 1.715--1.879x AVX2 and
-1.720--1.809x AVX-512 improvement for cooperative B preparation on
-`64x4096x4096`. The measured four-thread speedups, 2.14x and 1.82x, remain
-below the 3.0x criterion. Full native/OpenBLAS ratios and full-envelope planner
-regret remain unestablished.
+Four bounded ABBA cell-median point estimates at cooperative-packing checkpoint
+`4719528354575f5aff74def97b534e763cb2033c` favored the candidate by
+1.715--1.879x for AVX2 and 1.720--1.809x for AVX-512 on
+`64x4096x4096`, relative to pre-optimization Milestone 7 checkpoint
+`6a26994849aadf738910e18a0cebb66ea9b238dc`. No geometric mean, confidence
+interval, or sample-level win/loss claim is available. An intermediate
+`a008a57` diagnostic measured 2.14x and 1.82x four-thread speedup, but later
+runtime hardening prevents attributing those numbers to the exact final
+checkpoint. Final-checkpoint scaling, direct Milestone 5 improvement, complete
+native/OpenBLAS ratios, and full-envelope planner regret remain unestablished.
 
 ## Windows and hosted status
 
-The existing Windows x64 portability contract is present and passed inside
-the local Linux CTest matrix. The true hosted Windows clang-cl/COFF/PE/DLL,
-package, consumer, and ZIP workflow must be rerun on the pull request. No new
-Windows performance claim is made.
+The Linux-side contract tests for the Windows distribution validator passed.
+Actual clang-cl/COFF/PE/DLL, package, consumer, and ZIP execution at this
+branch tip remain a hosted pull-request gate. No new Windows runtime or
+performance result is claimed.
 
 ## Publication constraints
 

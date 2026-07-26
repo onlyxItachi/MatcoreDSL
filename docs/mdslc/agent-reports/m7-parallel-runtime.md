@@ -1,5 +1,11 @@
 # Milestone 7 parallel-runtime lane
 
+> Historical scope note: this report freezes the two-dimensional tasking lane
+> before cooperative B preparation was prototyped. For the later experimental
+> packing lane and the final decision to keep production selection dormant, see
+> `m7-parallel-performance.md` and
+> `../../performance/cpu/native-blas-parity-v1.md`.
+
 Date: 2026-07-26
 
 Branch: `mdslc/native-blas-parity-v1`

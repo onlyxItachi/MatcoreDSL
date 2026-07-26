@@ -101,10 +101,11 @@ public API.
 ## Milestone 7 partial disposition
 
 Milestone 7 retains useful private CPU-backend hardening but has not completed
-its native BLAS parity gate:
+or evaluated its native BLAS parity gate:
 
-- a narrow measured short-wide path cooperatively prepares packed B using the
-  persistent workers and existing caller-owned workspace;
+- cooperative packed-B preparation infrastructure was implemented, but its
+  broad production rule is dormant after independent review found insufficient
+  final-checkpoint boundary evidence;
 - parallel planning and diagnostics now represent exact M/N task geometry and
   effective thread capacity;
 - the Release AVX2 and AVX-512 production full-tile artifacts have durable
@@ -113,14 +114,14 @@ its native BLAS parity gate:
   timing scope, placement, result, and coverage mismatches;
 - Release, Debug, OpenBLAS-disabled, sanitizer, package, native compiler,
   hygiene, and legacy gates pass; but
-- the measured four-thread short-wide speedups remain below 3.0x, and shared
-  host contention prevented a complete authenticated forward/reverse parity
-  matrix.
+- an intermediate short-wide diagnostic remained below 3.0x, exact final-tip
+  scaling is unestablished, and shared host contention prevented a complete
+  authenticated forward/reverse parity matrix.
 
 Accordingly, complete native/OpenBLAS family ratios and full-envelope planner
 regret are not claimed. Issue #15 and GitHub milestone #5 remain open, and
-there is no parity completion tag. The accepted bounded report is
-`docs/performance/cpu/native-blas-parity-v1.md`.
+there is no parity completion tag. The candidate local disposition pending
+hosted gates is `docs/performance/cpu/native-blas-parity-v1.md`.
 
 ## Milestone 5 published Linux gate and focused Windows validation
 

@@ -2,13 +2,18 @@
 
 Status date: 2026-07-26
 
-Verdict: **partially passed**
+Milestone disposition: **partially passed (manual, evidence-bounded)**
 
-This report is the authoritative Milestone 7 disposition for the validated
-Linux x86-64 host. It does not claim general BLAS parity. The implementation,
-correctness, artifact, ABI, package, and sanitizer gates pass, and a measured
-short-wide packing bottleneck improved materially. The complete declared
-native/OpenBLAS parity envelope was not established.
+Performance acceptance: **not evaluated / not established** because no
+complete authenticated forward/reverse pair exists. This is not a verdict
+emitted by the parity summarizer.
+
+This report is the candidate local Milestone 7 disposition pending independent
+review resolution and hosted gates. It does not claim general BLAS parity. The
+implementation,
+correctness, artifact, ABI, package, and sanitizer gates pass. Four bounded
+short-wide diagnostic cell medians favored cooperative B preparation. The
+complete declared native/OpenBLAS parity envelope was not established.
 
 ## Scope and evidence identity
 
@@ -19,16 +24,29 @@ native/OpenBLAS parity envelope was not established.
 - Operating system: Ubuntu Linux, x86-64.
 - Compiler/tooling: Clang/LLVM 21.1.8, Release and Debug.
 - External provider: OpenBLAS 0.3.32, pthread, LP64 CBLAS.
-- Implementation and measurement-contract checkpoint:
+- Incomplete physical-run implementation/contract checkpoint:
   `2863253d1f2b06a943c2028ae298d0381d15ddf4`.
 - Exact Release benchmark SHA-256:
   `61028379491877db4383cc73359dcce009e0d96d36f85ad471ae30ceab1fb8b9`.
 - Runner SHA-256:
   `ec57c6a2876bb2b492ad9f716818dd78fc1509a55319f8066119e2dd55292766`.
-- Summarizer SHA-256:
+- Historical checkpoint summarizer SHA-256:
   `9a13e5cbc09db2250c98a2f537b7f3debd94f6549f06501399e0268a7506d67e`.
 - Frozen forward plan SHA-256:
   `c050c6a8d700abdc89f6a7aaee6898b510948cf59cc1f2c831b8542b7b1c09fc`.
+
+These hashes identify the incomplete exact-tip sweep only. The historical ABBA
+and S-P-P-S diagnostics below carry their own source checkpoints and are not
+results from this benchmark binary.
+
+Final-review commits `0fe66e7` and `c2d0c9f` subsequently made cooperative
+packing dormant and replaced summary-v2 partial semantics with the
+self-authenticating summary-v3 bounded assessment. The reviewed v3 summarizer
+has SHA-256
+`048e0c9e642e58270eda9d780aedc9a503ccbbc0518ebcf18807fb80d21a7e72`
+and Git blob `cb16bc96f56330ac352ce30d08918f7cd98854aa`. It intentionally rejects
+the earlier incomplete receipt and must be used for any future complete
+collection.
 
 The benchmark binary authenticated a clean Git worktree and exact tracked
 source commit. Benchmark schema v6 and parity manifest v3 distinguish complete
@@ -43,12 +61,14 @@ thread placement, and independent correctness replay.
 2. Parallel GEMM task planning represents M-only, N-only, and two-dimensional
    output grids. Planner diagnostics report row tasks, column tasks, total
    task capacity, effective thread ceiling, and capacity limiting.
-3. The persistent parallel executor can cooperatively prepare disjoint final
-   packed-B panels within the existing caller-owned workspace. A publication
-   barrier makes the completed image read-only before computation.
-4. Cooperative B preparation is deliberately restricted to the measured
-   short-wide envelope: more than one worker, `M <= 64`, `N >= 4096`,
-   `K >= 4096`, packed B at least 4 MiB, and more than one NC panel.
+3. Private persistent-executor infrastructure can cooperatively prepare
+   disjoint final packed-B panels within the existing caller-owned workspace.
+   A publication barrier makes the completed image read-only before
+   computation.
+4. Independent final review rejected the former broad activation rule because
+   its full boundary matrix was not measured at the final checkpoint.
+   Production selection is therefore dormant and continues to use serial
+   B preparation pending new authenticated evidence.
 5. AVX2 gained a private prevalidated 4x16 full-tile symbol for parallel use,
    but independent complete-call evidence rejected routing the serial executor
    through it. Serial routing was restored to the checked entry.
@@ -64,11 +84,17 @@ fallback, or runtime autotuning.
 
 ## Bounded measured improvements
 
-The retained ABBA experiment compares the pre-optimization baseline
-`6a26994849aadf` with the reviewed cooperative-packing implementation. Raw JSON
-remains external and untracked. Runs used guarded complete calls, packing
-included, allocation excluded, caller-owned reused workspace, compact native
-placement, and exact forced native variants.
+The retained ABBA experiment compares the pre-optimization Milestone 7
+checkpoint `6a26994849aadf738910e18a0cebb66ea9b238dc` with
+cooperative-packing checkpoint
+`4719528354575f5aff74def97b534e763cb2033c`. The exact candidate and baseline
+identities were recovered from the external clean-source benchmark receipts;
+the raw JSON remains external and untracked. Later changes removed an
+unrelated `32x8192x1024` threshold while retaining the measured
+`64x4096x4096` path. Runs used guarded complete calls, packing included,
+allocation excluded, caller-owned reused workspace, exact forced native
+variants, and contiguous process masks (CPUs 0--3 for four-thread cells and
+0--11 for twelve-thread cells); workers were not individually pinned.
 
 For `64x4096x4096`, the candidate/baseline throughput ratios were:
 
@@ -77,16 +103,22 @@ For `64x4096x4096`, the candidate/baseline throughput ratios were:
 | packed AVX2/FMA | 1.715x | 1.879x |
 | packed AVX-512/FMA | 1.720x | 1.809x |
 
-A separate current-implementation S-P-P-S diagnostic measured:
+These are four host-bounded cell-median point estimates, all favoring the
+candidate. No geometric mean, confidence interval, or sample-level win/loss
+claim is available.
+
+An intermediate clean implementation at
+`a008a57e84af17bef7113b108d34141f8a7e3ed7` produced this historical S-P-P-S
+diagnostic:
 
 | Native variant | 1-thread complete call | 4-thread complete call | Speedup |
 | --- | ---: | ---: | ---: |
 | AVX2/FMA | 25.654 ms, 83.71 GFLOP/s | 12.007 ms, 178.85 GFLOP/s | 2.14x |
 | AVX-512/FMA | 24.188 ms, 88.78 GFLOP/s | 13.305 ms, 161.40 GFLOP/s | 1.82x |
 
-These measurements establish removal of one serial short-wide B-packing
-bottleneck. They do not meet the declared 3.0x four-thread target and do not
-establish native/OpenBLAS parity.
+Later packing/runtime hardening changed the implementation. These measurements
+identify an unresolved scaling risk but do not establish final-checkpoint
+scaling or native/OpenBLAS parity.
 
 The attempted serial AVX2 full-tile promotion was 0.62--2.47% slower on five
 stable representative complete-call cells and was not retained as a
@@ -95,12 +127,14 @@ not omitted from the envelope.
 
 ## Complete-matrix collection disposition
 
-The frozen matrix contains 368 cases in each stable order. Multiple fresh
-forward attempts were stopped by the interference guard when unrelated
-multi-process compiler, pytest, checksum, and physical-device workloads became
-active on the shared host. An authenticated resumable forward manifest reached
-258/368 cases at the exact checkpoint, but no complete forward manifest and no
-matching reverse manifest were produced.
+The frozen 12-core matrix contains 368 cases in each stable order.
+Operator/external host-quiescence monitoring stopped collection when unrelated
+multi-process workloads became active on the shared host. An external,
+untracked authenticated resumable forward receipt at the exact checkpoint has
+SHA-256
+`26e75ecbcfbb19d024fa8a5fa9790b65a2deb5743b39f16a4f22dd39381cfe69`
+and records 258/368 cases (`252` reused and `6` newly passed). No complete
+exact-checkpoint forward/reverse pair was produced.
 
 The incomplete manifest is not summarized, committed, or used for a
 performance claim. There is therefore no final table of per-shape
@@ -120,15 +154,18 @@ requested four-thread and physical-core ceiling.
 | Single-thread medium/large median native/OpenBLAS ratio >= 0.90 | not established | complete paired matrix unavailable |
 | Every declared core-family median >= 0.75 or approved limitation | not established | complete paired matrix unavailable |
 | Native equals or beats OpenBLAS on one meaningful family | not established | no complete matched-provider family aggregate |
-| Native materially improves over Milestone 5 | passed, bounded | short-wide cooperative B packing, 1.715--1.879x AVX2 and 1.720--1.809x AVX-512 versus baseline |
 | Multi-thread large-shape median native/OpenBLAS ratio >= 0.85 | not established | complete paired matrix unavailable |
-| Four-thread native speedup >= 3.0x | failed on measured short-wide cell | AVX2 2.14x; AVX-512 1.82x |
+| Four-thread native speedup >= 3.0x | not established at exact final checkpoint | intermediate `a008a57` diagnostic was 2.14x AVX2 / 1.82x AVX-512, below target |
 | Physical-core execution improves over one thread | not established over complete envelope | bounded individual diagnostics only |
 | Planner median/p95/max regret <= 1.05/1.15/1.35 | not established over full envelope | only eleven-shape diagnostic registry coverage exists |
 | No automatic regret above 2.0 | not established over full envelope | incomplete full-registry coverage |
 | Correctness, artifact, ABI, package, sanitizer gates | passed | exact integration report |
 
-Because mandatory performance criteria are failed or not established, changing
+The bounded cooperative-packing diagnostic reported large positive point
+estimates relative to the pre-optimization Milestone 7 checkpoint; improvement
+over Milestone 5 and at the exact final checkpoint is not established.
+
+Because mandatory performance criteria are not established, changing
 the shape envelope, counting OpenBLAS-selected automatic plans as native
 parity, or promoting bounded regret would be benchmark gaming. The milestone
 is therefore partial.
@@ -136,9 +173,9 @@ is therefore partial.
 ## Supported claims
 
 - The retained private AVX2/AVX-512 bodies contain the claimed packed-FMA ISA.
-- Cooperative B preparation is correct, race-free under the tested sanitizer
-  scope, allocation-free, and materially faster on the declared short-wide
-  calibration cell.
+- The private cooperative-preparation candidate is allocation-free and passed
+  its historical focused correctness/race checks. Production selection is
+  dormant pending a final-checkpoint boundary matrix.
 - Existing native/compiler/runtime/package behavior remains correct and
   installed-consumer compatible.
 - OpenBLAS remains a legal optional planner candidate and fails closed when
