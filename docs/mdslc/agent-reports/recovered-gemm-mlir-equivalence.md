@@ -1,7 +1,8 @@
 # Recovered GEMM to Matcore MLIR equivalence evidence
 
 - Lane: Milestone D authenticated recovered-source semantic bridge
-- Implementation commit: `8039bca`
+- Initial implementation commits: `8039bca`, `d9756da`
+- Independent-review hardening commit: `230e142`
 - Scope: internal analysis/inspection only; no source rewrite, execution, or
   public/installable API
 - Toolchain: Clang/LLVM/MLIR `21.1.8`
@@ -13,8 +14,17 @@ GEMM candidate now enters the same `mdsl.gemm` operation class as an explicit
 Matcore IR v1 capture without forging a Matcore IR v1 operation or the trusted
 `matcore::mdsl::gemm` callee.
 
-The bridge consumes the exact `frontend::Result`, extraction `Options`, and
-candidate index together. Before constructing MLIR it recomputes or validates:
+The bridge no longer accepts mutable `frontend::Result` and `Options` values.
+After successful native parse/Sema, source-stability checking, diagnostics, and
+Matcore IR v0 verification, the native frontend issues a non-default-
+constructible `AuthenticatedNativeFrontendEvidenceV1`. Its private payload
+holds immutable-by-API copies of the complete `Result` and effective `Options`.
+Only the native issuer and internal MLIR bridge accessor are friends. Mutating
+the published diagnostic `Result` or original `Options` after issuance cannot
+alter the sealed evidence.
+
+Before constructing recovered MLIR the bridge recomputes or validates from
+that sealed payload:
 
 - native `clang-libtooling-v1` producer identity;
 - normalized source identity from the extraction input;
@@ -32,6 +42,14 @@ candidate index together. Before constructing MLIR it recomputes or validates:
 Only a zero-rejection `recognized_guard_required` candidate is accepted.
 `not_recognized`, `recognized_rejected`, and synthetic `raised` states do not
 acquire permission through this API.
+
+The authenticated explicit/recovered comparison likewise accepts only sealed
+native evidence. Its explicit side authenticates the selected native v0 site
+against sealed source bytes, source ranges, line/column, compilation identity,
+and stable site ID, then internally performs v0 to verified v1 to Matcore MLIR.
+It returns only an equality result, normalized fingerprints, and an error; it
+does not expose an authenticated MLIR wrapper that could be reused as
+execution permission.
 
 ## Preserved semantic boundary
 
@@ -56,9 +74,13 @@ aliases, requirements, policy, and function shape. The source-specific origin,
 numerical derivation, and provenance dictionaries remain separate and are
 validated by the dialect's closed cross-product.
 
-The recovered module has its own closed analysis envelope. The existing strict
-Matcore IR v1 CPU runtime-dispatch lowering rejects it and clears any pending
-records. No recovered C++ is rewritten or executed by this implementation.
+The recovered module has its own closed analysis envelope. Executable CPU
+runtime-dispatch lowering now rejects any module carrying
+`mdsl.analysis_only`, clears pending records transactionally, and additionally
+requires exact `mdsl.producer = clang-libtooling-v1`. Thus neither recovered
+analysis IR nor a structurally valid bootstrap-produced explicit envelope can
+authorize execution. No recovered C++ is rewritten or executed by this
+implementation.
 
 ## Mathematical equivalence
 
@@ -75,13 +97,19 @@ strides, layout, memory space, alignment, mutability, destination/result
 identity, accumulation type, semantic requirements, alias preconditions,
 effects, synchronization, and every expanded numerical field.
 
-The real relaxed native-frontend loop and the reviewed dynamic explicit v1
-fixture produce byte-equal normalized contracts and equal SHA-256 identities.
-A valid static-shape explicit operation produces a different fingerprint.
-Strict/default C++ candidates are rejected before MLIR construction and cannot
-participate in authorized equivalence.
+One test invokes the real native LibTooling frontend for both the trusted
+explicit call and relaxed ordinary-C++ loop. The explicit result is upgraded
+through v0/v1/MLIR internally, and both sides produce byte-equal normalized
+contracts and equal SHA-256 identities. A valid static-shape explicit operation
+produces a different structural fingerprint. Strict/default C++ candidates are
+rejected before recovered MLIR construction and cannot participate in
+authenticated equivalence.
 
-The fingerprint is an inspection/equality mechanism, not execution permission.
+The public structural fingerprint/equality functions are explicitly named
+`fingerprintStructuralMathematicalGemmV1` and
+`equivalentStructuralMathematicalGemmV1`. They accept structurally verified
+modules for diagnostics and make no provenance claim. Authenticated equality
+is a separate evidence-token API. Neither mechanism is execution permission.
 
 ## Validation
 
@@ -117,7 +145,7 @@ nice -n 10 cmake --build \
 
 Observed results:
 
-- recovered bridge: `62/62` checks passed;
+- recovered bridge: `78/78` checks passed;
 - existing Matcore MLIR core: `204` checks, `0` failures;
 - existing CPU runtime-dispatch lowering: `18` checks, `0` failures;
 - focused CTest: `3/3` passed:
@@ -125,11 +153,37 @@ Observed results:
   `mlir.cpu.runtime_dispatch_lowering_v1`;
 - `git diff --check` passed for the lane.
 
-The focused test runs the real native LibTooling frontend against canonical,
-strict, and not-recognized ordinary-C++ fixtures. It adversarially mutates the
-compilation identity, source bytes/digest, site ID, line, outer range, proof
-order, guard order, FP proof, semantic contract, and rejection set. Every
-mutation fails closed before MLIR construction.
+The focused test runs the real native LibTooling frontend against a trusted
+explicit call plus canonical relaxed, strict, and not-recognized ordinary-C++
+fixtures. It proves live explicit v0 to v1 to MLIR and recovered-loop
+mathematical equivalence. It then mutates the public post-extraction result with
+an in-bounds proof shift, coordinated outer-end/proof drift, parameter binding
+drift, function/source-display drift, state/FP/guard drift, source bytes, and a
+diagnostic. Every mutation leaves the sealed recovered MLIR byte-identical.
+Changing the original effective options after issuance likewise has no effect.
+
+The strict candidate is adversarially relabeled by copying every relaxed
+candidate literal into its mutable public result; its sealed evidence retains
+the original strict FP rejection and cannot construct recovered IR or enter
+authenticated equivalence. The test also verifies that `mdsl.analysis_only`
+and bootstrap-producer explicit envelopes fail executable CPU lowering while
+clearing pending records.
+
+## Independent-review findings addressed
+
+The first independent review rejected the initial implementation with three
+medium findings and no high findings:
+
+1. mutable frontend diagnostics were treated as an authentication boundary;
+2. structurally verified fingerprints were described as authenticated; and
+3. the analysis-only marker was not an enforced lowering taint.
+
+A separate execution-boundary review also found that the CPU lowerer accepted
+the bootstrap producer supported by the inspection bridge verifier. Commit
+`230e142` addresses all four findings with sealed native evidence, separate
+structural/authenticated equality APIs, a live explicit frontend proof, and
+hard analysis-only/native-producer lowering gates. Focused tests pass; final
+independent rereview remains required before integration acceptance.
 
 ## Limitations
 
