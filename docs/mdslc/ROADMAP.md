@@ -251,8 +251,11 @@ policy remain open for the separate freeze milestone.
 
 ### H — CPU Beta
 
-Status: active. A--G have their required bounded dispositions; final clean-head
-local/hosted integration and independent beta review remain pending.
+Status: active. A--G have their required bounded dispositions. The full local
+integration matrix passed at code candidate `69d099e`; later commits through
+the recorded local report and review-whitespace correction are non-product
+changes. Final independent beta review, hosted Linux/Windows integration,
+normal merge, and beta tag remain pending.
 
 The intended initial claim is valid C++ `.mdsl`, preserved ordinary C++,
 explicit F32 rank-2 GEMM, verified capture and semantic IR, deterministic legal
@@ -279,8 +282,8 @@ Installed packages report `MatcoreDSL_MATCORE_MLIR_AVAILABLE` and
 `MatcoreDSL_DEFAULT_SEMANTIC_PIPELINE`. Consumers may pass
 `SEMANTIC_PIPELINE capture-v0|matcore-mlir` to
 `matcoredsl_add_executable`; invalid, unavailable, or bootstrap/MLIR pairings
-fail during configuration. The detailed supported/unsupported claim and final
-pending matrix are frozen in [CPU_BETA_V1.md](CPU_BETA_V1.md).
+fail during configuration. The detailed supported/unsupported claim and
+remaining acceptance matrix are frozen in [CPU_BETA_V1.md](CPU_BETA_V1.md).
 
 ## Dependency graph
 

@@ -208,11 +208,16 @@ sanitizer profiles remain explicitly MLIR-disabled/default-`capture-v0`; they
 must prove the semantic route unavailable rather than imply Windows MLIR
 execution.
 
-Focused installed/relocated/source-inaccessible profile validation is recorded,
-but final full local matrices, hosted pull-request results, and the final
-independent CPU-beta review are pending at the eventual clean candidate commit.
-No CPU beta release is claimed yet. The bounded product contract and exact
-remaining gates are in [CPU_BETA_V1.md](CPU_BETA_V1.md).
+The full local Milestone H matrix passed at code candidate `69d099e`: the
+Release MLIR/OpenBLAS 2x2 matrix, MLIR-present/default-capture compatibility,
+full Debug with OpenBLAS, focused ASan+UBSan and TSan scopes, installed and
+source-inaccessible packages, strict C17 ABI, legacy frontend, artifact,
+planner-sanity, and repository-hygiene gates are green. Commits after that
+candidate only record this evidence or correct review-document whitespace;
+they do not change compiler/runtime/package behavior. Hosted pull-request and
+Windows results, normal merge, and the final independent CPU-beta review remain
+pending. No CPU beta release is claimed yet. The bounded product contract and
+exact remaining gates are in [CPU_BETA_V1.md](CPU_BETA_V1.md).
 
 ## Milestone 7 native BLAS parity
 

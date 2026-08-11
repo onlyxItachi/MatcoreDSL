@@ -2,8 +2,9 @@
 
 Date: 2026-08-11
 
-Status: **candidate contract; final Milestone H acceptance, hosted validation,
-merge, and beta publication are pending.**
+Status: **local Milestone H matrix passed at code candidate `69d099e`; final
+independent review, hosted validation, merge, and beta publication are
+pending.**
 
 This document fixes the claim and validation boundary for the first CPU beta.
 It does not freeze the public API, ABI, backend contract, operation set, or
@@ -142,29 +143,32 @@ not manufactured by changing the benchmark contract or envelope.
 
 ## Milestone H acceptance matrix
 
-The statuses below are intentionally conservative. Focused component evidence
-exists, but every row remains **pending final candidate evidence** until it is
-rerun or authenticated at the exact clean commit submitted for merge.
+The full local matrix was run from clean code candidate `69d099e`; the evidence
+is recorded in
+[cpu-beta-local-validation.md](agent-reports/cpu-beta-local-validation.md).
+The following commits through the local report and review-whitespace correction
+change documentation only, so the table distinguishes authenticated local
+evidence from the still-pending independent and hosted gates.
 
 | Gate | Required final evidence | Candidate status |
 | --- | --- | --- |
-| Linux Release | Exact 2x2 matrix: OpenBLAS required/disabled by Matcore MLIR enabled/disabled; configured defaults authenticated | pending |
-| Linux Debug | MLIR enabled, default `matcore-mlir`, full registered supported suite | pending |
-| ASan + UBSan | MLIR enabled/default `matcore-mlir`; supported in-process scope including FP-environment negatives | pending |
-| TSan | MLIR disabled/default `capture-v0`; shared-state/runtime scope | pending |
-| Package and relocation | MLIR-on and MLIR-off installs; installed consumer; relocated and source/build-inaccessible consumer | pending |
-| Semantic artifact | Explicit `.mdsl -> v1 -> mdsl MLIR -> native object -> executable`; backend producer and stable runtime symbol inspected | pending |
-| ABI/install exports | Strict C17, 15 retained runtime C exports, status 26, layouts, SONAME/import boundary, no private MLIR export/path leak | pending |
-| Recognition and domains | Accepted focused verifier/equivalence suites plus executable-boundary rejection of recovered/map modules | pending |
+| Linux Release | Exact 2x2 matrix: OpenBLAS required/disabled by Matcore MLIR enabled/disabled; configured defaults authenticated | passed locally at `69d099e`: 63/63, 63/63, 58/58, 58/58 |
+| Linux Debug | MLIR enabled, default `matcore-mlir`, full registered supported suite | passed locally at `69d099e`: 63/63 with OpenBLAS required |
+| ASan + UBSan | MLIR enabled/default `matcore-mlir`; supported in-process scope including FP-environment negatives | passed locally at `69d099e`: 20/20 |
+| TSan | MLIR disabled/default `capture-v0`; shared-state/runtime scope | passed locally at `69d099e`: 4/4 |
+| Package and relocation | MLIR-on and MLIR-off installs; installed consumer; relocated and source/build-inaccessible consumer | passed locally at `69d099e` |
+| Semantic artifact | Explicit `.mdsl -> v1 -> mdsl MLIR -> native object -> executable`; backend producer and stable runtime symbol inspected | passed locally at `69d099e` |
+| ABI/install exports | Strict C17, 15 retained runtime C exports, status 26, layouts, SONAME/import boundary, no private MLIR export/path leak | passed locally at `69d099e` |
+| Recognition and domains | Accepted focused verifier/equivalence suites plus executable-boundary rejection of recovered/map modules | passed locally at `69d099e`; focused component reviews accepted |
 | Windows x64 | Release, Debug, supported sanitizer, MLIR-unavailable negative, DLL/import library, installed consumer, paths with spaces, ZIP artifact | pending hosted run |
-| Performance sanity | Correctness and planner sanity only; no new native-parity claim | pending |
-| Repository hygiene | Clean tree, `git diff --check`, generated-artifact and semantic-MLIR hygiene | pending |
+| Performance sanity | Correctness and planner sanity only; no new native-parity claim | passed locally at `69d099e`; one guarded 256-cubed OpenBLAS selection sanity, not parity evidence |
+| Repository hygiene | Clean tree, `git diff --check`, generated-artifact and semantic-MLIR hygiene | passed locally at `69d099e` and after report/whitespace-only commits |
 | Independent review | Fresh adversarial review of the exact candidate with no unresolved high or medium finding | pending |
 | Hosted pull request | Normal PR checks green before normal merge | pending |
 
-The beta must not be described as shipped, passed, merged, tagged, or validated
-by hosted checks until these statuses are replaced by exact evidence from the
-final candidate.
+The beta must not be described as shipped, merged, tagged, or validated by
+hosted checks until the remaining rows are replaced by exact evidence from the
+pull-request candidate.
 
 ## Explicitly unsupported claims
 
