@@ -768,8 +768,10 @@ matcore_runtime_gemm_i8_i32_reference_v1(
 /*
  * Synchronously computes out = lhs * rhs. Bootstrap v0 accepts only positive
  * rank-2, row-major contiguous f32 host tensors, CPU target, and
- * fallback=error. It allocates and copies nothing. out must not overlap either
- * input. All failures are returned; no C++ exception crosses this boundary.
+ * fallback=error. MDSLC performs no packing/workspace allocation and does not
+ * copy input or output tensors; a selected opaque provider may manage internal
+ * memory under its own contract. out must not overlap either input. All
+ * failures are returned; no C++ exception crosses this boundary.
  */
 MATCORE_RUNTIME_API matcore_status_v0 matcore_runtime_gemm_f32_v0(
     const matcore_tensor_desc_v0 *out,
