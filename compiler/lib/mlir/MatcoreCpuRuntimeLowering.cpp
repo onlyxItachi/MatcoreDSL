@@ -47,10 +47,23 @@ bool lowerExplicitGemmToCpuRuntimeDispatchV1(
     std::string &error) {
   records.clear();
   error.clear();
+  if (module && module->hasAttr("mdsl.analysis_only")) {
+    error = "CPU runtime-dispatch lowering rejects mdsl.analysis_only "
+            "modules; analysis evidence is never executable permission";
+    return false;
+  }
   if (!mlir_bridge::verifyMatcoreV1BridgeModule(module, error)) {
     error = "CPU runtime-dispatch lowering requires the verified explicit "
             "Matcore IR v1 bridge envelope: " +
             error;
+    return false;
+  }
+  const auto producer =
+      module->getAttrOfType<mlir::StringAttr>("mdsl.producer");
+  if (!producer || producer.getValue() != "clang-libtooling-v1") {
+    error = "CPU runtime-dispatch lowering requires executable authorization "
+            "from mdsl.producer=clang-libtooling-v1; bootstrap capture is "
+            "inspection-only";
     return false;
   }
 

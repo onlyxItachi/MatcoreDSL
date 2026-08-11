@@ -28,7 +28,7 @@ struct RecoveredGemmBridgeResultV1 {
 // and extraction options that produced it, then builds one recovered mdsl.gemm
 // analysis site. The result never authorizes rewrite or execution.
 RecoveredGemmBridgeResultV1 bridgeRecoveredGemmToMatcoreMlirV1(
-    const frontend::Result &source, const frontend::Options &options,
+    const frontend::AuthenticatedNativeFrontendEvidenceV1 &evidence,
     std::size_t candidate_index, mlir::MLIRContext &context);
 
 // Verifies the closed analysis-only module envelope. Source authentication is
@@ -43,16 +43,39 @@ struct MathematicalGemmFingerprintV1 {
 };
 
 // Produces a normalized mathematical WHAT fingerprint for exactly one
-// authenticated explicit-v1 or recovered-analysis module. Origin,
-// provenance, source-expression spelling, site/symbol identity, policy, and
-// numerical profile/derivation labels are excluded. Expanded numerical
-// semantics and every tensor/effect/alias contract remain.
-bool fingerprintMathematicalGemmV1(
+// structurally verified explicit-v1 or recovered-analysis module. This API is
+// diagnostic-only and intentionally does not authenticate source provenance.
+// Origin, provenance, source-expression spelling, site/symbol identity,
+// policy, and numerical profile/derivation labels are excluded. Expanded
+// numerical semantics and every tensor/effect/alias contract remain.
+bool fingerprintStructuralMathematicalGemmV1(
     mlir::ModuleOp module, MathematicalGemmFingerprintV1 &fingerprint,
     std::string &error);
 
-bool equivalentMathematicalGemmV1(mlir::ModuleOp left, mlir::ModuleOp right,
-                                  bool &equivalent, std::string &error);
+bool equivalentStructuralMathematicalGemmV1(
+    mlir::ModuleOp left, mlir::ModuleOp right, bool &equivalent,
+    std::string &error);
+
+struct AuthenticatedExplicitRecoveredEquivalenceV1 {
+  bool equivalent = false;
+  MathematicalGemmFingerprintV1 explicit_fingerprint;
+  MathematicalGemmFingerprintV1 recovered_fingerprint;
+  std::string error;
+
+  explicit operator bool() const { return error.empty(); }
+};
+
+// Authenticated equivalence accepts only immutable native-frontend evidence.
+// It internally routes the explicit site through v0 -> verified v1 -> MLIR and
+// the recovered site through its source-proven analysis bridge, then compares
+// their structural mathematical fingerprints. It returns no MLIR wrapper that
+// a caller could reuse as execution permission.
+AuthenticatedExplicitRecoveredEquivalenceV1
+compareAuthenticatedExplicitAndRecoveredGemmV1(
+    const frontend::AuthenticatedNativeFrontendEvidenceV1 &explicit_evidence,
+    std::size_t explicit_operation_index,
+    const frontend::AuthenticatedNativeFrontendEvidenceV1 &recovered_evidence,
+    std::size_t recovered_candidate_index);
 
 } // namespace matcore::mdslc::mlir_bridge
 

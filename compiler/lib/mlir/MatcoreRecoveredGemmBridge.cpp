@@ -3,6 +3,7 @@
 #include "MatcoreGemmSemanticBuilder.h"
 #include "MatcoreOps.h"
 #include "MatcoreV1Bridge.h"
+#include "matcore_ir_v1.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
@@ -116,16 +117,34 @@ bool exactRelaxedFpProof(const frontend::RecoveredFpProof &proof) {
 }
 
 bool authenticateRecoveredCandidate(
-    const frontend::Result &source, const frontend::Options &options,
+    const frontend::AuthenticatedNativeFrontendEvidenceV1 &evidence,
     std::size_t candidate_index, const frontend::RecoveredGemmCandidate *&out,
     std::string &error) {
   out = nullptr;
+  if (!evidence.valid()) {
+    error = "recovered MLIR analysis requires sealed native frontend evidence";
+    return false;
+  }
+  const frontend::Options &options =
+      detail::AuthenticatedNativeFrontendEvidenceAccessV1::options(evidence);
+  const frontend::Result &source =
+      detail::AuthenticatedNativeFrontendEvidenceAccessV1::result(evidence);
   if (!options.inspect_recovered_cpp_gemm) {
     error = "recovered MLIR analysis requires explicit native recovery inspection";
     return false;
   }
   if (source.module.producer != "clang-libtooling-v1") {
     error = "recovered MLIR analysis requires an authenticated native LibTooling result";
+    return false;
+  }
+  if (!source.diagnostics.empty()) {
+    error = "recovered MLIR analysis rejects native evidence with diagnostics";
+    return false;
+  }
+  std::string module_error;
+  if (!ir::verify(source.module, module_error)) {
+    error = "recovered MLIR analysis rejects invalid sealed Matcore IR v0: " +
+            module_error;
     return false;
   }
   if (candidate_index >= source.recovered_gemm_candidates.size()) {
@@ -239,6 +258,82 @@ bool authenticateRecoveredCandidate(
     return false;
   }
   out = &candidate;
+  return true;
+}
+
+bool authenticateExplicitOperation(
+    const frontend::AuthenticatedNativeFrontendEvidenceV1 &evidence,
+    std::size_t operation_index, const frontend::Result *&source,
+    const ir::Operation *&operation, std::string &error) {
+  source = nullptr;
+  operation = nullptr;
+  if (!evidence.valid()) {
+    error = "explicit comparison requires sealed native frontend evidence";
+    return false;
+  }
+  const frontend::Options &options =
+      detail::AuthenticatedNativeFrontendEvidenceAccessV1::options(evidence);
+  source =
+      &detail::AuthenticatedNativeFrontendEvidenceAccessV1::result(evidence);
+  if (!options.inspect_recovered_cpp_gemm) {
+    error = "explicit comparison requires native evidence inspection mode";
+    return false;
+  }
+  if (source->module.producer != "clang-libtooling-v1" ||
+      !source->diagnostics.empty()) {
+    error = "explicit comparison requires a successful native LibTooling result";
+    return false;
+  }
+  std::string module_error;
+  if (!ir::verify(source->module, module_error)) {
+    error = "explicit comparison rejects invalid sealed Matcore IR v0: " +
+            module_error;
+    return false;
+  }
+  if (operation_index >= source->module.operations.size()) {
+    error = "explicit GEMM operation index is out of range";
+    return false;
+  }
+  if (source->source_snapshot.empty()) {
+    error = "explicit comparison requires the exact parsed source snapshot";
+    return false;
+  }
+  operation = &source->module.operations[operation_index];
+  if (operation->source.file != source->module.source_file ||
+      operation->call_range.begin != operation->source.offset ||
+      operation->call_range.end <= operation->call_range.begin ||
+      operation->call_range.end > source->source_snapshot.size()) {
+    error = "explicit GEMM source range does not match sealed native evidence";
+    return false;
+  }
+  std::uint64_t expected_line = 0;
+  std::uint64_t expected_column = 0;
+  if (!sourceLineColumnAtOffset(source->source_snapshot,
+                                operation->source.offset, expected_line,
+                                expected_column) ||
+      operation->source.line != expected_line ||
+      operation->source.column != expected_column) {
+    error = "explicit GEMM line/column does not match its sealed source offset";
+    return false;
+  }
+  const std::string source_identity =
+      frontend::stableSourceIdentity(canonicalInputPath(options.input_path));
+  const std::string compilation_identity =
+      frontend::stableCompilationIdentity(options);
+  if (operation->site_id != frontend::makeStableSiteId(
+                                source_identity, compilation_identity,
+                                source->source_snapshot,
+                                operation->source.offset, "gemm")) {
+    error = "explicit GEMM site ID does not authenticate sealed source and compilation identity";
+    return false;
+  }
+  for (const ir::SourceRange &range : operation->argument_ranges) {
+    if (range.begin < operation->call_range.begin ||
+        range.end <= range.begin || range.end > operation->call_range.end) {
+      error = "explicit GEMM argument range escapes its sealed call range";
+      return false;
+    }
+  }
   return true;
 }
 
@@ -451,13 +546,15 @@ bool acceptedFingerprintEnvelope(mlir::ModuleOp module, std::string &error) {
 } // namespace
 
 RecoveredGemmBridgeResultV1 bridgeRecoveredGemmToMatcoreMlirV1(
-    const frontend::Result &source, const frontend::Options &options,
+    const frontend::AuthenticatedNativeFrontendEvidenceV1 &evidence,
     std::size_t candidate_index, mlir::MLIRContext &context) {
   RecoveredGemmBridgeResultV1 result;
   const frontend::RecoveredGemmCandidate *candidate = nullptr;
-  if (!authenticateRecoveredCandidate(source, options, candidate_index,
-                                      candidate, result.error))
+  if (!authenticateRecoveredCandidate(evidence, candidate_index, candidate,
+                                      result.error))
     return result;
+  const frontend::Result &source =
+      detail::AuthenticatedNativeFrontendEvidenceAccessV1::result(evidence);
 
   registerMatcoreSemanticDialects(context);
   mlir::OpBuilder builder(&context);
@@ -684,7 +781,7 @@ bool verifyRecoveredGemmAnalysisModuleV1(mlir::ModuleOp module,
   return true;
 }
 
-bool fingerprintMathematicalGemmV1(
+bool fingerprintStructuralMathematicalGemmV1(
     mlir::ModuleOp module, MathematicalGemmFingerprintV1 &fingerprint,
     std::string &error) {
   fingerprint = {};
@@ -728,16 +825,19 @@ bool fingerprintMathematicalGemmV1(
   return true;
 }
 
-bool equivalentMathematicalGemmV1(mlir::ModuleOp left, mlir::ModuleOp right,
-                                  bool &equivalent, std::string &error) {
+bool equivalentStructuralMathematicalGemmV1(
+    mlir::ModuleOp left, mlir::ModuleOp right, bool &equivalent,
+    std::string &error) {
   equivalent = false;
   MathematicalGemmFingerprintV1 left_fingerprint;
   MathematicalGemmFingerprintV1 right_fingerprint;
-  if (!fingerprintMathematicalGemmV1(left, left_fingerprint, error)) {
+  if (!fingerprintStructuralMathematicalGemmV1(left, left_fingerprint,
+                                               error)) {
     error = "left semantic GEMM is not fingerprintable: " + error;
     return false;
   }
-  if (!fingerprintMathematicalGemmV1(right, right_fingerprint, error)) {
+  if (!fingerprintStructuralMathematicalGemmV1(right, right_fingerprint,
+                                               error)) {
     error = "right semantic GEMM is not fingerprintable: " + error;
     return false;
   }
@@ -745,6 +845,72 @@ bool equivalentMathematicalGemmV1(mlir::ModuleOp left, mlir::ModuleOp right,
                    right_fingerprint.canonical_contract &&
                left_fingerprint.sha256 == right_fingerprint.sha256;
   return true;
+}
+
+AuthenticatedExplicitRecoveredEquivalenceV1
+compareAuthenticatedExplicitAndRecoveredGemmV1(
+    const frontend::AuthenticatedNativeFrontendEvidenceV1 &explicit_evidence,
+    std::size_t explicit_operation_index,
+    const frontend::AuthenticatedNativeFrontendEvidenceV1 &recovered_evidence,
+    std::size_t recovered_candidate_index) {
+  AuthenticatedExplicitRecoveredEquivalenceV1 result;
+  const frontend::Result *explicit_source = nullptr;
+  const ir::Operation *explicit_operation = nullptr;
+  if (!authenticateExplicitOperation(explicit_evidence,
+                                     explicit_operation_index,
+                                     explicit_source, explicit_operation,
+                                     result.error)) {
+    result.error = "explicit native evidence rejected: " + result.error;
+    return result;
+  }
+
+  ir::Module selected_v0 = explicit_source->module;
+  selected_v0.operations = {*explicit_operation};
+  ir::v1::Module selected_v1;
+  if (!ir::v1::fromV0(selected_v0, selected_v1, result.error)) {
+    result.error = "explicit native v0-to-v1 bridge rejected evidence: " +
+                   result.error;
+    return result;
+  }
+
+  mlir::MLIRContext explicit_context;
+  BridgeResult explicit_mlir = bridgeV1ToMatcoreMlir(
+      selected_v1, explicit_context, explicitGemmF32V1BridgeContext());
+  if (!explicit_mlir) {
+    result.error = "explicit native v1-to-MLIR bridge rejected evidence: " +
+                   explicit_mlir.error;
+    return result;
+  }
+
+  mlir::MLIRContext recovered_context;
+  RecoveredGemmBridgeResultV1 recovered_mlir =
+      bridgeRecoveredGemmToMatcoreMlirV1(
+          recovered_evidence, recovered_candidate_index, recovered_context);
+  if (!recovered_mlir) {
+    result.error = "recovered native evidence rejected: " +
+                   recovered_mlir.error;
+    return result;
+  }
+
+  if (!fingerprintStructuralMathematicalGemmV1(
+          *explicit_mlir.module, result.explicit_fingerprint, result.error)) {
+    result.error = "authenticated explicit GEMM is not fingerprintable: " +
+                   result.error;
+    return result;
+  }
+  if (!fingerprintStructuralMathematicalGemmV1(
+          *recovered_mlir.module, result.recovered_fingerprint,
+          result.error)) {
+    result.error = "authenticated recovered GEMM is not fingerprintable: " +
+                   result.error;
+    return result;
+  }
+  result.equivalent =
+      result.explicit_fingerprint.canonical_contract ==
+          result.recovered_fingerprint.canonical_contract &&
+      result.explicit_fingerprint.sha256 ==
+          result.recovered_fingerprint.sha256;
+  return result;
 }
 
 } // namespace matcore::mdslc::mlir_bridge

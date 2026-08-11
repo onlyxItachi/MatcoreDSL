@@ -1,4 +1,5 @@
 #include "frontend.h"
+#include "native_frontend_evidence_internal.h"
 #include "recovered_gemm_recognizer.h"
 #include "../support/platform_support.h"
 
@@ -1518,6 +1519,10 @@ public:
                                 error});
       result.module.operations.clear();
       return false;
+    }
+    if (options.inspect_recovered_cpp_gemm) {
+      result.native_evidence =
+          detail::NativeFrontendEvidenceIssuerV1::issue(result, options);
     }
     return true;
   }

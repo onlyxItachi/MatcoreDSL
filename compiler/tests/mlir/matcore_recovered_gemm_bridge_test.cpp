@@ -53,7 +53,12 @@ frontend::Options optionsFor(const std::filesystem::path &source,
   options.clang_resource_directory = MDSLC_RECOVERED_TEST_RESOURCE_DIR;
   options.trusted_public_headers = {MDSLC_RECOVERED_TEST_PUBLIC_HEADER};
   options.inspect_recovered_cpp_gemm = true;
-  options.compiler_arguments = {"-std=c++20", "-O2"};
+  const std::filesystem::path include_root =
+      std::filesystem::path(MDSLC_RECOVERED_TEST_PUBLIC_HEADER)
+          .parent_path()
+          .parent_path();
+  options.compiler_arguments = {"-std=c++20", "-O2",
+                                "-I" + include_root.string()};
   if (relaxed) {
     const std::vector<std::string> relaxed_flags = {
         "-ffp-contract=fast",  "-fassociative-math",
@@ -95,21 +100,27 @@ v1::Module explicitCapture() {
 }
 
 template <typename Mutation>
-void expectAuthenticationRejected(const frontend::Result &authenticated,
-                                  const frontend::Options &options,
-                                  Mutation mutate,
-                                  std::string_view expected,
-                                  std::string_view message) {
-  frontend::Result damaged = authenticated;
-  frontend::Options damaged_options = options;
-  mutate(damaged, damaged_options);
+void expectMutableResultCannotForge(
+    const frontend::Result &published_result,
+    std::string_view authenticated_mlir, Mutation mutate,
+    std::string_view message) {
+  frontend::Result damaged = published_result;
+  mutate(damaged);
+  check(damaged.native_evidence.has_value() &&
+            damaged.native_evidence->valid(),
+        "copied sealed evidence must remain valid after public Result mutation");
+  if (!damaged.native_evidence)
+    return;
   mlir::MLIRContext context;
   bridge::RecoveredGemmBridgeResultV1 result =
       bridge::bridgeRecoveredGemmToMatcoreMlirV1(
-          damaged, damaged_options, 0, context);
-  check(!result, message);
-  checkContains(result.error, expected,
-                "authentication rejection must explain the failed boundary");
+          *damaged.native_evidence, 0, context);
+  check(static_cast<bool>(result), message);
+  if (result) {
+    check(bridge::serializeDeterministicMlir(*result.module) ==
+              authenticated_mlir,
+          "mutable Result drift must not alter sealed recovered MLIR");
+  }
 }
 
 } // namespace
@@ -128,32 +139,40 @@ int main() {
         "native recovery inspection must not forge a capture DTO operation");
   check(recovered_frontend.recovered_gemm_candidates.size() == 1,
         "canonical loop must produce exactly one recovered candidate");
+  check(recovered_frontend.native_evidence.has_value() &&
+            recovered_frontend.native_evidence->valid(),
+        "successful native recovery inspection must issue sealed evidence");
 
   mlir::MLIRContext recovered_context;
-  bridge::RecoveredGemmBridgeResultV1 recovered =
-      bridge::bridgeRecoveredGemmToMatcoreMlirV1(
-          recovered_frontend, relaxed_options, 0, recovered_context);
+  bridge::RecoveredGemmBridgeResultV1 recovered;
+  if (recovered_frontend.native_evidence) {
+    recovered = bridge::bridgeRecoveredGemmToMatcoreMlirV1(
+        *recovered_frontend.native_evidence, 0, recovered_context);
+  }
   check(static_cast<bool>(recovered),
         "authenticated relaxed loop must build recovered Matcore MLIR");
   std::string error;
+  std::string recovered_text;
   if (recovered) {
     check(bridge::verifyRecoveredGemmAnalysisModuleV1(*recovered.module, error),
           "recovered module must pass its closed analysis-only envelope");
-    const std::string text = bridge::serializeDeterministicMlir(*recovered.module);
-    checkContains(text, "kind = \"recovered_cpp_loop\"",
+    recovered_text = bridge::serializeDeterministicMlir(*recovered.module);
+    checkContains(recovered_text, "kind = \"recovered_cpp_loop\"",
                   "recovered module must retain recovered source origin");
-    checkContains(text, "permission = \"source_proven_guard_required\"",
+    checkContains(recovered_text,
+                  "permission = \"source_proven_guard_required\"",
                   "recovered module must retain guard-required permission");
-    checkContains(text, "target = \"generic\"",
+    checkContains(recovered_text, "target = \"generic\"",
                   "recovered module must not invent a CPU target decision");
-    checkContains(text, "fallback = \"preserve_original_cpp\"",
+    checkContains(recovered_text, "fallback = \"preserve_original_cpp\"",
                   "recovered module must preserve ordinary C++ fallback");
-    checkContains(text, "mdsl.required_runtime_guards",
+    checkContains(recovered_text, "mdsl.required_runtime_guards",
                   "recovered module must retain its exact guard obligations");
-    checkContains(text, "mdsl.source_identity",
+    checkContains(recovered_text, "mdsl.source_identity",
                   "recovered module must retain stable source identity");
-    check(text.find("canonical_callee") == std::string::npos &&
-              text.find("matcore::mdsl::gemm") == std::string::npos,
+    check(recovered_text.find("canonical_callee") == std::string::npos &&
+              recovered_text.find("matcore::mdsl::gemm") ==
+                  std::string::npos,
           "recovered module must not forge trusted explicit-call provenance");
 
     std::vector<lowering::CpuRuntimeDispatchRecordV1> records(1);
@@ -163,43 +182,81 @@ int main() {
           "strict explicit CPU lowering must reject recovered analysis IR");
     check(records.empty(),
           "recovered CPU-lowering rejection must clear pending records");
-    checkContains(error, "explicit Matcore IR v1 bridge envelope",
+    checkContains(error, "analysis_only",
                   "CPU rejection must explain the executable boundary");
 
     mlir::MLIRContext second_context;
     auto second = bridge::bridgeRecoveredGemmToMatcoreMlirV1(
-        recovered_frontend, relaxed_options, 0, second_context);
+        *recovered_frontend.native_evidence, 0, second_context);
     check(static_cast<bool>(second),
           "a repeated authenticated recovery bridge must succeed");
     if (second) {
-      check(bridge::serializeDeterministicMlir(*second.module) == text,
+      check(bridge::serializeDeterministicMlir(*second.module) ==
+                recovered_text,
             "recovered analysis MLIR must be byte deterministic");
     }
   }
 
+  const std::filesystem::path explicit_source =
+      std::filesystem::path(MDSLC_RECOVERED_TEST_FRONTEND_DIR).parent_path() /
+      "gemm_capture.mdsl";
+  const std::string explicit_source_before = readFile(explicit_source);
+  frontend::Options explicit_options = optionsFor(explicit_source, false);
+  frontend::Result explicit_frontend;
+  check(extract(explicit_options, explicit_frontend),
+        "real native frontend must capture the trusted explicit GEMM call");
+  check(readFile(explicit_source) == explicit_source_before,
+        "native explicit extraction must not rewrite source");
+  check(explicit_frontend.module.operations.size() == 1,
+        "native explicit extraction must produce one authenticated v0 site");
+  check(explicit_frontend.native_evidence.has_value() &&
+            explicit_frontend.native_evidence->valid(),
+        "native explicit extraction must issue sealed evidence in inspection mode");
+  if (explicit_frontend.native_evidence &&
+      recovered_frontend.native_evidence) {
+    const auto authenticated =
+        bridge::compareAuthenticatedExplicitAndRecoveredGemmV1(
+            *explicit_frontend.native_evidence, 0,
+            *recovered_frontend.native_evidence, 0);
+    check(static_cast<bool>(authenticated),
+          "live native explicit/recovered comparison must authenticate");
+    check(authenticated.equivalent &&
+              !authenticated.explicit_fingerprint.canonical_contract.empty() &&
+              authenticated.explicit_fingerprint.sha256.starts_with(
+                  "sha256:") &&
+              authenticated.explicit_fingerprint.sha256.size() == 71 &&
+              authenticated.explicit_fingerprint.canonical_contract ==
+                  authenticated.recovered_fingerprint.canonical_contract &&
+              authenticated.explicit_fingerprint.sha256 ==
+                  authenticated.recovered_fingerprint.sha256,
+          "live explicit v0/v1/MLIR and recovered loop must share normalized WHAT");
+  }
+
+  // Parsed/golden data may use the explicitly structural diagnostic API, but
+  // it never enters the authenticated equivalence API above.
   mlir::MLIRContext explicit_context;
   const v1::Module capture = explicitCapture();
   auto explicit_module = bridge::bridgeV1ToMatcoreMlir(
       capture, explicit_context, bridge::explicitGemmF32V1BridgeContext());
   check(static_cast<bool>(explicit_module),
-        "explicit dynamic GEMM fixture must bridge to Matcore MLIR");
+        "untrusted explicit fixture must bridge for structural diagnostics");
   if (recovered && explicit_module) {
     bridge::MathematicalGemmFingerprintV1 explicit_fingerprint;
     bridge::MathematicalGemmFingerprintV1 recovered_fingerprint;
-    check(bridge::fingerprintMathematicalGemmV1(
+    check(bridge::fingerprintStructuralMathematicalGemmV1(
               *explicit_module.module, explicit_fingerprint, error),
-          "explicit GEMM mathematical fingerprint must succeed");
-    check(bridge::fingerprintMathematicalGemmV1(
+          "explicit fixture structural fingerprint must succeed");
+    check(bridge::fingerprintStructuralMathematicalGemmV1(
               *recovered.module, recovered_fingerprint, error),
-          "recovered GEMM mathematical fingerprint must succeed");
+          "recovered structural fingerprint must succeed");
     check(!explicit_fingerprint.canonical_contract.empty() &&
               explicit_fingerprint.sha256.starts_with("sha256:") &&
               explicit_fingerprint.sha256.size() == 71,
-          "mathematical fingerprint must be inspectable and SHA-256 identified");
+          "structural fingerprint must be inspectable and SHA-256 identified");
     bool equivalent = false;
-    check(bridge::equivalentMathematicalGemmV1(
+    check(bridge::equivalentStructuralMathematicalGemmV1(
               *explicit_module.module, *recovered.module, equivalent, error),
-          "explicit/recovered mathematical comparison must succeed");
+          "structural explicit/recovered comparison must succeed");
     check(equivalent &&
               explicit_fingerprint.canonical_contract ==
                   recovered_fingerprint.canonical_contract &&
@@ -228,100 +285,111 @@ int main() {
           "valid static explicit GEMM must bridge for inequality testing");
     if (static_module) {
       equivalent = true;
-      check(bridge::equivalentMathematicalGemmV1(
+      check(bridge::equivalentStructuralMathematicalGemmV1(
                 *static_module.module, *recovered.module, equivalent, error),
             "static/dynamic mathematical comparison must be well formed");
       check(!equivalent,
             "fingerprint must preserve static versus dynamic shape semantics");
     }
+
+    std::vector<lowering::CpuRuntimeDispatchRecordV1> records(1);
+    records.front().site_id = "sentinel";
+    (*explicit_module.module)
+        ->setAttr("mdsl.analysis_only",
+                  mlir::BoolAttr::get(&explicit_context, true));
+    check(!lowering::lowerExplicitGemmToCpuRuntimeDispatchV1(
+              *explicit_module.module, records, error),
+          "analysis-only taint must reject an otherwise explicit envelope");
+    check(records.empty(),
+          "analysis-only rejection must clear pending runtime records");
+    checkContains(error, "analysis_only",
+                  "analysis-only rejection must explain the taint boundary");
+    (*explicit_module.module)->removeAttr("mdsl.analysis_only");
+
+    records.push_back({});
+    (*explicit_module.module)
+        ->setAttr("mdsl.producer",
+                  mlir::StringAttr::get(&explicit_context,
+                                        "clang-ast-json-bootstrap-v0"));
+    check(!lowering::lowerExplicitGemmToCpuRuntimeDispatchV1(
+              *explicit_module.module, records, error),
+          "bootstrap producer must not authorize executable CPU lowering");
+    check(records.empty(),
+          "bootstrap-producer rejection must clear pending runtime records");
+    checkContains(error, "clang-libtooling-v1",
+                  "bootstrap rejection must name the required native producer");
   }
 
-  expectAuthenticationRejected(
-      recovered_frontend, relaxed_options,
-      [](frontend::Result &, frontend::Options &options) {
-        options.compiler_arguments.insert(options.compiler_arguments.end() - 1,
-                                          "-DIDENTITY_DRIFT=1");
-      },
-      "compilation identity",
-      "changed compilation options must invalidate recovered authorization");
-  expectAuthenticationRejected(
-      recovered_frontend, relaxed_options,
-      [](frontend::Result &result, frontend::Options &) {
-        result.source_snapshot.push_back(' ');
-      },
-      "source digest",
-      "changed source bytes must invalidate recovered authorization");
-  expectAuthenticationRejected(
-      recovered_frontend, relaxed_options,
-      [](frontend::Result &result, frontend::Options &) {
-        char &last =
-            result.recovered_gemm_candidates[0].source_snapshot_sha256.back();
-        last = last == '0' ? '1' : '0';
-      },
-      "source digest",
-      "changed source digest must invalidate recovered authorization");
-  expectAuthenticationRejected(
-      recovered_frontend, relaxed_options,
-      [](frontend::Result &result, frontend::Options &) {
-        result.recovered_gemm_candidates[0].site_id =
-            "mc_00000000000000000000000000000000";
-      },
-      "site ID",
-      "forged site identity must invalidate recovered authorization");
-  expectAuthenticationRejected(
-      recovered_frontend, relaxed_options,
-      [](frontend::Result &result, frontend::Options &) {
-        ++result.recovered_gemm_candidates[0].line;
-      },
-      "line/column",
-      "changed source line must invalidate recovered authorization");
-  expectAuthenticationRejected(
-      recovered_frontend, relaxed_options,
-      [](frontend::Result &result, frontend::Options &) {
-        ++result.recovered_gemm_candidates[0].outer_loop_range.begin;
-      },
-      "outer-loop range",
-      "changed recovered source range must invalidate authorization");
-  expectAuthenticationRejected(
-      recovered_frontend, relaxed_options,
-      [](frontend::Result &result, frontend::Options &) {
-        std::swap(result.recovered_gemm_candidates[0].proof_ranges[0],
-                  result.recovered_gemm_candidates[0].proof_ranges[1]);
-      },
-      "proof ranges",
-      "reordered proof roles must invalidate recovered authorization");
-  expectAuthenticationRejected(
-      recovered_frontend, relaxed_options,
-      [](frontend::Result &result, frontend::Options &) {
-        std::swap(
-            result.recovered_gemm_candidates[0].required_runtime_guards[0],
-            result.recovered_gemm_candidates[0].required_runtime_guards[1]);
-      },
-      "runtime guards",
-      "reordered runtime guards must invalidate recovered authorization");
-  expectAuthenticationRejected(
-      recovered_frontend, relaxed_options,
-      [](frontend::Result &result, frontend::Options &) {
-        result.recovered_gemm_candidates[0].fp_proof.preserve_signed_zero = true;
-      },
-      "floating-point proof",
-      "changed effective FP proof must invalidate recovered authorization");
-  expectAuthenticationRejected(
-      recovered_frontend, relaxed_options,
-      [](frontend::Result &result, frontend::Options &) {
-        result.recovered_gemm_candidates[0].semantic_contract =
-            "forged_contract";
-      },
-      "semantic contract",
-      "changed semantic contract must invalidate recovered authorization");
-  expectAuthenticationRejected(
-      recovered_frontend, relaxed_options,
-      [](frontend::Result &result, frontend::Options &) {
-        result.recovered_gemm_candidates[0].rejection_reasons = {
-            "injected_rejection"};
-      },
-      "zero-rejection",
-      "a rejection reason must prevent recovered authorization");
+  if (!recovered_text.empty()) {
+    expectMutableResultCannotForge(
+        recovered_frontend, recovered_text,
+        [](frontend::Result &result) {
+          ++result.recovered_gemm_candidates[0].proof_ranges[1].range.begin;
+        },
+        "an in-bounds public proof-range shift cannot mutate sealed evidence");
+    expectMutableResultCannotForge(
+        recovered_frontend, recovered_text,
+        [](frontend::Result &result) {
+          --result.recovered_gemm_candidates[0].outer_loop_range.end;
+          --result.recovered_gemm_candidates[0].proof_ranges[0].range.end;
+        },
+        "coordinated public outer-end/proof drift cannot mutate sealed evidence");
+    expectMutableResultCannotForge(
+        recovered_frontend, recovered_text,
+        [](frontend::Result &result) {
+          auto &candidate = result.recovered_gemm_candidates[0];
+          candidate.output_parameter = "forged_output";
+          candidate.lhs_parameter = "forged_lhs";
+          candidate.rhs_parameter = "forged_rhs";
+          candidate.m_parameter = "forged_m";
+          candidate.n_parameter = "forged_n";
+          candidate.k_parameter = "forged_k";
+        },
+        "public binding drift cannot mutate sealed evidence");
+    expectMutableResultCannotForge(
+        recovered_frontend, recovered_text,
+        [](frontend::Result &result) {
+          result.module.source_file = "forged-display.mdsl";
+          result.module.translation_unit = "forged-display.mdsl";
+          auto &candidate = result.recovered_gemm_candidates[0];
+          candidate.source_file = "forged-display.mdsl";
+          candidate.function_name = "forged_function";
+        },
+        "public function/source-display drift cannot mutate sealed evidence");
+    expectMutableResultCannotForge(
+        recovered_frontend, recovered_text,
+        [](frontend::Result &result) {
+          auto &candidate = result.recovered_gemm_candidates[0];
+          candidate.state = frontend::RecoveredGemmState::recognized_rejected;
+          candidate.fp_proof.preserve_signed_zero = true;
+          std::swap(candidate.required_runtime_guards[0],
+                    candidate.required_runtime_guards[1]);
+          result.source_snapshot.push_back(' ');
+          result.diagnostics.push_back(
+              {.file = "forged-display.mdsl",
+               .line = 1,
+               .column = 1,
+               .message = "forged diagnostic"});
+        },
+        "public state/FP/guard/source drift cannot mutate sealed evidence");
+
+    frontend::Options drifted_options = relaxed_options;
+    drifted_options.compiler_arguments.insert(
+        drifted_options.compiler_arguments.end() - 1,
+        "-DIDENTITY_DRIFT=1");
+    check(frontend::stableCompilationIdentity(drifted_options) !=
+              frontend::stableCompilationIdentity(relaxed_options),
+          "option-drift fixture must change compilation identity");
+    mlir::MLIRContext drifted_options_context;
+    auto sealed_after_option_drift =
+        bridge::bridgeRecoveredGemmToMatcoreMlirV1(
+            *recovered_frontend.native_evidence, 0,
+            drifted_options_context);
+    check(sealed_after_option_drift &&
+              bridge::serializeDeterministicMlir(
+                  *sealed_after_option_drift.module) == recovered_text,
+          "post-extraction Options drift cannot alter sealed compilation identity");
+  }
 
   frontend::Options strict_options = optionsFor(recovered_source, false);
   frontend::Result strict_frontend;
@@ -331,13 +399,45 @@ int main() {
             strict_frontend.recovered_gemm_candidates[0].state ==
                 frontend::RecoveredGemmState::recognized_rejected,
         "strict ordinary GEMM must be recognized but rewrite-rejected");
+  check(strict_frontend.native_evidence.has_value() &&
+            strict_frontend.native_evidence->valid(),
+        "strict native inspection must still seal its rejected evidence");
   mlir::MLIRContext strict_context;
-  auto strict = bridge::bridgeRecoveredGemmToMatcoreMlirV1(
-      strict_frontend, strict_options, 0, strict_context);
+  bridge::RecoveredGemmBridgeResultV1 strict;
+  if (strict_frontend.native_evidence) {
+    strict = bridge::bridgeRecoveredGemmToMatcoreMlirV1(
+        *strict_frontend.native_evidence, 0, strict_context);
+  }
   check(!strict,
         "strict/default C++ semantics must not produce authorized recovered IR");
   checkContains(strict.error, "recognized_guard_required",
                 "strict rejection must explain the permission boundary");
+
+  frontend::Result relabeled_strict = strict_frontend;
+  if (!relabeled_strict.recovered_gemm_candidates.empty() &&
+      !recovered_frontend.recovered_gemm_candidates.empty()) {
+    relabeled_strict.recovered_gemm_candidates[0] =
+        recovered_frontend.recovered_gemm_candidates[0];
+  }
+  if (relabeled_strict.native_evidence) {
+    mlir::MLIRContext relabeled_context;
+    auto relabeled = bridge::bridgeRecoveredGemmToMatcoreMlirV1(
+        *relabeled_strict.native_evidence, 0, relabeled_context);
+    check(!relabeled,
+          "copying all relaxed literals onto a strict public Result cannot forge authorization");
+    checkContains(relabeled.error, "recognized_guard_required",
+                  "sealed strict evidence must retain its original rejection state");
+  }
+  if (explicit_frontend.native_evidence && strict_frontend.native_evidence) {
+    const auto strict_comparison =
+        bridge::compareAuthenticatedExplicitAndRecoveredGemmV1(
+            *explicit_frontend.native_evidence, 0,
+            *strict_frontend.native_evidence, 0);
+    check(!strict_comparison,
+          "authenticated equivalence must reject a strict recovered loop");
+    checkContains(strict_comparison.error, "recognized_guard_required",
+                  "authenticated strict comparison must explain permission rejection");
+  }
 
   const std::filesystem::path non_gemm_source =
       std::filesystem::path(MDSLC_RECOVERED_TEST_FRONTEND_DIR) /
@@ -350,9 +450,15 @@ int main() {
             non_gemm_frontend.recovered_gemm_candidates[0].state ==
                 frontend::RecoveredGemmState::not_recognized,
         "non-GEMM loop must remain not recognized");
+  check(non_gemm_frontend.native_evidence.has_value() &&
+            non_gemm_frontend.native_evidence->valid(),
+        "non-GEMM native inspection must seal its negative result");
   mlir::MLIRContext non_gemm_context;
-  auto non_gemm = bridge::bridgeRecoveredGemmToMatcoreMlirV1(
-      non_gemm_frontend, non_gemm_options, 0, non_gemm_context);
+  bridge::RecoveredGemmBridgeResultV1 non_gemm;
+  if (non_gemm_frontend.native_evidence) {
+    non_gemm = bridge::bridgeRecoveredGemmToMatcoreMlirV1(
+        *non_gemm_frontend.native_evidence, 0, non_gemm_context);
+  }
   check(!non_gemm,
         "not-recognized ordinary C++ must not produce semantic GEMM IR");
 

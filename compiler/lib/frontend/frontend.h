@@ -6,11 +6,20 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+namespace matcore::mdslc::mlir_bridge::detail {
+class AuthenticatedNativeFrontendEvidenceAccessV1;
+}
+
 namespace matcore::mdslc::frontend {
+
+namespace detail {
+class NativeFrontendEvidenceIssuerV1;
+}
 
 struct Diagnostic {
   std::string file;
@@ -100,12 +109,48 @@ struct RecoveredGemmCandidate {
   std::vector<std::string> rejection_reasons;
 };
 
+// Native-only, immutable-by-API evidence issued after a successful LibTooling
+// extraction. It seals copies of every Result field plus the effective Options
+// used for that extraction. It is deliberately non-default-constructible and
+// non-aggregate: mutable diagnostic Result fields are not an authorization
+// boundary.
+class AuthenticatedNativeFrontendEvidenceV1 {
+public:
+  AuthenticatedNativeFrontendEvidenceV1(
+      const AuthenticatedNativeFrontendEvidenceV1 &) = default;
+  AuthenticatedNativeFrontendEvidenceV1 &operator=(
+      const AuthenticatedNativeFrontendEvidenceV1 &) = default;
+  AuthenticatedNativeFrontendEvidenceV1(
+      AuthenticatedNativeFrontendEvidenceV1 &&) noexcept = default;
+  AuthenticatedNativeFrontendEvidenceV1 &operator=(
+      AuthenticatedNativeFrontendEvidenceV1 &&) noexcept = default;
+
+  [[nodiscard]] bool valid() const noexcept;
+
+private:
+  struct Payload;
+
+  explicit AuthenticatedNativeFrontendEvidenceV1(
+      std::shared_ptr<const Payload> payload)
+      : payload_(std::move(payload)) {}
+
+  std::shared_ptr<const Payload> payload_;
+
+  friend class detail::NativeFrontendEvidenceIssuerV1;
+  friend class ::matcore::mdslc::mlir_bridge::detail::
+      AuthenticatedNativeFrontendEvidenceAccessV1;
+};
+
 struct Result {
   ir::Module module;
   std::vector<Diagnostic> diagnostics;
   // Exact bytes parsed for source ranges and later consumed by codegen.
   std::string source_snapshot;
   std::vector<RecoveredGemmCandidate> recovered_gemm_candidates;
+  // Present only for a successful native extraction requested in explicit
+  // recovery-inspection mode. Ordinary compilation does not pay the cost of
+  // the sealed source snapshot copy.
+  std::optional<AuthenticatedNativeFrontendEvidenceV1> native_evidence;
 };
 
 class Frontend {
@@ -134,5 +179,20 @@ std::string_view recoveredGemmStateName(RecoveredGemmState state);
 std::string serializeRecoveredGemmInspection(const Result &result);
 
 } // namespace matcore::mdslc::frontend
+
+namespace matcore::mdslc::mlir_bridge::detail {
+
+// Internal bridge access to the native frontend's immutable evidence payload.
+// Definitions live with the native issuer, where the private payload is
+// complete. Callers cannot construct or modify the evidence through this seam.
+class AuthenticatedNativeFrontendEvidenceAccessV1 {
+public:
+  static const frontend::Options &
+  options(const frontend::AuthenticatedNativeFrontendEvidenceV1 &evidence);
+  static const frontend::Result &
+  result(const frontend::AuthenticatedNativeFrontendEvidenceV1 &evidence);
+};
+
+} // namespace matcore::mdslc::mlir_bridge::detail
 
 #endif // MATCORE_MDSLC_FRONTEND_H

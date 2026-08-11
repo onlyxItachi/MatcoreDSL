@@ -27,6 +27,7 @@ endif()
 
 if(MDSLC_ENABLE_NATIVE_FRONTEND)
   add_library(matcore_frontend_native STATIC
+    native_frontend_evidence.cpp
     native_frontend.cpp
     recovered_gemm_recognizer.cpp
   )
