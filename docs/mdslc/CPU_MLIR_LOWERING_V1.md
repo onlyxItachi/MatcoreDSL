@@ -1,7 +1,8 @@
 # Matcore MLIR to CPU runtime-dispatch lowering v1
 
-- Status: design contract for Milestone E; implementation is not accepted by
-  this document
+- Status: implemented and independently accepted for the focused Linux
+  explicit-GEMM runtime-dispatch path; final CPU-beta integration gates are
+  tracked separately
 - Scope: explicit F32 rank-two `mdsl.gemm` sites on the existing synchronous
   host-resident CPU route
 - Architecture source of truth: ADR-0009 and
@@ -120,6 +121,16 @@ The generated function remains a private implementation seam. Existing C ABI
 symbols and layouts do not change. No MLIR type, C++ container, exception, or
 template crosses the runtime boundary.
 
+This v1 semantic backend calls the existing one-shot
+`matcore_runtime_gemm_f32_v0` entry and therefore inherits its zero-workspace,
+allocation-free candidate boundary. It may select legal reference, tiled,
+compiler-vectorized, or linked single-thread OpenBLAS implementations. It does
+not silently allocate workspace and cannot select packed or parallel candidates
+that require explicit caller workspace or an execution context. Those native
+variants remain available through the existing additive workspace/context C
+APIs; claiming that the one-shot semantic path can select every registered CPU
+variant would be incorrect.
+
 Backend text generation should be shared with the existing code generator
 through one normalized internal entry representation. Copying two independent
 versions of symbol naming and wrapper generation would create an avoidable
@@ -142,9 +153,16 @@ that is observable to the caller, or destination mutation. Lowering may remove
 a runtime check only after a static proof is represented in a form that the
 verifier can authenticate.
 
-The current runtime lacks the complete FP-environment gate. That gate is a hard
-Milestone E dependency; merely encoding the numerical dictionary in MLIR does
-not prove runtime conformance.
+The Linux x86-64 runtime now enforces the complete accepted execution-thread
+gate before packing or output mutation: round-to-nearest, non-trapping
+exceptions, and FTZ/DAZ disabled. Every active native worker is admitted before
+parallel work; the linked single-thread OpenBLAS adapter is checked against the
+supported numerical envelope. The exact source-evaluation compile profile is
+also enforced. Rejection returns additive status
+`MATCORE_STATUS_UNSUPPORTED_FLOATING_POINT_ENVIRONMENT_V0` (26) without
+changing an existing ABI layout or function signature. This accepted focused
+evidence does not substitute for the final Milestone H configuration/hosted
+matrix, and it does not claim physical Windows FP-environment validation.
 
 ## Artifact path
 
@@ -162,8 +180,12 @@ foo.mdsl
   -> runtime planner and selected CPU backend
 ```
 
-On Windows, generated COFF objects are linked directly or archived into a
-normal `.lib`; no ELF partial-link assumption is introduced.
+On Windows, the established compatibility path links generated COFF objects
+directly or archives them into a normal `.lib`; no ELF partial-link assumption
+is introduced. Current Windows Release, Debug, and supported sanitizer profiles
+build with Matcore MLIR disabled and semantic default `capture-v0`. An explicit
+`matcore-mlir` request must fail unavailable without producing an artifact.
+This document does not claim Windows semantic-MLIR execution.
 
 The semantic backend source must come from the MLIR lowering when this route is
 selected. Generating an MLIR file for inspection while continuing to generate
@@ -176,20 +198,41 @@ The native Clang frontend remains the source authority. The AST-JSON bootstrap
 path remains compatibility-only and must not silently acquire the semantic
 lowering route.
 
-During migration, a build may expose an explicit semantic-pipeline selector.
-If Matcore MLIR support was not built, selecting that route fails clearly; it
-never silently falls back to the v0-only backend. Once the semantic route
-passes all E and beta gates, it may become the normal native pipeline.
+The source compatibility configuration remains:
+
+```text
+MDSLC_ENABLE_MATCORE_MLIR=OFF
+MDSLC_DEFAULT_SEMANTIC_PIPELINE=capture-v0
+```
+
+The Linux CPU-beta profile deliberately configures exact MLIR 21.1.8 support
+and `MDSLC_DEFAULT_SEMANTIC_PIPELINE=matcore-mlir`. The configured default is
+compiled into `mdslc++`; an explicit `--semantic-pipeline` selector overrides
+it. Selecting `matcore-mlir` when support is not built fails clearly and never
+falls back to the v0-only backend. The semantic route requires the native
+frontend; bootstrap compatibility must explicitly pair with `capture-v0`.
+
+Installed packages publish exact `ON`/`OFF`
+`MatcoreDSL_MATCORE_MLIR_AVAILABLE` and the configured
+`MatcoreDSL_DEFAULT_SEMANTIC_PIPELINE`. The
+`matcoredsl_add_executable` helper accepts
+`SEMANTIC_PIPELINE capture-v0|matcore-mlir`; invalid, unavailable, or
+bootstrap/MLIR combinations fail during consumer configuration. With MLIR
+enabled, `matcore-mlir` is installed only as a leaf executable. No MLIR CMake
+target, header, aggregate shared-library dependency, or local MLIR prefix is
+exported. With MLIR disabled, the tool is absent and capability is `OFF`.
 
 The v0/v1 serializer, verifier, rewrite ranges, sites header, descriptor stubs,
 runtime ABI, and installed consumer remain compatible.
 
 ## Multi-operation boundary
 
-Milestone C proves `mdsl.gemm -> mdsl.map(mdsl.sin)` composition in the
-semantic optimizer. This v1 CPU lowering executes only the GEMM envelope.
-It must reject an unsupported map/domain pipeline rather than silently drop the
-map or execute only GEMM.
+Milestone C has independently accepted
+`mdsl.gemm -> mdsl.map(mdsl.sin)` composition and the closed all/slice/indices/
+predicate domain model in the semantic optimizer. It remains inspection-only.
+This v1 CPU lowering executes only the GEMM envelope and rejects an unsupported
+map/domain pipeline rather than silently dropping the map or executing GEMM
+alone.
 
 A later map lowering may choose a generated scalar/vector loop or a fused
 implementation only after numerical, destination, outside-domain, alias, and
@@ -198,7 +241,18 @@ does not authorize overwriting the original explicit GEMM destination: the
 functional map result is a separate semantic value unless another explicit
 commit/destination contract says otherwise.
 
-## Required tests
+## Accepted focused tests and final integration gates
+
+Focused independent review accepted the authenticated native-v1 to Matcore
+MLIR to stable runtime-dispatch object/executable path, the producer and
+analysis-only authority gates, deterministic outputs, and the MLIR-disabled
+unavailable path. Installed-profile validation also passed the MLIR-on/default-
+`matcore-mlir` and MLIR-off/default-`capture-v0` relocated and
+source-inaccessible consumer scopes.
+
+The following list remains the final Milestone H candidate matrix. Items are
+not described as final-clean-head or hosted passes until that exact candidate
+has completed them.
 
 ### Positive
 

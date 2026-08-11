@@ -80,11 +80,17 @@ requirements are preconditions rather than facts. An optimization may consume
 them only after static proof or a dominating runtime guard, with dynamic
 rejection before packing or output mutation.
 
-The existing CPU runtime does not yet validate the full rounding mode,
-trap-mask, and FTZ/DAZ environment contract. Milestone E must add fail-closed
-preflight and backend conformance/subnormal/non-finite tests before the new
-semantic route executes. Earlier CPU correctness evidence is not retroactively
-claimed as this floating-point-environment gate.
+The Linux x86-64 CPU runtime now validates the execution thread's rounding
+mode, trap state, and FTZ/DAZ state before packing or destination mutation. It
+also admits every active native worker before parallel work and validates the
+linked single-thread OpenBLAS adapter against the supported numerical
+envelope. The exact source-evaluation compile profile is enforced. Rejection
+uses the additive status
+`MATCORE_STATUS_UNSUPPORTED_FLOATING_POINT_ENVIRONMENT_V0` (numeric value 26)
+without changing an existing C record layout or function signature. Focused
+normal and ASan/UBSan review passed; the final CPU-beta configuration matrix
+remains a separate Milestone H gate. Windows FP support remains bounded by its
+hosted compatibility lane rather than this physical Linux acceptance.
 
 The first staged work is architecture freeze, the MLIR core and deterministic
 v1 bridge, GEMM-to-SIN domain composition, conservative explicit/recovered
@@ -111,7 +117,7 @@ frontend must not mix MLIR 22 or modify the legacy root MLIR 18.1.3 contract.
 The semantic-foundation implementation may advance only while this coherent
 isolated toolchain and its no-path-leak gate remain green.
 
-### Semantic milestones A and B
+### Semantic milestones A through H
 
 **Milestone A is complete on `mdslc/semantic-compiler-foundation-v1`.**
 ADR-0009, this status, the roadmap, the pre-freeze decision log, and the
@@ -144,13 +150,69 @@ evidence passes 204/204 semantic checks, 9/9 CLI checks, and 2/2 MLIR CTest
 entries. Independent review found zero unresolved high/medium findings. The
 last in-flight whole-suite run passed 51/52 after the branch advanced during
 execution; the sole failure was the expected authenticated source-commit guard
-rejecting a stale benchmark binary. The merge gate is a final clean rebuild
-from the settled documentation commit so every provenance-sensitive test sees
-the exact branch state under review.
+rejecting a stale benchmark binary. Later focused installed-profile validation
+refreshed exact clean-head provenance and passed its owned gates. A final full
+rebuild at the settled candidate commit remains the Milestone H integration
+gate so every provenance-sensitive test sees the exact state under review.
 
-Milestone C's map/domain design and Milestone D's conservative C++ GEMM
-recognition contract are documented, but neither constitutes production
-rewriting or an executable recovered-loop route yet.
+**Milestone C is implemented and independently accepted for the internal
+composition-v1 optimizer boundary.** `mdsl.map`, `mdsl.sin`, `mdsl.yield`,
+`mdsl.return`, and the closed `all`, slice, indices, and predicate domain forms
+have deterministic verified semantics and source-backed provenance checks.
+This is an inspection/optimizer model only: the v1 CPU lowerer rejects every
+map/domain pipeline, and no public map operation or map/sine execution route is
+claimed.
+
+**Milestone D is implemented and independently accepted for analysis and
+equivalence inspection.** One canonical ordinary-C++ row-major F32 GEMM loop
+can be recognized, sealed against an authenticated source snapshot, and
+compared with an independently authenticated explicit `mdsl::gemm` through the
+common mathematical fingerprint. Recognition is not rewrite permission.
+Strict and guard-required recovered forms remain analysis-only, the executable
+CPU lowerer rejects them, and rejected recognition preserves ordinary C++.
+
+**Milestone E is implemented and independently accepted for the focused Linux
+explicit-GEMM path.** Authenticated native Matcore IR v1 is bridged into a
+verified Matcore MLIR module, lowered to a private CPU runtime-dispatch backend,
+compiled into an ordinary object/executable, and executed through the stable
+`matcore_runtime_gemm_f32_v0` boundary. The executed backend is produced by the
+semantic lowering rather than by an unused inspection sidecar. This is a
+library-dispatch lowering, not Linalg/Vector loop generation. The final fresh
+Release, Debug, sanitizer, installed-package, relocation, source-inaccessible,
+ABI, Windows, and hosted matrix remains Milestone H work.
+
+**Milestone F has an accepted bounded technical-limit disposition.** The
+unchanged Milestone 7 performance contract still lacks a complete authenticated
+forward/reverse pair, so native-BLAS parity remains unproven, Issue #15 and
+milestone #5 remain open, and no parity tag exists. CPU beta may select the
+fastest legal authenticated provider, including OpenBLAS, without turning that
+selection into a native-parity claim.
+
+**Milestone G is independently accepted for the bounded existing-version
+contract.** Packed-B v1 remains caller-owned, serial, synchronous borrowed
+storage with manual invalidation; returned C strings remain borrowed; existing
+versions evolve additively. General transformed-operand ownership, structured
+report iteration, execution intent, forced-variant policy, and support-duration
+decisions remain inputs to the later public freeze. This acceptance does not
+freeze any API, ABI, or backend contract.
+
+**Milestone H is active.** The compatibility source-tree configuration remains
+`MDSLC_ENABLE_MATCORE_MLIR=OFF` with default semantic pipeline `capture-v0`.
+The Linux CPU-beta profile deliberately enables exact MLIR 21.1.8 support and
+sets the configured default to `matcore-mlir`. Installed packages publish
+`MatcoreDSL_MATCORE_MLIR_AVAILABLE` and
+`MatcoreDSL_DEFAULT_SEMANTIC_PIPELINE`; `matcoredsl_add_executable` accepts an
+explicit `SEMANTIC_PIPELINE capture-v0|matcore-mlir` and fails closed on
+invalid or unavailable combinations. Windows Release, Debug, and supported
+sanitizer profiles remain explicitly MLIR-disabled/default-`capture-v0`; they
+must prove the semantic route unavailable rather than imply Windows MLIR
+execution.
+
+Focused installed/relocated/source-inaccessible profile validation is recorded,
+but final full local matrices, hosted pull-request results, and the final
+independent CPU-beta review are pending at the eventual clean candidate commit.
+No CPU beta release is claimed yet. The bounded product contract and exact
+remaining gates are in [CPU_BETA_V1.md](CPU_BETA_V1.md).
 
 ## Milestone 7 native BLAS parity
 
@@ -686,8 +748,10 @@ and all accelerator compiler paths were not attempted.
   Windows. Multi-node NUMA policy is synthetic-only, with no runtime page
   placement or migration.
 - Windows OpenBLAS, a clean-machine installer test, GEMV, GEVM, ReLU-GEMM,
-  MLIR lowering, CUDA/cuBLAS, HIP, Metal, NPU placement, fusion, and autotuning
-  are not implemented or claimed.
+  Windows Matcore-MLIR semantic execution, generated Linalg/Vector compute,
+  CUDA/cuBLAS, HIP, Metal, NPU placement, fusion, and autotuning are not
+  implemented or claimed. Linux explicit-GEMM Matcore-MLIR runtime-dispatch
+  lowering exists; map/domain and recovered-loop routes remain inspection-only.
 
 The standalone native CPU architecture proof, Milestone 4 performance
 foundation, published Linux Milestone 5 backend, and focused hosted Windows

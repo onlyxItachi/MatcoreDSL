@@ -47,9 +47,11 @@ path and native parity is not a CPU-beta prerequisite.
    evidence tooling merged. A complete authenticated parity envelope remains
    uncollected, so parity is not claimed.
 
-The current architecture verdict remains passed for the standalone native CPU
-frontend/runtime slice. It does not yet include a compositional MLIR semantic
-optimizer.
+The standalone native CPU frontend/runtime verdict remains passed. The
+semantic-foundation branch now also contains the independently accepted
+Matcore MLIR core, map/domain composition model, conservative recovered-GEMM
+analysis, and explicit-GEMM CPU runtime-dispatch lowering. Map/domain and
+recovered-loop execution are deliberately not part of that executable claim.
 
 ## Architectural delta
 
@@ -137,14 +139,16 @@ parse/print and v1 bridge goldens; destination/result and precondition/fact
 verifier negatives; malformed semantic negatives; unchanged v0/v1
 compatibility tests; independent semantic review. These focused gates pass:
 the core semantic harness reports 204/204 checks, the CLI harness 9/9, and the
-two MLIR CTest entries 2/2. A final settled-tree whole-suite rebuild remains an
-integration gate before merge because benchmark provenance tests deliberately
-reject binaries built from an older branch commit.
+two MLIR CTest entries 2/2. The later installed-package profile also exercises
+the core through the semantic route. The final settled candidate's full
+configuration matrix remains Milestone H evidence rather than a reason to
+reopen this accepted semantic-core boundary.
 
 ### C — Multi-op and domain semantics
 
-Status: design complete; implementation begins only from the independently
-accepted B contract.
+Status: implemented and independently accepted for the internal
+composition-v1 optimizer/inspection boundary. It does not authorize map/sine
+CPU lowering or a public map API.
 
 Implement `mdsl.map`, `mdsl.sin`, `mdsl.yield`/`mdsl.return` as required, with
 `all`, slice, indices, and predicate/mask domain concepts. Prove canonical
@@ -152,13 +156,17 @@ GEMM-to-SIN(all) and one partial-domain case. Use SSA/use-def order and explicit
 effects rather than unnecessary total program order.
 
 Gate: domain bounds/shape, untouched-element, mutation, numerical, alias,
-effect, and reordering negative tests plus deterministic textual goldens.
+effect, and reordering negative tests plus deterministic textual goldens. The
+focused semantic binary reports 319 checks with zero failures, and the core
+plus map/domain CTest pair passed 2/2 in independent review. The CPU lowerer
+must continue to reject this unsupported composition rather than execute GEMM
+alone.
 
 ### D — Explicit/recovered equivalence prototype
 
-Status: conservative recognition/permission design complete in
-`CPP_GEMM_RECOGNITION.md`; implementation depends on the accepted B contract
-and may develop alongside C with separate ownership.
+Status: implemented and independently accepted for analysis and authenticated
+structural-equivalence inspection. It remains deliberately non-executable and
+does not rewrite ordinary C++.
 
 Conservatively recognize one canonical non-dependent ordinary C++ GEMM loop
 and raise it directly into the same `mdsl.gemm` semantics as explicit
@@ -167,11 +175,16 @@ preserves ordinary C++ behavior.
 
 Gate: semantic equivalence; source provenance; dependence/alias/numerical/
 barrier/macro/volatile/atomic negatives; unchanged object/execution behavior
-when raising is rejected.
+when raising is rejected. Independent rereview accepted the sealed native
+evidence and explicit/recovered comparison with no unresolved high or medium
+finding. Both strict and guard-required recovered modules remain analysis-only
+and are rejected by the executable CPU lowerer.
 
 ### E — CPU MLIR lowering proof
 
-Status: depends on B and the relevant C semantics.
+Status: implemented and independently accepted for the focused Linux
+authenticated explicit-F32-GEMM runtime-dispatch path. Full CPU-beta
+configuration and hosted evidence remains Milestone H work.
 
 Route authenticated capture through verified Matcore MLIR into legal CPU
 planning/lowering, reusing the current runtime and implementation registry.
@@ -188,10 +201,19 @@ oracle, artifact inspection, forced-illegal/environment failure, Release,
 Debug, sanitizers, package relocation, external consumer, and Windows
 compatibility.
 
+The focused proof passes through the stable
+`matcore_runtime_gemm_f32_v0` descriptor ABI and produces an ordinary native
+artifact whose backend carries the semantic-lowering producer marker. The
+runtime now enforces the required source-evaluation and execution-thread FP
+environment on the physically validated Linux x86-64 scope, using additive
+status 26 on rejection. This is library-dispatch lowering; Linalg/Vector loop
+generation, map execution, and recovered-loop execution are not claimed.
+
 ### F — Milestone 7 evidence closure or bounded technical limit
 
-Status: Issue #15 and milestone #5 remain open; may run in parallel when an
-exclusive host is available.
+Status: accepted bounded technical limit for the semantic-pivot dependency.
+Issue #15 and milestone #5 remain open because native-BLAS parity itself is
+still partial and may be revisited only on an exclusive host.
 
 Run the unchanged authenticated forward/reverse envelope. If it passes, record
 the result. If it fails, retain best-provider selection and document the
@@ -200,11 +222,15 @@ until final-checkpoint evidence justifies a legal activation rule.
 
 Gate: unchanged provider, shapes, thread rules, timing, legality, and regret
 scope; complete authenticated pair or an explicitly reviewed bounded limit;
-no benchmark gaming or fabricated counter evidence.
+no benchmark gaming or fabricated counter evidence. The reviewed bounded
+disposition is the second allowed outcome: the incomplete 258/368 forward
+receipt is not reused as a parity result, cooperative packed-B preparation
+remains production-dormant, and no parity tag is created.
 
 ### G — Pre-freeze contract resolution
 
-Status: depends on A--E and a bounded F disposition.
+Status: independently accepted for bounded existing-version decisions. The
+broader public API/ABI/backend-contract freeze remains explicitly deferred.
 
 Resolve transformed-operand ownership/identity/immutability/lifetime,
 cross-context sharing, caller-owned transformed storage, report iteration,
@@ -216,9 +242,17 @@ Gate: additive compatibility design, retained symbol/layout tests, Linux and
 Windows installed consumers, and independent ABI/backend-contract review.
 This gate still does not freeze an interface merely by documenting it.
 
+The accepted bounded decisions define packed-B v1 as caller-owned borrowed
+storage with serial synchronous reuse and manual invalidation, define returned
+C strings as borrowed, and require additive version evolution. General
+transformed-operand ownership/sharing, structured plan/report iteration,
+execution intent, forced variant identity, and long-term support/deprecation
+policy remain open for the separate freeze milestone.
+
 ### H — CPU Beta
 
-Status: depends on E, G, and an honest F disposition.
+Status: active. A--G have their required bounded dispositions; final clean-head
+local/hosted integration and independent beta review remain pending.
 
 The intended initial claim is valid C++ `.mdsl`, preserved ordinary C++,
 explicit F32 rank-2 GEMM, verified capture and semantic IR, deterministic legal
@@ -231,13 +265,30 @@ Gate: fresh Release, Debug, supported sanitizers, package, external consumer,
 Windows, native artifact, IR/verifier, explicit/recovered recognition,
 planner, performance sanity, hygiene, and independent adversarial review.
 
+Product-profile boundary:
+
+- source compatibility default: Matcore MLIR disabled and semantic pipeline
+  `capture-v0`;
+- Linux CPU-beta profile: exact MLIR 21.1.8 enabled and configured default
+  `matcore-mlir`;
+- Windows x64 compatibility profile: Matcore MLIR disabled and configured
+  default `capture-v0`, with an explicit semantic request required to fail
+  unavailable and leave no artifact.
+
+Installed packages report `MatcoreDSL_MATCORE_MLIR_AVAILABLE` and
+`MatcoreDSL_DEFAULT_SEMANTIC_PIPELINE`. Consumers may pass
+`SEMANTIC_PIPELINE capture-v0|matcore-mlir` to
+`matcoredsl_add_executable`; invalid, unavailable, or bootstrap/MLIR pairings
+fail during configuration. The detailed supported/unsupported claim and final
+pending matrix are frozen in [CPU_BETA_V1.md](CPU_BETA_V1.md).
+
 ## Dependency graph
 
 ```text
-A -> B -> C -----------+
-      +-> D -----------+-> E ----+
-current M7 contract -------> F ---+-> G -> H
-                  A/B/C/D/E ------+
+A -> B -> C ----------------+
+      +-> D ----------------+-> E --+
+current M7 contract ------------> F -+-> G -> H
+                         A/B/C/D/E ---+
 ```
 
 F is evidence-parallel but cannot change A--E semantics. G requires a bounded
@@ -251,8 +302,9 @@ F disposition, not a manufactured parity pass. H does not depend on GPU work.
   performance evidence, and adversarial review use isolated sibling worktrees
   and non-overlapping files.
 - Milestone 7 remains tracked separately by Issue #15 and milestone #5.
-- Contract-resolution and beta publication receive new branches from the
-  then-current clean `main` after their entry gates pass.
+- Bounded contract resolution and the CPU-beta candidate are integrated on
+  `mdslc/semantic-compiler-foundation-v1`; publication still requires a normal
+  pull request from that branch after the final H gates pass.
 - Integration uses focused commits and normal merges. No rebase, history
   rewrite, tag movement, or deletion of legacy/user work is part of this plan.
 
