@@ -84,14 +84,25 @@ tool.
 The private semantic backend calls the existing one-shot
 `matcore_runtime_gemm_f32_v0` entry. That ABI requires zero caller workspace
 and performs no MDSLC-owned packing/workspace allocation. It permits reference,
-tiled, compiler-vectorized, and linked single-thread OpenBLAS where available;
-an opaque OpenBLAS provider may manage internal memory under its own contract.
-The path cannot select workspace-requiring packed or parallel variants.
+tiled, compiler-vectorized, and linked single-thread OpenBLAS where available.
+A linked opaque OpenBLAS provider may manage internal memory under its own
+contract while being probed or executed. The path cannot select
+workspace-requiring packed or parallel variants.
+
+The additive non-context v1 API evaluates OpenBLAS only for automatic or
+forced-provider requests. Forced reference/tiled/vector/native requests retain
+truthful linked-but-uninspected diagnostics and perform no provider call;
+forced packed-B preparation and execution use that same no-provider boundary.
 
 Native packed and persistent-parallel variants remain supported through the
-existing additive caller-workspace and execution-context C APIs. Their
-workspace, ownership, thread, and lifetime contracts are not weakened or
-hidden to make the semantic one-shot path appear broader.
+existing additive caller-workspace and execution-context C APIs. Context
+creation validates every compiled variant. With a linked OpenBLAS provider,
+first process use runs one provider-conformance GEMM and every context creation
+runs finite and special-value provider validation GEMMs only if that provider
+is conformant. The provider may initialize or manage internal memory during
+either boundary, before a later forced-native context-backed request. Their
+workspace, ownership, thread, and lifetime contracts are not weakened or hidden
+to make the semantic one-shot path appear broader.
 
 Packed-B v1 remains caller-owned borrowed storage with synchronous serial
 reuse and manual invalidation after source/packed mutation, relocation, or

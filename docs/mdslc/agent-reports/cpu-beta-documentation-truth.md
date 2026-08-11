@@ -55,11 +55,11 @@ remain unexported.
 
 The executable semantic backend's one-shot
 `matcore_runtime_gemm_f32_v0` boundary is also explicit: it requires zero caller
-workspace and performs no MDSLC-owned packing/workspace allocation. A selected
-opaque OpenBLAS provider may manage internal memory under its own contract.
-Workspace/context native packed and parallel variants remain available through
-their existing additive APIs; they are not silently made available through the
-one-shot semantic route.
+workspace and performs no MDSLC-owned packing/workspace allocation. A linked
+opaque OpenBLAS provider may manage internal memory under its own contract
+while being probed or executed. Workspace/context native packed and parallel
+variants remain available through their existing additive APIs; they are not
+silently made available through the one-shot semantic route.
 
 ## Claims intentionally withheld
 

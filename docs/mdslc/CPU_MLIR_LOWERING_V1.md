@@ -125,9 +125,10 @@ This v1 semantic backend calls the existing one-shot
 `matcore_runtime_gemm_f32_v0` entry and therefore inherits its zero-caller-
 workspace boundary. MDSLC performs no hidden packing/workspace allocation on
 this route. It may select legal reference, tiled, compiler-vectorized, or linked
-single-thread OpenBLAS implementations; the opaque provider may manage internal
-memory under its own contract. The route cannot select packed or parallel
-candidates that require explicit caller workspace or an execution context.
+single-thread OpenBLAS implementations. A linked opaque provider may manage
+internal memory under its own contract while being probed or executed. The
+route cannot select packed or parallel candidates that require explicit caller
+workspace or an execution context.
 Those native variants remain available through the existing additive
 workspace/context C APIs; claiming that the one-shot semantic path can select
 every registered CPU variant would be incorrect.

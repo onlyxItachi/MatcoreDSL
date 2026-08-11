@@ -452,8 +452,9 @@ The existing one-shot C ABI remains compatible. Additive v1 APIs query and
 execute with explicit caller workspace and support caller-owned prepacked B.
 Insufficient/misaligned/overlapping storage and forced illegal providers or
 ISAs fail before output mutation. MDSLC adds no hidden packing/workspace
-allocation or host/device tensor copy, and no silent fallback; an opaque
-OpenBLAS provider may manage internal memory under its own contract.
+allocation or host/device tensor copy, and no silent fallback; a linked opaque
+OpenBLAS provider may manage internal memory under its own contract while being
+probed or executed.
 
 `matcore-bench` freezes the JSON benchmark contract and distinguishes complete
 one-shot, reused workspace, prepacked B, and diagnostic-only packed-compute

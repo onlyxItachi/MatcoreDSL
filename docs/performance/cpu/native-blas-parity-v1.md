@@ -90,8 +90,8 @@ thread placement, and independent correctness replay.
 No public C ABI symbol was removed or changed. MDSLC adds no hidden
 packing/workspace allocation, implicit tensor copy, global
 transformed-operand cache, K split, silent provider fallback, or runtime
-autotuning. An opaque OpenBLAS provider may manage internal memory under its
-own contract.
+autotuning. A linked opaque OpenBLAS provider may manage internal memory under
+its own contract while being probed or executed.
 
 ## Bounded measured improvements
 
