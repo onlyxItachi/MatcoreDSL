@@ -88,9 +88,9 @@ envelope. The exact source-evaluation compile profile is enforced. Rejection
 uses the additive status
 `MATCORE_STATUS_UNSUPPORTED_FLOATING_POINT_ENVIRONMENT_V0` (numeric value 26)
 without changing an existing C record layout or function signature. Focused
-normal and ASan/UBSan review passed; the final CPU-beta configuration matrix
-remains a separate Milestone H gate. Windows FP support remains bounded by its
-hosted compatibility lane rather than this physical Linux acceptance.
+normal and ASan/UBSan review passed, and the later full local CPU-beta matrix
+passed at `69d099e`. Windows FP support remains bounded by its hosted
+compatibility lane rather than this physical Linux acceptance.
 
 The first staged work is architecture freeze, the MLIR core and deterministic
 v1 bridge, GEMM-to-SIN domain composition, conservative explicit/recovered
@@ -151,9 +151,9 @@ entries. Independent review found zero unresolved high/medium findings. The
 last in-flight whole-suite run passed 51/52 after the branch advanced during
 execution; the sole failure was the expected authenticated source-commit guard
 rejecting a stale benchmark binary. Later focused installed-profile validation
-refreshed exact clean-head provenance and passed its owned gates. A final full
-rebuild at the settled candidate commit remains the Milestone H integration
-gate so every provenance-sensitive test sees the exact state under review.
+refreshed exact clean-head provenance and passed its owned gates. The later full
+local matrix rebuilt the settled code candidate `69d099e` and passed every
+registered supported gate, including provenance-sensitive tests.
 
 **Milestone C is implemented and independently accepted for the internal
 composition-v1 optimizer boundary.** `mdsl.map`, `mdsl.sin`, `mdsl.yield`,
@@ -177,9 +177,10 @@ verified Matcore MLIR module, lowered to a private CPU runtime-dispatch backend,
 compiled into an ordinary object/executable, and executed through the stable
 `matcore_runtime_gemm_f32_v0` boundary. The executed backend is produced by the
 semantic lowering rather than by an unused inspection sidecar. This is a
-library-dispatch lowering, not Linalg/Vector loop generation. The final fresh
-Release, Debug, sanitizer, installed-package, relocation, source-inaccessible,
-ABI, Windows, and hosted matrix remains Milestone H work.
+library-dispatch lowering, not Linalg/Vector loop generation. The fresh local
+Release, Debug, sanitizer, installed-package, relocation,
+source-inaccessible, and ABI matrix passed at `69d099e`; hosted Linux/Windows,
+normal merge/tag, and final independent review remain Milestone H work.
 
 **Milestone F has an accepted bounded technical-limit disposition.** The
 unchanged Milestone 7 performance contract still lacks a complete authenticated

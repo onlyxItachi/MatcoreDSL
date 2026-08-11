@@ -34,8 +34,10 @@ CPU-beta acceptance boundary honest.
 - Milestone G accepts bounded current-version packed-B ownership/invalidation,
   borrowed-string, and additive-evolution contracts; the public API/ABI/backend
   freeze remains deferred.
-- Milestone H is active, not complete. Final local configuration matrices,
-  exact-head hosted results, and final independent review remain pending.
+- Milestone H is active, not complete. The later full local configuration
+  matrix passed at code candidate `69d099e`; exact-head hosted results, hosted
+  Windows validation, normal merge/tag, and final independent review remain
+  pending.
 
 ## Product-profile clarification
 
@@ -63,7 +65,8 @@ one-shot semantic route.
 
 This update does not claim:
 
-- a final clean-head Release/Debug/sanitizer/package matrix;
+- a final clean-head Release/Debug/sanitizer/package matrix as of this report's
+  original `0bafa51` checkpoint (that matrix later passed at `69d099e`);
 - hosted pull-request or Windows results for the semantic-foundation candidate;
 - a merged, tagged, or published CPU beta;
 - executable map/domain or recovered-loop replacement;
@@ -72,8 +75,9 @@ This update does not claim:
 - a public API/ABI/backend-contract freeze; or
 - GPU/NPU work.
 
-`CPU_BETA_V1.md` records each final Milestone H gate as pending until evidence
-is authenticated at the exact candidate commit.
+`CPU_BETA_V1.md` now records the local Milestone H gates as passed at
+`69d099e` and retains the independent-review, hosted Windows/Linux, merge, and
+tag gates as pending.
 
 ## Documentation validation
 
@@ -86,5 +90,6 @@ Before the focused documentation commit:
 - the changed-file and staged-file sets were checked to contain only the six
   files owned by this lane.
 
-No build or runtime test was run, by assignment. This report is not a substitute
-for the fixed-head Milestone H validation matrix.
+No build or runtime test was run by this documentation lane. Its original
+checkpoint was not a substitute for the fixed-head Milestone H matrix; that
+matrix was subsequently run and recorded separately at `69d099e`.
