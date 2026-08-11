@@ -1,6 +1,7 @@
 #include "MatcoreV1Bridge.h"
 
 #include "MatcoreDialect.h"
+#include "MatcoreGemmSemanticBuilder.h"
 #include "MatcoreOps.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -56,113 +57,6 @@ bool fitsSigned64(std::uint64_t value) {
                       std::numeric_limits<std::int64_t>::max());
 }
 
-mlir::DictionaryAttr scalarAttribute(mlir::Builder &builder,
-                                     const ir::v1::ScalarExpr &value,
-                                     std::string &error) {
-  if (value.kind == ir::v1::ScalarExpr::Kind::Static) {
-    if (!fitsSigned64(value.value)) {
-      error = "Matcore IR v1 scalar exceeds MLIR signed dimension range";
-      return {};
-    }
-    return builder.getDictionaryAttr(
-        {builder.getNamedAttr("kind", builder.getStringAttr("static")),
-         builder.getNamedAttr(
-             "value", builder.getI64IntegerAttr(
-                          static_cast<std::int64_t>(value.value)))});
-  }
-  return builder.getDictionaryAttr(
-      {builder.getNamedAttr("kind", builder.getStringAttr("dynamic")),
-       builder.getNamedAttr("symbol", builder.getStringAttr(value.symbol))});
-}
-
-mlir::ArrayAttr scalarArrayAttribute(
-    mlir::Builder &builder, const std::vector<ir::v1::ScalarExpr> &values,
-    std::string &error) {
-  llvm::SmallVector<mlir::Attribute> encoded;
-  encoded.reserve(values.size());
-  for (const ir::v1::ScalarExpr &value : values) {
-    mlir::DictionaryAttr attribute = scalarAttribute(builder, value, error);
-    if (!attribute)
-      return {};
-    encoded.push_back(attribute);
-  }
-  return builder.getArrayAttr(encoded);
-}
-
-mlir::Type elementType(mlir::Builder &builder, ir::v1::DType dtype) {
-  switch (dtype) {
-  case ir::v1::DType::F16:
-    return builder.getF16Type();
-  case ir::v1::DType::BF16:
-    return builder.getBF16Type();
-  case ir::v1::DType::F32:
-    return builder.getF32Type();
-  case ir::v1::DType::F64:
-    return builder.getF64Type();
-  case ir::v1::DType::I8:
-    return builder.getI8Type();
-  case ir::v1::DType::I32:
-    return builder.getI32Type();
-  }
-  return {};
-}
-
-mlir::RankedTensorType tensorType(mlir::Builder &builder,
-                                  const ir::v1::TensorType &source,
-                                  std::string &error) {
-  llvm::SmallVector<std::int64_t> dimensions;
-  dimensions.reserve(source.shape.size());
-  for (const ir::v1::ScalarExpr &dimension : source.shape) {
-    if (dimension.kind == ir::v1::ScalarExpr::Kind::Dynamic) {
-      dimensions.push_back(mlir::ShapedType::kDynamic);
-      continue;
-    }
-    if (!fitsSigned64(dimension.value)) {
-      error = "Matcore IR v1 tensor dimension exceeds MLIR signed range";
-      return {};
-    }
-    dimensions.push_back(static_cast<std::int64_t>(dimension.value));
-  }
-  mlir::Type element = elementType(builder, source.element_dtype);
-  if (!element) {
-    error = "Matcore IR v1 tensor has no MLIR element type mapping";
-    return {};
-  }
-  return mlir::RankedTensorType::get(dimensions, element);
-}
-
-mlir::DictionaryAttr tensorSemantics(mlir::Builder &builder,
-                                     const ir::v1::TensorValue &value,
-                                     std::string &error) {
-  mlir::ArrayAttr shape = scalarArrayAttribute(builder, value.type.shape, error);
-  if (!shape)
-    return {};
-  mlir::ArrayAttr strides =
-      scalarArrayAttribute(builder, value.type.strides, error);
-  if (!strides)
-    return {};
-  return builder.getDictionaryAttr(
-      {builder.getNamedAttr(
-           "alignment_bytes",
-           builder.getI64IntegerAttr(value.type.required_alignment_bytes)),
-       builder.getNamedAttr("alignment_contract",
-                            builder.getStringAttr("required_precondition")),
-       builder.getNamedAttr("layout",
-                            builder.getStringAttr(ir::v1::toString(value.type.layout))),
-       builder.getNamedAttr(
-           "memory_space",
-           builder.getStringAttr(ir::v1::toString(value.type.memory_space))),
-       builder.getNamedAttr(
-           "mutability",
-           builder.getStringAttr(ir::v1::toString(value.mutability))),
-       builder.getNamedAttr("role",
-                            builder.getStringAttr(ir::v1::toString(value.id))),
-       builder.getNamedAttr("shape", shape),
-       builder.getNamedAttr("source_expression",
-                            builder.getStringAttr(value.source_expression)),
-       builder.getNamedAttr("strides", strides)});
-}
-
 mlir::DictionaryAttr rangeAttribute(mlir::Builder &builder,
                                     const ir::SourceRange &range,
                                     std::string &error) {
@@ -215,60 +109,6 @@ mlir::DictionaryAttr provenanceAttribute(mlir::Builder &builder,
        builder.getNamedAttr("version", builder.getI32IntegerAttr(1))});
 }
 
-mlir::ArrayAttr stringArray(mlir::Builder &builder,
-                            llvm::ArrayRef<llvm::StringRef> values) {
-  llvm::SmallVector<mlir::Attribute> attributes;
-  attributes.reserve(values.size());
-  for (llvm::StringRef value : values)
-    attributes.push_back(builder.getStringAttr(value));
-  return builder.getArrayAttr(attributes);
-}
-
-mlir::ArrayAttr requirementAttributes(
-    mlir::Builder &builder,
-    const std::vector<ir::v1::SemanticRequirement> &requirements) {
-  llvm::SmallVector<mlir::Attribute> attributes;
-  attributes.reserve(requirements.size());
-  for (ir::v1::SemanticRequirement requirement : requirements)
-    attributes.push_back(builder.getStringAttr(ir::v1::toString(requirement)));
-  return builder.getArrayAttr(attributes);
-}
-
-mlir::ArrayAttr aliasAttributes(
-    mlir::Builder &builder,
-    const std::vector<ir::v1::AliasRequirement> &requirements) {
-  llvm::SmallVector<mlir::Attribute> attributes;
-  attributes.reserve(requirements.size());
-  for (const ir::v1::AliasRequirement &requirement : requirements) {
-    attributes.push_back(builder.getDictionaryAttr(
-        {builder.getNamedAttr("contract",
-                              builder.getStringAttr("required_precondition")),
-         builder.getNamedAttr(
-             "first", builder.getStringAttr(ir::v1::toString(requirement.first))),
-         builder.getNamedAttr(
-             "relation",
-             builder.getStringAttr(ir::v1::toString(requirement.relation))),
-         builder.getNamedAttr(
-             "second",
-             builder.getStringAttr(ir::v1::toString(requirement.second)))}));
-  }
-  return builder.getArrayAttr(attributes);
-}
-
-mlir::DictionaryAttr effectsAttribute(mlir::Builder &builder,
-                                      const ir::v1::Effects &effects) {
-  llvm::SmallVector<llvm::StringRef> reads;
-  llvm::SmallVector<llvm::StringRef> writes;
-  for (ir::v1::ValueId value : effects.reads)
-    reads.push_back(ir::v1::toString(value));
-  for (ir::v1::ValueId value : effects.writes)
-    writes.push_back(ir::v1::toString(value));
-  return builder.getDictionaryAttr(
-      {builder.getNamedAttr("read_write", builder.getArrayAttr({})),
-       builder.getNamedAttr("reads", stringArray(builder, reads)),
-       builder.getNamedAttr("writes", stringArray(builder, writes))});
-}
-
 mlir::DictionaryAttr numericalAttribute(mlir::Builder &builder) {
   return builder.getDictionaryAttr(
       {builder.getNamedAttr("accumulation_dtype", builder.getStringAttr("f32")),
@@ -312,99 +152,39 @@ mlir::LogicalResult addOperationFunction(
     error = "verified Matcore IR v1 GEMM must have two operands";
     return mlir::failure();
   }
-  mlir::RankedTensorType lhs_type =
-      tensorType(builder, operation.operands[0].type, error);
-  mlir::RankedTensorType rhs_type =
-      tensorType(builder, operation.operands[1].type, error);
-  mlir::RankedTensorType output_type =
-      tensorType(builder, operation.output.type, error);
-  if (!lhs_type || !rhs_type || !output_type)
-    return mlir::failure();
-
-  mlir::DictionaryAttr lhs_semantics =
-      tensorSemantics(builder, operation.operands[0], error);
-  mlir::DictionaryAttr rhs_semantics =
-      tensorSemantics(builder, operation.operands[1], error);
-  mlir::DictionaryAttr output_semantics =
-      tensorSemantics(builder, operation.output, error);
   mlir::DictionaryAttr provenance =
       provenanceAttribute(builder, operation, error);
-  if (!lhs_semantics || !rhs_semantics || !output_semantics || !provenance)
+  if (!provenance)
     return mlir::failure();
 
   const auto source_location = mlir::FileLineColLoc::get(
       builder.getContext(), operation.source.file, operation.source.line,
       operation.source.column);
-  const std::string function_name =
-      "__matcore_semantic_" + operation.site_id;
-  const auto function_type = builder.getFunctionType(
-      {lhs_type, rhs_type, output_type}, {output_type});
-  builder.setInsertionPointToEnd(module.getBody());
-  auto function = mlir::func::FuncOp::create(source_location, function_name,
-                                              function_type);
-  // Public visibility is an internal semantic-IR liveness root: MLIR 21
-  // SymbolDCE otherwise removes every unreferenced private capture function.
-  // It is not a promised native ABI. Milestone E must deliberately choose
-  // collision-safe names and visibility before machine artifact emission.
-  function->setAttr("mdsl.capture_ordinal",
-                    builder.getI64IntegerAttr(static_cast<std::int64_t>(ordinal)));
-  function->setAttr("mdsl.site_id", builder.getStringAttr(operation.site_id));
-  module.push_back(function);
-
-  mlir::Block *entry = function.addEntryBlock();
-  builder.setInsertionPointToStart(entry);
-  mlir::OperationState state(source_location,
-                             mlir_dialect::GemmOp::getOperationName());
-  state.addOperands({entry->getArgument(0), entry->getArgument(1),
-                     entry->getArgument(2)});
-  state.addTypes(output_type);
-  state.addAttributes(
-      {builder.getNamedAttr("site_id", builder.getStringAttr(operation.site_id)),
-       builder.getNamedAttr(
-           "origin",
-           builder.getDictionaryAttr(
-               {builder.getNamedAttr(
-                    "canonical_callee",
-                    builder.getStringAttr(operation.canonical_callee)),
-                builder.getNamedAttr("kind",
-                                     builder.getStringAttr("explicit_call")),
-                builder.getNamedAttr("version",
-                                     builder.getI32IntegerAttr(1))})),
-       builder.getNamedAttr(
-           "accumulation_type",
-           mlir::TypeAttr::get(elementType(builder, operation.accumulation_dtype))),
-       builder.getNamedAttr("lhs_semantics", lhs_semantics),
-       builder.getNamedAttr("rhs_semantics", rhs_semantics),
-       builder.getNamedAttr("output_semantics", output_semantics),
-       builder.getNamedAttr("semantic_requirements",
-                            requirementAttributes(builder,
-                                                  operation.requirements)),
-       builder.getNamedAttr("aliasing",
-                            aliasAttributes(builder,
-                                            operation.alias_requirements)),
-       builder.getNamedAttr("effects",
-                            effectsAttribute(builder, operation.effects)),
-       builder.getNamedAttr(
-           "synchronization",
-           builder.getStringAttr(ir::v1::toString(
-               operation.effects.synchronization))),
-       builder.getNamedAttr(
-           "policy",
-           builder.getDictionaryAttr(
-               {builder.getNamedAttr(
-                    "fallback",
-                    builder.getStringAttr(
-                        ir::v1::toString(operation.policy.fallback))),
-                builder.getNamedAttr(
-                    "target",
-                    builder.getStringAttr(
-                        ir::v1::toString(operation.policy.target)))})),
-       builder.getNamedAttr("numerical", numericalAttribute(builder)),
-       builder.getNamedAttr("provenance", provenance)});
-  mlir::Operation *raw_operation = builder.create(state);
-  auto gemm = mlir::cast<mlir_dialect::GemmOp>(raw_operation);
-  builder.create<mlir::func::ReturnOp>(source_location, gemm.getResult());
-  return mlir::success();
+  GemmSemanticSiteV1 site{
+      .site_id = operation.site_id,
+      .ordinal = ordinal,
+      .lhs = operation.operands[0],
+      .rhs = operation.operands[1],
+      .output = operation.output,
+      .accumulation_dtype = operation.accumulation_dtype,
+      .requirements = operation.requirements,
+      .alias_requirements = operation.alias_requirements,
+      .effects = operation.effects,
+      .target = std::string(ir::v1::toString(operation.policy.target)),
+      .fallback = std::string(ir::v1::toString(operation.policy.fallback)),
+      .origin = builder.getDictionaryAttr(
+          {builder.getNamedAttr(
+               "canonical_callee",
+               builder.getStringAttr(operation.canonical_callee)),
+           builder.getNamedAttr("kind",
+                                builder.getStringAttr("explicit_call")),
+           builder.getNamedAttr("version", builder.getI32IntegerAttr(1))}),
+      .numerical = numericalAttribute(builder),
+      .provenance = provenance,
+      .source_location = source_location,
+  };
+  return mlir::success(
+      appendGemmSemanticSiteV1(module, builder, site, error));
 }
 
 bool requireModuleString(mlir::ModuleOp module, llvm::StringRef name,
