@@ -9,7 +9,9 @@ The lane owned `compiler/lib/mlir/`, `compiler/tools/matcore-mlir/`,
 `compiler/CMakeLists.txt`. Commit `e0dee79` adds a real TableGen `mdsl` dialect,
 a destination-aware and effectful `mdsl.gemm`, a strict Matcore IR v1 bridge,
 the internal `matcore-mlir` inspection CLI, deterministic goldens, and negative
-verification tests.
+verification tests. Review fixes `339ff7b` and `a66ade8` complete the
+floating-point environment, semantic-root liveness, recovered-source
+extensibility, and strict-versus-relaxed numerical contracts.
 
 The existing standalone build remains unchanged by default. The new surface is
 enabled only with `MDSLC_ENABLE_MATCORE_MLIR=ON`; enabling it without an
@@ -32,16 +34,23 @@ confirmed to fail with actionable diagnostics.
 
 ## Implemented semantic boundary
 
-- Each verified capture operation becomes one independent private function, so
-  operation-local dynamic dimension symbols do not acquire cross-site identity.
+- Each verified capture operation becomes one independent public semantic-entry
+  function, so operation-local dynamic dimension symbols do not acquire
+  cross-site identity and standard SymbolDCE cannot erase unconsumed semantic
+  sites. This visibility is internal-IR liveness, not a native/exported ABI
+  promise. Milestone E must consume or demote these functions with
+  translation-unit-safe names before machine emission.
 - Ranked tensor types carry rank, static/dynamic shape, and element dtype.
 - Verified attributes preserve accumulation dtype, shape symbols, strides,
   layout, memory space, alignment and alias preconditions, mutability, effects,
   synchronization, policy, source expressions, source ranges, and source
   locations.
 - `origin` is a version-extensible dictionary. The v1 bridge authenticates
-  `kind = explicit_call` and `canonical_callee = matcore::mdsl::gemm`; future
-  recovered-loop work need not change the ODS signature.
+  `kind = explicit_call` and `canonical_callee = matcore::mdsl::gemm`. The
+  core dialect also verifies two fail-closed recovered-loop states without a
+  forged callee: an analysis-only strict increasing-K form whose rewrite is
+  rejected, and a relaxed source-proven form that still requires a dominating
+  pre-mutation guard. Permission/profile cross-combinations are rejected.
 - `mdsl.gemm` implements both `DestinationStyleOpInterface` and
   `MemoryEffectOpInterface`. It reports lhs/rhs reads and an observable output
   write. Its SSA result is the post-overwrite value tied to the explicit
@@ -50,6 +59,14 @@ confirmed to fail with actionable diagnostics.
   reviewed numerical and floating-point-environment fields. It never invents
   permissions from the target. Alignment and no-alias metadata remain required
   preconditions rather than optimizer facts.
+- The module records `mdsl.execution_intent = "generic"`. Inference and training
+  are enumerated at the bridge boundary but rejected for v1 until their
+  semantics are validated; no intent silently grants caching, immutability, or
+  numerical permission.
+- `verifyMatcoreV1BridgeModule` deliberately verifies the explicit v1 capture
+  envelope, not every future compositional dialect module. General dialect
+  operations use normal MLIR verification; tests separately prove recovered
+  `mdsl.gemm` parse/verification and explicit-envelope rejection.
 
 Encoding this profile does not prove runtime conformance. Floating-point
 environment enforcement and lowering guards remain a Milestone E obligation.
@@ -76,15 +93,23 @@ ctest --test-dir /home/hamza-usta/.cache/mdslc-semantic-mlir-build \
   --output-on-failure -j1
 ```
 
-Results from the clean committed source tree:
+Results from committed source trees:
 
-- opt-in complete build: passed;
-- opt-in CTest: 52/52 passed in 115.61 seconds;
-- focused semantic executable: 99 checks, 0 failures;
-- focused CLI contract: 7 checks, 0 failures;
+- opt-in complete build at `339ff7b`: passed;
+- opt-in CTest at `339ff7b`: 52/52 passed in 117.20 seconds;
+- focused semantic executable at `a66ade8`: 204 checks, 0 failures;
+- focused CLI contract at `a66ade8`: 9 checks, 0 failures;
 - fresh default-OFF build: passed;
-- unchanged default CTest surface: 50/50 passed in 128.57 seconds;
+- unchanged default CTest surface: 50/50 passed in 125.32 seconds;
 - installed CLI emitted bytes identical to the reviewed semantic MLIR golden.
+
+An in-flight full run after `a66ade8` passed 51/52 tests. The shared branch
+advanced to documentation commit `7021338` after benchmark provenance was
+embedded, and only the authenticated native-BLAS-parity runner rejected that
+stale source commit. No semantic, frontend, integration, package, runtime, or
+planner test failed. The lead intentionally deferred the final full rerun until
+all review/status documentation settles, so one clean provenance refresh can
+validate the final tree.
 
 The installed `matcore-mlir` is an ordinary x86-64 ELF PIE. `readelf`, `ldd`,
 and `strings` showed no extracted MLIR toolchain path or source/build path in
@@ -114,6 +139,18 @@ Incremental compilation exposed and corrected the following before acceptance:
    correctly rejecting a dirty implementation worktree. After committing and
    refreshing exact source provenance, all four passed without weakening the
    guards.
+8. Independent review found that infinity behavior and execution intent were
+   not explicit, per-site private functions could be erased by SymbolDCE, the
+   core verifier was coupled to explicit-call provenance, and wide textual
+   integer attributes could reach unsafe casts. The reviewed fixes add exact
+   contracts, public semantic liveness roots with real SymbolDCE coverage,
+   versioned origin/provenance branches, source-file consistency, and exact
+   integer-width/range checks.
+9. A second independent pass found recovered ordinary C++ was still forced to
+   inherit the relaxed explicit-eDSL tuple. The core now uses a closed numerical
+   vocabulary and exact origin/permission/profile cross-products, including an
+   analysis-only strict increasing-K profile. Positive textual round-trip and
+   malformed-cross-product tests close that gap.
 
 ## Linkage and installation limits
 
@@ -126,6 +163,7 @@ aggregate shared MLIR library or a private extracted-toolchain RUNPATH.
 exported. Only the leaf `matcore-mlir` executable is installed. Existing
 `find_package(MatcoreDSL)` consumers therefore acquire no MLIR headers,
 libraries, or CMake dependency. Current semantic support is limited to verified
-explicit rank-2 F32 GEMM capture and inspection; it does not yet lower or
-execute through MLIR, authenticate recovered C++ loops, or claim runtime
+explicit rank-2 F32 GEMM capture and inspection plus core-only recovered-loop
+representation tests. It does not yet recognize recovered C++ loops, establish
+their guards, lower or execute through MLIR, or claim runtime
 floating-point-environment conformance.
