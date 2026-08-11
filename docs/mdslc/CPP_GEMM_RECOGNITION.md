@@ -138,8 +138,10 @@ Relevant Clang 21 APIs include:
   `equalsBoundNode` where useful;
 - `ASTContext::getParents`, `ASTContext::getSizeType`, and
   `ASTContext::hasSameType`;
-- `FunctionDecl::getTemplatedKind`, `FunctionDecl::hasAttr`, and
-  `CXXRecordDecl::isLambda`;
+- `FunctionDecl::getTemplatedKind`, `FunctionDecl::redecls`, declaration and
+  parameter attribute iteration, and `CXXRecordDecl::isLambda`; permission
+  checks the complete redeclaration chain because Clang need not inherit an
+  optimization/offload attribute from a prototype onto its definition;
 - `AttributedStmt::getAttrs`, `OptimizeNoneAttr`, and `LoopHintAttr`;
 - `Expr::HasSideEffects`, `Expr::getFPFeaturesInEffect`,
   `QualType::isVolatileQualified`, `Type::isAtomicType`, and `AtomicExpr`;

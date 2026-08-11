@@ -2,6 +2,7 @@
 
 - Implementation commit: `a0fda2ba08cf413552ab0cfdbdbdfb83e3eddf75`
 - Independent-review fixes: `a0952560f4015aa613b7f35bb8c25690e3e383eb`
+- Redeclaration-chain fix: `20be3f3ddacfb096104b0b71ce8a40c05ed6af57`
 - Scope: native Clang 21 frontend inspection only
 - Default behavior: unchanged
 - Source replacement: unavailable
@@ -47,8 +48,9 @@ The focused matrix covers:
   local/function/parameter attributes, and non-default address spaces;
 - effective Clang 21 `FPOptions::getFPEvalMethod()` state, including an
   explicitly extended-evaluation, no-system-header i386/`-mno-sse` rejection;
-- OpenACC, OpenMP declare-simd/declare-target, and SYCL host and target-device
-  contexts as explicit offload/parallel rejections;
+- OpenACC, OpenMP declare-simd/declare-target (including attributes retained
+  only on an earlier prototype), and SYCL host and target-device contexts as
+  explicit offload/parallel rejections;
 - output accumulation and transposed-B near misses as `not_recognized`;
 - renamed identifiers, harmless parentheses, UTF-8, CRLF, missing final
   newline, and two distinct sites;
@@ -75,7 +77,7 @@ Debug, Clang/LLVM 21.1.8:
 frontend.native.focused                     passed
 frontend.native.primary                     passed
 frontend.native.recovered_gemm_inspection   passed
-Recovered GEMM inspection: 336 checks, 0 failures
+Recovered GEMM inspection: 344 checks, 0 failures
 ```
 
 Release, Clang/LLVM 21.1.8:
@@ -84,7 +86,7 @@ Release, Clang/LLVM 21.1.8:
 frontend.native.focused                     passed
 frontend.native.primary                     passed
 frontend.native.recovered_gemm_inspection   passed
-Recovered GEMM inspection: 336 checks, 0 failures
+Recovered GEMM inspection: 344 checks, 0 failures
 ```
 
 Both configurations built `matcore-extract` with Ninja `-j2`; CTest ran
@@ -108,7 +110,10 @@ three were reproduced and resolved in `a095256`:
    fixture.
 3. OpenACC and SYCL language/device state, OpenMP declare-simd and
    declare-target attributes, and OpenMP/OpenACC/SYCL statement nodes all
-   reject recovery with `offload_or_parallel_context`.
+   reject recovery with `offload_or_parallel_context`. The follow-up
+   `20be3f3` closes Clang 21's non-inherited `declare simd` prototype case by
+   authenticating attributes and parameter contracts across the complete
+   `FunctionDecl` redeclaration chain.
 
 Every new recognized rejection preserves the input bytes, emits an empty
 Matcore capture module, compiles through ordinary Clang with the same semantic
