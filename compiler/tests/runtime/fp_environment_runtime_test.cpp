@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <new>
 #include <string_view>
 #include <vector>
@@ -107,6 +108,33 @@ matcore_packed_b_desc_v1 empty_packed_b() {
   result.abi_version = MATCORE_RUNTIME_EXECUTION_ABI_VERSION_V1;
   result.struct_size = sizeof(result);
   return result;
+}
+
+std::uint64_t mix_packed_b_provenance(std::uint64_t state,
+                                      std::uint64_t value) {
+  state ^= value + UINT64_C(0x9e3779b97f4a7c15) + (state << 6U) +
+           (state >> 2U);
+  return state;
+}
+
+std::uint64_t packed_b_provenance(
+    const matcore_packed_b_desc_v1 &descriptor) {
+  std::uint64_t result = UINT64_C(0x4d43504241563131);
+  result = mix_packed_b_provenance(
+      result, static_cast<std::uint64_t>(
+                  reinterpret_cast<std::uintptr_t>(descriptor.source_data)));
+  result = mix_packed_b_provenance(
+      result, static_cast<std::uint64_t>(
+                  reinterpret_cast<std::uintptr_t>(descriptor.packed_data)));
+  result = mix_packed_b_provenance(result, descriptor.storage_bytes);
+  result = mix_packed_b_provenance(result, descriptor.packed_elements);
+  result = mix_packed_b_provenance(
+      result, static_cast<std::uint64_t>(descriptor.k));
+  result = mix_packed_b_provenance(
+      result, static_cast<std::uint64_t>(descriptor.n));
+  result = mix_packed_b_provenance(result, descriptor.kc);
+  result = mix_packed_b_provenance(result, descriptor.nc);
+  return mix_packed_b_provenance(result, descriptor.nr);
 }
 
 struct Fixture {
@@ -277,6 +305,243 @@ void prepacked_paths_reject_before_storage_mutation() {
 #endif
 }
 
+void invalid_runtime_arguments_precede_fp_guard() {
+#if defined(__linux__) && defined(__x86_64__)
+  Fixture fixture;
+  auto packed_options =
+      options(MATCORE_CPU_GEMM_REQUEST_FORCE_NATIVE_PACKED_AVX2_FMA_V2);
+
+  matcore_gemm_workspace_requirements_v1 direct_requirements{};
+  direct_requirements.abi_version = MATCORE_RUNTIME_EXECUTION_ABI_VERSION_V1;
+  direct_requirements.struct_size = sizeof(direct_requirements);
+  auto direct_query_report = empty_report();
+  const auto direct_query = matcore_runtime_gemm_f32_workspace_size_v1(
+      &fixture.out_desc, &fixture.lhs_desc, &fixture.rhs_desc,
+      &fixture.cpu_policy, &packed_options, &direct_requirements,
+      &direct_query_report);
+
+  matcore_gemm_prepacked_b_requirements_v1 packed_requirements{};
+  packed_requirements.abi_version = MATCORE_RUNTIME_EXECUTION_ABI_VERSION_V1;
+  packed_requirements.struct_size = sizeof(packed_requirements);
+  const auto packed_query = matcore_runtime_gemm_f32_prepacked_b_size_v1(
+      &fixture.out_desc, &fixture.lhs_desc, &fixture.rhs_desc,
+      &fixture.cpu_policy, &packed_options, &packed_requirements);
+  expect(direct_query.code == MATCORE_STATUS_OK_V0 &&
+             packed_query.code == MATCORE_STATUS_OK_V0,
+         "validation-precedence fixtures obtain packed workspace requirements");
+  if (direct_query.code != MATCORE_STATUS_OK_V0 ||
+      packed_query.code != MATCORE_STATUS_OK_V0) {
+    return;
+  }
+
+  AlignedBytes direct_workspace(
+      static_cast<std::size_t>(direct_requirements.workspace_bytes) + 64U);
+  AlignedBytes packed_storage(
+      static_cast<std::size_t>(packed_requirements.packed_b_bytes) + 64U);
+  AlignedBytes execution_workspace(
+      static_cast<std::size_t>(packed_requirements.execution_workspace_bytes) +
+      64U);
+  expect(direct_workspace.valid() && packed_storage.valid() &&
+             execution_workspace.valid(),
+         "validation-precedence fixtures allocate aligned caller storage");
+  if (!direct_workspace.valid() || !packed_storage.valid() ||
+      !execution_workspace.valid()) {
+    return;
+  }
+  std::memset(direct_workspace.data(), 0x31, direct_workspace.size());
+  std::memset(packed_storage.data(), 0x42, packed_storage.size());
+  std::memset(execution_workspace.data(), 0x53,
+              execution_workspace.size());
+
+  auto packed_desc = empty_packed_b();
+  expect(matcore_runtime_gemm_f32_prepack_b_v1(
+             &fixture.out_desc, &fixture.lhs_desc, &fixture.rhs_desc,
+             &fixture.cpu_policy, &packed_options, packed_storage.data(),
+             static_cast<std::size_t>(packed_requirements.packed_b_bytes),
+             &packed_desc)
+             .code == MATCORE_STATUS_OK_V0,
+         "validation-precedence fixture creates one valid packed-B descriptor");
+
+  const std::vector<std::byte> direct_before(
+      direct_workspace.data(), direct_workspace.data() + direct_workspace.size());
+  const std::vector<std::byte> packed_before(
+      packed_storage.data(), packed_storage.data() + packed_storage.size());
+  const std::vector<std::byte> execution_before(
+      execution_workspace.data(),
+      execution_workspace.data() + execution_workspace.size());
+  constexpr std::uintptr_t kCacheLineMask = ~std::uintptr_t{63U};
+  void *const overflowing_aligned_pointer = reinterpret_cast<void *>(
+      std::numeric_limits<std::uintptr_t>::max() & kCacheLineMask);
+
+  ScopedMxcsr scope;
+  scope.set(scope.saved() | (1U << 15U));
+
+  auto expect_direct_status = [&](void *workspace, std::size_t bytes,
+                                  matcore_status_code_v0 expected,
+                                  std::string_view message) {
+    auto report = empty_report();
+    const auto result = matcore_runtime_gemm_f32_execute_v1(
+        &fixture.out_desc, &fixture.lhs_desc, &fixture.rhs_desc,
+        &fixture.cpu_policy, &packed_options, workspace, bytes, &report);
+    expect(result.code == expected && fixture.output_unchanged() &&
+               report.plan_status == 0,
+           message);
+  };
+  expect_direct_status(
+      direct_workspace.data(),
+      static_cast<std::size_t>(direct_requirements.workspace_bytes) - 1U,
+      MATCORE_STATUS_INSUFFICIENT_WORKSPACE_V0,
+      "direct workspace size error precedes FP-state rejection");
+  expect_direct_status(
+      direct_workspace.data() + 1U,
+      static_cast<std::size_t>(direct_requirements.workspace_bytes),
+      MATCORE_STATUS_INVALID_ALIGNMENT_V0,
+      "direct workspace alignment error precedes FP-state rejection");
+  expect_direct_status(
+      overflowing_aligned_pointer,
+      static_cast<std::size_t>(direct_requirements.workspace_bytes),
+      MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0,
+      "direct workspace address overflow precedes FP-state rejection");
+  expect_direct_status(
+      fixture.lhs.data(),
+      static_cast<std::size_t>(direct_requirements.workspace_bytes),
+      MATCORE_STATUS_ALIAS_VIOLATION_V0,
+      "direct workspace overlap precedes FP-state rejection");
+
+  auto expect_prepack_status = [&](void *storage, std::size_t bytes,
+                                   matcore_packed_b_desc_v1 *descriptor,
+                                   matcore_status_code_v0 expected,
+                                   std::string_view message) {
+    const auto result = matcore_runtime_gemm_f32_prepack_b_v1(
+        &fixture.out_desc, &fixture.lhs_desc, &fixture.rhs_desc,
+        &fixture.cpu_policy, &packed_options, storage, bytes, descriptor);
+    expect(result.code == expected, message);
+  };
+  auto empty_descriptor = empty_packed_b();
+  expect_prepack_status(
+      nullptr, static_cast<std::size_t>(packed_requirements.packed_b_bytes),
+      &empty_descriptor, MATCORE_STATUS_INVALID_ARGUMENT_V0,
+      "prepack null storage error precedes FP-state rejection");
+  expect_prepack_status(
+      packed_storage.data(),
+      static_cast<std::size_t>(packed_requirements.packed_b_bytes) - 1U,
+      &empty_descriptor, MATCORE_STATUS_INSUFFICIENT_WORKSPACE_V0,
+      "prepack storage size error precedes FP-state rejection");
+  expect_prepack_status(
+      packed_storage.data() + 1U,
+      static_cast<std::size_t>(packed_requirements.packed_b_bytes),
+      &empty_descriptor, MATCORE_STATUS_INVALID_ALIGNMENT_V0,
+      "prepack storage alignment error precedes FP-state rejection");
+  expect_prepack_status(
+      overflowing_aligned_pointer,
+      static_cast<std::size_t>(packed_requirements.packed_b_bytes),
+      &empty_descriptor, MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0,
+      "prepack storage address overflow precedes FP-state rejection");
+  expect_prepack_status(
+      fixture.rhs.data(),
+      static_cast<std::size_t>(packed_requirements.packed_b_bytes),
+      &empty_descriptor, MATCORE_STATUS_ALIAS_VIOLATION_V0,
+      "prepack storage overlap precedes FP-state rejection");
+
+  alignas(64) std::array<std::byte, Fixture::m * Fixture::n * sizeof(float)>
+      descriptor_output{};
+  auto *overlapping_output_descriptor =
+      ::new (descriptor_output.data()) matcore_packed_b_desc_v1(
+          empty_packed_b());
+  auto overlapping_out = fixture.out_desc;
+  overlapping_out.data = descriptor_output.data();
+  expect(matcore_runtime_gemm_f32_prepack_b_v1(
+             &overlapping_out, &fixture.lhs_desc, &fixture.rhs_desc,
+             &fixture.cpu_policy, &packed_options, packed_storage.data(),
+             static_cast<std::size_t>(packed_requirements.packed_b_bytes),
+             overlapping_output_descriptor)
+             .code == MATCORE_STATUS_ALIAS_VIOLATION_V0,
+         "prepack descriptor/tensor overlap precedes FP-state rejection");
+
+  auto expect_prepacked_status = [&](const matcore_packed_b_desc_v1 &descriptor,
+                                     void *workspace, std::size_t bytes,
+                                     const matcore_tensor_desc_v0 &output,
+                                     matcore_status_code_v0 expected,
+                                     std::string_view message) {
+    auto report = empty_report();
+    const auto result = matcore_runtime_gemm_f32_execute_prepacked_b_v1(
+        &output, &fixture.lhs_desc, &fixture.rhs_desc, &fixture.cpu_policy,
+        &packed_options, &descriptor, workspace, bytes, &report);
+    expect(result.code == expected && report.plan_status == 0, message);
+  };
+
+  auto corrupted = packed_desc;
+  corrupted.provenance ^= UINT64_C(1);
+  expect_prepacked_status(
+      corrupted, execution_workspace.data(),
+      static_cast<std::size_t>(packed_requirements.execution_workspace_bytes),
+      fixture.out_desc, MATCORE_STATUS_PREPACK_MISMATCH_V0,
+      "prepacked provenance error precedes FP-state rejection");
+  auto wrong_source = packed_desc;
+  wrong_source.source_data = fixture.lhs.data();
+  wrong_source.provenance = packed_b_provenance(wrong_source);
+  expect_prepacked_status(
+      wrong_source, execution_workspace.data(),
+      static_cast<std::size_t>(packed_requirements.execution_workspace_bytes),
+      fixture.out_desc, MATCORE_STATUS_PREPACK_MISMATCH_V0,
+      "prepacked source identity error precedes FP-state rejection");
+  auto overflowing_packed = packed_desc;
+  overflowing_packed.packed_data = overflowing_aligned_pointer;
+  overflowing_packed.provenance = packed_b_provenance(overflowing_packed);
+  expect_prepacked_status(
+      overflowing_packed, execution_workspace.data(),
+      static_cast<std::size_t>(packed_requirements.execution_workspace_bytes),
+      fixture.out_desc, MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0,
+      "prepacked storage address overflow precedes FP-state rejection");
+  auto overlapping_packed = packed_desc;
+  overlapping_packed.packed_data = fixture.out.data();
+  overlapping_packed.provenance = packed_b_provenance(overlapping_packed);
+  expect_prepacked_status(
+      overlapping_packed, execution_workspace.data(),
+      static_cast<std::size_t>(packed_requirements.execution_workspace_bytes),
+      fixture.out_desc, MATCORE_STATUS_ALIAS_VIOLATION_V0,
+      "prepacked storage/tensor overlap precedes FP-state rejection");
+  expect_prepacked_status(
+      packed_desc, execution_workspace.data(),
+      static_cast<std::size_t>(packed_requirements.execution_workspace_bytes) -
+          1U,
+      fixture.out_desc, MATCORE_STATUS_INSUFFICIENT_WORKSPACE_V0,
+      "prepacked workspace size error precedes FP-state rejection");
+  expect_prepacked_status(
+      packed_desc, execution_workspace.data() + 1U,
+      static_cast<std::size_t>(packed_requirements.execution_workspace_bytes),
+      fixture.out_desc, MATCORE_STATUS_INVALID_ALIGNMENT_V0,
+      "prepacked workspace alignment error precedes FP-state rejection");
+  expect_prepacked_status(
+      packed_desc, overflowing_aligned_pointer,
+      static_cast<std::size_t>(packed_requirements.execution_workspace_bytes),
+      fixture.out_desc, MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0,
+      "prepacked workspace address overflow precedes FP-state rejection");
+  expect_prepacked_status(
+      packed_desc, fixture.lhs.data(),
+      static_cast<std::size_t>(packed_requirements.execution_workspace_bytes),
+      fixture.out_desc, MATCORE_STATUS_ALIAS_VIOLATION_V0,
+      "prepacked workspace/tensor overlap precedes FP-state rejection");
+
+  auto *overlapping_input_descriptor =
+      ::new (descriptor_output.data()) matcore_packed_b_desc_v1(packed_desc);
+  expect_prepacked_status(
+      *overlapping_input_descriptor, execution_workspace.data(),
+      static_cast<std::size_t>(packed_requirements.execution_workspace_bytes),
+      overlapping_out, MATCORE_STATUS_ALIAS_VIOLATION_V0,
+      "prepacked descriptor/tensor overlap precedes FP-state rejection");
+
+  expect(fixture.output_unchanged() &&
+             std::equal(direct_before.begin(), direct_before.end(),
+                        direct_workspace.data()) &&
+             std::equal(packed_before.begin(), packed_before.end(),
+                        packed_storage.data()) &&
+             std::equal(execution_before.begin(), execution_before.end(),
+                        execution_workspace.data()),
+         "all pre-FP validation rejections preserve caller output and storage bytes");
+#endif
+}
+
 void status_flags_are_legality_neutral() {
 #if defined(__linux__) && defined(__x86_64__)
   Fixture fixture;
@@ -319,6 +584,7 @@ void context_creation_authenticates_worker_environment() {
 int main() {
   public_execution_rejects_before_mutation();
   prepacked_paths_reject_before_storage_mutation();
+  invalid_runtime_arguments_precede_fp_guard();
   status_flags_are_legality_neutral();
   context_creation_authenticates_worker_environment();
   if (failures != 0) return 1;

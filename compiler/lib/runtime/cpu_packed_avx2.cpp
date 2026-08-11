@@ -143,11 +143,11 @@ CpuPackedGemmStatusV1 validate_workspace(
     const ByteSpan *forbidden_spans, std::size_t forbidden_count,
     ByteSpan *workspace_span) noexcept {
   if (workspace == nullptr) return CpuPackedGemmStatusV1::null_pointer;
-  if (!pointer_has_alignment(workspace, requirements.alignment_bytes)) {
-    return CpuPackedGemmStatusV1::workspace_misaligned;
-  }
   if (workspace_bytes < requirements.total_bytes) {
     return CpuPackedGemmStatusV1::workspace_insufficient;
+  }
+  if (!pointer_has_alignment(workspace, requirements.alignment_bytes)) {
+    return CpuPackedGemmStatusV1::workspace_misaligned;
   }
   if (!make_span(workspace, requirements.total_bytes, workspace_span)) {
     return CpuPackedGemmStatusV1::arithmetic_overflow;
@@ -384,37 +384,11 @@ CpuPackedGemmStatusV1 cpu_prepare_packed_b_avx2_v1(
     const planner::CpuGemmProblemV1 &problem, const float *rhs,
     void *packed_storage, std::size_t packed_storage_bytes,
     CpuPackedBViewV1 *view) noexcept {
-  if (rhs == nullptr || packed_storage == nullptr || view == nullptr) {
-    return CpuPackedGemmStatusV1::null_pointer;
-  }
-  CpuPackedGemmWorkspaceRequirementsV1 requirements;
-  auto status =
-      cpu_packed_avx2_prepacked_b_requirements_v1(problem, &requirements);
+  auto status = cpu_validate_prepare_packed_b_avx2_v1(
+      problem, rhs, packed_storage, packed_storage_bytes, view);
   if (status != CpuPackedGemmStatusV1::success) return status;
-  if (!pointer_has_alignment(rhs, alignof(float)) ||
-      !pointer_has_alignment(rhs, problem.minimum_alignment_bytes)) {
-    return CpuPackedGemmStatusV1::invalid_pointer_alignment;
-  }
-  if (!pointer_has_alignment(packed_storage,
-                             kCpuPackedGemmWorkspaceAlignmentV1)) {
-    return CpuPackedGemmStatusV1::workspace_misaligned;
-  }
-  if (packed_storage_bytes < requirements.total_bytes) {
-    return CpuPackedGemmStatusV1::workspace_insufficient;
-  }
-
-  const auto k = static_cast<std::size_t>(problem.k);
   const auto n = static_cast<std::size_t>(problem.n);
-  ByteSpan rhs_span;
-  ByteSpan storage_span;
-  if (!make_matrix_span(rhs, k, n, &rhs_span) ||
-      !make_span(packed_storage, requirements.total_bytes, &storage_span)) {
-    return CpuPackedGemmStatusV1::arithmetic_overflow;
-  }
-  if (overlaps(rhs_span, storage_span)) {
-    return CpuPackedGemmStatusV1::alias_violation;
-  }
-
+  const auto k = static_cast<std::size_t>(problem.k);
   auto *destination = static_cast<float *>(packed_storage);
   std::size_t packed_elements = 0;
   for (std::size_t column = 0; column < n; column += kCpuPackedGemmNcV1) {
@@ -432,7 +406,47 @@ CpuPackedGemmStatusV1 cpu_prepare_packed_b_avx2_v1(
   return CpuPackedGemmStatusV1::success;
 }
 
-CpuPackedGemmStatusV1 cpu_execute_packed_avx2_v1(
+CpuPackedGemmStatusV1 cpu_validate_prepare_packed_b_avx2_v1(
+    const planner::CpuGemmProblemV1 &problem, const float *rhs,
+    void *packed_storage, std::size_t packed_storage_bytes,
+    CpuPackedBViewV1 *view) noexcept {
+  if (rhs == nullptr || packed_storage == nullptr || view == nullptr) {
+    return CpuPackedGemmStatusV1::null_pointer;
+  }
+  CpuPackedGemmWorkspaceRequirementsV1 requirements;
+  auto status =
+      cpu_packed_avx2_prepacked_b_requirements_v1(problem, &requirements);
+  if (status != CpuPackedGemmStatusV1::success) return status;
+  if (!pointer_has_alignment(rhs, alignof(float)) ||
+      !pointer_has_alignment(rhs, problem.minimum_alignment_bytes)) {
+    return CpuPackedGemmStatusV1::invalid_pointer_alignment;
+  }
+  if (packed_storage_bytes < requirements.total_bytes) {
+    return CpuPackedGemmStatusV1::workspace_insufficient;
+  }
+  if (!pointer_has_alignment(packed_storage,
+                             kCpuPackedGemmWorkspaceAlignmentV1)) {
+    return CpuPackedGemmStatusV1::workspace_misaligned;
+  }
+
+  const auto k = static_cast<std::size_t>(problem.k);
+  const auto n = static_cast<std::size_t>(problem.n);
+  ByteSpan rhs_span;
+  ByteSpan storage_span;
+  if (!make_matrix_span(rhs, k, n, &rhs_span) ||
+      !make_span(packed_storage, requirements.total_bytes, &storage_span)) {
+    return CpuPackedGemmStatusV1::arithmetic_overflow;
+  }
+  if (overlaps(rhs_span, storage_span)) {
+    return CpuPackedGemmStatusV1::alias_violation;
+  }
+  *view = detail::cpu_make_packed_b_view_v1(
+      problem, rhs, static_cast<const float *>(packed_storage),
+      packed_storage_bytes, requirements.packed_b_bytes / sizeof(float));
+  return CpuPackedGemmStatusV1::success;
+}
+
+CpuPackedGemmStatusV1 cpu_validate_packed_avx2_v1(
     const planner::CpuGemmProblemV1 &problem, const float *lhs,
     const float *rhs, float *out, void *workspace,
     std::size_t workspace_bytes) noexcept {
@@ -441,10 +455,6 @@ CpuPackedGemmStatusV1 cpu_execute_packed_avx2_v1(
       problem, CpuPackedGemmWorkspaceModeV1::transient_a_and_b,
       &requirements);
   if (status != CpuPackedGemmStatusV1::success) return status;
-  if (!cpu_packed_avx2_runtime_usable_v1()) {
-    return CpuPackedGemmStatusV1::isa_unavailable;
-  }
-
   std::size_t m = 0;
   std::size_t n = 0;
   std::size_t k = 0;
@@ -458,10 +468,30 @@ CpuPackedGemmStatusV1 cpu_execute_packed_avx2_v1(
   if (status != CpuPackedGemmStatusV1::success) return status;
   const std::array<ByteSpan, 3> forbidden{lhs_span, rhs_span, out_span};
   ByteSpan workspace_span;
-  status = validate_workspace(workspace, workspace_bytes, requirements,
-                              forbidden.data(), forbidden.size(),
-                              &workspace_span);
+  return validate_workspace(workspace, workspace_bytes, requirements,
+                            forbidden.data(), forbidden.size(),
+                            &workspace_span);
+}
+
+CpuPackedGemmStatusV1 cpu_execute_packed_avx2_v1(
+    const planner::CpuGemmProblemV1 &problem, const float *lhs,
+    const float *rhs, float *out, void *workspace,
+    std::size_t workspace_bytes) noexcept {
+  CpuPackedGemmWorkspaceRequirementsV1 requirements;
+  auto status = cpu_packed_avx2_workspace_requirements_v1(
+      problem, CpuPackedGemmWorkspaceModeV1::transient_a_and_b,
+      &requirements);
   if (status != CpuPackedGemmStatusV1::success) return status;
+  if (!cpu_packed_avx2_runtime_usable_v1()) {
+    return CpuPackedGemmStatusV1::isa_unavailable;
+  }
+  status = cpu_validate_packed_avx2_v1(problem, lhs, rhs, out, workspace,
+                                       workspace_bytes);
+  if (status != CpuPackedGemmStatusV1::success) return status;
+
+  const auto m = static_cast<std::size_t>(problem.m);
+  const auto n = static_cast<std::size_t>(problem.n);
+  const auto k = static_cast<std::size_t>(problem.k);
 
   auto *workspace_bytes_pointer = static_cast<std::byte *>(workspace);
   auto *packed_a = reinterpret_cast<float *>(
@@ -496,34 +526,13 @@ CpuPackedGemmStatusV1 cpu_execute_packed_avx2_prepacked_b_v1(
   if (!cpu_packed_avx2_runtime_usable_v1()) {
     return CpuPackedGemmStatusV1::isa_unavailable;
   }
-
-  std::size_t m = 0;
-  std::size_t n = 0;
-  std::size_t k = 0;
-  status = dimensions(problem, &m, &n, &k);
-  if (status != CpuPackedGemmStatusV1::success) return status;
-  ByteSpan source_span;
-  ByteSpan packed_span;
-  status = validate_prepacked_view(problem, packed_b, &source_span, &packed_span);
+  status = cpu_validate_packed_avx2_prepacked_b_v1(
+      problem, lhs, out, packed_b, workspace, workspace_bytes);
   if (status != CpuPackedGemmStatusV1::success) return status;
 
-  ByteSpan lhs_span;
-  ByteSpan rhs_span;
-  ByteSpan out_span;
-  status = validate_tensor_contract(problem, lhs, packed_b.source_data, out, m,
-                                    n, k, &lhs_span, &rhs_span, &out_span);
-  if (status != CpuPackedGemmStatusV1::success) return status;
-  if (rhs_span.begin != source_span.begin || rhs_span.end != source_span.end ||
-      overlaps(lhs_span, packed_span) || overlaps(out_span, packed_span)) {
-    return CpuPackedGemmStatusV1::alias_violation;
-  }
-  const std::array<ByteSpan, 4> forbidden{lhs_span, rhs_span, out_span,
-                                          packed_span};
-  ByteSpan workspace_span;
-  status = validate_workspace(workspace, workspace_bytes, requirements,
-                              forbidden.data(), forbidden.size(),
-                              &workspace_span);
-  if (status != CpuPackedGemmStatusV1::success) return status;
+  const auto m = static_cast<std::size_t>(problem.m);
+  const auto n = static_cast<std::size_t>(problem.n);
+  const auto k = static_cast<std::size_t>(problem.k);
 
   auto *packed_a = static_cast<float *>(workspace);
   const float *packed_block = packed_b.packed_data;
@@ -542,6 +551,71 @@ CpuPackedGemmStatusV1 cpu_execute_packed_avx2_prepacked_b_v1(
       }
       packed_offset += padded_columns * depth;
     }
+  }
+  return CpuPackedGemmStatusV1::success;
+}
+
+CpuPackedGemmStatusV1 cpu_validate_packed_avx2_prepacked_b_v1(
+    const planner::CpuGemmProblemV1 &problem, const float *lhs, float *out,
+    const CpuPackedBViewV1 &packed_b, void *workspace,
+    std::size_t workspace_bytes) noexcept {
+  CpuPackedGemmWorkspaceRequirementsV1 requirements;
+  auto status = cpu_packed_avx2_workspace_requirements_v1(
+      problem, CpuPackedGemmWorkspaceModeV1::transient_a_with_prepacked_b,
+      &requirements);
+  if (status != CpuPackedGemmStatusV1::success) return status;
+  status = cpu_validate_packed_avx2_prepacked_b_view_v1(
+      problem, lhs, out, packed_b);
+  if (status != CpuPackedGemmStatusV1::success) return status;
+
+  std::size_t m = 0;
+  std::size_t n = 0;
+  std::size_t k = 0;
+  status = dimensions(problem, &m, &n, &k);
+  if (status != CpuPackedGemmStatusV1::success) return status;
+  ByteSpan source_span;
+  ByteSpan packed_span;
+  status = validate_prepacked_view(problem, packed_b, &source_span, &packed_span);
+  if (status != CpuPackedGemmStatusV1::success) return status;
+  ByteSpan lhs_span;
+  ByteSpan rhs_span;
+  ByteSpan out_span;
+  status = validate_tensor_contract(problem, lhs, packed_b.source_data, out, m,
+                                    n, k, &lhs_span, &rhs_span, &out_span);
+  if (status != CpuPackedGemmStatusV1::success) return status;
+  if (rhs_span.begin != source_span.begin || rhs_span.end != source_span.end ||
+      overlaps(lhs_span, packed_span) || overlaps(out_span, packed_span)) {
+    return CpuPackedGemmStatusV1::alias_violation;
+  }
+  const std::array<ByteSpan, 4> forbidden{lhs_span, rhs_span, out_span,
+                                          packed_span};
+  ByteSpan workspace_span;
+  return validate_workspace(workspace, workspace_bytes, requirements,
+                            forbidden.data(), forbidden.size(),
+                            &workspace_span);
+}
+
+CpuPackedGemmStatusV1 cpu_validate_packed_avx2_prepacked_b_view_v1(
+    const planner::CpuGemmProblemV1 &problem, const float *lhs, float *out,
+    const CpuPackedBViewV1 &packed_b) noexcept {
+  std::size_t m = 0;
+  std::size_t n = 0;
+  std::size_t k = 0;
+  auto status = dimensions(problem, &m, &n, &k);
+  if (status != CpuPackedGemmStatusV1::success) return status;
+  ByteSpan source_span;
+  ByteSpan packed_span;
+  status = validate_prepacked_view(problem, packed_b, &source_span, &packed_span);
+  if (status != CpuPackedGemmStatusV1::success) return status;
+  ByteSpan lhs_span;
+  ByteSpan rhs_span;
+  ByteSpan out_span;
+  status = validate_tensor_contract(problem, lhs, packed_b.source_data, out, m,
+                                    n, k, &lhs_span, &rhs_span, &out_span);
+  if (status != CpuPackedGemmStatusV1::success) return status;
+  if (rhs_span.begin != source_span.begin || rhs_span.end != source_span.end ||
+      overlaps(lhs_span, packed_span) || overlaps(out_span, packed_span)) {
+    return CpuPackedGemmStatusV1::alias_violation;
   }
   return CpuPackedGemmStatusV1::success;
 }

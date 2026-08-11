@@ -80,6 +80,27 @@ std::string_view cpu_packed_gemm_status_message_v1(
 bool cpu_packed_avx2_build_available_v1() noexcept;
 bool cpu_packed_avx2_runtime_usable_v1() noexcept;
 
+// Pure, non-mutating execution validators used to keep every pointer, span,
+// alias, and workspace error ahead of the floating-point-environment gate.
+CpuPackedGemmStatusV1 cpu_validate_packed_avx2_v1(
+    const planner::CpuGemmProblemV1 &problem, const float *lhs,
+    const float *rhs, float *out, void *workspace,
+    std::size_t workspace_bytes) noexcept;
+
+CpuPackedGemmStatusV1 cpu_validate_prepare_packed_b_avx2_v1(
+    const planner::CpuGemmProblemV1 &problem, const float *rhs,
+    void *packed_storage, std::size_t packed_storage_bytes,
+    CpuPackedBViewV1 *view) noexcept;
+
+CpuPackedGemmStatusV1 cpu_validate_packed_avx2_prepacked_b_v1(
+    const planner::CpuGemmProblemV1 &problem, const float *lhs, float *out,
+    const CpuPackedBViewV1 &packed_b, void *workspace,
+    std::size_t workspace_bytes) noexcept;
+
+CpuPackedGemmStatusV1 cpu_validate_packed_avx2_prepacked_b_view_v1(
+    const planner::CpuGemmProblemV1 &problem, const float *lhs, float *out,
+    const CpuPackedBViewV1 &packed_b) noexcept;
+
 CpuPackedGemmStatusV1 cpu_packed_avx2_workspace_requirements_v1(
     const planner::CpuGemmProblemV1 &problem,
     CpuPackedGemmWorkspaceModeV1 mode,

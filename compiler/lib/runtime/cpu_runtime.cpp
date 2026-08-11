@@ -220,6 +220,52 @@ bool overlaps(std::uintptr_t lhs_begin, std::uintptr_t lhs_end,
   return lhs_begin < rhs_end && rhs_begin < lhs_end;
 }
 
+matcore_status_v0 validate_selected_workspace_v1(
+    std::uint64_t required_bytes, std::uint32_t required_alignment,
+    void *workspace, std::size_t workspace_bytes,
+    const matcore_tensor_desc_v0 &out, const matcore_tensor_desc_v0 &lhs,
+    const matcore_tensor_desc_v0 &rhs) noexcept {
+  if (required_bytes == 0) return status(MATCORE_STATUS_OK_V0, "ok");
+  if (required_bytes > workspace_bytes || workspace == nullptr) {
+    return status(MATCORE_STATUS_INSUFFICIENT_WORKSPACE_V0,
+                  "CPU GEMM workspace is smaller than the selected plan requires");
+  }
+  if (required_bytes > std::numeric_limits<std::size_t>::max()) {
+    return status(MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0,
+                  "CPU GEMM workspace exceeds the addressable size");
+  }
+  if (required_alignment == 0 ||
+      (required_alignment & (required_alignment - 1U)) != 0 ||
+      reinterpret_cast<std::uintptr_t>(workspace) % required_alignment != 0) {
+    return status(MATCORE_STATUS_INVALID_ALIGNMENT_V0,
+                  "CPU GEMM workspace does not satisfy selected alignment");
+  }
+
+  std::uintptr_t workspace_begin = 0;
+  std::uintptr_t workspace_end = 0;
+  std::uintptr_t out_begin = 0;
+  std::uintptr_t out_end = 0;
+  std::uintptr_t lhs_begin = 0;
+  std::uintptr_t lhs_end = 0;
+  std::uintptr_t rhs_begin = 0;
+  std::uintptr_t rhs_end = 0;
+  if (!byte_range(workspace, static_cast<std::size_t>(required_bytes),
+                  &workspace_begin, &workspace_end) ||
+      !byte_count(out, &out_begin, &out_end) ||
+      !byte_count(lhs, &lhs_begin, &lhs_end) ||
+      !byte_count(rhs, &rhs_begin, &rhs_end)) {
+    return status(MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0,
+                  "CPU GEMM workspace range overflows the address space");
+  }
+  if (overlaps(workspace_begin, workspace_end, out_begin, out_end) ||
+      overlaps(workspace_begin, workspace_end, lhs_begin, lhs_end) ||
+      overlaps(workspace_begin, workspace_end, rhs_begin, rhs_end)) {
+    return status(MATCORE_STATUS_ALIAS_VIOLATION_V0,
+                  "CPU GEMM workspace must not overlap any tensor");
+  }
+  return status(MATCORE_STATUS_OK_V0, "ok");
+}
+
 struct ValidatedGemmV0 {
   matcore::mdslc::planner::CpuGemmProblemV1 problem;
   const float *lhs = nullptr;
@@ -2607,17 +2653,11 @@ matcore_runtime_gemm_f32_execute_v1(
     return unavailable_plan_status(plan);
   const std::size_t selected = static_cast<std::size_t>(plan.selected_variant);
   const auto &candidate = plan.candidates[selected];
-  if (candidate.required_workspace_bytes > workspace_bytes ||
-      (candidate.required_workspace_bytes != 0 && workspace == nullptr)) {
-    return status(MATCORE_STATUS_INSUFFICIENT_WORKSPACE_V0,
-                  "CPU GEMM workspace is smaller than the selected plan requires");
-  }
-  if (candidate.required_workspace_bytes != 0 &&
-      (reinterpret_cast<std::uintptr_t>(workspace) %
-       candidate.required_workspace_alignment) != 0) {
-    return status(MATCORE_STATUS_INVALID_ALIGNMENT_V0,
-                  "CPU GEMM workspace does not satisfy the selected alignment");
-  }
+  result = validate_selected_workspace_v1(
+      candidate.required_workspace_bytes,
+      candidate.required_workspace_alignment, workspace, workspace_bytes,
+      *out, *lhs, *rhs);
+  if (result.code != MATCORE_STATUS_OK_V0) return result;
 
   result = validate_current_fp_environment_v1();
   if (result.code != MATCORE_STATUS_OK_V0) return result;
@@ -2758,39 +2798,46 @@ matcore_runtime_gemm_f32_prepack_b_v1(
   if (requirements_status !=
       matcore::mdslc::runtime::CpuPackedGemmStatusV1::success)
     return packed_execution_status(requirements_status);
-  if (packed_storage != nullptr) {
-    std::uintptr_t storage_begin = 0;
-    std::uintptr_t storage_end = 0;
-    std::uintptr_t out_begin = 0;
-    std::uintptr_t out_end = 0;
-    std::uintptr_t lhs_begin = 0;
-    std::uintptr_t lhs_end = 0;
-    std::uintptr_t rhs_begin = 0;
-    std::uintptr_t rhs_end = 0;
-    std::uintptr_t descriptor_begin = 0;
-    std::uintptr_t descriptor_end = 0;
-    if (!byte_range(packed_storage, packed_requirements.total_bytes,
-                    &storage_begin, &storage_end) ||
-        !byte_count(*out, &out_begin, &out_end) ||
-        !byte_count(*lhs, &lhs_begin, &lhs_end) ||
-        !byte_count(*rhs, &rhs_begin, &rhs_end) ||
-        !byte_range(packed_b, sizeof(*packed_b), &descriptor_begin,
-                    &descriptor_end)) {
-      return status(MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0,
-                    "packed-B storage byte range overflows the address space");
-    }
-    if (overlaps(storage_begin, storage_end, out_begin, out_end) ||
-        overlaps(storage_begin, storage_end, lhs_begin, lhs_end) ||
-        overlaps(storage_begin, storage_end, rhs_begin, rhs_end) ||
-        overlaps(storage_begin, storage_end, descriptor_begin,
-                 descriptor_end) ||
-        overlaps(descriptor_begin, descriptor_end, out_begin, out_end) ||
-        overlaps(descriptor_begin, descriptor_end, lhs_begin, lhs_end) ||
-        overlaps(descriptor_begin, descriptor_end, rhs_begin, rhs_end)) {
-      return status(
-          MATCORE_STATUS_ALIAS_VIOLATION_V0,
-          "packed-B storage and descriptor must not overlap GEMM tensors or each other");
-    }
+  [[maybe_unused]] matcore::mdslc::runtime::CpuPackedBViewV1 validated_view;
+  const auto validation_status =
+      matcore::mdslc::runtime::cpu_validate_prepare_packed_b_avx2_v1(
+          validated.problem, validated.rhs, packed_storage,
+          packed_storage_bytes, &validated_view);
+  if (validation_status !=
+      matcore::mdslc::runtime::CpuPackedGemmStatusV1::success) {
+    return packed_execution_status(validation_status);
+  }
+
+  std::uintptr_t storage_begin = 0;
+  std::uintptr_t storage_end = 0;
+  std::uintptr_t out_begin = 0;
+  std::uintptr_t out_end = 0;
+  std::uintptr_t lhs_begin = 0;
+  std::uintptr_t lhs_end = 0;
+  std::uintptr_t rhs_begin = 0;
+  std::uintptr_t rhs_end = 0;
+  std::uintptr_t descriptor_begin = 0;
+  std::uintptr_t descriptor_end = 0;
+  if (!byte_range(packed_storage, packed_requirements.total_bytes,
+                  &storage_begin, &storage_end) ||
+      !byte_count(*out, &out_begin, &out_end) ||
+      !byte_count(*lhs, &lhs_begin, &lhs_end) ||
+      !byte_count(*rhs, &rhs_begin, &rhs_end) ||
+      !byte_range(packed_b, sizeof(*packed_b), &descriptor_begin,
+                  &descriptor_end)) {
+    return status(MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0,
+                  "packed-B storage or descriptor range overflows the address space");
+  }
+  if (overlaps(storage_begin, storage_end, out_begin, out_end) ||
+      overlaps(storage_begin, storage_end, lhs_begin, lhs_end) ||
+      overlaps(storage_begin, storage_end, rhs_begin, rhs_end) ||
+      overlaps(storage_begin, storage_end, descriptor_begin, descriptor_end) ||
+      overlaps(descriptor_begin, descriptor_end, out_begin, out_end) ||
+      overlaps(descriptor_begin, descriptor_end, lhs_begin, lhs_end) ||
+      overlaps(descriptor_begin, descriptor_end, rhs_begin, rhs_end)) {
+    return status(
+        MATCORE_STATUS_ALIAS_VIOLATION_V0,
+        "packed-B storage and descriptor must not overlap GEMM tensors or each other");
   }
 
   result = validate_current_fp_environment_v1();
@@ -2832,15 +2879,15 @@ matcore_runtime_gemm_f32_execute_prepacked_b_v1(
   matcore::mdslc::planner::CpuGemmRequestV2 request;
   matcore_status_v0 result = validate_execution_options(options, &request);
   if (result.code != MATCORE_STATUS_OK_V0) return result;
-  if (!forced_native_packed_request(request)) {
-    return status(MATCORE_STATUS_UNAVAILABLE_VARIANT_V0,
-                  "prepacked-B requires the forced native packed AVX2/FMA variant");
-  }
   if (report == nullptr)
     return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
                   "CPU plan v2 report must be non-null");
   result = validate_empty_report_v2(*report);
   if (result.code != MATCORE_STATUS_OK_V0) return result;
+  if (!forced_native_packed_request(request)) {
+    return status(MATCORE_STATUS_UNAVAILABLE_VARIANT_V0,
+                  "prepacked-B requires the forced native packed AVX2/FMA variant");
+  }
   matcore::mdslc::runtime::CpuPackedBViewV1 view;
   result = unpack_packed_b_desc(packed_b, &view);
   if (result.code != MATCORE_STATUS_OK_V0) return result;
@@ -2851,6 +2898,53 @@ matcore_runtime_gemm_f32_execute_prepacked_b_v1(
     return status(MATCORE_STATUS_PREPACK_MISMATCH_V0,
                   "packed-B source identity does not match the supplied right input");
   }
+
+  matcore::mdslc::runtime::CpuPackedGemmWorkspaceRequirementsV1
+      packed_requirements;
+  const auto packed_requirements_status =
+      matcore::mdslc::runtime::cpu_packed_avx2_prepacked_b_requirements_v1(
+          validated.problem, &packed_requirements);
+  if (packed_requirements_status !=
+      matcore::mdslc::runtime::CpuPackedGemmStatusV1::success) {
+    return packed_execution_status(packed_requirements_status);
+  }
+  const auto view_status =
+      matcore::mdslc::runtime::cpu_validate_packed_avx2_prepacked_b_view_v1(
+          validated.problem, validated.lhs, validated.out, view);
+  if (view_status !=
+      matcore::mdslc::runtime::CpuPackedGemmStatusV1::success) {
+    return packed_execution_status(view_status);
+  }
+
+  std::uintptr_t descriptor_begin = 0;
+  std::uintptr_t descriptor_end = 0;
+  std::uintptr_t out_begin = 0;
+  std::uintptr_t out_end = 0;
+  std::uintptr_t lhs_begin = 0;
+  std::uintptr_t lhs_end = 0;
+  std::uintptr_t rhs_begin = 0;
+  std::uintptr_t rhs_end = 0;
+  std::uintptr_t packed_begin = 0;
+  std::uintptr_t packed_end = 0;
+  if (!byte_range(packed_b, sizeof(*packed_b), &descriptor_begin,
+                  &descriptor_end) ||
+      !byte_count(*out, &out_begin, &out_end) ||
+      !byte_count(*lhs, &lhs_begin, &lhs_end) ||
+      !byte_count(*rhs, &rhs_begin, &rhs_end) ||
+      !byte_range(view.packed_data, packed_requirements.packed_b_bytes,
+                  &packed_begin, &packed_end)) {
+    return status(MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0,
+                  "prepacked-B descriptor or storage range overflows the address space");
+  }
+  if (overlaps(descriptor_begin, descriptor_end, out_begin, out_end) ||
+      overlaps(descriptor_begin, descriptor_end, lhs_begin, lhs_end) ||
+      overlaps(descriptor_begin, descriptor_end, rhs_begin, rhs_end) ||
+      overlaps(descriptor_begin, descriptor_end, packed_begin, packed_end)) {
+    return status(
+        MATCORE_STATUS_ALIAS_VIOLATION_V0,
+        "prepacked-B descriptor must not overlap tensors or packed storage");
+  }
+
   const auto resources =
       matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
           validated.problem, options->requested_threads);
@@ -2871,17 +2965,27 @@ matcore_runtime_gemm_f32_execute_prepacked_b_v1(
   if (query_status !=
       matcore::mdslc::runtime::CpuPackedGemmStatusV1::success)
     return packed_execution_status(query_status);
-  if (execution.total_bytes > workspace_bytes ||
-      (execution.total_bytes != 0 && workspace == nullptr)) {
-    return status(MATCORE_STATUS_INSUFFICIENT_WORKSPACE_V0,
-                  "prepacked-B execution workspace is too small");
+  const auto validation_status =
+      matcore::mdslc::runtime::cpu_validate_packed_avx2_prepacked_b_v1(
+          validated.problem, validated.lhs, validated.out, view, workspace,
+          workspace_bytes);
+  if (validation_status !=
+      matcore::mdslc::runtime::CpuPackedGemmStatusV1::success) {
+    return packed_execution_status(validation_status);
   }
-  if (execution.total_bytes != 0 &&
-      reinterpret_cast<std::uintptr_t>(workspace) %
-              execution.alignment_bytes !=
-          0) {
-    return status(MATCORE_STATUS_INVALID_ALIGNMENT_V0,
-                  "prepacked-B execution workspace is misaligned");
+
+  std::uintptr_t workspace_begin = 0;
+  std::uintptr_t workspace_end = 0;
+  if (!byte_range(workspace, execution.total_bytes, &workspace_begin,
+                  &workspace_end)) {
+    return status(MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0,
+                  "prepacked-B workspace range overflows the address space");
+  }
+  if (overlaps(descriptor_begin, descriptor_end, workspace_begin,
+               workspace_end)) {
+    return status(
+        MATCORE_STATUS_ALIAS_VIOLATION_V0,
+        "prepacked-B descriptor must not overlap workspace");
   }
   result = validate_current_fp_environment_v1();
   if (result.code != MATCORE_STATUS_OK_V0) return result;
