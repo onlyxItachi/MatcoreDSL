@@ -31,6 +31,31 @@ in `context.md`.
   is reached only through a loss-checked v1-to-v0 projection; do not fork the
   schema, verifier, or code generator. JSON remains a versioned inspection
   boundary, not the permanent optimizer architecture.
+- Matcore IR v1 remains the deterministic capture/provenance DTO for the
+  explicit GEMM surface. The compositional optimizer representation is the
+  internal `mdsl` MLIR dialect. Bridge v1 into that dialect through one
+  documented, verified conversion boundary; do not mutate v1 in place or add
+  another overlapping JSON optimizer schema.
+- Preserve semantic information until the final optimization that can use it.
+  Matcore semantic operations describe WHAT. Legality, planning, structured
+  upstream dialects, scheduling, and library/generated-code selection describe
+  HOW. LLVM, target-specific dialects, and platform/vendor toolchains describe
+  MACHINE. A lower representation may consume a fact only after encoding its
+  meaning structurally or completing every decision that needs it.
+- Numerical behavior, effects, aliasing, mutation, synchronization, execution
+  intent, and target policy are legality contracts, not optimization hints.
+  A required alignment or no-alias field is a precondition rather than proof
+  about concrete runtime values; consume it only after static proof or a
+  dominating fail-closed guard that runs before output mutation.
+- Recognition of an ordinary C++ compute idiom is not permission to replace
+  it. Recovered operations require separate dependence, alias/effect,
+  numerical, barrier, and source-region legality proofs. If any proof fails,
+  leave ordinary C++ behavior untouched and report the rejection reason.
+- Explicit and conservatively recovered operations may converge into the same
+  Matcore MLIR semantics, but recovered loops must not forge explicit-header
+  provenance or inherit the explicit eDSL numerical profile. Keep host C++
+  control flow in Clang/source rewriting unless a later milestone explicitly
+  proves a larger-region capture.
 - Clang is the C++ frontend and host compiler. MDSLC owns matrix semantics,
   planning, legalization, scheduling, and target lowering. Do not claim that
   Clang automatically lowers Matcore IR for every accelerator.
@@ -151,6 +176,12 @@ For the driver-only language proof, use the selected executable explicitly:
   the user's authorization and must stay within the task scope.
 - Do not mix compiler executables, headers, libraries, or CMake packages from
   different LLVM/Clang releases in one frontend binary.
+- The Matcore MLIR component, when deliberately enabled, must use MLIR
+  21.1.8 coherently with the selected LLVM/Clang 21.1.8 tuple. It is an
+  internal build dependency and must not leak absolute development-prefix
+  paths or MLIR targets into the installed consumer package. Do not link the
+  standalone compiler to the unrelated system MLIR 22 surface or couple it to
+  the legacy root project's MLIR 18 requirement.
 - Validate incrementally after every meaningful change. Before handoff, run the
   narrow tests, then the complete standalone suite, and repeat from a clean
   build directory when the milestone requires it.

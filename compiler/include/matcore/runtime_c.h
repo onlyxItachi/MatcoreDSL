@@ -102,7 +102,8 @@ enum {
   MATCORE_STATUS_INVALID_EXECUTION_CONTEXT_V0 = 22,
   MATCORE_STATUS_EXECUTOR_FAILURE_V0 = 23,
   MATCORE_STATUS_UNSUPPORTED_CAPABILITY_V0 = 24,
-  MATCORE_STATUS_ACCUMULATOR_OVERFLOW_V0 = 25
+  MATCORE_STATUS_ACCUMULATOR_OVERFLOW_V0 = 25,
+  MATCORE_STATUS_UNSUPPORTED_FLOATING_POINT_ENVIRONMENT_V0 = 26
 };
 
 /* Dimensions and strides are in elements. Reserved fields must be zeroed. */
@@ -127,7 +128,21 @@ typedef struct matcore_policy_v0 {
   uint64_t reserved[4];
 } matcore_policy_v0;
 
-/* message is a borrowed, process-lifetime string and must not be freed. */
+/*
+ * Returned-string contract for this ABI:
+ *
+ * Every non-null const char * returned in a status, plan, candidate,
+ * requirements, or provider field is a borrowed, read-only, NUL-terminated
+ * string. It is backed by runtime static storage or linked-provider storage and
+ * remains valid only until the owning runtime or provider dynamic library is
+ * unloaded. The caller must not free or modify it and must copy any text that
+ * must survive library unload.
+ *
+ * Exact human-readable message, reason, selection-reason, and provider text is
+ * diagnostic wording, not a machine ABI. Callers must branch on status codes,
+ * enums, versioned structured fields, and explicitly documented stable_id
+ * values rather than parse diagnostic sentences.
+ */
 typedef struct matcore_status_v0 {
   uint32_t abi_version;
   uint32_t struct_size;
@@ -242,7 +257,7 @@ enum {
   MATCORE_CPU_PLAN_STATUS_INVALID_CAPABILITIES_V1 = 5
 };
 
-/* stable_id and reason point to process-lifetime, read-only strings. */
+/* stable_id and reason follow the returned-string contract above. */
 typedef struct matcore_cpu_gemm_candidate_v1 {
   const char *stable_id;
   uint32_t legal;
@@ -254,7 +269,7 @@ typedef struct matcore_cpu_gemm_candidate_v1 {
 
 /*
  * Fixed-layout, machine-readable result for deterministic automatic CPU GEMM
- * planning. String pointers are process-lifetime and must not be freed.
+ * planning. String pointers follow the returned-string contract above.
  * Reserved fields are zero. estimated_cost is UINT64_MAX for illegal
  * candidates. Candidates appear in fixed registry order: reference, tiled,
  * compiler-vectorized.
@@ -305,7 +320,7 @@ typedef struct matcore_cpu_gemm_execution_options_v1 {
   uint64_t reserved[4];
 } matcore_cpu_gemm_execution_options_v1;
 
-/* stable_id and reason point to process-lifetime, read-only strings. */
+/* stable_id and reason follow the returned-string contract above. */
 typedef struct matcore_cpu_gemm_candidate_v2 {
   const char *stable_id;
   uint32_t legal;
@@ -319,8 +334,8 @@ typedef struct matcore_cpu_gemm_candidate_v2 {
 } matcore_cpu_gemm_candidate_v2;
 
 /*
- * Additive resource-aware plan report. Provider strings are borrowed,
- * process-lifetime strings. The five candidates use fixed registry order:
+ * Additive resource-aware plan report. All string pointers follow the
+ * returned-string contract above. The five candidates use fixed registry order:
  * reference, tiled, compiler-vectorized, OpenBLAS, native-packed AVX2/FMA.
  */
 typedef struct matcore_cpu_gemm_plan_report_v2 {
@@ -379,7 +394,7 @@ typedef struct matcore_cpu_gemm_execution_options_v2 {
   uint64_t reserved[4];
 } matcore_cpu_gemm_execution_options_v2;
 
-/* stable_id and reason point to process-lifetime, read-only strings. */
+/* stable_id and reason follow the returned-string contract above. */
 typedef struct matcore_cpu_gemm_candidate_v3 {
   const char *stable_id;
   uint32_t legal;
@@ -404,7 +419,8 @@ typedef struct matcore_cpu_gemm_candidate_v3 {
 /*
  * Advanced F32 plan report. Candidates use fixed registry order: reference,
  * tiled, compiler-vectorized, OpenBLAS, packed AVX2, packed AVX-512,
- * parallel AVX2, parallel AVX-512. Topology fields are summaries; the runtime
+ * parallel AVX2, parallel AVX-512. All string pointers follow the
+ * returned-string contract above. Topology fields are summaries; the runtime
  * retains the complete versioned mapping internally.
  */
 typedef struct matcore_cpu_gemm_plan_report_v3 {
@@ -551,12 +567,25 @@ typedef struct matcore_gemm_prepacked_b_requirements_v1 {
 } matcore_gemm_prepacked_b_requirements_v1;
 
 /*
- * Borrowed descriptor for caller-owned native packed-B storage. Both source
- * and packed storage must remain alive and unmodified through execution. The
- * rhs descriptor supplied to execute_prepacked_b_v1 must retain the exact
- * source_data identity. Packed storage and this descriptor must not overlap
- * any GEMM tensor or each other. All fields are validated; callers must not
- * synthesize this descriptor.
+ * Borrowed descriptor for caller-owned native packed-B storage. This is an
+ * address-and-metadata snapshot, not an owning object and not content
+ * authentication. provenance binds source and packed addresses, shape, storage
+ * extent, and packing constants; it does not hash or otherwise verify source or
+ * packed bytes.
+ *
+ * The caller must keep both storage regions alive, at the same addresses, and
+ * unmodified from successful prepack through every execution. Mutating either
+ * region, moving/relocating either region, or deallocating either region
+ * invalidates this descriptor. The caller must run prepack_b_v1 again before
+ * any later execution; address/provenance validation cannot make stale content
+ * valid. The rhs descriptor supplied to execute_prepacked_b_v1 must retain the
+ * exact source_data identity.
+ *
+ * Version 1 supports synchronous serial reuse only. Concurrent use of one
+ * descriptor or its storage, including sharing across execution contexts, is
+ * unsupported. Packed storage and this descriptor must not overlap each other,
+ * GEMM tensors, or execution workspace. All fields are validated; callers must
+ * not synthesize this descriptor.
  */
 typedef struct matcore_packed_b_desc_v1 {
   uint32_t abi_version;
@@ -591,9 +620,13 @@ MATCORE_RUNTIME_API matcore_status_v0 matcore_runtime_plan_gemm_f32_v1(
 
 /*
  * Returns the deterministic resource-aware plan and exact caller-owned
- * workspace requirement without executing or modifying output data. options,
- * requirements, and report use strict version/size checks. Output fields in
- * requirements and report must be zero before the call.
+ * workspace requirement without executing the requested GEMM or modifying
+ * output data. Automatic and forced-provider requests may run the process-once
+ * OpenBLAS conformance GEMM; a linked opaque provider may initialize or manage
+ * internal memory during that probe. Forced non-provider requests deliberately
+ * leave provider conformance uninspected. options, requirements, and report use
+ * strict version/size checks. Output fields in requirements and report must be
+ * zero before the call.
  */
 MATCORE_RUNTIME_API matcore_status_v0
 matcore_runtime_gemm_f32_workspace_size_v1(
@@ -606,9 +639,12 @@ matcore_runtime_gemm_f32_workspace_size_v1(
     matcore_cpu_gemm_plan_report_v2 *report) MATCORE_RUNTIME_NOEXCEPT;
 
 /*
- * Executes exactly the selected resource-aware plan. The runtime allocates
- * nothing. Nonzero workspace must satisfy the queried size and alignment.
- * Every pre-execution validation failure leaves output data unchanged.
+ * Executes exactly the selected resource-aware plan. MDSLC allocates no
+ * packing/workspace memory; nonzero caller workspace must satisfy the queried
+ * size and alignment. Automatic or forced-provider requests may probe or
+ * execute a linked opaque provider, which may manage internal memory under its
+ * own contract; forced non-provider requests leave it uninspected. Every pre-
+ * execution validation failure leaves output data unchanged.
  */
 MATCORE_RUNTIME_API matcore_status_v0 matcore_runtime_gemm_f32_execute_v1(
     const matcore_tensor_desc_v0 *out,
@@ -620,7 +656,10 @@ MATCORE_RUNTIME_API matcore_status_v0 matcore_runtime_gemm_f32_execute_v1(
     size_t workspace_bytes,
     matcore_cpu_gemm_plan_report_v2 *report) MATCORE_RUNTIME_NOEXCEPT;
 
-/* Query caller-owned persistent B storage and transient A workspace sizes. */
+/*
+ * Query caller-owned persistent B storage and transient A workspace sizes.
+ * Version 1 accepts only the forced single-thread native packed AVX2/FMA path.
+ */
 MATCORE_RUNTIME_API matcore_status_v0
 matcore_runtime_gemm_f32_prepacked_b_size_v1(
     const matcore_tensor_desc_v0 *out,
@@ -631,7 +670,10 @@ matcore_runtime_gemm_f32_prepacked_b_size_v1(
     matcore_gemm_prepacked_b_requirements_v1 *requirements)
     MATCORE_RUNTIME_NOEXCEPT;
 
-/* Prepare persistent packed-B bytes without allocating or modifying output. */
+/*
+ * Prepare persistent packed-B bytes without allocating or modifying output.
+ * On success, packed_b captures the borrowed v1 snapshot described above.
+ */
 MATCORE_RUNTIME_API matcore_status_v0 matcore_runtime_gemm_f32_prepack_b_v1(
     const matcore_tensor_desc_v0 *out,
     const matcore_tensor_desc_v0 *lhs,
@@ -643,8 +685,10 @@ MATCORE_RUNTIME_API matcore_status_v0 matcore_runtime_gemm_f32_prepack_b_v1(
     matcore_packed_b_desc_v1 *packed_b) MATCORE_RUNTIME_NOEXCEPT;
 
 /*
- * Execute the forced native packed candidate with a validated packed-B view.
- * The rhs pointer must match the source identity captured by prepack_b_v1.
+ * Execute the forced single-thread native packed candidate synchronously with
+ * a validated packed-B view. The rhs pointer must match the source identity
+ * captured by prepack_b_v1. Validation authenticates metadata, not contents;
+ * obey the mutation, lifetime, relocation, and serial-reuse rules above.
  */
 MATCORE_RUNTIME_API matcore_status_v0
 matcore_runtime_gemm_f32_execute_prepacked_b_v1(
@@ -660,8 +704,15 @@ matcore_runtime_gemm_f32_execute_prepacked_b_v1(
 
 /*
  * Creates a reusable CPU worker context. Worker-management storage is runtime
- * owned; GEMM packing/workspace storage remains caller owned. The output
- * handle must initially be null and is written only on success.
+ * owned; GEMM packing/workspace storage remains caller owned. Context creation
+ * authenticates every compiled runtime variant. When OpenBLAS is linked and
+ * the floating-point environment is compatible, first process use runs one
+ * provider-conformance GEMM. If that provider is conformant, each context
+ * creation then runs finite and special-value provider validation GEMMs. The
+ * opaque provider may initialize or manage internal memory during either
+ * boundary. Later context-backed reports reuse that context's full validation
+ * evidence. The output handle must initially be null and is written only on
+ * success.
  */
 MATCORE_RUNTIME_API matcore_status_v0
 matcore_runtime_cpu_execution_context_create_v1(
@@ -731,8 +782,11 @@ matcore_runtime_gemm_i8_i32_reference_v1(
 /*
  * Synchronously computes out = lhs * rhs. Bootstrap v0 accepts only positive
  * rank-2, row-major contiguous f32 host tensors, CPU target, and
- * fallback=error. It allocates and copies nothing. out must not overlap either
- * input. All failures are returned; no C++ exception crosses this boundary.
+ * fallback=error. MDSLC performs no packing/workspace allocation and does not
+ * copy input or output tensors; a linked opaque provider may manage internal
+ * memory under its own contract while being probed or executed. out must not
+ * overlap either input. All failures are returned; no C++ exception crosses
+ * this boundary.
  */
 MATCORE_RUNTIME_API matcore_status_v0 matcore_runtime_gemm_f32_v0(
     const matcore_tensor_desc_v0 *out,

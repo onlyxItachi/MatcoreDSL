@@ -7,6 +7,12 @@ target_link_libraries(matcore-extract PRIVATE
   matcore_ir_v1
   MatcoreDSL::PlatformSupportV1
 )
+if(MDSLC_ENABLE_MATCORE_MLIR)
+  target_link_libraries(matcore-extract PRIVATE matcore_mlir_semantics)
+  target_compile_definitions(matcore-extract PRIVATE MDSLC_HAS_MATCORE_MLIR=1)
+else()
+  target_compile_definitions(matcore-extract PRIVATE MDSLC_HAS_MATCORE_MLIR=0)
+endif()
 if(MDSLC_ENABLE_NATIVE_FRONTEND)
   target_link_libraries(matcore-extract PRIVATE matcore_frontend_native)
   target_compile_definitions(matcore-extract PRIVATE MDSLC_HAS_NATIVE_FRONTEND=1)

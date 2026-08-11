@@ -31,6 +31,8 @@ int main() {
       planner::CpuLayoutV1::row_major_contiguous, 64};
   planner::CpuGemmImplementationResourcesV1 baseline;
   baseline.openblas_linked = true;
+  baseline.openblas_conformance_evaluated = true;
+  baseline.openblas_conformant = true;
   baseline.native_packed_avx2_fma_compiled = true;
   baseline.native_packed_workspace_size_valid = true;
   baseline.native_packed_workspace_bytes = 393216;
@@ -134,12 +136,15 @@ int main() {
       const std::uint64_t before = bound->info().completed_submissions;
       const auto exact = runtime::validate_cpu_runtime_variants_v1(*bound);
       const std::uint64_t after = bound->info().completed_submissions;
-      // Reference, tiled, compiler-vectorized, and both serial packed probes
-      // are submitted unconditionally.  OpenBLAS is submitted only when the
-      // provider is linked, while each parallel packed path correctly fails
-      // closed before worker submission when its ISA is unavailable.
-      const bool openblas_linked =
-          runtime::openblas_provider_info_v1().linked;
+      // All six serial probes are submitted unconditionally so availability
+      // and numerical conformance are authenticated on the bound worker.  An
+      // unavailable probe reports fail-closed evidence from inside that
+      // submission.  Each available parallel ISA probe uses four submissions:
+      // capture worker FP state, finite GEMM, special-value GEMM, and verify
+      // and restore worker FP state.  Unavailable parallel probes fail closed
+      // before submitting any worker phase.
+      const bool openblas_conformant =
+          runtime::openblas_conformance_report_v1().conformant;
       const bool avx2_usable = runtime::cpu_packed_avx2_runtime_usable_v1();
       const bool avx512_usable =
           runtime::cpu_packed_avx512_runtime_usable_v1();
@@ -149,23 +154,23 @@ int main() {
               planner::CpuGemmRequestV1::force_compiler_vectorized)
               .status == planner::CpuPlanStatusV1::selected;
       const std::uint64_t expected_submissions =
-          5U + static_cast<std::uint64_t>(openblas_linked) +
-          static_cast<std::uint64_t>(avx2_usable) +
-          static_cast<std::uint64_t>(avx512_usable);
+          6U + 4U * static_cast<std::uint64_t>(avx2_usable) +
+          4U * static_cast<std::uint64_t>(avx512_usable);
       expect(exact.reference_f32_runtime_validated &&
                  exact.tiled_f32_runtime_validated &&
                  exact.compiler_vectorized_f32_runtime_validated ==
                      compiler_vectorized_usable &&
                  exact.external_openblas_f32_runtime_validated ==
-                     openblas_linked &&
+                     openblas_conformant &&
                  exact.packed_avx2_f32_runtime_validated == avx2_usable &&
                  exact.packed_avx512_f32_runtime_validated == avx512_usable &&
                  exact.parallel_avx2_f32_runtime_validated == avx2_usable &&
                  exact.parallel_avx512_f32_runtime_validated ==
-                     avx512_usable &&
-                 after - before == expected_submissions,
-             "exact stable-variant validation reports host-legal evidence and "
-             "dispatches every executable probe through bound workers");
+                     avx512_usable,
+             "exact stable-variant validation reports host-legal evidence");
+      expect(after - before == expected_submissions,
+             "exact stable-variant validation dispatches every conformance "
+             "phase through bound workers");
     }
   }
 

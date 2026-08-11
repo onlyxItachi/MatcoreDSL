@@ -1032,6 +1032,7 @@ def unavailable_suite(
             [
                 str(driver),
                 "--frontend=ast-json-bootstrap",
+                "--semantic-pipeline=capture-v0",
                 "--save-temps",
                 "--matcore-target=cpu",
                 "-std=c++20",
@@ -1102,6 +1103,8 @@ def driver_suite(checks: Checks, extractor: Path, driver: Path, clang: Path) -> 
             command = [str(driver), "--verbose", "--save-temps"]
             if frontend is not None:
                 command.append(f"--frontend={frontend}")
+            if frontend == "ast-json-bootstrap":
+                command.append("--semantic-pipeline=capture-v0")
             command.extend(
                 [
                     "--matcore-target=cpu",

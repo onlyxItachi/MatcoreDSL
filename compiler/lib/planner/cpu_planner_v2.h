@@ -41,6 +41,11 @@ struct CpuGemmImplementationResourcesV1 {
   std::uint32_t native_packed_workspace_alignment = 0;
   std::uint32_t openblas_maximum_threads = 0;
   std::uint32_t requested_threads = 1;
+  // These are evidence, not implications of linkage. Every producer must set
+  // them explicitly after authenticating the provider; zero/default records
+  // fail closed.
+  bool openblas_conformance_evaluated = false;
+  bool openblas_conformant = false;
 };
 
 struct CpuGemmVariantRecordV2 {
@@ -149,6 +154,10 @@ constexpr std::string_view extra_legality_reason(
     case CpuGemmVariantV2::external_openblas:
       if (!resources.openblas_linked)
         return "OpenBLAS CBLAS adapter is not linked";
+      if (!resources.openblas_conformance_evaluated)
+        return "OpenBLAS conformance was not evaluated for this request";
+      if (!resources.openblas_conformant)
+        return "OpenBLAS conformance validation failed";
       if (!resources.openblas_local_thread_control)
         return "OpenBLAS local thread control is unavailable";
       if (resources.requested_threads > INT_MAX)

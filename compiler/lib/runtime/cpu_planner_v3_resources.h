@@ -9,6 +9,22 @@ namespace matcore::mdslc::runtime {
 
 inline constexpr std::uint32_t kCpuRuntimeValidationEvidenceVersionV1 = 1;
 
+struct CpuVariantConformanceReportV1 {
+  std::uint32_t version = kCpuRuntimeValidationEvidenceVersionV1;
+  bool available = false;
+  bool environment_compatible = false;
+  bool finite_correct = false;
+  bool gradual_subnormal_correct = false;
+  bool nan_input_propagated = false;
+  bool infinity_classes_preserved = false;
+  bool inf_times_zero_is_nan = false;
+  bool opposite_infinity_sum_is_nan = false;
+  bool nonfinite_classes_correct = false;
+  bool control_state_preserved = false;
+  std::uint32_t authenticated_threads = 0;
+  bool conformant = false;
+};
+
 struct CpuRuntimeValidationEvidenceV1 {
   std::uint32_t version = kCpuRuntimeValidationEvidenceVersionV1;
   // Each bit is exact process-local execution evidence for the named stable
@@ -22,6 +38,13 @@ struct CpuRuntimeValidationEvidenceV1 {
   bool packed_avx512_f32_runtime_validated = false;
   bool parallel_avx2_f32_runtime_validated = false;
   bool parallel_avx512_f32_runtime_validated = false;
+  CpuVariantConformanceReportV1 reference_f32;
+  CpuVariantConformanceReportV1 tiled_f32;
+  CpuVariantConformanceReportV1 compiler_vectorized_f32;
+  CpuVariantConformanceReportV1 packed_avx2_f32;
+  CpuVariantConformanceReportV1 packed_avx512_f32;
+  CpuVariantConformanceReportV1 parallel_avx2_f32;
+  CpuVariantConformanceReportV1 parallel_avx512_f32;
 };
 
 planner::CpuGemmImplementationResourcesV2

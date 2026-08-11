@@ -1,0 +1,16 @@
+#include <cstddef>
+
+#define MDSLC_OUTER_LOOP(I, M) for (std::size_t I = 0; I < M; ++I)
+
+void macro_gemm(float *c, const float *a, const float *b, std::size_t m,
+                std::size_t n, std::size_t k) {
+  MDSLC_OUTER_LOOP(i, m) {
+    for (std::size_t j = 0; j < n; ++j) {
+      float acc = 0.0F;
+      for (std::size_t p = 0; p < k; ++p) {
+        acc += a[i * k + p] * b[p * n + j];
+      }
+      c[i * n + j] = acc;
+    }
+  }
+}

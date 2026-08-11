@@ -1,13 +1,22 @@
-# MDSLC native frontend status
+# MDSLC status
 
-Status date: 2026-07-26
+Status date: 2026-08-11
 
-- Canonical `origin/main` and published Milestone 6 merge:
-  `ddda3ccf628dae60bdb7f57d68d024fd02168fcb`
+- PR #18 base `origin/main` and merged Milestone 7 bounded disposition:
+  `e5069758ad04bdb459de2026cad8498b47fda707`
+- Strategic semantic-foundation branch:
+  `mdslc/semantic-compiler-foundation-v1`
+- CPU-beta pull request / umbrella issue / GitHub milestone: `#18` / `#17` /
+  `#6`; hosted validation passed at product/test head
+  `1d084a175772f286b04eb1802e2c4d8272533ede`, while normal merge, post-merge
+  checks, the `mdslc-cpu-beta-v1` tag, tracker closure, and publication remain
+  pending
 - Milestone 6 pull request: `#14`, merged normally
 - Milestone 6 umbrella issue / GitHub milestone: `#13` / `#4`, closed
 - Milestone 6 immutable tag: `mdslc-cpu-performance-audit-v1`
 - Milestone 7 integration branch: `mdslc/native-blas-parity-v1`
+- Milestone 7 pull request: `#16`, merged normally with all hosted Linux,
+  Windows x64, and repository-hygiene checks passing
 - Milestone 7 umbrella issue / GitHub milestone: `#15` / `#5`, open
 - Completed Milestone 5 merge before history sanitation:
   `091d74072a710389b4a8e9d51f696ad9773021e6`
@@ -28,13 +37,238 @@ Status date: 2026-07-26
   remapping commit IDs.
 - Milestone 3 tracker: GitHub milestone `#1`, completed
 
+## Strategic semantic-compiler pivot
+
+**The primary next objective is a compositional Matcore semantic compiler and
+CPU-first beta. It is not a parity-only continuation and it does not begin a
+public API/ABI/backend-contract freeze.**
+
+The existing Matcore IR v1 remains the deterministic typed capture and
+provenance DTO. The accepted next optimizer representation is a Matcore MLIR
+dialect with textual namespace `mdsl`, generic SSA values, verified operation
+semantics, regions/use-def relationships, numerical intent, domains, effects,
+aliases, mutation, and source provenance. The v1-to-dialect bridge must be
+exact for every represented v1 field and fail closed otherwise. Because v1
+does not yet contain sufficient numerical-policy granularity, ADR-0009 freezes
+the internal `explicit-gemm-f32-v1` policy and Milestone B must encode and
+verify it. The policy permits FMA and reassociation only within a GEMM K
+reduction, leaves K order implementation-defined, preserves NaN/non-finite
+semantics without payload/order guarantees, relaxes signed zero, forbids
+approximate math, overwrites an explicit non-aliasing destination, and forbids
+in-place operand mutation. It additionally requires round-to-nearest-ties-even,
+masked/non-trapping exceptions, gradual subnormals with FTZ/DAZ disabled, and
+makes no exact exception-status-flag preservation guarantee. Recovered loops
+require source-derived proof and cannot inherit these permissions. No bridge is
+called fully lossless until those semantics are represented and verified. No
+second JSON optimizer schema is planned.
+
+Responsibilities are now explicit:
+
+```text
+WHAT     authenticated capture + Matcore semantic MLIR
+HOW      planning/transformation plus Linalg/Tensor/MemRef/Vector substrates
+MACHINE  LLVM or target-specific dialects and platform/vendor toolchains
+```
+
+Lowering may consume a semantic fact only after the next representation
+structurally encodes it or every optimization needing it has completed.
+Linalg/Tensor/MemRef/Vector remain HOW while alternatives are still possible;
+being an upstream dialect does not itself make a representation MACHINE-level.
+Recognition of an ordinary C++ idiom is not permission to replace it. Failed
+or unproven implicit raising preserves ordinary C++ behavior.
+
+The `mdsl.gemm` result is defined as the post-overwrite semantic value tied to
+the explicit write-only destination. It is not an independent allocation;
+bufferization must alias it to destination storage, and the observable write
+cannot be removed because the SSA result is unused. V1 alignment and alias
+requirements are preconditions rather than facts. An optimization may consume
+them only after static proof or a dominating runtime guard, with dynamic
+rejection before packing or output mutation.
+
+The Linux x86-64 CPU runtime now validates the execution thread's rounding
+mode, trap state, and FTZ/DAZ state before packing or destination mutation. It
+also admits every active native worker before parallel work and validates the
+linked single-thread OpenBLAS adapter against the supported numerical
+envelope. The exact source-evaluation compile profile is enforced. Rejection
+uses the additive status
+`MATCORE_STATUS_UNSUPPORTED_FLOATING_POINT_ENVIRONMENT_V0` (numeric value 26)
+without changing an existing C record layout or function signature. Focused
+normal and ASan/UBSan review passed, and the later full local CPU-beta matrix
+passed at immutable local full-matrix candidate `6796fd8`. Focused CI/test and
+Windows FP-profile corrections later landed in `f8e38ea` and `1d084a1`; they
+are not documentation-only changes and passed their hosted lanes at
+`1d084a175772f286b04eb1802e2c4d8272533ede`. Windows FP support remains bounded
+by that hosted compatibility lane rather than the physical Linux acceptance,
+and Windows Matcore-MLIR semantic execution is not claimed.
+
+The first staged work is architecture freeze, the MLIR core and deterministic
+v1 bridge, GEMM-to-SIN domain composition, conservative explicit/recovered
+GEMM equivalence, and an end-to-end CPU MLIR route that reuses the validated
+planner/runtime. The full dependency graph and merge gates are in
+[ADR-0009](../adr/0009-mdslc-semantic-compiler-foundation.md) and the
+[roadmap](ROADMAP.md).
+
+### Toolchain gate
+
+The installed standalone frontend tuple remains Clang/LLVM 21.1.8, Ubuntu
+revision `1:21.1.8-6ubuntu1`. A system APT simulation showed that installing
+matching MLIR 21 development packages globally would remove the installed
+MLIR 22 surface. The exact `libmlir-21`, `libmlir-21-dev`, and
+`mlir-21-tools` 21.1.8 Debian payloads were instead extracted to a versioned
+user-local development prefix without changing system packages.
+
+The toolchain lane validated an in-process `clang-cpp` + MLIR + LLVM program,
+a TableGen-generated toy dialect/op, and a narrow static
+`MLIRIR`/`MLIRSupport` executable with neither a shared `libMLIR` dependency
+nor a local-prefix RUNPATH. Production configuration may accept the prefix via
+`MLIR_DIR`, but no installed artifact or package export may hardcode it. The
+frontend must not mix MLIR 22 or modify the legacy root MLIR 18.1.3 contract.
+The semantic-foundation implementation may advance only while this coherent
+isolated toolchain and its no-path-leak gate remain green.
+
+### Semantic milestones A through H
+
+**Milestone A is complete on `mdslc/semantic-compiler-foundation-v1`.**
+ADR-0009, this status, the roadmap, the pre-freeze decision log, and the
+repository agent guidance agree on the WHAT/HOW/MACHINE boundary, destination
+identity, precondition-versus-fact rule, numerical environment, recognition
+permission, and execution-intent boundaries. Independent review reported no
+unresolved high- or medium-severity finding.
+
+**Milestone B is implemented and independently accepted.** The opt-in
+`MDSLC_ENABLE_MATCORE_MLIR` build now provides a TableGen-generated `mdsl`
+dialect, destination-aware and effectful `mdsl.gemm`, a deterministic verified
+Matcore IR v1 bridge, and the internal `matcore-mlir` inspection tool. Every
+site is emitted as an independent semantic entry symbol so ordinary host C++
+control flow is not fabricated; that public MLIR symbol visibility is an
+internal liveness root, not a public C/C++ ABI promise. The installed tool links
+only the required static MLIR components and does not export MLIR or the
+user-local development prefix through package metadata or RUNPATH.
+
+The dialect verifier distinguishes three exact origin/numerical contracts:
+
+- authenticated explicit calls use `explicit-gemm-f32-v1`;
+- recovered loops whose effective source semantics match the relaxed profile
+  use `source_proven_guard_required`; and
+- ordinary strict increasing-K loops use the analysis-only
+  `recognized_rewrite_rejected` contract.
+
+The strict form cannot enter the explicit v1 bridge envelope, and the relaxed
+form does not claim that its runtime guard has already executed. Focused
+evidence passes 204/204 semantic checks, 9/9 CLI checks, and 2/2 MLIR CTest
+entries. Independent review found zero unresolved high/medium findings. The
+last in-flight whole-suite run passed 51/52 after the branch advanced during
+execution; the sole failure was the expected authenticated source-commit guard
+rejecting a stale benchmark binary. Later focused installed-profile validation
+refreshed exact clean-head provenance and passed its owned gates. The later full
+local matrix rebuilt immutable code candidate `6796fd8` and passed every
+registered supported gate, including provenance-sensitive tests.
+
+**Milestone C is implemented and independently accepted for the internal
+composition-v1 optimizer boundary.** `mdsl.map`, `mdsl.sin`, `mdsl.yield`,
+`mdsl.return`, and the closed `all`, slice, indices, and predicate domain forms
+have deterministic verified semantics and source-backed provenance checks.
+This is an inspection/optimizer model only: the v1 CPU lowerer rejects every
+map/domain pipeline, and no public map operation or map/sine execution route is
+claimed.
+
+**Milestone D is implemented and independently accepted for analysis and
+equivalence inspection.** One canonical ordinary-C++ row-major F32 GEMM loop
+can be recognized, sealed against an authenticated source snapshot, and
+compared with an independently authenticated explicit `mdsl::gemm` through the
+common mathematical fingerprint. Recognition is not rewrite permission.
+Strict and guard-required recovered forms remain analysis-only, the executable
+CPU lowerer rejects them, and rejected recognition preserves ordinary C++.
+
+**Milestone E is implemented and independently accepted for the focused Linux
+explicit-GEMM path.** Authenticated native Matcore IR v1 is bridged into a
+verified Matcore MLIR module, lowered to a private CPU runtime-dispatch backend,
+compiled into an ordinary object/executable, and executed through the stable
+`matcore_runtime_gemm_f32_v0` boundary. The executed backend is produced by the
+semantic lowering rather than by an unused inspection sidecar. This is a
+library-dispatch lowering, not Linalg/Vector loop generation. The fresh local
+Release, Debug, sanitizer, installed-package, relocation,
+source-inaccessible, and ABI matrix passed at `6796fd8`. Hosted Linux/Windows,
+sanitizer, legacy, and hygiene validation subsequently passed on PR #18 at
+`1d084a175772f286b04eb1802e2c4d8272533ede`. Normal merge, post-merge checks,
+tag, tracker closure, and publication remain Milestone H work. The independent
+review gate passed with no unresolved high- or medium-severity finding.
+
+**Milestone F has an accepted bounded technical-limit disposition.** The
+unchanged Milestone 7 performance contract still lacks a complete authenticated
+forward/reverse pair, so native-BLAS parity remains unproven, Issue #15 and
+milestone #5 remain open, and no parity tag exists. CPU beta may select the
+fastest legal authenticated provider, including OpenBLAS, without turning that
+selection into a native-parity claim.
+
+**Milestone G is independently accepted for the bounded existing-version
+contract.** Packed-B v1 remains caller-owned, serial, synchronous borrowed
+storage with manual invalidation; returned C strings remain borrowed; existing
+versions evolve additively. General transformed-operand ownership, structured
+report iteration, execution intent, forced-variant policy, and support-duration
+decisions remain inputs to the later public freeze. This acceptance does not
+freeze any API, ABI, or backend contract.
+
+**Milestone H is active.** The compatibility source-tree configuration remains
+`MDSLC_ENABLE_MATCORE_MLIR=OFF` with default semantic pipeline `capture-v0`.
+The Linux CPU-beta profile deliberately enables exact MLIR 21.1.8 support and
+sets the configured default to `matcore-mlir`. Installed packages publish
+`MatcoreDSL_MATCORE_MLIR_AVAILABLE` and
+`MatcoreDSL_DEFAULT_SEMANTIC_PIPELINE`; `matcoredsl_add_executable` accepts an
+explicit `SEMANTIC_PIPELINE capture-v0|matcore-mlir` and fails closed on
+invalid or unavailable combinations. Windows Release, Debug, and supported
+sanitizer profiles remain explicitly MLIR-disabled/default-`capture-v0`; they
+must prove the semantic route unavailable rather than imply Windows MLIR
+execution.
+
+The final local Milestone H matrix passed at immutable code candidate
+`6796fd8`: the
+Release MLIR/OpenBLAS 2x2 matrix, MLIR-present/default-capture compatibility,
+full Debug with OpenBLAS, focused ASan+UBSan and TSan scopes, installed and
+source-inaccessible packages, strict C17 ABI, legacy frontend, artifact,
+planner-sanity, and repository-hygiene gates are green. This evidence supersedes
+the earlier `69d099e` run because intervening compiler/runtime/package fixes
+were product changes. The later `f8e38ea` and `1d084a1` commits contain focused
+CI/test and Windows FP-profile fixes, so they must not be described as
+documentation-only. They do not replace `6796fd8` as the immutable full local
+matrix; instead, the hosted gates authenticate the resulting product/test head
+`1d084a175772f286b04eb1802e2c4d8272533ede`.
+
+Exact hosted evidence on PR #18 is:
+
+- `mdslc-native`: push run
+  [31522956062](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522956062)
+  passed 7/7 jobs; pull-request run
+  [31522958911](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522958911)
+  passed 7/7 jobs;
+- legacy `ci`: pull-request run
+  [31522958924](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522958924)
+  passed 1/1 job;
+- `repository-hygiene`: push run
+  [31522956052](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522956052)
+  and pull-request run
+  [31522958913](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522958913)
+  each passed 1/1 job; and
+- `mdslc-windows`: push run
+  [31522956094](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522956094)
+  and pull-request run
+  [31522958916](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522958916)
+  both completed with full success.
+
+Local, independent-review, and hosted gates are passed. Milestone H remains
+active only for the normal PR #18 merge, green post-merge checks on `main`, the
+immutable `mdslc-cpu-beta-v1` tag, Issue #17 / GitHub milestone #6 closure, and
+publication. No CPU beta release is claimed yet. The bounded product contract
+is in [CPU_BETA_V1.md](CPU_BETA_V1.md).
+
 ## Milestone 7 native BLAS parity
 
-**Milestone 7 has a candidate manual partial disposition pending hosted gates.
+**Milestone 7 has a reviewed manual partial disposition merged through PR #16.
 The non-performance implementation, correctness, artifact, sanitizer, ABI,
-package, and consumer gates pass locally, but performance acceptance was not
-evaluated because the declared forward/reverse evidence pair is incomplete.
-Issue #15 and milestone #5 remain open; no completion tag exists.**
+package, consumer, Linux hosted, Windows x64 hosted, and hygiene gates passed,
+but performance acceptance was not evaluated because the declared
+forward/reverse evidence pair is incomplete. Issue #15 and milestone #5 remain
+open; no completion tag exists.**
 
 The private CPU backend now has a wider AVX-512 4x32 full-tile body,
 two-dimensional output-task planning, exact task-capacity diagnostics, and
@@ -72,10 +306,12 @@ Release 50/50, Debug 50/50, OpenBLAS-disabled 50/50, ASan/UBSan 19/19, TSan
 `.mdsl -> ELF .o -> executable` proof, repository hygiene, and the 14-case
 legacy frontend contract. The OpenBLAS-disabled forced request failed closed.
 Independent static review found no unresolved high- or medium-severity code
-finding. Hosted Linux, Windows x64, and hygiene checks remain a pull-request
-gate.
+finding. PR #16 subsequently passed the OpenBLAS-required and
+OpenBLAS-disabled Linux jobs, generic build/test, Windows x64, and repository
+hygiene jobs before its normal merge. The partial performance disposition did
+not become a parity claim through that merge.
 
-The bounded disposition is documented in
+The merged bounded disposition is documented in
 `docs/performance/cpu/native-blas-parity-v1.md` and
 `docs/mdslc/agent-reports/m7-integration-validation.md`. Milestone 7 must not
 be called complete, issue #15/milestone #5 must not be closed, and no parity
@@ -256,8 +492,10 @@ runtime remains generic and capability-gated.
 The existing one-shot C ABI remains compatible. Additive v1 APIs query and
 execute with explicit caller workspace and support caller-owned prepacked B.
 Insufficient/misaligned/overlapping storage and forced illegal providers or
-ISAs fail before output mutation. No hidden allocation, host/device copy, or
-silent fallback was added.
+ISAs fail before output mutation. MDSLC adds no hidden packing/workspace
+allocation or host/device tensor copy, and no silent fallback; a linked opaque
+OpenBLAS provider may manage internal memory under its own contract while being
+probed or executed.
 
 `matcore-bench` freezes the JSON benchmark contract and distinguishes complete
 one-shot, reused workspace, prepacked B, and diagnostic-only packed-compute
@@ -559,8 +797,10 @@ and all accelerator compiler paths were not attempted.
   Windows. Multi-node NUMA policy is synthetic-only, with no runtime page
   placement or migration.
 - Windows OpenBLAS, a clean-machine installer test, GEMV, GEVM, ReLU-GEMM,
-  MLIR lowering, CUDA/cuBLAS, HIP, Metal, NPU placement, fusion, and autotuning
-  are not implemented or claimed.
+  Windows Matcore-MLIR semantic execution, generated Linalg/Vector compute,
+  CUDA/cuBLAS, HIP, Metal, NPU placement, fusion, and autotuning are not
+  implemented or claimed. Linux explicit-GEMM Matcore-MLIR runtime-dispatch
+  lowering exists; map/domain and recovered-loop routes remain inspection-only.
 
 The standalone native CPU architecture proof, Milestone 4 performance
 foundation, published Linux Milestone 5 backend, and focused hosted Windows

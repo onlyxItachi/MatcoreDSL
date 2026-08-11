@@ -493,7 +493,8 @@ int main(int argc, char **argv) {
       planner::CpuLayoutV1::row_major_contiguous, options->alignment};
   const auto baseline =
       runtime::discover_cpu_gemm_implementation_resources_v1(
-          problem, options->threads);
+          problem, options->threads,
+          runtime::CpuExternalProviderProbeV1::include);
   runtime::CpuRuntimeValidationEvidenceV1 evidence;
   if (context != nullptr)
     evidence = runtime::validate_cpu_runtime_variants_v1(*context);

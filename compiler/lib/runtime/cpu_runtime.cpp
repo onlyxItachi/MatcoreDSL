@@ -14,10 +14,12 @@
 #include "cpu_runtime_validation.h"
 #include "cpu_capability_v2.h"
 #include "cpu_topology_v1.h"
+#include "fp_environment_v1.h"
 #include "thread_affinity_v1.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -70,6 +72,17 @@ matcore_status_v0 status(matcore_status_code_v0 code,
   return {MATCORE_RUNTIME_ABI_VERSION_V0,
           static_cast<uint32_t>(sizeof(matcore_status_v0)), code, 0, message,
           {0, 0}};
+}
+
+matcore_status_v0 validate_current_fp_environment_v1() noexcept {
+  const auto report =
+      matcore::mdslc::platform::inspect_current_fp_environment_v1();
+  if (!report.explicit_gemm_f32_v1_compatible) {
+    return status(
+        MATCORE_STATUS_UNSUPPORTED_FLOATING_POINT_ENVIRONMENT_V0,
+        matcore::mdslc::platform::fp_environment_rejection_reason_v1(report));
+  }
+  return status(MATCORE_STATUS_OK_V0, "ok");
 }
 
 bool valid_header(uint32_t version, uint32_t size,
@@ -205,6 +218,52 @@ bool byte_range(const void *pointer, std::size_t bytes,
 bool overlaps(std::uintptr_t lhs_begin, std::uintptr_t lhs_end,
               std::uintptr_t rhs_begin, std::uintptr_t rhs_end) noexcept {
   return lhs_begin < rhs_end && rhs_begin < lhs_end;
+}
+
+matcore_status_v0 validate_selected_workspace_v1(
+    std::uint64_t required_bytes, std::uint32_t required_alignment,
+    void *workspace, std::size_t workspace_bytes,
+    const matcore_tensor_desc_v0 &out, const matcore_tensor_desc_v0 &lhs,
+    const matcore_tensor_desc_v0 &rhs) noexcept {
+  if (required_bytes == 0) return status(MATCORE_STATUS_OK_V0, "ok");
+  if (required_bytes > workspace_bytes || workspace == nullptr) {
+    return status(MATCORE_STATUS_INSUFFICIENT_WORKSPACE_V0,
+                  "CPU GEMM workspace is smaller than the selected plan requires");
+  }
+  if (required_bytes > std::numeric_limits<std::size_t>::max()) {
+    return status(MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0,
+                  "CPU GEMM workspace exceeds the addressable size");
+  }
+  if (required_alignment == 0 ||
+      (required_alignment & (required_alignment - 1U)) != 0 ||
+      reinterpret_cast<std::uintptr_t>(workspace) % required_alignment != 0) {
+    return status(MATCORE_STATUS_INVALID_ALIGNMENT_V0,
+                  "CPU GEMM workspace does not satisfy selected alignment");
+  }
+
+  std::uintptr_t workspace_begin = 0;
+  std::uintptr_t workspace_end = 0;
+  std::uintptr_t out_begin = 0;
+  std::uintptr_t out_end = 0;
+  std::uintptr_t lhs_begin = 0;
+  std::uintptr_t lhs_end = 0;
+  std::uintptr_t rhs_begin = 0;
+  std::uintptr_t rhs_end = 0;
+  if (!byte_range(workspace, static_cast<std::size_t>(required_bytes),
+                  &workspace_begin, &workspace_end) ||
+      !byte_count(out, &out_begin, &out_end) ||
+      !byte_count(lhs, &lhs_begin, &lhs_end) ||
+      !byte_count(rhs, &rhs_begin, &rhs_end)) {
+    return status(MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0,
+                  "CPU GEMM workspace range overflows the address space");
+  }
+  if (overlaps(workspace_begin, workspace_end, out_begin, out_end) ||
+      overlaps(workspace_begin, workspace_end, lhs_begin, lhs_end) ||
+      overlaps(workspace_begin, workspace_end, rhs_begin, rhs_end)) {
+    return status(MATCORE_STATUS_ALIAS_VIOLATION_V0,
+                  "CPU GEMM workspace must not overlap any tensor");
+  }
+  return status(MATCORE_STATUS_OK_V0, "ok");
 }
 
 struct ValidatedGemmV0 {
@@ -590,6 +649,32 @@ bool forced_native_packed_request(
   return request ==
          matcore::mdslc::planner::CpuGemmRequestV2::
              force_native_packed_avx2_fma;
+}
+
+matcore::mdslc::runtime::CpuExternalProviderProbeV1 external_provider_probe(
+    matcore::mdslc::planner::CpuGemmRequestV2 request) noexcept {
+  return request == matcore::mdslc::planner::CpuGemmRequestV2::automatic ||
+                 request == matcore::mdslc::planner::CpuGemmRequestV2::
+                                force_external_openblas
+             ? matcore::mdslc::runtime::CpuExternalProviderProbeV1::include
+             : matcore::mdslc::runtime::CpuExternalProviderProbeV1::exclude;
+}
+
+matcore::mdslc::runtime::OpenBlasProviderInfoV1 external_provider_info(
+    matcore::mdslc::runtime::CpuExternalProviderProbeV1 probe,
+    bool linked_at_build) noexcept {
+  if (probe ==
+      matcore::mdslc::runtime::CpuExternalProviderProbeV1::include) {
+    return matcore::mdslc::runtime::openblas_provider_info_v1();
+  }
+  matcore::mdslc::runtime::OpenBlasProviderInfoV1 provider;
+  provider.linked = linked_at_build;
+  if (linked_at_build) {
+    provider.package_version = "uninspected";
+    provider.runtime_config = "uninspected";
+    provider.runtime_core = "uninspected";
+  }
+  return provider;
 }
 
 matcore_status_v0 packed_execution_status(
@@ -1805,7 +1890,8 @@ AdvancedGemmPlanV3 make_advanced_gemm_plan_v3(
     matcore::mdslc::planner::CpuGemmRequestV3 request) noexcept {
   auto baseline =
       matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
-          validated.problem, options.requested_threads);
+          validated.problem, options.requested_threads,
+          matcore::mdslc::runtime::CpuExternalProviderProbeV1::include);
   const CpuRuntimeSelfTestsV1 &self_tests = cpu_runtime_self_tests_v1();
   baseline.native_packed_avx2_fma_compiled =
       baseline.native_packed_avx2_fma_compiled &&
@@ -1970,6 +2056,10 @@ matcore_status_v0 parallel_execution_status_v1(
     case ParallelStatus::worker_task_failed:
       return status(MATCORE_STATUS_EXECUTOR_FAILURE_V0,
                     "parallel CPU GEMM worker task failed");
+    case ParallelStatus::unsupported_fp_environment:
+      return status(
+          MATCORE_STATUS_UNSUPPORTED_FLOATING_POINT_ENVIRONMENT_V0,
+          "parallel CPU GEMM worker floating-point environment is unsupported");
     case ParallelStatus::invalid_problem:
     case ParallelStatus::null_pointer:
       return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
@@ -2056,10 +2146,25 @@ struct SingleVariantTaskV3 {
   const matcore::mdslc::planner::CpuCandidateDecisionV3 *candidate = nullptr;
   void *workspace = nullptr;
   std::size_t workspace_bytes = 0;
+  bool fp_environment_rejected = false;
   matcore_status_v0 result =
       status(MATCORE_STATUS_EXECUTOR_FAILURE_V0,
              "single-worker CPU GEMM did not execute");
 };
+
+matcore::mdslc::runtime::CpuExecutionStatusV1
+single_variant_fp_preflight_v3(std::size_t, void *user_data) noexcept {
+  if (user_data == nullptr) {
+    return matcore::mdslc::runtime::CpuExecutionStatusV1::
+        invalid_configuration;
+  }
+  auto &task = *static_cast<SingleVariantTaskV3 *>(user_data);
+  if (validate_current_fp_environment_v1().code != MATCORE_STATUS_OK_V0) {
+    task.fp_environment_rejected = true;
+    return matcore::mdslc::runtime::CpuExecutionStatusV1::callback_failed;
+  }
+  return matcore::mdslc::runtime::CpuExecutionStatusV1::success;
+}
 
 matcore::mdslc::runtime::CpuExecutionStatusV1 single_variant_task_v3(
     std::size_t task_index, std::size_t worker_index,
@@ -2089,6 +2194,8 @@ matcore_status_v0 execute_single_variant_in_context_v3(
     void *workspace, std::size_t workspace_bytes) noexcept {
   const auto context_info = context.workers->info();
   if (context_info.affinity.requested_workers == 0) {
+    const matcore_status_v0 fp_status = validate_current_fp_environment_v1();
+    if (fp_status.code != MATCORE_STATUS_OK_V0) return fp_status;
     return execute_single_variant_v3(variant, validated, candidate, workspace,
                                      workspace_bytes);
   }
@@ -2109,13 +2216,63 @@ matcore_status_v0 execute_single_variant_in_context_v3(
           ? matcore::mdslc::runtime::CpuProviderNestingPolicyV1::
                 external_provider_active
           : matcore::mdslc::runtime::CpuProviderNestingPolicyV1::native_only;
-  const auto execution = context.workers->run_tasks(
-      1, 1, nesting, single_variant_task_v3, &task);
+  const auto execution = context.workers->run_tasks_with_preflight(
+      1, 1, nesting, single_variant_fp_preflight_v3,
+      single_variant_task_v3, &task);
+  if (task.fp_environment_rejected) {
+    return status(
+        MATCORE_STATUS_UNSUPPORTED_FLOATING_POINT_ENVIRONMENT_V0,
+        "CPU execution worker floating-point environment is unsupported");
+  }
   if (task.result.code != MATCORE_STATUS_OK_V0) return task.result;
   if (execution != matcore::mdslc::runtime::CpuExecutionStatusV1::success) {
     return status(MATCORE_STATUS_EXECUTOR_FAILURE_V0,
                   matcore::mdslc::runtime::cpu_execution_status_message_v1(
                       execution));
+  }
+  return status(MATCORE_STATUS_OK_V0, "ok");
+}
+
+struct ContextFpPreflightV1 {
+  std::atomic<bool> rejected{false};
+};
+
+matcore::mdslc::runtime::CpuExecutionStatusV1 context_fp_preflight_v1(
+    std::size_t, void *user_data) noexcept {
+  if (user_data == nullptr) {
+    return matcore::mdslc::runtime::CpuExecutionStatusV1::
+        invalid_configuration;
+  }
+  auto &state = *static_cast<ContextFpPreflightV1 *>(user_data);
+  if (validate_current_fp_environment_v1().code != MATCORE_STATUS_OK_V0) {
+    state.rejected.store(true, std::memory_order_relaxed);
+    return matcore::mdslc::runtime::CpuExecutionStatusV1::callback_failed;
+  }
+  return matcore::mdslc::runtime::CpuExecutionStatusV1::success;
+}
+
+matcore::mdslc::runtime::CpuExecutionStatusV1 context_fp_noop_task_v1(
+    std::size_t, std::size_t, void *) noexcept {
+  return matcore::mdslc::runtime::CpuExecutionStatusV1::success;
+}
+
+matcore_status_v0 validate_context_fp_environment_v1(
+    matcore::mdslc::runtime::CpuExecutionContextV1 &workers,
+    std::uint32_t active_threads) noexcept {
+  ContextFpPreflightV1 state;
+  const auto result = workers.run_tasks_with_preflight(
+      active_threads, active_threads,
+      matcore::mdslc::runtime::CpuProviderNestingPolicyV1::native_only,
+      context_fp_preflight_v1, context_fp_noop_task_v1, &state);
+  if (state.rejected.load(std::memory_order_relaxed)) {
+    return status(
+        MATCORE_STATUS_UNSUPPORTED_FLOATING_POINT_ENVIRONMENT_V0,
+        "CPU execution-context worker floating-point environment is unsupported");
+  }
+  if (result != matcore::mdslc::runtime::CpuExecutionStatusV1::success) {
+    return status(MATCORE_STATUS_EXECUTOR_FAILURE_V0,
+                  matcore::mdslc::runtime::cpu_execution_status_message_v1(
+                      result));
   }
   return status(MATCORE_STATUS_OK_V0, "ok");
 }
@@ -2209,6 +2366,9 @@ matcore_runtime_cpu_execution_context_create_v1(
           MATCORE_STATUS_UNSUPPORTED_CAPABILITY_V0,
           "CPU execution context could not authenticate planner placement evidence");
     }
+    const matcore_status_v0 fp_status = validate_context_fp_environment_v1(
+        *workers, workers->info().actual_worker_count);
+    if (fp_status.code != MATCORE_STATUS_OK_V0) return fp_status;
     const auto validation_evidence =
         matcore::mdslc::runtime::validate_cpu_runtime_variants_v1(*workers);
     const std::uint64_t validation_submission_baseline =
@@ -2468,7 +2628,8 @@ matcore_runtime_gemm_f32_workspace_size_v1(
   if (result.code != MATCORE_STATUS_OK_V0) return result;
   const auto resources =
       matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
-          validated.problem, options->requested_threads);
+          validated.problem, options->requested_threads,
+          external_provider_probe(request));
   const auto capabilities =
       matcore::mdslc::planner::discover_cpu_capabilities_v1();
   const auto plan = matcore::mdslc::planner::plan_cpu_gemm_v2(
@@ -2487,7 +2648,10 @@ matcore_runtime_gemm_f32_workspace_size_v1(
   output.selected_stable_id = candidate.stable_id.data();
   *requirements = output;
   populate_report_v2(
-      plan, matcore::mdslc::runtime::openblas_provider_info_v1(), report);
+      plan,
+      external_provider_info(external_provider_probe(request),
+                             plan.resources.openblas_linked),
+      report);
   return status(MATCORE_STATUS_OK_V0, "ok");
 }
 
@@ -2511,7 +2675,8 @@ matcore_runtime_gemm_f32_execute_v1(
   if (result.code != MATCORE_STATUS_OK_V0) return result;
   const auto resources =
       matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
-          validated.problem, options->requested_threads);
+          validated.problem, options->requested_threads,
+          external_provider_probe(request));
   const auto capabilities =
       matcore::mdslc::planner::discover_cpu_capabilities_v1();
   const auto plan = matcore::mdslc::planner::plan_cpu_gemm_v2(
@@ -2520,17 +2685,14 @@ matcore_runtime_gemm_f32_execute_v1(
     return unavailable_plan_status(plan);
   const std::size_t selected = static_cast<std::size_t>(plan.selected_variant);
   const auto &candidate = plan.candidates[selected];
-  if (candidate.required_workspace_bytes > workspace_bytes ||
-      (candidate.required_workspace_bytes != 0 && workspace == nullptr)) {
-    return status(MATCORE_STATUS_INSUFFICIENT_WORKSPACE_V0,
-                  "CPU GEMM workspace is smaller than the selected plan requires");
-  }
-  if (candidate.required_workspace_bytes != 0 &&
-      (reinterpret_cast<std::uintptr_t>(workspace) %
-       candidate.required_workspace_alignment) != 0) {
-    return status(MATCORE_STATUS_INVALID_ALIGNMENT_V0,
-                  "CPU GEMM workspace does not satisfy the selected alignment");
-  }
+  result = validate_selected_workspace_v1(
+      candidate.required_workspace_bytes,
+      candidate.required_workspace_alignment, workspace, workspace_bytes,
+      *out, *lhs, *rhs);
+  if (result.code != MATCORE_STATUS_OK_V0) return result;
+
+  result = validate_current_fp_environment_v1();
+  if (result.code != MATCORE_STATUS_OK_V0) return result;
 
   bool executed = false;
   switch (plan.selected_variant) {
@@ -2568,7 +2730,10 @@ matcore_runtime_gemm_f32_execute_v1(
                   "selected CPU GEMM implementation did not execute");
 
   populate_report_v2(
-      plan, matcore::mdslc::runtime::openblas_provider_info_v1(), report);
+      plan,
+      external_provider_info(external_provider_probe(request),
+                             plan.resources.openblas_linked),
+      report);
   return status(MATCORE_STATUS_OK_V0, "ok");
 }
 
@@ -2592,7 +2757,8 @@ matcore_runtime_gemm_f32_prepacked_b_size_v1(
   if (result.code != MATCORE_STATUS_OK_V0) return result;
   const auto resources =
       matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
-          validated.problem, options->requested_threads);
+          validated.problem, options->requested_threads,
+          matcore::mdslc::runtime::CpuExternalProviderProbeV1::exclude);
   const auto plan = matcore::mdslc::planner::plan_cpu_gemm_v2(
       validated.problem,
       matcore::mdslc::planner::discover_cpu_capabilities_v1(), resources,
@@ -2652,7 +2818,8 @@ matcore_runtime_gemm_f32_prepack_b_v1(
   if (result.code != MATCORE_STATUS_OK_V0) return result;
   const auto resources =
       matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
-          validated.problem, options->requested_threads);
+          validated.problem, options->requested_threads,
+          matcore::mdslc::runtime::CpuExternalProviderProbeV1::exclude);
   const auto plan = matcore::mdslc::planner::plan_cpu_gemm_v2(
       validated.problem,
       matcore::mdslc::planner::discover_cpu_capabilities_v1(), resources,
@@ -2668,40 +2835,50 @@ matcore_runtime_gemm_f32_prepack_b_v1(
   if (requirements_status !=
       matcore::mdslc::runtime::CpuPackedGemmStatusV1::success)
     return packed_execution_status(requirements_status);
-  if (packed_storage != nullptr) {
-    std::uintptr_t storage_begin = 0;
-    std::uintptr_t storage_end = 0;
-    std::uintptr_t out_begin = 0;
-    std::uintptr_t out_end = 0;
-    std::uintptr_t lhs_begin = 0;
-    std::uintptr_t lhs_end = 0;
-    std::uintptr_t rhs_begin = 0;
-    std::uintptr_t rhs_end = 0;
-    std::uintptr_t descriptor_begin = 0;
-    std::uintptr_t descriptor_end = 0;
-    if (!byte_range(packed_storage, packed_requirements.total_bytes,
-                    &storage_begin, &storage_end) ||
-        !byte_count(*out, &out_begin, &out_end) ||
-        !byte_count(*lhs, &lhs_begin, &lhs_end) ||
-        !byte_count(*rhs, &rhs_begin, &rhs_end) ||
-        !byte_range(packed_b, sizeof(*packed_b), &descriptor_begin,
-                    &descriptor_end)) {
-      return status(MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0,
-                    "packed-B storage byte range overflows the address space");
-    }
-    if (overlaps(storage_begin, storage_end, out_begin, out_end) ||
-        overlaps(storage_begin, storage_end, lhs_begin, lhs_end) ||
-        overlaps(storage_begin, storage_end, rhs_begin, rhs_end) ||
-        overlaps(storage_begin, storage_end, descriptor_begin,
-                 descriptor_end) ||
-        overlaps(descriptor_begin, descriptor_end, out_begin, out_end) ||
-        overlaps(descriptor_begin, descriptor_end, lhs_begin, lhs_end) ||
-        overlaps(descriptor_begin, descriptor_end, rhs_begin, rhs_end)) {
-      return status(
-          MATCORE_STATUS_ALIAS_VIOLATION_V0,
-          "packed-B storage and descriptor must not overlap GEMM tensors or each other");
-    }
+  [[maybe_unused]] matcore::mdslc::runtime::CpuPackedBViewV1 validated_view;
+  const auto validation_status =
+      matcore::mdslc::runtime::cpu_validate_prepare_packed_b_avx2_v1(
+          validated.problem, validated.rhs, packed_storage,
+          packed_storage_bytes, &validated_view);
+  if (validation_status !=
+      matcore::mdslc::runtime::CpuPackedGemmStatusV1::success) {
+    return packed_execution_status(validation_status);
   }
+
+  std::uintptr_t storage_begin = 0;
+  std::uintptr_t storage_end = 0;
+  std::uintptr_t out_begin = 0;
+  std::uintptr_t out_end = 0;
+  std::uintptr_t lhs_begin = 0;
+  std::uintptr_t lhs_end = 0;
+  std::uintptr_t rhs_begin = 0;
+  std::uintptr_t rhs_end = 0;
+  std::uintptr_t descriptor_begin = 0;
+  std::uintptr_t descriptor_end = 0;
+  if (!byte_range(packed_storage, packed_requirements.total_bytes,
+                  &storage_begin, &storage_end) ||
+      !byte_count(*out, &out_begin, &out_end) ||
+      !byte_count(*lhs, &lhs_begin, &lhs_end) ||
+      !byte_count(*rhs, &rhs_begin, &rhs_end) ||
+      !byte_range(packed_b, sizeof(*packed_b), &descriptor_begin,
+                  &descriptor_end)) {
+    return status(MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0,
+                  "packed-B storage or descriptor range overflows the address space");
+  }
+  if (overlaps(storage_begin, storage_end, out_begin, out_end) ||
+      overlaps(storage_begin, storage_end, lhs_begin, lhs_end) ||
+      overlaps(storage_begin, storage_end, rhs_begin, rhs_end) ||
+      overlaps(storage_begin, storage_end, descriptor_begin, descriptor_end) ||
+      overlaps(descriptor_begin, descriptor_end, out_begin, out_end) ||
+      overlaps(descriptor_begin, descriptor_end, lhs_begin, lhs_end) ||
+      overlaps(descriptor_begin, descriptor_end, rhs_begin, rhs_end)) {
+    return status(
+        MATCORE_STATUS_ALIAS_VIOLATION_V0,
+        "packed-B storage and descriptor must not overlap GEMM tensors or each other");
+  }
+
+  result = validate_current_fp_environment_v1();
+  if (result.code != MATCORE_STATUS_OK_V0) return result;
 
   matcore::mdslc::runtime::CpuPackedBViewV1 view;
   const auto packed_status =
@@ -2739,15 +2916,15 @@ matcore_runtime_gemm_f32_execute_prepacked_b_v1(
   matcore::mdslc::planner::CpuGemmRequestV2 request;
   matcore_status_v0 result = validate_execution_options(options, &request);
   if (result.code != MATCORE_STATUS_OK_V0) return result;
-  if (!forced_native_packed_request(request)) {
-    return status(MATCORE_STATUS_UNAVAILABLE_VARIANT_V0,
-                  "prepacked-B requires the forced native packed AVX2/FMA variant");
-  }
   if (report == nullptr)
     return status(MATCORE_STATUS_INVALID_ARGUMENT_V0,
                   "CPU plan v2 report must be non-null");
   result = validate_empty_report_v2(*report);
   if (result.code != MATCORE_STATUS_OK_V0) return result;
+  if (!forced_native_packed_request(request)) {
+    return status(MATCORE_STATUS_UNAVAILABLE_VARIANT_V0,
+                  "prepacked-B requires the forced native packed AVX2/FMA variant");
+  }
   matcore::mdslc::runtime::CpuPackedBViewV1 view;
   result = unpack_packed_b_desc(packed_b, &view);
   if (result.code != MATCORE_STATUS_OK_V0) return result;
@@ -2758,9 +2935,57 @@ matcore_runtime_gemm_f32_execute_prepacked_b_v1(
     return status(MATCORE_STATUS_PREPACK_MISMATCH_V0,
                   "packed-B source identity does not match the supplied right input");
   }
+
+  matcore::mdslc::runtime::CpuPackedGemmWorkspaceRequirementsV1
+      packed_requirements;
+  const auto packed_requirements_status =
+      matcore::mdslc::runtime::cpu_packed_avx2_prepacked_b_requirements_v1(
+          validated.problem, &packed_requirements);
+  if (packed_requirements_status !=
+      matcore::mdslc::runtime::CpuPackedGemmStatusV1::success) {
+    return packed_execution_status(packed_requirements_status);
+  }
+  const auto view_status =
+      matcore::mdslc::runtime::cpu_validate_packed_avx2_prepacked_b_view_v1(
+          validated.problem, validated.lhs, validated.out, view);
+  if (view_status !=
+      matcore::mdslc::runtime::CpuPackedGemmStatusV1::success) {
+    return packed_execution_status(view_status);
+  }
+
+  std::uintptr_t descriptor_begin = 0;
+  std::uintptr_t descriptor_end = 0;
+  std::uintptr_t out_begin = 0;
+  std::uintptr_t out_end = 0;
+  std::uintptr_t lhs_begin = 0;
+  std::uintptr_t lhs_end = 0;
+  std::uintptr_t rhs_begin = 0;
+  std::uintptr_t rhs_end = 0;
+  std::uintptr_t packed_begin = 0;
+  std::uintptr_t packed_end = 0;
+  if (!byte_range(packed_b, sizeof(*packed_b), &descriptor_begin,
+                  &descriptor_end) ||
+      !byte_count(*out, &out_begin, &out_end) ||
+      !byte_count(*lhs, &lhs_begin, &lhs_end) ||
+      !byte_count(*rhs, &rhs_begin, &rhs_end) ||
+      !byte_range(view.packed_data, packed_requirements.packed_b_bytes,
+                  &packed_begin, &packed_end)) {
+    return status(MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0,
+                  "prepacked-B descriptor or storage range overflows the address space");
+  }
+  if (overlaps(descriptor_begin, descriptor_end, out_begin, out_end) ||
+      overlaps(descriptor_begin, descriptor_end, lhs_begin, lhs_end) ||
+      overlaps(descriptor_begin, descriptor_end, rhs_begin, rhs_end) ||
+      overlaps(descriptor_begin, descriptor_end, packed_begin, packed_end)) {
+    return status(
+        MATCORE_STATUS_ALIAS_VIOLATION_V0,
+        "prepacked-B descriptor must not overlap tensors or packed storage");
+  }
+
   const auto resources =
       matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
-          validated.problem, options->requested_threads);
+          validated.problem, options->requested_threads,
+          matcore::mdslc::runtime::CpuExternalProviderProbeV1::exclude);
   auto plan = matcore::mdslc::planner::plan_cpu_gemm_v2(
       validated.problem,
       matcore::mdslc::planner::discover_cpu_capabilities_v1(), resources,
@@ -2778,18 +3003,30 @@ matcore_runtime_gemm_f32_execute_prepacked_b_v1(
   if (query_status !=
       matcore::mdslc::runtime::CpuPackedGemmStatusV1::success)
     return packed_execution_status(query_status);
-  if (execution.total_bytes > workspace_bytes ||
-      (execution.total_bytes != 0 && workspace == nullptr)) {
-    return status(MATCORE_STATUS_INSUFFICIENT_WORKSPACE_V0,
-                  "prepacked-B execution workspace is too small");
+  const auto validation_status =
+      matcore::mdslc::runtime::cpu_validate_packed_avx2_prepacked_b_v1(
+          validated.problem, validated.lhs, validated.out, view, workspace,
+          workspace_bytes);
+  if (validation_status !=
+      matcore::mdslc::runtime::CpuPackedGemmStatusV1::success) {
+    return packed_execution_status(validation_status);
   }
-  if (execution.total_bytes != 0 &&
-      reinterpret_cast<std::uintptr_t>(workspace) %
-              execution.alignment_bytes !=
-          0) {
-    return status(MATCORE_STATUS_INVALID_ALIGNMENT_V0,
-                  "prepacked-B execution workspace is misaligned");
+
+  std::uintptr_t workspace_begin = 0;
+  std::uintptr_t workspace_end = 0;
+  if (!byte_range(workspace, execution.total_bytes, &workspace_begin,
+                  &workspace_end)) {
+    return status(MATCORE_STATUS_ARITHMETIC_OVERFLOW_V0,
+                  "prepacked-B workspace range overflows the address space");
   }
+  if (overlaps(descriptor_begin, descriptor_end, workspace_begin,
+               workspace_end)) {
+    return status(
+        MATCORE_STATUS_ALIAS_VIOLATION_V0,
+        "prepacked-B descriptor must not overlap workspace");
+  }
+  result = validate_current_fp_environment_v1();
+  if (result.code != MATCORE_STATUS_OK_V0) return result;
   const auto execute_status =
       matcore::mdslc::runtime::cpu_execute_packed_avx2_prepacked_b_v1(
           validated.problem, validated.lhs, validated.out, view, workspace,
@@ -2804,7 +3041,11 @@ matcore_runtime_gemm_f32_execute_prepacked_b_v1(
   plan.candidates[packed_index].required_workspace_alignment =
       static_cast<std::uint32_t>(execution.alignment_bytes);
   populate_report_v2(
-      plan, matcore::mdslc::runtime::openblas_provider_info_v1(), report);
+      plan,
+      external_provider_info(
+          matcore::mdslc::runtime::CpuExternalProviderProbeV1::exclude,
+          plan.resources.openblas_linked),
+      report);
   return status(MATCORE_STATUS_OK_V0, "ok");
 }
 
@@ -2855,10 +3096,11 @@ matcore_runtime_gemm_f32_v0(const matcore_tensor_desc_v0 *out,
   if (result.code != MATCORE_STATUS_OK_V0) return result;
   auto resources =
       matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
-          validated.problem, 1);
+          validated.problem, 1,
+          matcore::mdslc::runtime::CpuExternalProviderProbeV1::include);
   // The original one-shot ABI cannot receive caller-owned packing storage.
-  // Keep it allocation-free by removing workspace-requiring candidates while
-  // still allowing zero-workspace external and native variants.
+  // Remove MDSLC workspace-requiring candidates while still allowing
+  // zero-caller-workspace native and opaque external-provider variants.
   resources.native_packed_avx2_fma_compiled = false;
   resources.native_packed_workspace_size_valid = false;
   resources.native_packed_workspace_bytes = 0;
@@ -2868,6 +3110,8 @@ matcore_runtime_gemm_f32_v0(const matcore_tensor_desc_v0 *out,
       matcore::mdslc::planner::discover_cpu_capabilities_v1(), resources);
   if (plan.status != matcore::mdslc::planner::CpuPlanStatusV1::selected)
     return unavailable_plan_status(plan);
+  const matcore_status_v0 fp_status = validate_current_fp_environment_v1();
+  if (fp_status.code != MATCORE_STATUS_OK_V0) return fp_status;
   if (plan.selected_variant ==
       matcore::mdslc::planner::CpuGemmVariantV2::external_openblas) {
     std::uint32_t actual_threads = 0;

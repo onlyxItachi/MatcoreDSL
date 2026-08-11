@@ -7,6 +7,7 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace {
@@ -102,6 +103,38 @@ int main() {
     std::cerr << "reference workspace query failed: " << result.message << '\n';
     return 1;
   }
+  if (result.message == nullptr || report.external_provider == nullptr ||
+      report.external_provider_version == nullptr ||
+      report.external_provider_config == nullptr) {
+    std::cerr << "workspace query omitted borrowed diagnostic strings\n";
+    return 1;
+  }
+  const bool linked_but_uninspected =
+      std::strcmp(report.external_provider, "OpenBLAS") == 0 &&
+      std::strcmp(report.external_provider_version, "uninspected") == 0 &&
+      std::strcmp(report.external_provider_config, "uninspected") == 0 &&
+      std::strcmp(report.candidates[3].reason,
+                  "OpenBLAS conformance was not evaluated for this request") ==
+          0;
+  const bool not_linked =
+      std::strcmp(report.external_provider, "unavailable") == 0 &&
+      std::strcmp(report.external_provider_version, "unavailable") == 0 &&
+      std::strcmp(report.external_provider_config, "unavailable") == 0 &&
+      std::strcmp(report.candidates[3].reason,
+                  "OpenBLAS CBLAS adapter is not linked") == 0;
+  if (!linked_but_uninspected && !not_linked) {
+    std::cerr <<
+        "forced non-provider report confused uninspected and absent OpenBLAS\n";
+    return 1;
+  }
+  const char *borrowed_status_message = result.message;
+  const char *borrowed_provider = report.external_provider;
+  const char *borrowed_provider_version = report.external_provider_version;
+  const char *borrowed_provider_config = report.external_provider_config;
+  const std::string status_message_copy(borrowed_status_message);
+  const std::string provider_copy(borrowed_provider);
+  const std::string provider_version_copy(borrowed_provider_version);
+  const std::string provider_config_copy(borrowed_provider_config);
 
   report = empty_report();
   result = matcore_runtime_gemm_f32_execute_v1(
@@ -324,6 +357,62 @@ int main() {
     return 1;
   }
 
+  out.fill(-15.0F);
+  report = empty_report();
+  result = matcore_runtime_gemm_f32_execute_prepacked_b_v1(
+      &out_desc, &lhs_desc, &rhs_desc, &cpu_policy, &packed_options,
+      &valid_packed_b, prepacked_workspace,
+      static_cast<std::size_t>(
+          prepacked_requirements.execution_workspace_bytes),
+      &report);
+  if (result.code != MATCORE_STATUS_OK_V0 || !correct(out)) {
+    std::cerr << "serial prepacked-B reuse failed: " << result.message << '\n';
+    return 1;
+  }
+
+  auto two_thread_packed_options = options(
+      MATCORE_CPU_GEMM_REQUEST_FORCE_NATIVE_PACKED_AVX2_FMA_V2, 2);
+  matcore_gemm_prepacked_b_requirements_v1 two_thread_requirements{};
+  two_thread_requirements.abi_version =
+      MATCORE_RUNTIME_EXECUTION_ABI_VERSION_V1;
+  two_thread_requirements.struct_size = sizeof(two_thread_requirements);
+  const auto two_thread_requirements_before = two_thread_requirements;
+  out.fill(-16.0F);
+  result = matcore_runtime_gemm_f32_prepacked_b_size_v1(
+      &out_desc, &lhs_desc, &rhs_desc, &cpu_policy,
+      &two_thread_packed_options, &two_thread_requirements);
+  if (result.code != MATCORE_STATUS_UNAVAILABLE_VARIANT_V0 ||
+      std::memcmp(&two_thread_requirements, &two_thread_requirements_before,
+                  sizeof(two_thread_requirements)) != 0 ||
+      out != std::array<float, 4>{-16.0F, -16.0F, -16.0F, -16.0F}) {
+    std::cerr << "prepacked-B v1 accepted non-serial execution\n";
+    return 1;
+  }
+
+  std::vector<std::byte> relocated_storage_bytes(
+      static_cast<std::size_t>(prepacked_requirements.packed_b_bytes) + 63);
+  const auto relocated_raw =
+      reinterpret_cast<std::uintptr_t>(relocated_storage_bytes.data());
+  void *relocated_storage =
+      reinterpret_cast<void *>((relocated_raw + 63U) & ~uintptr_t{63U});
+  std::memcpy(relocated_storage, valid_packed_b.packed_data,
+              static_cast<std::size_t>(prepacked_requirements.packed_b_bytes));
+  auto relocated_packed_b = valid_packed_b;
+  relocated_packed_b.packed_data = relocated_storage;
+  out.fill(-18.0F);
+  report = empty_report();
+  result = matcore_runtime_gemm_f32_execute_prepacked_b_v1(
+      &out_desc, &lhs_desc, &rhs_desc, &cpu_policy, &packed_options,
+      &relocated_packed_b, prepacked_workspace,
+      static_cast<std::size_t>(
+          prepacked_requirements.execution_workspace_bytes),
+      &report);
+  if (result.code != MATCORE_STATUS_PREPACK_MISMATCH_V0 ||
+      out != std::array<float, 4>{-18.0F, -18.0F, -18.0F, -18.0F}) {
+    std::cerr << "relocated packed-B storage retained stale authentication\n";
+    return 1;
+  }
+
   std::array<float, 4> other_rhs{2.0F, 0.0F, 0.0F, 2.0F};
   matcore_tensor_desc_v0 other_rhs_desc =
       tensor(other_rhs.data(), 2, 2, MATCORE_MUTABILITY_READ_ONLY_V0);
@@ -370,6 +459,42 @@ int main() {
   if (result.code != MATCORE_STATUS_PREPACK_MISMATCH_V0 ||
       out != std::array<float, 4>{-17.0F, -17.0F, -17.0F, -17.0F}) {
     std::cerr << "corrupt prepacked-B descriptor was accepted or mutated output\n";
+    return 1;
+  }
+
+  rhs = {1.0F, 0.0F, 0.0F, 1.0F};
+  packed_b = {};
+  packed_b.abi_version = MATCORE_RUNTIME_EXECUTION_ABI_VERSION_V1;
+  packed_b.struct_size = sizeof(packed_b);
+  result = matcore_runtime_gemm_f32_prepack_b_v1(
+      &out_desc, &lhs_desc, &rhs_desc, &cpu_policy, &packed_options,
+      packed_storage,
+      static_cast<std::size_t>(prepacked_requirements.packed_b_bytes),
+      &packed_b);
+  if (result.code != MATCORE_STATUS_OK_V0 ||
+      packed_b.provenance != valid_packed_b.provenance) {
+    std::cerr << "explicit repack after source mutation failed\n";
+    return 1;
+  }
+  out.fill(-21.0F);
+  report = empty_report();
+  result = matcore_runtime_gemm_f32_execute_prepacked_b_v1(
+      &out_desc, &lhs_desc, &rhs_desc, &cpu_policy, &packed_options, &packed_b,
+      prepacked_workspace,
+      static_cast<std::size_t>(
+          prepacked_requirements.execution_workspace_bytes),
+      &report);
+  if (result.code != MATCORE_STATUS_OK_V0 || out != lhs) {
+    std::cerr << "repacked mutated source did not produce current contents\n";
+    return 1;
+  }
+
+  if (std::strcmp(borrowed_status_message, status_message_copy.c_str()) != 0 ||
+      std::strcmp(borrowed_provider, provider_copy.c_str()) != 0 ||
+      std::strcmp(borrowed_provider_version, provider_version_copy.c_str()) !=
+          0 ||
+      std::strcmp(borrowed_provider_config, provider_config_copy.c_str()) != 0) {
+    std::cerr << "borrowed runtime/provider string expired during runtime use\n";
     return 1;
   }
   return 0;

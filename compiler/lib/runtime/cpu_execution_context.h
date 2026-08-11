@@ -91,6 +91,9 @@ using CpuExecutionTaskV1 = CpuExecutionStatusV1 (*)(
     std::size_t task_index, std::size_t worker_index,
     void *user_data) noexcept;
 
+using CpuExecutionPreflightV1 = CpuExecutionStatusV1 (*)(
+    std::size_t worker_index, void *user_data) noexcept;
+
 // A context owns a fixed set of persistent workers. It deliberately owns no
 // GEMM packing buffers: per-worker workspaces remain explicit and caller-owned.
 // Concurrent submissions to one context are serialized. Independent contexts
@@ -114,6 +117,17 @@ class CpuExecutionContextV1 final {
   CpuExecutionStatusV1 run_tasks(
       std::size_t task_count, std::uint32_t active_threads,
       CpuProviderNestingPolicyV1 nesting_policy,
+      CpuExecutionTaskV1 task, void *user_data) noexcept;
+
+  // Every active worker runs preflight exactly once. No worker invokes task
+  // until every active worker has reached the barrier and every preflight has
+  // succeeded. A failed preflight suppresses all task callbacks while keeping
+  // the context reusable. This is the execution-legality boundary for
+  // thread-local state such as the floating-point environment.
+  CpuExecutionStatusV1 run_tasks_with_preflight(
+      std::size_t task_count, std::uint32_t active_threads,
+      CpuProviderNestingPolicyV1 nesting_policy,
+      CpuExecutionPreflightV1 preflight,
       CpuExecutionTaskV1 task, void *user_data) noexcept;
 
   // Idempotent. A submission already in progress is allowed to finish before

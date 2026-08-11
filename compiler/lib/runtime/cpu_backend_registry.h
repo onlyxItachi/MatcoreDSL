@@ -7,10 +7,16 @@
 
 namespace matcore::mdslc::runtime {
 
+enum class CpuExternalProviderProbeV1 : std::uint8_t {
+  exclude = 0,
+  include = 1,
+};
+
 planner::CpuGemmImplementationResourcesV1
 discover_cpu_gemm_implementation_resources_v1(
     const planner::CpuGemmProblemV1 &problem,
-    std::uint32_t requested_threads) noexcept;
+    std::uint32_t requested_threads,
+    CpuExternalProviderProbeV1 external_provider_probe) noexcept;
 
 }  // namespace matcore::mdslc::runtime
 

@@ -70,6 +70,39 @@ option(
   ON
 )
 option(
+  MDSLC_ENABLE_MATCORE_MLIR
+  "Build the internal Matcore MLIR semantic dialect and inspection tool"
+  OFF
+)
+set(
+  MDSLC_DEFAULT_SEMANTIC_PIPELINE
+  "capture-v0"
+  CACHE STRING
+  "Default mdslc++ CPU semantic pipeline (capture-v0 or matcore-mlir)"
+)
+set_property(
+  CACHE MDSLC_DEFAULT_SEMANTIC_PIPELINE
+  PROPERTY STRINGS capture-v0 matcore-mlir
+)
+set(MDSLC_VALID_SEMANTIC_PIPELINES capture-v0 matcore-mlir)
+if(NOT MDSLC_DEFAULT_SEMANTIC_PIPELINE IN_LIST MDSLC_VALID_SEMANTIC_PIPELINES)
+  message(FATAL_ERROR
+    "MDSLC_DEFAULT_SEMANTIC_PIPELINE must be capture-v0 or matcore-mlir; "
+    "found '${MDSLC_DEFAULT_SEMANTIC_PIPELINE}'")
+endif()
+if(MDSLC_DEFAULT_SEMANTIC_PIPELINE STREQUAL "matcore-mlir" AND
+   NOT MDSLC_ENABLE_MATCORE_MLIR)
+  message(FATAL_ERROR
+    "MDSLC_DEFAULT_SEMANTIC_PIPELINE=matcore-mlir requires "
+    "MDSLC_ENABLE_MATCORE_MLIR=ON")
+endif()
+set(MDSLC_MATCORE_MLIR_AVAILABLE "OFF")
+if(MDSLC_ENABLE_MATCORE_MLIR)
+  set(MDSLC_MATCORE_MLIR_AVAILABLE "ON")
+endif()
+message(STATUS
+  "MDSLC default semantic pipeline: ${MDSLC_DEFAULT_SEMANTIC_PIPELINE}")
+option(
   MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE
   "Enable the driver tool-prefix override for deliberate tests"
   OFF
@@ -83,6 +116,41 @@ endif()
 
 if(NOT MDSLC_ENABLE_NATIVE_FRONTEND AND NOT MDSLC_ENABLE_BOOTSTRAP_FRONTEND)
   message(FATAL_ERROR "At least one MDSLC frontend must be enabled")
+endif()
+
+if(MDSLC_ENABLE_MATCORE_MLIR)
+  if(NOT DEFINED MLIR_DIR OR MLIR_DIR STREQUAL "")
+    message(FATAL_ERROR
+      "MDSLC_ENABLE_MATCORE_MLIR requires an explicit MLIR_DIR for the "
+      "audited LLVM/Clang/MLIR 21.1.8 tuple")
+  endif()
+  find_package(LLVM 21.1.8 EXACT CONFIG REQUIRED)
+  find_package(Clang 21.1.8 EXACT CONFIG REQUIRED)
+  find_package(MLIR 21.1.8 EXACT CONFIG REQUIRED)
+  if(NOT LLVM_PACKAGE_VERSION VERSION_EQUAL "21.1.8" OR
+     NOT MLIR_VERSION VERSION_EQUAL "21.1.8")
+    message(FATAL_ERROR
+      "Matcore MLIR requires exact LLVM/Clang/MLIR 21.1.8 packages; found "
+      "LLVM ${LLVM_PACKAGE_VERSION} and MLIR ${MLIR_VERSION}")
+  endif()
+  foreach(MDSLC_REQUIRED_MLIR_TARGET IN ITEMS
+      MLIRIR
+      MLIRFuncDialect
+      MLIRParser
+      MLIRTransforms
+      MLIRDestinationStyleOpInterface
+      MLIRSideEffectInterfaces)
+    if(NOT TARGET ${MDSLC_REQUIRED_MLIR_TARGET})
+      message(FATAL_ERROR
+        "MLIR 21.1.8 package is missing required component target "
+        "${MDSLC_REQUIRED_MLIR_TARGET}")
+    endif()
+  endforeach()
+  list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
+  include(AddLLVM)
+  include(AddMLIR)
+  message(STATUS
+    "MDSLC Matcore MLIR semantic layer: exact MLIR ${MLIR_VERSION} at ${MLIR_DIR}")
 endif()
 
 if(MDSLC_ENABLE_NATIVE_FRONTEND)
@@ -283,6 +351,9 @@ configure_file(
 
 add_subdirectory(lib/support)
 add_subdirectory(lib/ir)
+if(MDSLC_ENABLE_MATCORE_MLIR)
+  add_subdirectory(lib/mlir)
+endif()
 add_subdirectory(lib/frontend)
 add_subdirectory(lib/codegen)
 add_subdirectory(lib/platform)
@@ -290,6 +361,9 @@ add_subdirectory(tools/matcore-extract)
 add_subdirectory(lib/runtime)
 add_subdirectory(tools/matcore-plan)
 add_subdirectory(tools/matcore-bench)
+if(MDSLC_ENABLE_MATCORE_MLIR)
+  add_subdirectory(tools/matcore-mlir)
+endif()
 
 add_executable(mdslc_driver tools/mdslc/main.cpp)
 set_property(TARGET mdslc_driver PROPERTY EXPORT_NAME Compiler)
@@ -316,6 +390,13 @@ install(
   LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
   ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
 )
+if(MDSLC_ENABLE_MATCORE_MLIR)
+  # The semantic inspection tool is installed as a leaf executable. Its
+  # private MLIR implementation libraries are deliberately not exported, so
+  # installed MatcoreDSL consumers acquire no MLIR dependency.
+  install(TARGETS matcore-mlir
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endif()
 if(WIN32 AND MDSLC_ENABLE_NATIVE_FRONTEND)
   # Official LLVM distributions may expose clang-cpp/LLVM as imported shared
   # targets or as static component targets.  Copy only declared imported DLL
@@ -400,6 +481,21 @@ if(BUILD_TESTING)
         frontend.native.primary
         PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
       )
+
+      if(NOT WIN32)
+        add_test(
+          NAME frontend.native.recovered_gemm_inspection
+          COMMAND
+            "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/run_recovered_gemm_tests.py"
+            --extractor "$<TARGET_FILE:matcore-extract>"
+            --clang "${MDSLC_CLANGXX_EXECUTABLE}"
+        )
+        set_tests_properties(
+          frontend.native.recovered_gemm_inspection
+          PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+        )
+      endif()
 
       add_test(
         NAME frontend.native.adversarial
@@ -499,6 +595,54 @@ if(BUILD_TESTING)
     endif()
 
     if(MDSLC_ENABLE_NATIVE_FRONTEND)
+      if(MDSLC_ENABLE_MATCORE_MLIR)
+        if(NOT WIN32)
+          add_test(
+            NAME integration.semantic_mlir_cpu_pipeline
+            COMMAND
+              "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/tests/mlir/run_semantic_cpu_pipeline_tests.py"
+              --extractor "$<TARGET_FILE:matcore-extract>"
+              --driver "$<TARGET_FILE:mdslc_driver>"
+              --clangxx "${MDSLC_CLANGXX_EXECUTABLE}"
+              --repository-root "${CMAKE_CURRENT_SOURCE_DIR}/.."
+              --build-dir "${CMAKE_BINARY_DIR}"
+              --expected-default-semantic-pipeline
+                "${MDSLC_DEFAULT_SEMANTIC_PIPELINE}"
+          )
+          set_tests_properties(
+            integration.semantic_mlir_cpu_pipeline
+            PROPERTIES
+              WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+              TIMEOUT 300
+          )
+        endif()
+      else()
+        # The unavailable-path contract is platform-neutral. In particular,
+        # Windows distributions that do not yet contain the audited MLIR tuple
+        # must reject an explicit semantic-pipeline request without artifacts.
+        add_test(
+          NAME integration.semantic_mlir_unavailable
+          COMMAND
+            "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/mlir/run_semantic_cpu_pipeline_tests.py"
+            --expect-unavailable
+            --extractor "$<TARGET_FILE:matcore-extract>"
+            --driver "$<TARGET_FILE:mdslc_driver>"
+            --clangxx "${MDSLC_CLANGXX_EXECUTABLE}"
+            --repository-root "${CMAKE_CURRENT_SOURCE_DIR}/.."
+            --build-dir "${CMAKE_BINARY_DIR}"
+            --expected-default-semantic-pipeline
+              "${MDSLC_DEFAULT_SEMANTIC_PIPELINE}"
+        )
+        set_tests_properties(
+          integration.semantic_mlir_unavailable
+          PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+            TIMEOUT 180
+        )
+      endif()
+
       if(WIN32)
         # The Linux matrix authenticates ELF partial links, SONAME/rpath and
         # POSIX process behavior. Windows has an explicit COFF/PE replacement
@@ -542,6 +686,8 @@ if(BUILD_TESTING)
           --producer-build-dir "${CMAKE_BINARY_DIR}"
           --test-root "${CMAKE_BINARY_DIR}/tests/installed-consumer"
           --cxx-compiler "${CMAKE_CXX_COMPILER}"
+          --matcore-mlir-available "${MDSLC_MATCORE_MLIR_AVAILABLE}"
+          --default-semantic-pipeline "${MDSLC_DEFAULT_SEMANTIC_PIPELINE}"
       )
     endif()
 
@@ -570,6 +716,54 @@ if(BUILD_TESTING)
 
     if(NOT WIN32 AND MDSLC_ENABLE_NATIVE_FRONTEND)
       find_program(MDSLC_PACKAGE_GIT_EXECUTABLE NAMES git REQUIRED)
+      get_filename_component(MDSLC_PACKAGE_REPOSITORY_ROOT
+        "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+      execute_process(
+        COMMAND
+          "${MDSLC_PACKAGE_GIT_EXECUTABLE}" -C
+          "${MDSLC_PACKAGE_REPOSITORY_ROOT}" rev-parse --verify HEAD
+        RESULT_VARIABLE MDSLC_PACKAGE_SOURCE_COMMIT_RESULT
+        OUTPUT_VARIABLE MDSLC_PACKAGE_SOURCE_COMMIT
+        ERROR_VARIABLE MDSLC_PACKAGE_SOURCE_COMMIT_ERROR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+      )
+      string(LENGTH "${MDSLC_PACKAGE_SOURCE_COMMIT}"
+        MDSLC_PACKAGE_SOURCE_COMMIT_LENGTH)
+      if(NOT MDSLC_PACKAGE_SOURCE_COMMIT_RESULT EQUAL 0 OR
+         (NOT MDSLC_PACKAGE_SOURCE_COMMIT_LENGTH EQUAL 40 AND
+          NOT MDSLC_PACKAGE_SOURCE_COMMIT_LENGTH EQUAL 64) OR
+         NOT MDSLC_PACKAGE_SOURCE_COMMIT MATCHES "^[0-9a-fA-F]+$")
+        message(FATAL_ERROR
+          "Cannot authenticate the source-inaccessible package-test commit: "
+          "${MDSLC_PACKAGE_SOURCE_COMMIT_ERROR}")
+      endif()
+      string(TOLOWER "${MDSLC_PACKAGE_SOURCE_COMMIT}"
+        MDSLC_PACKAGE_SOURCE_COMMIT)
+      execute_process(
+        COMMAND
+          "${MDSLC_PACKAGE_GIT_EXECUTABLE}" -C
+          "${MDSLC_PACKAGE_REPOSITORY_ROOT}" status --porcelain=v1
+          --untracked-files=all
+        RESULT_VARIABLE MDSLC_PACKAGE_SOURCE_STATUS_RESULT
+        OUTPUT_VARIABLE MDSLC_PACKAGE_SOURCE_STATUS
+        ERROR_VARIABLE MDSLC_PACKAGE_SOURCE_STATUS_ERROR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+      )
+      if(NOT MDSLC_PACKAGE_SOURCE_STATUS_RESULT EQUAL 0)
+        message(FATAL_ERROR
+          "Cannot authenticate source-inaccessible package-test cleanliness: "
+          "${MDSLC_PACKAGE_SOURCE_STATUS_ERROR}")
+      endif()
+      if(MDSLC_PACKAGE_SOURCE_STATUS STREQUAL "")
+        set(MDSLC_PACKAGE_SOURCE_WAS_CLEAN ON)
+      else()
+        set(MDSLC_PACKAGE_SOURCE_WAS_CLEAN OFF)
+      endif()
+      set(MDSLC_SOURCE_INACCESSIBLE_MLIR_ARGUMENTS)
+      if(MDSLC_ENABLE_MATCORE_MLIR)
+        list(APPEND MDSLC_SOURCE_INACCESSIBLE_MLIR_ARGUMENTS
+          --mlir-dir "${MLIR_DIR}")
+      endif()
       add_test(
         NAME package.installed_source_inaccessible
         COMMAND
@@ -577,7 +771,9 @@ if(BUILD_TESTING)
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/package/run_source_inaccessible_consumer.py"
           --cmake "${CMAKE_COMMAND}"
           --git "${MDSLC_PACKAGE_GIT_EXECUTABLE}"
-          --repository-root "${CMAKE_CURRENT_SOURCE_DIR}/.."
+          --repository-root "${MDSLC_PACKAGE_REPOSITORY_ROOT}"
+          --expected-source-commit "${MDSLC_PACKAGE_SOURCE_COMMIT}"
+          --configured-source-clean "${MDSLC_PACKAGE_SOURCE_WAS_CLEAN}"
           --expected-build-root "${CMAKE_BINARY_DIR}"
           --test-root
             "${CMAKE_BINARY_DIR}/tests/installed-source-inaccessible"
@@ -586,6 +782,9 @@ if(BUILD_TESTING)
           --clangxx "${MDSLC_CLANGXX_EXECUTABLE}"
           --llvm-dir "${LLVM_DIR}"
           --clang-dir "${Clang_DIR}"
+          --matcore-mlir-available "${MDSLC_MATCORE_MLIR_AVAILABLE}"
+          --default-semantic-pipeline "${MDSLC_DEFAULT_SEMANTIC_PIPELINE}"
+          ${MDSLC_SOURCE_INACCESSIBLE_MLIR_ARGUMENTS}
       )
       set_tests_properties(
         package.installed_source_inaccessible
@@ -600,6 +799,7 @@ if(BUILD_TESTING)
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/package/run_source_inaccessible_consumer_safety_tests.py"
           --script
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/package/run_source_inaccessible_consumer.py"
+          --git "${MDSLC_PACKAGE_GIT_EXECUTABLE}"
       )
     endif()
   endif()

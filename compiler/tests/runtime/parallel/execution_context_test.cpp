@@ -1,4 +1,5 @@
 #include "cpu_execution_context.h"
+#include "fp_environment_v1.h"
 #include "thread_affinity_v1.h"
 
 #include <atomic>
@@ -11,6 +12,10 @@
 #include <string_view>
 #include <thread>
 #include <vector>
+
+#if defined(__linux__) && defined(__x86_64__)
+#include <xmmintrin.h>
+#endif
 
 namespace {
 
@@ -57,6 +62,75 @@ struct BorrowedStackState {
   std::uint64_t expected = 0;
   std::uint64_t observed = 0;
 };
+
+struct PreflightState {
+  std::uint32_t active_threads = 0;
+  std::size_t failed_worker = std::numeric_limits<std::size_t>::max();
+  std::atomic<std::uint32_t> preflights{0};
+  std::atomic<std::uint32_t> tasks{0};
+  std::atomic<bool> task_started_early{false};
+};
+
+runtime::CpuExecutionStatusV1 record_preflight(
+    std::size_t worker_index, void *user_data) noexcept {
+  auto &state = *static_cast<PreflightState *>(user_data);
+  state.preflights.fetch_add(1, std::memory_order_release);
+  return worker_index == state.failed_worker
+             ? runtime::CpuExecutionStatusV1::callback_failed
+             : runtime::CpuExecutionStatusV1::success;
+}
+
+runtime::CpuExecutionStatusV1 record_preflight_task(
+    std::size_t, std::size_t, void *user_data) noexcept {
+  auto &state = *static_cast<PreflightState *>(user_data);
+  if (state.preflights.load(std::memory_order_acquire) !=
+      state.active_threads) {
+    state.task_started_early.store(true, std::memory_order_relaxed);
+  }
+  state.tasks.fetch_add(1, std::memory_order_relaxed);
+  return runtime::CpuExecutionStatusV1::success;
+}
+
+#if defined(__linux__) && defined(__x86_64__)
+struct WorkerFpState {
+  explicit WorkerFpState(std::uint32_t workers) : saved_mxcsr(workers, 0) {}
+  std::vector<std::uint32_t> saved_mxcsr;
+  std::atomic<std::uint32_t> inspected{0};
+  std::atomic<std::uint32_t> tasks{0};
+};
+
+runtime::CpuExecutionStatusV1 poison_one_worker_fp_environment(
+    std::size_t, std::size_t worker_index, void *user_data) noexcept {
+  auto &state = *static_cast<WorkerFpState *>(user_data);
+  state.saved_mxcsr[worker_index] = _mm_getcsr();
+  if (worker_index == 1) _mm_setcsr(_mm_getcsr() | (1U << 15U));
+  return runtime::CpuExecutionStatusV1::success;
+}
+
+runtime::CpuExecutionStatusV1 inspect_worker_fp_environment(
+    std::size_t, void *user_data) noexcept {
+  auto &state = *static_cast<WorkerFpState *>(user_data);
+  state.inspected.fetch_add(1, std::memory_order_relaxed);
+  return platform::inspect_current_fp_environment_v1()
+                 .explicit_gemm_f32_v1_compatible
+             ? runtime::CpuExecutionStatusV1::success
+             : runtime::CpuExecutionStatusV1::callback_failed;
+}
+
+runtime::CpuExecutionStatusV1 record_worker_fp_task(
+    std::size_t, std::size_t, void *user_data) noexcept {
+  auto &state = *static_cast<WorkerFpState *>(user_data);
+  state.tasks.fetch_add(1, std::memory_order_relaxed);
+  return runtime::CpuExecutionStatusV1::success;
+}
+
+runtime::CpuExecutionStatusV1 restore_worker_fp_environment(
+    std::size_t, std::size_t worker_index, void *user_data) noexcept {
+  auto &state = *static_cast<WorkerFpState *>(user_data);
+  _mm_setcsr(state.saved_mxcsr[worker_index]);
+  return runtime::CpuExecutionStatusV1::success;
+}
+#endif
 
 runtime::CpuExecutionStatusV1 observe_borrowed_stack_state(
     std::size_t task_index, std::size_t worker_index,
@@ -227,6 +301,84 @@ void configuration_and_static_distribution() {
                             record_assignment, &state) ==
              runtime::CpuExecutionStatusV1::context_stopping,
          "stopped context rejects later submissions");
+}
+
+void submission_preflight_is_a_fail_closed_barrier() {
+  constexpr std::uint32_t worker_count = 4;
+  auto context = make_context(worker_count, worker_count);
+  if (context == nullptr) return;
+
+  PreflightState accepted;
+  accepted.active_threads = worker_count;
+  expect(context->run_tasks_with_preflight(
+             16, worker_count,
+             runtime::CpuProviderNestingPolicyV1::native_only,
+             record_preflight, record_preflight_task, &accepted) ==
+             runtime::CpuExecutionStatusV1::success &&
+             accepted.preflights.load(std::memory_order_relaxed) ==
+                 worker_count &&
+             accepted.tasks.load(std::memory_order_relaxed) == 16 &&
+             !accepted.task_started_early.load(std::memory_order_relaxed),
+         "all active preflights finish before the first task callback");
+
+  PreflightState rejected;
+  rejected.active_threads = worker_count;
+  rejected.failed_worker = 2;
+  expect(context->run_tasks_with_preflight(
+             16, worker_count,
+             runtime::CpuProviderNestingPolicyV1::native_only,
+             record_preflight, record_preflight_task, &rejected) ==
+             runtime::CpuExecutionStatusV1::callback_failed &&
+             rejected.preflights.load(std::memory_order_relaxed) ==
+                 worker_count &&
+             rejected.tasks.load(std::memory_order_relaxed) == 0,
+         "one failed preflight suppresses every task without deadlock");
+
+  PreflightState reused;
+  reused.active_threads = worker_count;
+  expect(context->run_tasks_with_preflight(
+             8, worker_count,
+             runtime::CpuProviderNestingPolicyV1::native_only,
+             record_preflight, record_preflight_task, &reused) ==
+             runtime::CpuExecutionStatusV1::success &&
+             reused.tasks.load(std::memory_order_relaxed) == 8,
+         "context remains reusable after a failed preflight");
+}
+
+void worker_fp_poisoning_fails_before_tasks() {
+#if defined(__linux__) && defined(__x86_64__)
+  constexpr std::uint32_t worker_count = 4;
+  auto context = make_context(worker_count, worker_count);
+  if (context == nullptr) return;
+  WorkerFpState state(worker_count);
+  expect(context->run_tasks(
+             worker_count, worker_count,
+             runtime::CpuProviderNestingPolicyV1::native_only,
+             poison_one_worker_fp_environment, &state) ==
+             runtime::CpuExecutionStatusV1::success,
+         "one persistent worker can be physically poisoned for the guard test");
+  expect(context->run_tasks_with_preflight(
+             worker_count, worker_count,
+             runtime::CpuProviderNestingPolicyV1::native_only,
+             inspect_worker_fp_environment, record_worker_fp_task, &state) ==
+             runtime::CpuExecutionStatusV1::callback_failed &&
+             state.inspected.load(std::memory_order_relaxed) == worker_count &&
+             state.tasks.load(std::memory_order_relaxed) == 0,
+         "one poisoned worker rejects the whole submission before any task");
+  expect(context->run_tasks(
+             worker_count, worker_count,
+             runtime::CpuProviderNestingPolicyV1::native_only,
+             restore_worker_fp_environment, &state) ==
+             runtime::CpuExecutionStatusV1::success,
+         "worker environments are restored after physical poisoning");
+  state.inspected.store(0, std::memory_order_relaxed);
+  expect(context->run_tasks_with_preflight(
+             worker_count, worker_count,
+             runtime::CpuProviderNestingPolicyV1::native_only,
+             inspect_worker_fp_environment, record_worker_fp_task, &state) ==
+             runtime::CpuExecutionStatusV1::success,
+         "restored workers pass the next authenticated submission");
+#endif
 }
 
 void inactive_workers_do_not_retain_borrowed_submissions() {
@@ -502,6 +654,8 @@ void multi_worker_shutdown_completes_active_barrier() {
 
 int main() {
   configuration_and_static_distribution();
+  submission_preflight_is_a_fail_closed_barrier();
+  worker_fp_poisoning_fails_before_tasks();
   inactive_workers_do_not_retain_borrowed_submissions();
   explicit_worker_affinity_is_strict_and_reported();
   independent_contexts_execute_concurrently();

@@ -76,6 +76,8 @@ planner::CpuPlannerPlacementEvidenceV1 single_node_placement(
 planner::CpuGemmImplementationResourcesV2 resources() {
   planner::CpuGemmImplementationResourcesV2 result;
   result.baseline.openblas_linked = true;
+  result.baseline.openblas_conformance_evaluated = true;
+  result.baseline.openblas_conformant = true;
   result.baseline.openblas_local_thread_control = true;
   result.baseline.openblas_maximum_threads = 24;
   result.baseline.native_packed_avx2_fma_compiled = true;

@@ -7,9 +7,14 @@
 static_assert(MATCORE_RUNTIME_ABI_VERSION_V0 == 0);
 static_assert(MATCORE_RUNTIME_PLAN_ABI_VERSION_V1 == 1);
 static_assert(MATCORE_RUNTIME_CPU_GEMM_CANDIDATE_COUNT_V1 == 3);
+static_assert(MATCORE_RUNTIME_EXECUTION_ABI_VERSION_V1 == 1);
+static_assert(MATCORE_RUNTIME_PLAN_ABI_VERSION_V2 == 2);
+static_assert(MATCORE_RUNTIME_CPU_GEMM_CANDIDATE_COUNT_V2 == 5);
 static_assert(MATCORE_RUNTIME_CAPABILITY_ABI_VERSION_V2 == 2);
 static_assert(MATCORE_RUNTIME_PLAN_ABI_VERSION_V3 == 3);
 static_assert(MATCORE_RUNTIME_CPU_GEMM_CANDIDATE_COUNT_V3 == 8);
+static_assert(MATCORE_RUNTIME_EXECUTION_OPTIONS_ABI_VERSION_V2 == 2);
+static_assert(MATCORE_RUNTIME_EXECUTION_CONTEXT_ABI_VERSION_V1 == 1);
 
 static_assert(std::is_standard_layout_v<matcore_tensor_desc_v0>);
 static_assert(std::is_standard_layout_v<matcore_policy_v0>);
@@ -36,6 +41,20 @@ static_assert(
     std::is_standard_layout_v<matcore_cpu_execution_context_options_v1>);
 static_assert(
     std::is_standard_layout_v<matcore_cpu_execution_context_report_v1>);
+static_assert(
+    std::is_same_v<decltype(matcore_status_v0{}.message), const char *>);
+static_assert(std::is_same_v<
+              decltype(matcore_cpu_gemm_candidate_v1{}.stable_id),
+              const char *>);
+static_assert(std::is_same_v<decltype(matcore_cpu_gemm_candidate_v1{}.reason),
+                             const char *>);
+static_assert(std::is_same_v<
+              decltype(matcore_cpu_gemm_plan_report_v2{}.external_provider),
+              const char *>);
+static_assert(std::is_same_v<decltype(matcore_packed_b_desc_v1{}.source_data),
+                             const void *>);
+static_assert(std::is_same_v<decltype(matcore_packed_b_desc_v1{}.packed_data),
+                             const void *>);
 
 #if INTPTR_MAX == INT64_MAX
 static_assert(sizeof(matcore_tensor_desc_v0) == 192);
@@ -113,6 +132,7 @@ static_assert(offsetof(matcore_cpu_execution_context_report_v1,
 static_assert(MATCORE_STATUS_INVALID_ALIGNMENT_V0 == 16);
 static_assert(MATCORE_STATUS_PREPACK_MISMATCH_V0 == 21);
 static_assert(MATCORE_STATUS_ACCUMULATOR_OVERFLOW_V0 == 25);
+static_assert(MATCORE_STATUS_UNSUPPORTED_FLOATING_POINT_ENVIRONMENT_V0 == 26);
 static_assert(MATCORE_CPU_FEATURE_PORTABLE_SCALAR_F32_V1 == UINT64_C(1));
 static_assert(MATCORE_CPU_FEATURE_AVX2_V1 == (UINT64_C(1) << 1));
 static_assert(MATCORE_CPU_FEATURE_FMA_V1 == (UINT64_C(1) << 2));

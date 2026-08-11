@@ -77,8 +77,8 @@ void run_shape(std::int64_t m, std::int64_t k, std::int64_t n) {
   const auto p = policy();
   const auto result = matcore_runtime_gemm_f32_v0(&out, &lhs, &rhs, &p);
   expect(result.code == MATCORE_STATUS_OK_V0, "valid GEMM returns success");
-  expect(text_or_empty(result.message) == "ok",
-         "legacy GEMM success diagnostic remains stable");
+  expect(!text_or_empty(result.message).empty(),
+         "legacy GEMM returns a nonempty borrowed diagnostic");
   for (std::size_t i = 0; i < c.size(); ++i)
     expect(std::fabs(static_cast<double>(c[i]) - oracle[i]) < 1.0e-5,
            "GEMM matches independent oracle");
@@ -572,7 +572,7 @@ void runtime_plan_report() {
          "runtime report exposes all registry candidates");
   expect(report.selected_stable_id != nullptr &&
              report.selection_reason != nullptr,
-         "runtime report exposes process-lifetime selection diagnostics");
+         "runtime report exposes borrowed selection diagnostics");
   expect(text_or_empty(report.selection_reason).find(
              "lowest deterministic cost") != std::string_view::npos,
          "runtime report exposes a human-readable selection reason");
@@ -594,12 +594,42 @@ void runtime_plan_report() {
          "runtime report exposes detected x86_64 architecture");
 #endif
 
+  if (result.message == nullptr || report.selected_stable_id == nullptr ||
+      report.selection_reason == nullptr ||
+      report.candidate_count !=
+          MATCORE_RUNTIME_CPU_GEMM_CANDIDATE_COUNT_V1) {
+    expect(false, "runtime report returned all required borrowed strings");
+    return;
+  }
+  const char *borrowed_status_message = result.message;
+  const char *borrowed_selected_id = report.selected_stable_id;
+  const char *borrowed_selection_reason = report.selection_reason;
+  const std::string status_message_copy(borrowed_status_message);
+  const std::string selected_id_copy(borrowed_selected_id);
+  const std::string selection_reason_copy(borrowed_selection_reason);
+  std::array<const char *, MATCORE_RUNTIME_CPU_GEMM_CANDIDATE_COUNT_V1>
+      borrowed_candidate_ids{};
+  std::array<const char *, MATCORE_RUNTIME_CPU_GEMM_CANDIDATE_COUNT_V1>
+      borrowed_candidate_reasons{};
+  std::array<std::string, MATCORE_RUNTIME_CPU_GEMM_CANDIDATE_COUNT_V1>
+      candidate_id_copies{};
+  std::array<std::string, MATCORE_RUNTIME_CPU_GEMM_CANDIDATE_COUNT_V1>
+      candidate_reason_copies{};
+  for (std::uint32_t index = 0; index < report.candidate_count; ++index) {
+    borrowed_candidate_ids[index] = report.candidates[index].stable_id;
+    borrowed_candidate_reasons[index] = report.candidates[index].reason;
+    if (borrowed_candidate_ids[index] != nullptr)
+      candidate_id_copies[index] = borrowed_candidate_ids[index];
+    if (borrowed_candidate_reasons[index] != nullptr)
+      candidate_reason_copies[index] = borrowed_candidate_reasons[index];
+  }
+
   matcore_cpu_gemm_plan_report_v1 repeated_report{};
   repeated_report.abi_version = MATCORE_RUNTIME_PLAN_ABI_VERSION_V1;
   repeated_report.struct_size = sizeof(repeated_report);
-  expect(matcore_runtime_plan_gemm_f32_v1(&out, &lhs, &rhs, &p,
-                                          &repeated_report)
-                 .code == MATCORE_STATUS_OK_V0,
+  const auto repeated_result =
+      matcore_runtime_plan_gemm_f32_v1(&out, &lhs, &rhs, &p, &repeated_report);
+  expect(repeated_result.code == MATCORE_STATUS_OK_V0,
          "repeated runtime planning succeeds");
   expect(text_or_empty(repeated_report.selected_stable_id) ==
              text_or_empty(report.selected_stable_id) &&
@@ -616,6 +646,20 @@ void runtime_plan_report() {
                text_or_empty(repeated_report.candidates[index].reason) ==
                    text_or_empty(report.candidates[index].reason),
            "repeated runtime planning has stable candidate diagnostics");
+  }
+  expect(std::strcmp(borrowed_status_message, status_message_copy.c_str()) == 0 &&
+             std::strcmp(borrowed_selected_id, selected_id_copy.c_str()) == 0 &&
+             std::strcmp(borrowed_selection_reason,
+                         selection_reason_copy.c_str()) == 0,
+         "borrowed status and selection strings survive later runtime calls");
+  for (std::uint32_t index = 0; index < report.candidate_count; ++index) {
+    expect(borrowed_candidate_ids[index] != nullptr &&
+               borrowed_candidate_reasons[index] != nullptr &&
+               std::strcmp(borrowed_candidate_ids[index],
+                           candidate_id_copies[index].c_str()) == 0 &&
+               std::strcmp(borrowed_candidate_reasons[index],
+                           candidate_reason_copies[index].c_str()) == 0,
+           "borrowed candidate strings survive later runtime calls");
   }
 
   matcore_cpu_gemm_plan_report_v1 bad_report{};

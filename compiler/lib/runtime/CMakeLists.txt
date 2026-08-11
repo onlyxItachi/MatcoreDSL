@@ -4,6 +4,9 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   project(MatcoreRuntimeV0 LANGUAGES CXX)
   include(CTest)
   include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/MatcoreDSLCompilerOptions.cmake")
+  set(CMAKE_CXX_STANDARD 20)
+  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+  set(CMAKE_CXX_EXTENSIONS OFF)
 endif()
 
 option(
@@ -62,6 +65,13 @@ if(NOT MDSLC_HAS_OPENBLAS)
   message(STATUS "MDSLC OpenBLAS variant: unavailable (optional)")
 endif()
 
+if(NOT TARGET matcore_platform_v1)
+  add_subdirectory(
+    "${CMAKE_CURRENT_SOURCE_DIR}/../platform"
+    "${CMAKE_CURRENT_BINARY_DIR}/matcore_platform_v1"
+  )
+endif()
+
 if(NOT TARGET matcore_cpu_planner_v1)
   add_subdirectory(
     "${CMAKE_CURRENT_SOURCE_DIR}/../planner"
@@ -96,6 +106,7 @@ add_library(matcore_cpu_backends_v1 STATIC
 )
 add_library(MatcoreDSL::CpuBackendsV1 ALIAS matcore_cpu_backends_v1)
 target_compile_features(matcore_cpu_backends_v1 PUBLIC cxx_std_20)
+mdslc_target_enable_precise_fp(matcore_cpu_backends_v1)
 target_include_directories(matcore_cpu_backends_v1 PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
 )
@@ -114,6 +125,7 @@ add_library(MatcoreDSL::Runtime ALIAS matcore_runtime)
 set_property(TARGET matcore_runtime PROPERTY EXPORT_NAME Runtime)
 
 target_compile_features(matcore_runtime PUBLIC cxx_std_20)
+mdslc_target_enable_precise_fp(matcore_runtime)
 target_compile_definitions(matcore_runtime PRIVATE MATCORE_RUNTIME_BUILD)
 target_link_libraries(matcore_runtime PRIVATE MatcoreDSL::CpuPlannerV1)
 if(MDSLC_HAS_OPENBLAS)
@@ -165,6 +177,29 @@ if(WIN32)
 endif()
 
 if(BUILD_TESTING)
+  add_test(
+    NAME runtime.fp.compile_profile
+    COMMAND "${CMAKE_COMMAND}"
+      "-DMDSLC_NINJA=${CMAKE_MAKE_PROGRAM}"
+      "-DMDSLC_BINARY_DIR=${CMAKE_BINARY_DIR}"
+      "-DMDSLC_MSVC_ABI=${MDSLC_USING_MSVC_ABI_FRONTEND}"
+      "-DMDSLC_CXX_COMPILER_ID=${CMAKE_CXX_COMPILER_ID}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/cmake/check_runtime_fp_compile_profile.cmake"
+  )
+
+  add_test(
+    NAME runtime.fp.reject_unsafe_global_flags
+    COMMAND "${CMAKE_COMMAND}"
+      "-DMDSLC_CMAKE=${CMAKE_COMMAND}"
+      "-DMDSLC_NINJA=${CMAKE_MAKE_PROGRAM}"
+      "-DMDSLC_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
+      "-DMDSLC_TEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/unsafe-fp-configure-test"
+      "-DMDSLC_C_COMPILER=${CMAKE_C_COMPILER}"
+      "-DMDSLC_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+      "-DMDSLC_RAPIDJSON_INCLUDE_DIR=${MATCORE_RAPIDJSON_INCLUDE_DIR}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/cmake/reject_unsafe_fp_flags.cmake"
+  )
+
   add_executable(matcore_numeric_reference_test
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/types/reference_types_test.cpp"
   )
@@ -308,6 +343,37 @@ if(BUILD_TESTING)
   )
   add_test(NAME runtime.c_abi.compatibility_v1
     COMMAND matcore_runtime_abi_compat_test
+  )
+
+  # These physical rejection-path fixtures manipulate Linux x86-64 MXCSR/x87
+  # state. Do not register a vacuous executable on platforms where every test
+  # body is intentionally unavailable; the portable decoder/fail-closed
+  # contract remains covered by platform.fp_environment.v1.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+     CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    add_executable(matcore_fp_environment_runtime_test
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/fp_environment_runtime_test.cpp"
+    )
+    target_compile_features(matcore_fp_environment_runtime_test PRIVATE cxx_std_20)
+    mdslc_target_enable_warnings(matcore_fp_environment_runtime_test WERROR)
+    target_link_libraries(matcore_fp_environment_runtime_test
+      PRIVATE MatcoreDSL::Runtime
+    )
+    add_test(NAME runtime.c_abi.fp_environment_v1
+      COMMAND matcore_fp_environment_runtime_test
+    )
+  endif()
+
+  add_executable(matcore_cpu_runtime_validation_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/cpu_runtime_validation_test.cpp"
+  )
+  target_compile_features(matcore_cpu_runtime_validation_test PRIVATE cxx_std_20)
+  mdslc_target_enable_warnings(matcore_cpu_runtime_validation_test WERROR)
+  target_link_libraries(matcore_cpu_runtime_validation_test
+    PRIVATE MatcoreDSL::CpuBackendsV1
+  )
+  add_test(NAME runtime.cpu.variant_conformance.v1
+    COMMAND matcore_cpu_runtime_validation_test
   )
 
   add_executable(matcore_public_context_c_api_test

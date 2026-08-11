@@ -176,7 +176,10 @@ def main() -> int:
         if ir_version_from(explicit_native_log[0]) != "1":
             raise RuntimeError("explicit native pipeline did not request typed IR v1")
 
-        bootstrap = invoke(frontend="ast-json-bootstrap")
+        bootstrap = invoke(
+            frontend="ast-json-bootstrap",
+            additional_wrapper_arguments=["--semantic-pipeline=capture-v0"],
+        )
         bootstrap_log = read_log(log)
         if bootstrap.returncode != 73 or len(bootstrap_log) != 1:
             raise RuntimeError("bootstrap frontend was not invoked exactly once")
@@ -228,6 +231,7 @@ def main() -> int:
 
         successful_link = invoke(
             environment_updates={"MDSLC_DRIVER_TEST_SUCCESS": "1"},
+            additional_wrapper_arguments=["--semantic-pipeline=capture-v0"],
             compile_only=False,
             forwarding_probes=False,
         )

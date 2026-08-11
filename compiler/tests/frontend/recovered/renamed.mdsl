@@ -1,0 +1,16 @@
+#include <cstddef>
+
+// UTF-8 before the loop: π, λ, 矩阵.
+void renamed(float *destination, const float *left, const float *right,
+             std::size_t rows, std::size_t columns, std::size_t depth) {
+  for (std::size_t row = 0; (row < rows); (++row)) {
+    for (std::size_t column = 0; (column < columns); (++column)) {
+      float total = (0.0F);
+      for (std::size_t reduction = 0; (reduction < depth); (++reduction)) {
+        total += (left[(row * depth) + reduction] *
+                  right[(reduction * columns) + column]);
+      }
+      destination[(row * columns) + column] = total;
+    }
+  }
+}
