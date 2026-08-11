@@ -182,8 +182,14 @@ mlir::DictionaryAttr proofRange(mlir::Builder &builder, llvm::StringRef kind,
        builder.getNamedAttr("kind", builder.getStringAttr(kind))});
 }
 
+enum class RecoveredCppContract {
+  SourceProvenGuardRequired,
+  RecognizedRewriteRejected,
+};
+
 void makeRecoveredCppLoopContract(dialect::GemmOp operation,
-                                  mlir::Builder &builder) {
+                                  mlir::Builder &builder,
+                                  RecoveredCppContract contract) {
   const auto old_provenance = operation.getProvenance();
   const auto old_range =
       old_provenance.getAs<mlir::DictionaryAttr>("call_range");
@@ -192,6 +198,8 @@ void makeRecoveredCppLoopContract(dialect::GemmOp operation,
   const std::int64_t end =
       old_range.getAs<mlir::IntegerAttr>("end").getInt();
 
+  const bool rewrite_rejected =
+      contract == RecoveredCppContract::RecognizedRewriteRejected;
   operation->setAttr(
       "origin",
       builder.getDictionaryAttr(
@@ -202,15 +210,31 @@ void makeRecoveredCppLoopContract(dialect::GemmOp operation,
                builder.getStringAttr("canonical-row-major-f32-gemm-v1")),
            builder.getNamedAttr(
                "permission",
-               builder.getStringAttr("source_proven_guard_required")),
+               builder.getStringAttr(
+                   rewrite_rejected ? "recognized_rewrite_rejected"
+                                    : "source_proven_guard_required")),
            builder.getNamedAttr("version", builder.getI32IntegerAttr(1))}));
 
   auto numerical = operation.getNumerical();
   numerical = withField(
       builder, numerical, "profile",
-      builder.getStringAttr("recovered-cpp-gemm-f32-source-proven-v1"));
+      builder.getStringAttr(
+          rewrite_rejected ? "recovered-cpp-gemm-f32-strict-v1"
+                           : "recovered-cpp-gemm-f32-source-proven-v1"));
   numerical = withField(builder, numerical, "derivation",
                         builder.getStringAttr("effective_cpp_semantics"));
+  if (rewrite_rejected) {
+    numerical = withField(builder, numerical, "reassociation",
+                          builder.getStringAttr("forbidden"));
+    numerical = withField(builder, numerical, "contraction",
+                          builder.getStringAttr("within_statement"));
+    numerical = withField(builder, numerical, "reduction_order",
+                          builder.getStringAttr("increasing_k"));
+    numerical = withField(builder, numerical, "nan",
+                          builder.getStringAttr("strict"));
+    numerical = withField(builder, numerical, "signed_zero",
+                          builder.getStringAttr("preserve"));
+  }
   operation->setAttr("numerical", numerical);
 
   operation->setAttr(
@@ -568,21 +592,61 @@ int main() {
         "bridge must emit one independent function per operation/site");
 
   mlir::MLIRContext recovered_context;
-  auto recovered_result = build(capture, recovered_context, explicit_profile);
-  check(static_cast<bool>(recovered_result),
-        "recovered-form fixture must bridge before origin conversion");
-  if (recovered_result) {
-    auto recovered_gemm = findGemm(*recovered_result.module);
+  auto relaxed_recovered_result =
+      build(capture, recovered_context, explicit_profile);
+  auto strict_recovered_result =
+      build(capture, recovered_context, explicit_profile);
+  check(static_cast<bool>(relaxed_recovered_result) &&
+            static_cast<bool>(strict_recovered_result),
+        "recovered-form fixtures must bridge before origin conversion");
+  if (relaxed_recovered_result && strict_recovered_result) {
+    auto relaxed_gemm = findGemm(*relaxed_recovered_result.module);
+    auto strict_gemm = findGemm(*strict_recovered_result.module);
     mlir::Builder builder(&recovered_context);
-    makeRecoveredCppLoopContract(recovered_gemm, builder);
-    check(mlir::succeeded(mlir::verify(*recovered_result.module)),
-          "core GemmOp must accept strict source-proven recovered semantics");
-    check(!bridge::verifyMatcoreV1BridgeModule(*recovered_result.module,
+    const auto explicit_numerical = relaxed_gemm.getNumerical();
+    makeRecoveredCppLoopContract(
+        relaxed_gemm, builder,
+        RecoveredCppContract::SourceProvenGuardRequired);
+    makeRecoveredCppLoopContract(
+        strict_gemm, builder,
+        RecoveredCppContract::RecognizedRewriteRejected);
+    check(mlir::succeeded(mlir::verify(*relaxed_recovered_result.module)),
+          "core GemmOp must accept source-proven relaxed recovered semantics");
+    check(mlir::succeeded(mlir::verify(*strict_recovered_result.module)),
+          "core GemmOp must accept strict increasing-K recovered semantics");
+
+    auto normalize_numerical = [&](mlir::DictionaryAttr numerical) {
+      numerical = withoutField(builder, numerical, "profile");
+      return withoutField(builder, numerical, "derivation");
+    };
+    check(normalize_numerical(explicit_numerical) ==
+              normalize_numerical(relaxed_gemm.getNumerical()),
+          "explicit and source-proven relaxed GEMM must share one normalized mathematical contract");
+    check(normalize_numerical(explicit_numerical) !=
+              normalize_numerical(strict_gemm.getNumerical()),
+          "strict recovered GEMM must not claim relaxed explicit-eDSL semantics");
+
+    const std::string strict_text =
+        bridge::serializeDeterministicMlir(*strict_recovered_result.module);
+    mlir::MLIRContext recovered_parse_context;
+    bridge::registerMatcoreSemanticDialects(recovered_parse_context);
+    mlir::ParserConfig recovered_parser_config(
+        &recovered_parse_context, /*verifyAfterParse=*/true);
+    auto strict_parsed = mlir::parseSourceString<mlir::ModuleOp>(
+        strict_text, recovered_parser_config);
+    check(static_cast<bool>(strict_parsed),
+          "strict recovered semantic form must parse and core-verify");
+
+    check(!bridge::verifyMatcoreV1BridgeModule(*relaxed_recovered_result.module,
                                                verify_error),
           "the explicit v1 bridge envelope must reject recovered provenance");
     checkContains(verify_error, "explicit-call provenance",
                   "bridge-envelope rejection must explain the boundary");
-    check(!recovered_gemm.getOrigin().get("canonical_callee"),
+    check(!bridge::verifyMatcoreV1BridgeModule(*strict_recovered_result.module,
+                                               verify_error),
+          "analysis-only strict recovery must remain outside the executable v1 bridge envelope");
+    check(!relaxed_gemm.getOrigin().get("canonical_callee") &&
+              !strict_gemm.getOrigin().get("canonical_callee"),
           "recovered origin must not forge an explicit Matcore callee");
   }
 
@@ -598,7 +662,9 @@ int main() {
   expectCoreOperationRejected(
       capture, explicit_profile,
       [](dialect::GemmOp operation, mlir::Builder &builder) {
-        makeRecoveredCppLoopContract(operation, builder);
+        makeRecoveredCppLoopContract(
+            operation, builder,
+            RecoveredCppContract::SourceProvenGuardRequired);
         operation->setAttr(
             "origin",
             withField(builder, operation.getOrigin(), "permission",
@@ -608,7 +674,59 @@ int main() {
   expectCoreOperationRejected(
       capture, explicit_profile,
       [](dialect::GemmOp operation, mlir::Builder &builder) {
-        makeRecoveredCppLoopContract(operation, builder);
+        makeRecoveredCppLoopContract(
+            operation, builder,
+            RecoveredCppContract::SourceProvenGuardRequired);
+        operation->setAttr(
+            "origin",
+            withField(builder, operation.getOrigin(), "permission",
+                      builder.getStringAttr("recognized_rewrite_rejected")));
+      },
+      "analysis-only recovery permission must require the strict numerical profile");
+  expectCoreOperationRejected(
+      capture, explicit_profile,
+      [](dialect::GemmOp operation, mlir::Builder &builder) {
+        makeRecoveredCppLoopContract(
+            operation, builder,
+            RecoveredCppContract::RecognizedRewriteRejected);
+        operation->setAttr(
+            "origin",
+            withField(builder, operation.getOrigin(), "permission",
+                      builder.getStringAttr("source_proven_guard_required")));
+      },
+      "source-proven recovery permission must require its relaxed numerical profile");
+  expectCoreOperationRejected(
+      capture, explicit_profile,
+      [](dialect::GemmOp operation, mlir::Builder &builder) {
+        makeRecoveredCppLoopContract(
+            operation, builder,
+            RecoveredCppContract::RecognizedRewriteRejected);
+        operation->setAttr(
+            "numerical",
+            withField(
+                builder, operation.getNumerical(), "profile",
+                builder.getStringAttr(
+                    "recovered-cpp-gemm-f32-source-proven-v1")));
+      },
+      "strict recovered semantics must reject a relaxed profile label");
+  expectCoreOperationRejected(
+      capture, explicit_profile,
+      [](dialect::GemmOp operation, mlir::Builder &builder) {
+        makeRecoveredCppLoopContract(
+            operation, builder,
+            RecoveredCppContract::RecognizedRewriteRejected);
+        operation->setAttr(
+            "numerical",
+            withField(builder, operation.getNumerical(), "contraction",
+                      builder.getStringAttr("allowed")));
+      },
+      "strict recovered semantics must reject relaxed contraction permission");
+  expectCoreOperationRejected(
+      capture, explicit_profile,
+      [](dialect::GemmOp operation, mlir::Builder &builder) {
+        makeRecoveredCppLoopContract(
+            operation, builder,
+            RecoveredCppContract::SourceProvenGuardRequired);
         operation->setAttr(
             "numerical",
             withField(builder, operation.getNumerical(), "derivation",
@@ -618,7 +736,9 @@ int main() {
   expectCoreOperationRejected(
       capture, explicit_profile,
       [](dialect::GemmOp operation, mlir::Builder &builder) {
-        makeRecoveredCppLoopContract(operation, builder);
+        makeRecoveredCppLoopContract(
+            operation, builder,
+            RecoveredCppContract::SourceProvenGuardRequired);
         operation->setAttr(
             "policy",
             withField(builder, operation.getPolicy(), "fallback",
@@ -628,7 +748,9 @@ int main() {
   expectCoreOperationRejected(
       capture, explicit_profile,
       [](dialect::GemmOp operation, mlir::Builder &builder) {
-        makeRecoveredCppLoopContract(operation, builder);
+        makeRecoveredCppLoopContract(
+            operation, builder,
+            RecoveredCppContract::SourceProvenGuardRequired);
         operation->setAttr(
             "provenance",
             withField(builder, operation.getProvenance(), "source_snapshot",

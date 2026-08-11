@@ -4,6 +4,7 @@
 #include "mlir/IR/Location.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"
 
 #include <algorithm>
@@ -72,6 +73,17 @@ mlir::LogicalResult requireString(GemmOp operation,
   if (!value || value.getValue() != expected)
     return operation.emitOpError()
            << context << "." << name << " must be '" << expected << "'";
+  return mlir::success();
+}
+
+mlir::LogicalResult requireStringOneOf(
+    GemmOp operation, mlir::DictionaryAttr dictionary, llvm::StringRef name,
+    llvm::ArrayRef<llvm::StringRef> supported, llvm::StringRef context) {
+  const auto value = dictionary.getAs<mlir::StringAttr>(name);
+  if (!value || !llvm::is_contained(supported, value.getValue()))
+    return operation.emitOpError()
+           << context << "." << name
+           << " is not in the closed supported vocabulary";
   return mlir::success();
 }
 
@@ -283,7 +295,15 @@ mlir::LogicalResult verifyAliasing(GemmOp operation) {
   return mlir::success();
 }
 
-enum class SemanticOriginKind { ExplicitCall, RecoveredCppLoop };
+enum class SemanticOriginKind {
+  ExplicitCall,
+  RecoveredSourceProvenGuardRequired,
+  RecoveredRecognizedRewriteRejected,
+};
+
+bool isRecoveredOrigin(SemanticOriginKind origin_kind) {
+  return origin_kind != SemanticOriginKind::ExplicitCall;
+}
 
 mlir::LogicalResult verifyOrigin(GemmOp operation,
                                  SemanticOriginKind &origin_kind) {
@@ -304,7 +324,6 @@ mlir::LogicalResult verifyOrigin(GemmOp operation,
     return mlir::success();
   }
   if (kind.getValue() == "recovered_cpp_loop") {
-    origin_kind = SemanticOriginKind::RecoveredCppLoop;
     if (mlir::failed(requireExactDictionary(
             operation, origin, {"kind", "pattern", "permission", "version"},
             "origin")) ||
@@ -312,12 +331,23 @@ mlir::LogicalResult verifyOrigin(GemmOp operation,
                                     "origin")) ||
         mlir::failed(requireString(
             operation, origin, "pattern",
-            "canonical-row-major-f32-gemm-v1", "origin")) ||
-        mlir::failed(requireString(
-            operation, origin, "permission",
-            "source_proven_guard_required", "origin")))
+            "canonical-row-major-f32-gemm-v1", "origin")))
       return mlir::failure();
-    return mlir::success();
+    const auto permission = origin.getAs<mlir::StringAttr>("permission");
+    if (!permission)
+      return operation.emitOpError()
+             << "origin.permission is required for recovered_cpp_loop";
+    if (permission.getValue() == "source_proven_guard_required") {
+      origin_kind = SemanticOriginKind::RecoveredSourceProvenGuardRequired;
+      return mlir::success();
+    }
+    if (permission.getValue() == "recognized_rewrite_rejected") {
+      origin_kind = SemanticOriginKind::RecoveredRecognizedRewriteRejected;
+      return mlir::success();
+    }
+    return operation.emitOpError()
+           << "origin.permission has unsupported value '"
+           << permission.getValue() << "'";
   }
   return operation.emitOpError()
          << "origin.kind has unsupported value '" << kind.getValue() << "'";
@@ -334,49 +364,107 @@ mlir::LogicalResult verifyNumerical(GemmOp operation,
            "signed_zero", "subnormals", "trapping_exceptions"},
           "numerical")))
     return mlir::failure();
-  if (mlir::failed(requireString(operation, numerical, "accumulation_dtype",
-                                 "f32", "numerical")) ||
-      mlir::failed(requireString(operation, numerical, "reassociation",
-                                 "within_k_reduction", "numerical")) ||
-      mlir::failed(requireString(operation, numerical, "contraction", "allowed",
-                                 "numerical")) ||
-      mlir::failed(requireString(operation, numerical, "reduction_order",
-                                 "implementation_defined_within_k",
-                                 "numerical")) ||
-      mlir::failed(requireString(
+  if (mlir::failed(requireStringOneOf(operation, numerical,
+                                      "accumulation_dtype", {"f32"},
+                                      "numerical")) ||
+      mlir::failed(requireStringOneOf(
+          operation, numerical, "profile",
+          {"explicit-gemm-f32-v1",
+           "recovered-cpp-gemm-f32-source-proven-v1",
+           "recovered-cpp-gemm-f32-strict-v1"},
+          "numerical")) ||
+      mlir::failed(requireStringOneOf(
+          operation, numerical, "derivation",
+          {"explicit_edsl_contract", "effective_cpp_semantics"},
+          "numerical")) ||
+      mlir::failed(requireStringOneOf(
+          operation, numerical, "reassociation",
+          {"within_k_reduction", "forbidden"}, "numerical")) ||
+      mlir::failed(requireStringOneOf(operation, numerical, "contraction",
+                                      {"allowed", "within_statement"},
+                                      "numerical")) ||
+      mlir::failed(requireStringOneOf(
+          operation, numerical, "reduction_order",
+          {"implementation_defined_within_k", "increasing_k"},
+          "numerical")) ||
+      mlir::failed(requireStringOneOf(
           operation, numerical, "nan",
-          "preserve_classification_payload_order_unspecified", "numerical")) ||
-      mlir::failed(requireString(operation, numerical, "infinity",
-                                 "ieee_no_no_infs_assumption", "numerical")) ||
-      mlir::failed(requireString(operation, numerical, "signed_zero", "relaxed",
-                                 "numerical")) ||
-      mlir::failed(requireString(operation, numerical, "rounding",
-                                 "nearest_ties_even", "numerical")) ||
-      mlir::failed(requireString(
+          {"preserve_classification_payload_order_unspecified", "strict"},
+          "numerical")) ||
+      mlir::failed(requireStringOneOf(
+          operation, numerical, "infinity",
+          {"ieee_no_no_infs_assumption"}, "numerical")) ||
+      mlir::failed(requireStringOneOf(operation, numerical, "signed_zero",
+                                      {"relaxed", "preserve"},
+                                      "numerical")) ||
+      mlir::failed(requireStringOneOf(operation, numerical, "rounding",
+                                      {"nearest_ties_even"}, "numerical")) ||
+      mlir::failed(requireStringOneOf(
           operation, numerical, "exception_status",
-          "incoming_not_preserved_postcall_unspecified", "numerical")) ||
-      mlir::failed(requireString(
+          {"incoming_not_preserved_postcall_unspecified"}, "numerical")) ||
+      mlir::failed(requireStringOneOf(
           operation, numerical, "subnormals",
-          "ieee_gradual_ftz_daz_forbidden", "numerical")) ||
-      mlir::failed(requireString(operation, numerical, "trapping_exceptions",
-                                 "unsupported", "numerical")) ||
+          {"ieee_gradual_ftz_daz_forbidden"}, "numerical")) ||
+      mlir::failed(requireStringOneOf(operation, numerical,
+                                      "trapping_exceptions", {"unsupported"},
+                                      "numerical")) ||
       mlir::failed(requireBoolean(operation, numerical, "approximate_math",
                                   false, "numerical")) ||
       mlir::failed(requireBoolean(operation, numerical, "inplace", false,
                                   "numerical")))
     return mlir::failure();
-  if (origin_kind == SemanticOriginKind::ExplicitCall)
-    return mlir::failure(
-        mlir::failed(requireString(operation, numerical, "profile",
-                                   "explicit-gemm-f32-v1", "numerical")) ||
-        mlir::failed(requireString(operation, numerical, "derivation",
-                                   "explicit_edsl_contract", "numerical")));
+
+  llvm::StringRef profile;
+  llvm::StringRef derivation;
+  llvm::StringRef reassociation;
+  llvm::StringRef contraction;
+  llvm::StringRef reduction_order;
+  llvm::StringRef nan;
+  llvm::StringRef signed_zero;
+  switch (origin_kind) {
+  case SemanticOriginKind::ExplicitCall:
+    profile = "explicit-gemm-f32-v1";
+    derivation = "explicit_edsl_contract";
+    reassociation = "within_k_reduction";
+    contraction = "allowed";
+    reduction_order = "implementation_defined_within_k";
+    nan = "preserve_classification_payload_order_unspecified";
+    signed_zero = "relaxed";
+    break;
+  case SemanticOriginKind::RecoveredSourceProvenGuardRequired:
+    profile = "recovered-cpp-gemm-f32-source-proven-v1";
+    derivation = "effective_cpp_semantics";
+    reassociation = "within_k_reduction";
+    contraction = "allowed";
+    reduction_order = "implementation_defined_within_k";
+    nan = "preserve_classification_payload_order_unspecified";
+    signed_zero = "relaxed";
+    break;
+  case SemanticOriginKind::RecoveredRecognizedRewriteRejected:
+    profile = "recovered-cpp-gemm-f32-strict-v1";
+    derivation = "effective_cpp_semantics";
+    reassociation = "forbidden";
+    contraction = "within_statement";
+    reduction_order = "increasing_k";
+    nan = "strict";
+    signed_zero = "preserve";
+    break;
+  }
   return mlir::failure(
-      mlir::failed(requireString(
-          operation, numerical, "profile",
-          "recovered-cpp-gemm-f32-source-proven-v1", "numerical")) ||
+      mlir::failed(requireString(operation, numerical, "profile", profile,
+                                 "numerical")) ||
       mlir::failed(requireString(operation, numerical, "derivation",
-                                 "effective_cpp_semantics", "numerical")));
+                                 derivation, "numerical")) ||
+      mlir::failed(requireString(operation, numerical, "reassociation",
+                                 reassociation, "numerical")) ||
+      mlir::failed(requireString(operation, numerical, "contraction",
+                                 contraction, "numerical")) ||
+      mlir::failed(requireString(operation, numerical, "reduction_order",
+                                 reduction_order, "numerical")) ||
+      mlir::failed(requireString(operation, numerical, "nan", nan,
+                                 "numerical")) ||
+      mlir::failed(requireString(operation, numerical, "signed_zero",
+                                 signed_zero, "numerical")));
 }
 
 mlir::LogicalResult verifyPolicy(GemmOp operation,
@@ -385,7 +473,7 @@ mlir::LogicalResult verifyPolicy(GemmOp operation,
   if (mlir::failed(requireExactDictionary(operation, policy,
                                           {"fallback", "target"}, "policy")))
     return mlir::failure();
-  if (origin_kind == SemanticOriginKind::ExplicitCall)
+  if (!isRecoveredOrigin(origin_kind))
     return mlir::failure(
         mlir::failed(requireString(operation, policy, "target", "cpu",
                                    "policy")) ||
@@ -554,7 +642,7 @@ mlir::LogicalResult verifyRecoveredProvenance(
 
 mlir::LogicalResult verifyProvenance(GemmOp operation,
                                      SemanticOriginKind origin_kind) {
-  if (origin_kind == SemanticOriginKind::ExplicitCall)
+  if (!isRecoveredOrigin(origin_kind))
     return verifyExplicitProvenance(operation, operation.getProvenance());
   return verifyRecoveredProvenance(operation, operation.getProvenance());
 }
