@@ -89,8 +89,8 @@ uses the additive status
 `MATCORE_STATUS_UNSUPPORTED_FLOATING_POINT_ENVIRONMENT_V0` (numeric value 26)
 without changing an existing C record layout or function signature. Focused
 normal and ASan/UBSan review passed, and the later full local CPU-beta matrix
-passed at `69d099e`. Windows FP support remains bounded by its hosted
-compatibility lane rather than this physical Linux acceptance.
+passed at final local candidate `6796fd8`. Windows FP support remains bounded
+by its hosted compatibility lane rather than this physical Linux acceptance.
 
 The first staged work is architecture freeze, the MLIR core and deterministic
 v1 bridge, GEMM-to-SIN domain composition, conservative explicit/recovered
@@ -152,7 +152,7 @@ last in-flight whole-suite run passed 51/52 after the branch advanced during
 execution; the sole failure was the expected authenticated source-commit guard
 rejecting a stale benchmark binary. Later focused installed-profile validation
 refreshed exact clean-head provenance and passed its owned gates. The later full
-local matrix rebuilt the settled code candidate `69d099e` and passed every
+local matrix rebuilt immutable code candidate `6796fd8` and passed every
 registered supported gate, including provenance-sensitive tests.
 
 **Milestone C is implemented and independently accepted for the internal
@@ -179,7 +179,7 @@ compiled into an ordinary object/executable, and executed through the stable
 semantic lowering rather than by an unused inspection sidecar. This is a
 library-dispatch lowering, not Linalg/Vector loop generation. The fresh local
 Release, Debug, sanitizer, installed-package, relocation,
-source-inaccessible, and ABI matrix passed at `69d099e`; hosted Linux/Windows,
+source-inaccessible, and ABI matrix passed at `6796fd8`; hosted Linux/Windows,
 normal merge/tag, and final independent review remain Milestone H work.
 
 **Milestone F has an accepted bounded technical-limit disposition.** The
@@ -209,16 +209,18 @@ sanitizer profiles remain explicitly MLIR-disabled/default-`capture-v0`; they
 must prove the semantic route unavailable rather than imply Windows MLIR
 execution.
 
-The full local Milestone H matrix passed at code candidate `69d099e`: the
+The final local Milestone H matrix passed at immutable code candidate
+`6796fd8`: the
 Release MLIR/OpenBLAS 2x2 matrix, MLIR-present/default-capture compatibility,
 full Debug with OpenBLAS, focused ASan+UBSan and TSan scopes, installed and
 source-inaccessible packages, strict C17 ABI, legacy frontend, artifact,
-planner-sanity, and repository-hygiene gates are green. Commits after that
-candidate only record this evidence or correct review-document whitespace;
-they do not change compiler/runtime/package behavior. Hosted pull-request and
-Windows results, normal merge, and the final independent CPU-beta review remain
-pending. No CPU beta release is claimed yet. The bounded product contract and
-exact remaining gates are in [CPU_BETA_V1.md](CPU_BETA_V1.md).
+planner-sanity, and repository-hygiene gates are green. This evidence supersedes
+the earlier `69d099e` run because intervening compiler/runtime/package fixes
+were product changes. The following evidence/status commit is documentation
+only. Hosted pull-request and Windows results, normal merge, and final
+independent evidence review remain pending. No CPU beta release is claimed yet.
+The bounded product contract and exact remaining gates are in
+[CPU_BETA_V1.md](CPU_BETA_V1.md).
 
 ## Milestone 7 native BLAS parity
 

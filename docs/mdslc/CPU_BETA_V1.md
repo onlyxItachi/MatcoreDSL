@@ -2,7 +2,7 @@
 
 Date: 2026-08-11
 
-Status: **local Milestone H matrix passed at code candidate `69d099e`; final
+Status: **local Milestone H matrix passed at code candidate `6796fd8`; final
 independent review, hosted validation, merge, and beta publication are
 pending.**
 
@@ -155,27 +155,28 @@ not manufactured by changing the benchmark contract or envelope.
 
 ## Milestone H acceptance matrix
 
-The full local matrix was run from clean code candidate `69d099e`; the evidence
-is recorded in
-[cpu-beta-local-validation.md](agent-reports/cpu-beta-local-validation.md).
-The following commits through the local report and review-whitespace correction
-change documentation only, so the table distinguishes authenticated local
-evidence from the still-pending independent and hosted gates.
+The final local matrix was run from a clean immutable clone of code candidate
+`6796fd8`; the evidence is recorded in
+[cpu-beta-final-candidate-validation.md](agent-reports/cpu-beta-final-candidate-validation.md).
+It supersedes the historical `69d099e` matrix because later product changes
+hardened composition roots, package provenance, and provider-conformance
+routing. This documentation commit is intentionally separate from the tested
+code candidate.
 
 | Gate | Required final evidence | Candidate status |
 | --- | --- | --- |
-| Linux Release | Exact 2x2 matrix: OpenBLAS required/disabled by Matcore MLIR enabled/disabled; configured defaults authenticated | passed locally at `69d099e`: 63/63, 63/63, 58/58, 58/58 |
-| Linux Debug | MLIR enabled, default `matcore-mlir`, full registered supported suite | passed locally at `69d099e`: 63/63 with OpenBLAS required |
-| ASan + UBSan | MLIR enabled/default `matcore-mlir`; supported in-process scope including FP-environment negatives | passed locally at `69d099e`: 20/20 |
-| TSan | MLIR disabled/default `capture-v0`; shared-state/runtime scope | passed locally at `69d099e`: 4/4 |
-| Package and relocation | MLIR-on and MLIR-off installs; installed consumer; relocated and source/build-inaccessible consumer | passed locally at `69d099e` |
-| Semantic artifact | Explicit `.mdsl -> v1 -> mdsl MLIR -> native object -> executable`; backend producer and stable runtime symbol inspected | passed locally at `69d099e` |
-| ABI/install exports | Strict C17, 15 retained runtime C exports, status 26, layouts, SONAME/import boundary, no private MLIR export/path leak | passed locally at `69d099e` |
-| Recognition and domains | Accepted focused verifier/equivalence suites plus executable-boundary rejection of recovered/map modules | passed locally at `69d099e`; focused component reviews accepted |
+| Linux Release | Exact 2x2 matrix: OpenBLAS required/disabled by Matcore MLIR enabled/disabled; configured defaults authenticated | passed locally at `6796fd8`: 63/63, 63/63, 58/58, 58/58 |
+| Linux Debug | MLIR enabled, default `matcore-mlir`, full registered supported suite | passed locally at `6796fd8`: 63/63 with OpenBLAS required |
+| ASan + UBSan | MLIR enabled/default `matcore-mlir`; supported in-process scope including FP-environment negatives | passed locally at `6796fd8`: 20/20 |
+| TSan | MLIR disabled/default `capture-v0`; shared-state/runtime scope | passed locally at `6796fd8`: 4/4 |
+| Package and relocation | MLIR-on and MLIR-off installs; installed consumer; relocated and source/build-inaccessible consumer | passed locally at `6796fd8` |
+| Semantic artifact | Explicit `.mdsl -> v1 -> mdsl MLIR -> native object -> executable`; backend producer and stable runtime symbol inspected | passed locally at `6796fd8` |
+| ABI/install exports | Strict C17, 15 retained runtime C exports, status 26, layouts, SONAME/import boundary, no private MLIR export/path leak | passed locally at `6796fd8` |
+| Recognition and domains | Accepted focused verifier/equivalence suites plus executable-boundary rejection of recovered/map modules | passed locally at `6796fd8`; focused component reviews accepted |
 | Windows x64 | Release, Debug, supported sanitizer, MLIR-unavailable negative, DLL/import library, installed consumer, paths with spaces, ZIP artifact | pending hosted run |
-| Performance sanity | Correctness and planner sanity only; no new native-parity claim | passed locally at `69d099e`; one guarded 256-cubed OpenBLAS selection sanity, not parity evidence |
-| Repository hygiene | Clean tree, `git diff --check`, generated-artifact and semantic-MLIR hygiene | passed locally at `69d099e` and after report/whitespace-only commits |
-| Independent review | Fresh adversarial review of the exact candidate with no unresolved high or medium finding | pending |
+| Performance sanity | Correctness and planner sanity only; no new native-parity claim | passed locally at `6796fd8`; one guarded 256-cubed OpenBLAS selection sanity, not parity evidence |
+| Repository hygiene | Clean tree, `git diff --check`, generated-artifact and semantic-MLIR hygiene | passed locally at `6796fd8` |
+| Independent review | Fresh adversarial review of the exact candidate with no unresolved high or medium finding | static candidate review passed; final evidence/report review pending |
 | Hosted pull request | Normal PR checks green before normal merge | pending |
 
 The beta must not be described as shipped, merged, tagged, or validated by

@@ -252,10 +252,10 @@ policy remain open for the separate freeze milestone.
 ### H — CPU Beta
 
 Status: active. A--G have their required bounded dispositions. The full local
-integration matrix passed at code candidate `69d099e`; later commits through
-the recorded local report and review-whitespace correction are non-product
-changes. Final independent beta review, hosted Linux/Windows integration,
-normal merge, and beta tag remain pending.
+integration matrix passed at immutable code candidate `6796fd8`, superseding
+the historical `69d099e` matrix after later product hardening. Final independent
+evidence review, hosted Linux/Windows integration, normal merge, and beta tag
+remain pending.
 
 The intended initial claim is valid C++ `.mdsl`, preserved ordinary C++,
 explicit F32 rank-2 GEMM, verified capture and semantic IR, deterministic legal

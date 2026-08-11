@@ -8,6 +8,13 @@ Scope: Milestone H product/status documentation only. No compiler, runtime,
 package, workflow, public header, or test implementation was changed by this
 lane.
 
+Postscript: this focused documentation checkpoint predates later product
+hardening. The final local matrix subsequently passed at immutable candidate
+`6796fd8`; see
+[cpu-beta-final-candidate-validation.md](cpu-beta-final-candidate-validation.md).
+That evidence supersedes the intermediate `69d099e` matrix. The historical
+scope statements below describe this lane, not the current candidate.
+
 ## Purpose
 
 The semantic-foundation implementation and focused independent reviews had
@@ -34,8 +41,8 @@ CPU-beta acceptance boundary honest.
 - Milestone G accepts bounded current-version packed-B ownership/invalidation,
   borrowed-string, and additive-evolution contracts; the public API/ABI/backend
   freeze remains deferred.
-- Milestone H is active, not complete. The later full local configuration
-  matrix passed at code candidate `69d099e`; exact-head hosted results, hosted
+- Milestone H is active, not complete. The final full local configuration
+  matrix passed at code candidate `6796fd8`; exact-head hosted results, hosted
   Windows validation, normal merge/tag, and final independent review remain
   pending.
 
@@ -66,7 +73,8 @@ silently made available through the one-shot semantic route.
 This update does not claim:
 
 - a final clean-head Release/Debug/sanitizer/package matrix as of this report's
-  original `0bafa51` checkpoint (that matrix later passed at `69d099e`);
+  original `0bafa51` checkpoint (an intermediate matrix later passed at
+  `69d099e`, and final-candidate evidence passed at `6796fd8`);
 - hosted pull-request or Windows results for the semantic-foundation candidate;
 - a merged, tagged, or published CPU beta;
 - executable map/domain or recovered-loop replacement;
@@ -76,7 +84,7 @@ This update does not claim:
 - GPU/NPU work.
 
 `CPU_BETA_V1.md` now records the local Milestone H gates as passed at
-`69d099e` and retains the independent-review, hosted Windows/Linux, merge, and
+`6796fd8` and retains the independent-review, hosted Windows/Linux, merge, and
 tag gates as pending.
 
 ## Documentation validation
@@ -92,4 +100,5 @@ Before the focused documentation commit:
 
 No build or runtime test was run by this documentation lane. Its original
 checkpoint was not a substitute for the fixed-head Milestone H matrix; that
-matrix was subsequently run and recorded separately at `69d099e`.
+matrix was subsequently run and recorded separately. The final superseding run
+is recorded at `6796fd8`.
