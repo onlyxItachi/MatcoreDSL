@@ -1,6 +1,10 @@
 #include "../../lib/frontend/frontend.h"
 #include "../../lib/codegen/codegen.h"
 #include "../../lib/ir/matcore_ir_v1.h"
+#if MDSLC_HAS_MATCORE_MLIR
+#include "../../lib/mlir/MatcoreCpuRuntimeLowering.h"
+#include "../../lib/mlir/MatcoreV1Bridge.h"
+#endif
 #include "platform_support.h"
 #include "mdslc_config.h"
 
@@ -30,6 +34,11 @@ namespace {
 
 namespace support = matcore::mdslc::support;
 
+enum class SemanticPipeline {
+  CaptureV0,
+  MatcoreMlirCpuV1,
+};
+
 struct CommandLine {
   matcore::mdslc::frontend::Options frontend;
   std::string frontend_name = "native";
@@ -39,10 +48,13 @@ struct CommandLine {
   std::string sites_output;
   std::string stubs_output;
   std::string backend_output;
+  std::string semantic_ir_output;
   std::string verify_ir;
   std::string compiler_arguments_file;
   std::string recovered_gemm_report;
   std::uint32_t ir_version = matcore::mdslc::ir::kMatcoreIrVersion;
+  SemanticPipeline semantic_pipeline = SemanticPipeline::CaptureV0;
+  bool semantic_pipeline_was_explicit = false;
   bool compiler_was_explicit = false;
   bool ir_version_was_explicit = false;
 };
@@ -146,6 +158,7 @@ bool validateOutputPaths(const CommandLine &command) {
       {"--sites-out", command.sites_output},
       {"--stubs-out", command.stubs_output},
       {"--backend-out", command.backend_output},
+      {"--semantic-ir-out", command.semantic_ir_output},
       {"--inspect-recovered-gemm", command.recovered_gemm_report},
   };
   std::vector<std::pair<std::string_view, std::filesystem::path>> validated;
@@ -211,6 +224,12 @@ void usage(std::ostream &output) {
       << "  --sites-out FILE      generated C++ site declarations\n"
       << "  --stubs-out FILE      generated C++ descriptor stubs\n"
       << "  --backend-out FILE    generated C ABI backend forwarding entries\n"
+      << "  --semantic-pipeline=capture-v0|matcore-mlir\n"
+         "                         choose the executed backend producer; "
+         "matcore-mlir is explicit\n"
+      << "  --semantic-ir-out FILE\n"
+         "                         write verified Matcore MLIR inspection "
+         "text\n"
       << "  --ir-version N        emit Matcore IR 0 (default) or typed IR 1\n"
       << "  --verify-ir FILE      verify serialized Matcore IR v0/v1 and exit\n"
       << "  --frontend-info       describe the built frontend modes\n"
@@ -247,6 +266,25 @@ bool setIrVersion(CommandLine &command, std::string_view value) {
     return false;
   }
   command.ir_version_was_explicit = true;
+  return true;
+}
+
+bool setSemanticPipeline(CommandLine &command, std::string_view value) {
+  if (command.semantic_pipeline_was_explicit) {
+    std::cerr << "matcore-extract: --semantic-pipeline may be specified only "
+                 "once\n";
+    return false;
+  }
+  if (value == "capture-v0") {
+    command.semantic_pipeline = SemanticPipeline::CaptureV0;
+  } else if (value == "matcore-mlir") {
+    command.semantic_pipeline = SemanticPipeline::MatcoreMlirCpuV1;
+  } else {
+    std::cerr << "matcore-extract: unsupported --semantic-pipeline value: "
+              << value << " (expected capture-v0 or matcore-mlir)\n";
+    return false;
+  }
+  command.semantic_pipeline_was_explicit = true;
   return true;
 }
 
@@ -418,6 +456,23 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
                      "--backend-out")) {
         return std::nullopt;
       }
+    } else if (argument == "--semantic-ir-out") {
+      if (!takeValue(argc, argv, index, command.semantic_ir_output,
+                     "--semantic-ir-out")) {
+        return std::nullopt;
+      }
+    } else if (argument == "--semantic-pipeline") {
+      std::string value;
+      if (!takeValue(argc, argv, index, value, "--semantic-pipeline") ||
+          !setSemanticPipeline(command, value)) {
+        return std::nullopt;
+      }
+    } else if (argument.starts_with("--semantic-pipeline=")) {
+      if (!setSemanticPipeline(
+              command,
+              argument.substr(std::string("--semantic-pipeline=").size()))) {
+        return std::nullopt;
+      }
     } else if (argument == "--verify-ir") {
       if (!takeValue(argc, argv, index, command.verify_ir, "--verify-ir")) {
         return std::nullopt;
@@ -500,6 +555,12 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
 #else
       std::cout << "ast-json-bootstrap [not built]\n";
 #endif
+#if MDSLC_HAS_MATCORE_MLIR
+      std::cout << "semantic-pipeline matcore-mlir [built]: verified Matcore "
+                   "IR v1 bridge and CPU runtime-dispatch lowering\n";
+#else
+      std::cout << "semantic-pipeline matcore-mlir [not built]\n";
+#endif
       std::exit(0);
     } else {
       std::cerr << "matcore-extract: unknown tool option: " << argument
@@ -512,10 +573,12 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
     if (!command.frontend.input_path.empty() || !command.ir_output.empty() ||
         !command.rewrite_output.empty() || !command.sites_output.empty() ||
         !command.stubs_output.empty() || !command.backend_output.empty() ||
+        !command.semantic_ir_output.empty() ||
         !command.recovered_gemm_report.empty() ||
         !command.compiler_arguments_file.empty() ||
         !command.frontend.compiler_arguments.empty() ||
-        command.ir_version_was_explicit) {
+        command.ir_version_was_explicit ||
+        command.semantic_pipeline_was_explicit) {
       std::cerr << "matcore-extract: --verify-ir cannot be combined with "
                    "extraction or generation options\n";
       return std::nullopt;
@@ -532,6 +595,34 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
       command.frontend_name != "native") {
     std::cerr << "matcore-extract: --inspect-recovered-gemm is available only "
                  "with --frontend=native\n";
+    return std::nullopt;
+  }
+  if (command.semantic_pipeline == SemanticPipeline::MatcoreMlirCpuV1) {
+    if (command.frontend_name != "native") {
+      std::cerr << "matcore-extract: the Matcore MLIR semantic pipeline "
+                   "requires the authenticated native frontend\n";
+      return std::nullopt;
+    }
+    if (!command.ir_version_was_explicit ||
+        command.ir_version != matcore::mdslc::ir::v1::kMatcoreIrVersion) {
+      std::cerr << "matcore-extract: --semantic-pipeline=matcore-mlir requires "
+                   "--ir-version=1\n";
+      return std::nullopt;
+    }
+    if (!command.recovered_gemm_report.empty()) {
+      std::cerr << "matcore-extract: recovered GEMM inspection is analysis-only "
+                   "and cannot enter the executable Matcore MLIR pipeline\n";
+      return std::nullopt;
+    }
+#if !MDSLC_HAS_MATCORE_MLIR
+    std::cerr << "matcore-extract: Matcore MLIR support was not built; "
+                 "reconfigure with MDSLC_ENABLE_MATCORE_MLIR=ON and a coherent "
+                 "MLIR 21.1.8 package\n";
+    return std::nullopt;
+#endif
+  } else if (!command.semantic_ir_output.empty()) {
+    std::cerr << "matcore-extract: --semantic-ir-out requires "
+                 "--semantic-pipeline=matcore-mlir\n";
     return std::nullopt;
   }
   if (!command.compiler_arguments_file.empty()) {
@@ -634,9 +725,12 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
     return std::nullopt;
   }
   if (generated_output_count == 4) {
-    for (const std::string *path :
-         {&command.ir_output, &command.rewrite_output, &command.sites_output,
-          &command.stubs_output, &command.backend_output}) {
+    std::vector<const std::string *> generated_paths{
+        &command.ir_output, &command.rewrite_output, &command.sites_output,
+        &command.stubs_output, &command.backend_output};
+    if (!command.semantic_ir_output.empty())
+      generated_paths.push_back(&command.semantic_ir_output);
+    for (const std::string *path : generated_paths) {
       if (*path == "-") {
         std::cerr << "matcore-extract: generated artifact mode requires file "
                      "paths, not standard output\n";
@@ -853,6 +947,55 @@ int ExtractorMain(int argc, char **argv) {
               << verification_error << '\n';
     return 1;
   }
+
+  std::string semantic_ir;
+  std::vector<matcore::mdslc::codegen::RuntimeDispatchBackendEntryV1>
+      semantic_backend_entries;
+  if (command->semantic_pipeline == SemanticPipeline::MatcoreMlirCpuV1) {
+#if MDSLC_HAS_MATCORE_MLIR
+    mlir::MLIRContext semantic_context;
+    semantic_context.allowUnregisteredDialects(false);
+    auto semantic =
+        matcore::mdslc::mlir_bridge::bridgeV1ToMatcoreMlir(
+            typed_module, semantic_context,
+            matcore::mdslc::mlir_bridge::explicitGemmF32V1BridgeContext());
+    if (!semantic) {
+      std::cerr << command->frontend.input_path
+                << ": error: Matcore MLIR semantic bridge failed: "
+                << semantic.error << '\n';
+      return 1;
+    }
+    std::vector<
+        matcore::mdslc::mlir_lowering::CpuRuntimeDispatchRecordV1>
+        dispatch_records;
+    if (!matcore::mdslc::mlir_lowering::
+            lowerExplicitGemmToCpuRuntimeDispatchV1(
+                *semantic.module, dispatch_records, verification_error)) {
+      std::cerr << command->frontend.input_path
+                << ": error: Matcore MLIR CPU lowering failed: "
+                << verification_error << '\n';
+      return 1;
+    }
+    semantic_ir =
+        matcore::mdslc::mlir_bridge::serializeDeterministicMlir(
+            *semantic.module);
+    semantic_backend_entries.reserve(dispatch_records.size());
+    for (const auto &record : dispatch_records) {
+      if (record.runtime_symbol !=
+          matcore::mdslc::mlir_lowering::kCpuRuntimeDispatchSymbolV1) {
+        std::cerr << command->frontend.input_path
+                  << ": error: Matcore MLIR CPU lowering selected an "
+                     "unsupported runtime boundary\n";
+        return 1;
+      }
+      semantic_backend_entries.push_back({record.site_id});
+    }
+#else
+    std::cerr << "matcore-extract: internal error: unavailable Matcore MLIR "
+                 "pipeline passed command validation\n";
+    return 1;
+#endif
+  }
   const std::string json =
       command->ir_version == matcore::mdslc::ir::v1::kMatcoreIrVersion
           ? matcore::mdslc::ir::v1::serializeDeterministicJson(typed_module)
@@ -862,6 +1005,10 @@ int ExtractorMain(int argc, char **argv) {
         !writeAtomically(command->recovered_gemm_report,
                          matcore::mdslc::frontend::
                              serializeRecoveredGemmInspection(result))) {
+      return 1;
+    }
+    if (!command->semantic_ir_output.empty() &&
+        !writeAtomically(command->semantic_ir_output, semantic_ir)) {
       return 1;
     }
     return writeAtomically(command->ir_output, json) ? 0 : 1;
@@ -883,16 +1030,30 @@ int ExtractorMain(int argc, char **argv) {
               << generation_error << '\n';
     return 1;
   }
+  if (command->semantic_pipeline == SemanticPipeline::MatcoreMlirCpuV1 &&
+      !matcore::mdslc::codegen::generateRuntimeDispatchBackendV1(
+          semantic_backend_entries,
+          matcore::mdslc::codegen::
+              RuntimeDispatchBackendProducerV1::MatcoreMlirCpuV1,
+          artifacts.backend_source, generation_error)) {
+    std::cerr << command->frontend.input_path
+              << ": error: semantic backend generation failed: "
+              << generation_error << '\n';
+    return 1;
+  }
 
   // All contents are generated and verified before any destination is
   // published. Each individual file is published through a temporary rename.
-  const std::vector<std::pair<std::string, std::string_view>> outputs = {
+  std::vector<std::pair<std::string, std::string_view>> outputs = {
       {command->ir_output, json},
       {command->rewrite_output, artifacts.rewritten_host},
       {command->sites_output, artifacts.sites_header},
       {command->stubs_output, artifacts.stubs_source},
       {command->backend_output, artifacts.backend_source},
   };
+  if (!command->semantic_ir_output.empty()) {
+    outputs.emplace_back(command->semantic_ir_output, semantic_ir);
+  }
   for (const auto &[path, contents] : outputs) {
     if (!writeAtomically(path, contents)) {
       return 1;

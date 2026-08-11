@@ -41,6 +41,7 @@ bool UnsafeConsumedCompilerValue(std::string_view value) noexcept {
 }
 
 enum class FrontendMode { Native, AstJsonBootstrap };
+enum class SemanticPipelineMode { CaptureV0, MatcoreMlir };
 enum class CompilerFlavor { ClangGnu, ClangCl };
 
 struct CompilerToolchain {
@@ -55,7 +56,9 @@ struct WrapperArguments {
   bool save_temps = false;
   bool cpu_pipeline = false;
   bool frontend_was_explicit = false;
+  bool semantic_pipeline_was_explicit = false;
   FrontendMode frontend = FrontendMode::Native;
+  SemanticPipelineMode semantic_pipeline = SemanticPipelineMode::CaptureV0;
   std::optional<fs::path> tool_prefix_for_testing;
   std::optional<std::string> dependency_file;
   std::vector<std::string> compiler_arguments;
@@ -85,6 +88,7 @@ struct GeneratedArtifacts {
   fs::path host_source;
   fs::path host_overlay;
   fs::path ir;
+  fs::path semantic_ir;
   fs::path sites_header;
   fs::path stubs_source;
   fs::path backend_source;
@@ -160,6 +164,26 @@ std::optional<FrontendMode> ParseFrontend(std::string_view name) {
   }
   std::cerr << "mdslc++: unsupported frontend '" << name
             << "'; expected native or ast-json-bootstrap (no fallback is "
+               "performed)\n";
+  return std::nullopt;
+}
+
+std::string_view SemanticPipelineName(SemanticPipelineMode pipeline) {
+  switch (pipeline) {
+  case SemanticPipelineMode::CaptureV0:
+    return "capture-v0";
+  case SemanticPipelineMode::MatcoreMlir:
+    return "matcore-mlir";
+  }
+  return "capture-v0";
+}
+
+std::optional<SemanticPipelineMode>
+ParseSemanticPipeline(std::string_view name) {
+  if (name == "capture-v0") return SemanticPipelineMode::CaptureV0;
+  if (name == "matcore-mlir") return SemanticPipelineMode::MatcoreMlir;
+  std::cerr << "mdslc++: unsupported semantic pipeline '" << name
+            << "'; expected capture-v0 or matcore-mlir (no fallback is "
                "performed)\n";
   return std::nullopt;
 }
@@ -1062,6 +1086,27 @@ std::optional<WrapperArguments> ParseWrapperArguments(int argc, char **argv) {
       return std::nullopt;
     }
     if (!previous_option_consumes_argument &&
+        argument.starts_with("--semantic-pipeline=")) {
+      if (parsed.semantic_pipeline_was_explicit) {
+        std::cerr << "mdslc++: --semantic-pipeline may be specified only "
+                     "once\n";
+        return std::nullopt;
+      }
+      const std::string_view name =
+          argument.substr(std::string_view("--semantic-pipeline=").size());
+      const auto pipeline = ParseSemanticPipeline(name);
+      if (!pipeline) return std::nullopt;
+      parsed.semantic_pipeline = *pipeline;
+      parsed.semantic_pipeline_was_explicit = true;
+      continue;
+    }
+    if (!previous_option_consumes_argument &&
+        argument == "--semantic-pipeline") {
+      std::cerr << "mdslc++: use --semantic-pipeline=capture-v0 or "
+                   "--semantic-pipeline=matcore-mlir\n";
+      return std::nullopt;
+    }
+    if (!previous_option_consumes_argument &&
         argument.starts_with("--tool-prefix-for-testing=")) {
 #if MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE
       if (parsed.tool_prefix_for_testing) {
@@ -1152,6 +1197,17 @@ std::optional<WrapperArguments> ParseWrapperArguments(int argc, char **argv) {
   if (!parsed.cpu_pipeline && parsed.frontend_was_explicit) {
     std::cerr << "mdslc++: --frontend selects the Matcore extraction pipeline "
                  "and requires --matcore-target=cpu\n";
+    return std::nullopt;
+  }
+  if (!parsed.cpu_pipeline && parsed.semantic_pipeline_was_explicit) {
+    std::cerr << "mdslc++: --semantic-pipeline requires "
+                 "--matcore-target=cpu\n";
+    return std::nullopt;
+  }
+  if (parsed.semantic_pipeline == SemanticPipelineMode::MatcoreMlir &&
+      parsed.frontend != FrontendMode::Native) {
+    std::cerr << "mdslc++: --semantic-pipeline=matcore-mlir requires the "
+                 "authenticated native frontend\n";
     return std::nullopt;
   }
   if (!parsed.cpu_pipeline && parsed.tool_prefix_for_testing) {
@@ -1825,6 +1881,7 @@ GeneratedArtifacts MakeArtifactPaths(const fs::path &directory,
   return {.host_source = directory / (prefix + ".host.cpp"),
           .host_overlay = directory / (prefix + ".host-overlay.yaml"),
           .ir = directory / (prefix + ".matcore.json"),
+          .semantic_ir = directory / (prefix + ".semantic.mlir"),
           .sites_header = directory / (prefix + ".sites.h"),
           .stubs_source = directory / (prefix + ".stubs.cpp"),
           .backend_source = directory / (prefix + ".backend.cpp"),
@@ -2361,6 +2418,13 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
         return 2;
       }
     }
+    if (wrapper.semantic_pipeline == SemanticPipelineMode::MatcoreMlir &&
+        PathsReferToSameLocation(artifacts.semantic_ir, dependency_output)) {
+      std::cerr << "mdslc++: dependency file must not overwrite or alias the "
+                   "generated semantic MLIR artifact: "
+                << artifacts.semantic_ir << '\n';
+      return 2;
+    }
   }
   error.clear();
   if (fs::is_directory(output, error) && !error) {
@@ -2418,6 +2482,10 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
       {"generated stubs object", &artifacts.stubs_object},
       {"generated backend object", &artifacts.backend_object},
   };
+  if (wrapper.semantic_pipeline == SemanticPipelineMode::MatcoreMlir) {
+    mutation_paths.emplace_back("generated Matcore semantic MLIR",
+                                &artifacts.semantic_ir);
+  }
   if (!invocation.dependency_mode.empty()) {
     mutation_paths.emplace_back("requested dependency output",
                                 &dependency_output);
@@ -2483,6 +2551,13 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
       PathArgument(artifacts.stubs_source),
       "--backend-out",
       PathArgument(artifacts.backend_source)};
+  extract_command.emplace_back(
+      "--semantic-pipeline=" +
+      std::string(SemanticPipelineName(wrapper.semantic_pipeline)));
+  if (wrapper.semantic_pipeline == SemanticPipelineMode::MatcoreMlir) {
+    extract_command.emplace_back("--semantic-ir-out");
+    extract_command.emplace_back(PathArgument(artifacts.semantic_ir));
+  }
   if (wrapper.verbose) {
     extract_command.emplace_back("--verbose");
   }
@@ -2523,17 +2598,21 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
       !RequireGeneratedFile(artifacts.ir) ||
       !RequireGeneratedFile(artifacts.sites_header) ||
       !RequireGeneratedFile(artifacts.stubs_source) ||
-      !RequireGeneratedFile(artifacts.backend_source)) {
+      !RequireGeneratedFile(artifacts.backend_source) ||
+      (wrapper.semantic_pipeline == SemanticPipelineMode::MatcoreMlir &&
+       !RequireGeneratedFile(artifacts.semantic_ir))) {
     return 1;
   }
   if (!WriteHostOverlay(artifacts.host_overlay, source_absolute,
                         fs::absolute(artifacts.host_source))) {
     return 1;
   }
-  const std::vector<fs::path> generated_source_artifacts{
+  std::vector<fs::path> generated_source_artifacts{
       artifacts.host_source, artifacts.host_overlay, artifacts.ir,
       artifacts.sites_header, artifacts.stubs_source,
       artifacts.backend_source};
+  if (wrapper.semantic_pipeline == SemanticPipelineMode::MatcoreMlir)
+    generated_source_artifacts.push_back(artifacts.semantic_ir);
   std::string generated_snapshot_error;
   std::optional<std::vector<DependencySnapshot>> generated_snapshots =
       CaptureDependencyPaths(generated_source_artifacts,
@@ -2609,11 +2688,13 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
   if (result != 0) {
     return result;
   }
-  const std::vector<fs::path> generated_host_paths{
+  std::vector<fs::path> generated_host_paths{
       artifacts.host_source, artifacts.host_overlay, artifacts.ir,
       artifacts.sites_header, artifacts.stubs_source,
       artifacts.backend_source, artifacts.host_object,
       artifacts.stubs_object, artifacts.backend_object};
+  if (wrapper.semantic_pipeline == SemanticPipelineMode::MatcoreMlir)
+    generated_host_paths.push_back(artifacts.semantic_ir);
   const auto recheck_host_resolution = [&](const fs::path &depfile,
                                            std::string_view phase) {
     const int scan_result = GenerateRewrittenHostDependencyFile(
@@ -2908,12 +2989,14 @@ int RunCpuPipeline(const WrapperArguments &wrapper,
     return result;
   }
   if (!invocation.dependency_mode.empty()) {
-    const std::vector<fs::path> generated_dependencies{
+    std::vector<fs::path> generated_dependencies{
         artifacts.host_source,   artifacts.host_overlay,
         artifacts.ir,            artifacts.sites_header,
         artifacts.stubs_source,  artifacts.backend_source,
         artifacts.host_object,   artifacts.stubs_object,
         artifacts.backend_object};
+    if (wrapper.semantic_pipeline == SemanticPipelineMode::MatcoreMlir)
+      generated_dependencies.push_back(artifacts.semantic_ir);
     if (!CompilationInputsMatch(source_absolute, *source_snapshot,
                                 dependency_closure,
                                 "before dependency publication") ||
