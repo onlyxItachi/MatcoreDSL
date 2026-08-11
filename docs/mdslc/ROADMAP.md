@@ -85,7 +85,9 @@ encodes the selected target choice.
 
 ### A — Semantic Compiler Architecture Freeze
 
-Status: in progress.
+Status: complete on the semantic-foundation branch. ADR-0009 and the
+cross-document invariant set passed independent review with no unresolved
+high- or medium-severity finding.
 
 Freeze the internal architectural boundary, not the public API:
 
@@ -103,7 +105,10 @@ no unresolved high or medium issue.
 
 ### B — Matcore MLIR Core
 
-Status: queued behind A's reviewable contract and the MLIR 21 dependency gate.
+Status: complete on the semantic-foundation branch. The implementation uses an
+exact LLVM/Clang/MLIR 21.1.8 tuple, a TableGen-generated `mdsl` dialect, a
+deterministic verified v1 bridge, and an internal `matcore-mlir` inspection
+tool. Independent review found no unresolved high- or medium-severity issue.
 
 Implement the `mdsl` textual dialect with generic SSA values, `mdsl.gemm`,
 minimal type/attribute mapping, exact destination/effect/alias semantics,
@@ -114,7 +119,11 @@ contraction allowed, K-reduction-only reassociation, implementation-defined K
 order, NaN/non-finite preservation without payload/order guarantees, relaxed
 signed zero, no approximate math, explicit destination overwrite, and no
 input/output aliasing or in-place operand mutation. Recovered loops require
-source-derived proof and cannot inherit these permissions.
+source-derived proof and cannot inherit these permissions. The core dialect
+also represents a strict increasing-K recovered-loop form as analysis-only;
+its `recognized_rewrite_rejected` permission cannot enter the executable v1
+bridge envelope. A separately authenticated source-proven relaxed form records
+that a dominating runtime guard is still required.
 
 `mdsl.gemm` produces the post-overwrite semantic value of its explicit
 write-only destination, not independent allocated storage. Bufferization must
@@ -126,11 +135,16 @@ guard whose rejection occurs before output mutation.
 Gate: matching LLVM/Clang/MLIR 21.1.8; generated dialect build; deterministic
 parse/print and v1 bridge goldens; destination/result and precondition/fact
 verifier negatives; malformed semantic negatives; unchanged v0/v1
-compatibility tests; independent semantic review.
+compatibility tests; independent semantic review. These focused gates pass:
+the core semantic harness reports 204/204 checks, the CLI harness 9/9, and the
+two MLIR CTest entries 2/2. A final settled-tree whole-suite rebuild remains an
+integration gate before merge because benchmark provenance tests deliberately
+reject binaries built from an older branch commit.
 
 ### C — Multi-op and domain semantics
 
-Status: depends on B.
+Status: design complete; implementation begins only from the independently
+accepted B contract.
 
 Implement `mdsl.map`, `mdsl.sin`, `mdsl.yield`/`mdsl.return` as required, with
 `all`, slice, indices, and predicate/mask domain concepts. Prove canonical
@@ -142,7 +156,9 @@ effect, and reordering negative tests plus deterministic textual goldens.
 
 ### D — Explicit/recovered equivalence prototype
 
-Status: depends on B; may develop alongside C with separate ownership.
+Status: conservative recognition/permission design complete in
+`CPP_GEMM_RECOGNITION.md`; implementation depends on the accepted B contract
+and may develop alongside C with separate ownership.
 
 Conservatively recognize one canonical non-dependent ordinary C++ GEMM loop
 and raise it directly into the same `mdsl.gemm` semantics as explicit

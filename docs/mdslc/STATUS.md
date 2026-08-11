@@ -111,6 +111,46 @@ frontend must not mix MLIR 22 or modify the legacy root MLIR 18.1.3 contract.
 The semantic-foundation implementation may advance only while this coherent
 isolated toolchain and its no-path-leak gate remain green.
 
+### Semantic milestones A and B
+
+**Milestone A is complete on `mdslc/semantic-compiler-foundation-v1`.**
+ADR-0009, this status, the roadmap, the pre-freeze decision log, and the
+repository agent guidance agree on the WHAT/HOW/MACHINE boundary, destination
+identity, precondition-versus-fact rule, numerical environment, recognition
+permission, and execution-intent boundaries. Independent review reported no
+unresolved high- or medium-severity finding.
+
+**Milestone B is implemented and independently accepted.** The opt-in
+`MDSLC_ENABLE_MATCORE_MLIR` build now provides a TableGen-generated `mdsl`
+dialect, destination-aware and effectful `mdsl.gemm`, a deterministic verified
+Matcore IR v1 bridge, and the internal `matcore-mlir` inspection tool. Every
+site is emitted as an independent semantic entry symbol so ordinary host C++
+control flow is not fabricated; that public MLIR symbol visibility is an
+internal liveness root, not a public C/C++ ABI promise. The installed tool links
+only the required static MLIR components and does not export MLIR or the
+user-local development prefix through package metadata or RUNPATH.
+
+The dialect verifier distinguishes three exact origin/numerical contracts:
+
+- authenticated explicit calls use `explicit-gemm-f32-v1`;
+- recovered loops whose effective source semantics match the relaxed profile
+  use `source_proven_guard_required`; and
+- ordinary strict increasing-K loops use the analysis-only
+  `recognized_rewrite_rejected` contract.
+
+The strict form cannot enter the explicit v1 bridge envelope, and the relaxed
+form does not claim that its runtime guard has already executed. Focused
+evidence passes 204/204 semantic checks, 9/9 CLI checks, and 2/2 MLIR CTest
+entries. Independent review found zero unresolved high/medium findings. The
+last in-flight whole-suite run passed 51/52 after the branch advanced during
+execution; the sole failure was the expected authenticated source-commit guard
+rejecting a stale benchmark binary. A final clean rebuild from the settled
+documentation commit remains required before merge.
+
+Milestone C's map/domain design and Milestone D's conservative C++ GEMM
+recognition contract are documented, but neither constitutes production
+rewriting or an executable recovered-loop route yet.
+
 ## Milestone 7 native BLAS parity
 
 **Milestone 7 has a reviewed manual partial disposition merged through PR #16.
