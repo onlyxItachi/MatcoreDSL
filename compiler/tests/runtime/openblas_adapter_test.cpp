@@ -47,6 +47,28 @@ int main() {
     std::cerr << "linked OpenBLAS provider metadata is incomplete\n";
     return 1;
   }
+  const auto conformance = runtime::openblas_conformance_report_v1();
+  const auto conformance_again = runtime::openblas_conformance_report_v1();
+  if (conformance.version != runtime::kOpenBlasConformanceVersionV1 ||
+      !conformance.provider_linked || !conformance.identity_complete ||
+      !conformance.probe_attempted ||
+      !conformance.caller_environment_compatible ||
+      !conformance.finite_correct ||
+      !conformance.gradual_subnormal_correct ||
+      !conformance.nan_input_propagated ||
+      !conformance.infinity_classes_preserved ||
+      !conformance.inf_times_zero_is_nan ||
+      !conformance.opposite_infinity_sum_is_nan ||
+      !conformance.nonfinite_classes_correct ||
+      !conformance.control_state_preserved ||
+      !conformance.thread_state_restored || !conformance.conformant ||
+      conformance.provider_identity_key == 0 ||
+      conformance.provider_identity_key !=
+          conformance_again.provider_identity_key ||
+      !conformance_again.conformant) {
+    std::cerr << "linked OpenBLAS provider failed immutable conformance\n";
+    return 1;
+  }
   const planner::CpuGemmProblemV1 problem{
       2, 2, 2, planner::CpuScalarTypeV1::f32,
       planner::CpuScalarTypeV1::f32,

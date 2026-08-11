@@ -10,10 +10,12 @@ discover_cpu_gemm_implementation_resources_v1(
     const planner::CpuGemmProblemV1 &problem,
     std::uint32_t requested_threads) noexcept {
   const OpenBlasProviderInfoV1 provider = openblas_provider_info_v1();
+  const OpenBlasConformanceReportV1 conformance =
+      openblas_conformance_report_v1();
   planner::CpuGemmImplementationResourcesV1 resources;
-  resources.openblas_linked = provider.linked;
-  resources.openblas_local_thread_control = provider.linked;
-  if (provider.maximum_reported_threads > 0) {
+  resources.openblas_linked = provider.linked && conformance.conformant;
+  resources.openblas_local_thread_control = resources.openblas_linked;
+  if (resources.openblas_linked && provider.maximum_reported_threads > 0) {
     // Runtime conformance authenticates only the calling thread. Do not
     // advertise opaque provider workers as numerically validated.
     resources.openblas_maximum_threads = 1;

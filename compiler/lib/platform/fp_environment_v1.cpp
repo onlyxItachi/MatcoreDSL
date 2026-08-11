@@ -73,6 +73,69 @@ FpEnvironmentReportV1 inspect_current_fp_environment_v1() noexcept {
 #endif
 }
 
+bool fp_environment_control_state_equal_v1(
+    const FpEnvironmentReportV1 &lhs,
+    const FpEnvironmentReportV1 &rhs) noexcept {
+  if (lhs.version != kFpEnvironmentVersionV1 ||
+      rhs.version != kFpEnvironmentVersionV1 || lhs.backend != rhs.backend ||
+      !lhs.discovery_complete || !rhs.discovery_complete ||
+      !lhs.mxcsr_known || !rhs.mxcsr_known || !lhs.control_word_known ||
+      !rhs.control_word_known) {
+    return false;
+  }
+  constexpr std::uint32_t kMxcsrStatusMask = 0x3FU;
+  if ((lhs.raw_mxcsr & ~kMxcsrStatusMask) !=
+      (rhs.raw_mxcsr & ~kMxcsrStatusMask)) {
+    return false;
+  }
+#if defined(_WIN32) && defined(_M_X64)
+  constexpr std::uint32_t kWindowsRelevantControl =
+      _MCW_RC | _MCW_EM | _MCW_DN;
+  return (lhs.raw_control_word & kWindowsRelevantControl) ==
+         (rhs.raw_control_word & kWindowsRelevantControl);
+#else
+  return lhs.raw_control_word == rhs.raw_control_word;
+#endif
+}
+
+bool restore_fp_environment_control_state_v1(
+    const FpEnvironmentReportV1 &snapshot) noexcept {
+#if defined(__linux__) && defined(__x86_64__)
+  if (snapshot.version != kFpEnvironmentVersionV1 ||
+      snapshot.backend != FpEnvironmentBackendV1::linux_x86_64 ||
+      !snapshot.discovery_complete || !snapshot.mxcsr_known ||
+      !snapshot.control_word_known) {
+    return false;
+  }
+  _mm_setcsr(snapshot.raw_mxcsr);
+  const auto control = static_cast<std::uint16_t>(snapshot.raw_control_word);
+  __asm__ volatile("fnclex\n\tfldcw %0" : : "m"(control));
+  return fp_environment_control_state_equal_v1(
+      snapshot, inspect_current_fp_environment_v1());
+#elif defined(_WIN32) && defined(_M_X64)
+  if (snapshot.version != kFpEnvironmentVersionV1 ||
+      snapshot.backend != FpEnvironmentBackendV1::windows_x86_64 ||
+      !snapshot.discovery_complete || !snapshot.mxcsr_known ||
+      !snapshot.control_word_known) {
+    return false;
+  }
+  unsigned int restored = 0;
+  constexpr unsigned int kRelevantControl = _MCW_RC | _MCW_EM | _MCW_DN;
+  if (_controlfp_s(&restored, snapshot.raw_control_word,
+                   kRelevantControl) != 0) {
+    return false;
+  }
+  // _controlfp_s may synchronize overlapping SSE control fields. Restore the
+  // exact authenticated MXCSR control state after the documented CRT call.
+  _mm_setcsr(snapshot.raw_mxcsr);
+  return fp_environment_control_state_equal_v1(
+      snapshot, inspect_current_fp_environment_v1());
+#else
+  (void)snapshot;
+  return false;
+#endif
+}
+
 const char *fp_environment_rejection_reason_v1(
     const FpEnvironmentReportV1 &report) noexcept {
   if (report.version != kFpEnvironmentVersionV1)

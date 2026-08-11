@@ -127,6 +127,18 @@ constexpr FpEnvironmentReportV1 decode_linux_x86_fp_environment_v1(
 
 FpEnvironmentReportV1 inspect_current_fp_environment_v1() noexcept;
 
+// Compare only control state. MXCSR exception status flags are excluded from
+// the equality decision, just as they are from execution legality.
+bool fp_environment_control_state_equal_v1(
+    const FpEnvironmentReportV1 &lhs,
+    const FpEnvironmentReportV1 &rhs) noexcept;
+
+// Restore a previously authenticated control snapshot after an opaque
+// provider call. This is preservation of caller state, not normalization to a
+// compiler-chosen environment. Unknown backends fail closed.
+bool restore_fp_environment_control_state_v1(
+    const FpEnvironmentReportV1 &snapshot) noexcept;
+
 const char *fp_environment_rejection_reason_v1(
     const FpEnvironmentReportV1 &report) noexcept;
 

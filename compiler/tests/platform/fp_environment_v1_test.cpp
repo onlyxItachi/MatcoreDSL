@@ -126,6 +126,10 @@ void physical_environment_contract() {
                    violated))
                        .find("flush-to-zero") != std::string_view::npos,
            "physical FTZ violation is detected with an actionable reason");
+    expect(platform::restore_fp_environment_control_state_v1(initial) &&
+               platform::fp_environment_control_state_equal_v1(
+                   initial, platform::inspect_current_fp_environment_v1()),
+           "opaque-provider restoration returns to the exact control state");
   }
   {
     ScopedX86FpEnvironment scope;
@@ -134,39 +138,58 @@ void physical_environment_contract() {
                 .explicit_gemm_f32_v1_compatible,
            "physical DAZ violation is detected");
   }
-  {
-    ScopedX86FpEnvironment scope;
-    scope.set_mxcsr((scope.mxcsr() & ~(3U << 13U)) | (1U << 13U));
-    expect(!platform::inspect_current_fp_environment_v1()
-                .explicit_gemm_f32_v1_compatible,
-           "physical MXCSR rounding violation is detected");
+  bool all_mxcsr_rounding_modes_rejected = true;
+  bool all_x87_rounding_modes_rejected = true;
+  for (std::uint32_t mode = 1; mode != 4; ++mode) {
+    {
+      ScopedX86FpEnvironment scope;
+      scope.set_mxcsr((scope.mxcsr() & ~(3U << 13U)) | (mode << 13U));
+      all_mxcsr_rounding_modes_rejected &=
+          !platform::inspect_current_fp_environment_v1()
+               .explicit_gemm_f32_v1_compatible;
+    }
+    {
+      ScopedX86FpEnvironment scope;
+      const auto changed = static_cast<std::uint16_t>(
+          (scope.x87_control_word() & ~(3U << 10U)) | (mode << 10U));
+      scope.set_x87_control_word(changed);
+      all_x87_rounding_modes_rejected &=
+          !platform::inspect_current_fp_environment_v1()
+               .explicit_gemm_f32_v1_compatible;
+    }
   }
-  {
-    ScopedX86FpEnvironment scope;
-    const auto downward = static_cast<std::uint16_t>(
-        (scope.x87_control_word() & ~(3U << 10U)) | (1U << 10U));
-    scope.set_x87_control_word(downward);
-    expect(!platform::inspect_current_fp_environment_v1()
-                .explicit_gemm_f32_v1_compatible,
-           "physical x87 rounding violation is detected");
+  expect(all_mxcsr_rounding_modes_rejected,
+         "every non-RNE physical MXCSR rounding mode is rejected");
+  expect(all_x87_rounding_modes_rejected,
+         "every non-RNE physical x87 rounding mode is rejected");
+
+  bool all_mxcsr_masks_required = true;
+  bool all_x87_masks_required = true;
+  for (std::uint32_t exception = 0; exception != 6; ++exception) {
+    {
+      ScopedX86FpEnvironment scope;
+      // Clear every pending status flag before unmasking this family.
+      scope.set_mxcsr((scope.mxcsr() & ~0x3FU) &
+                      ~(1U << (7U + exception)));
+      all_mxcsr_masks_required &=
+          !platform::inspect_current_fp_environment_v1()
+               .explicit_gemm_f32_v1_compatible;
+    }
+    {
+      ScopedX86FpEnvironment scope;
+      // set_x87_control_word issues fnclex before installing the mask.
+      const auto unmasked = static_cast<std::uint16_t>(
+          scope.x87_control_word() & ~(1U << exception));
+      scope.set_x87_control_word(unmasked);
+      all_x87_masks_required &=
+          !platform::inspect_current_fp_environment_v1()
+               .explicit_gemm_f32_v1_compatible;
+    }
   }
-  {
-    ScopedX86FpEnvironment scope;
-    // Clear pending status flags before unmasking invalid-operation.
-    scope.set_mxcsr((scope.mxcsr() & ~0x3FU) & ~(1U << 7U));
-    expect(!platform::inspect_current_fp_environment_v1()
-                .explicit_gemm_f32_v1_compatible,
-           "physical MXCSR exception-mask violation is detected");
-  }
-  {
-    ScopedX86FpEnvironment scope;
-    const auto unmasked = static_cast<std::uint16_t>(
-        scope.x87_control_word() & ~(1U << 0U));
-    scope.set_x87_control_word(unmasked);
-    expect(!platform::inspect_current_fp_environment_v1()
-                .explicit_gemm_f32_v1_compatible,
-           "physical x87 exception-mask violation is detected");
-  }
+  expect(all_mxcsr_masks_required,
+         "every physical MXCSR exception-mask family is required");
+  expect(all_x87_masks_required,
+         "every physical x87 exception-mask family is required");
   {
     ScopedX86FpEnvironment scope;
     scope.set_mxcsr((scope.mxcsr() & ~0x3FU) | 0x3FU);

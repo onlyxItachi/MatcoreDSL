@@ -344,6 +344,18 @@ if(BUILD_TESTING)
     COMMAND matcore_fp_environment_runtime_test
   )
 
+  add_executable(matcore_cpu_runtime_validation_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/cpu_runtime_validation_test.cpp"
+  )
+  target_compile_features(matcore_cpu_runtime_validation_test PRIVATE cxx_std_20)
+  mdslc_target_enable_warnings(matcore_cpu_runtime_validation_test WERROR)
+  target_link_libraries(matcore_cpu_runtime_validation_test
+    PRIVATE MatcoreDSL::CpuBackendsV1
+  )
+  add_test(NAME runtime.cpu.variant_conformance.v1
+    COMMAND matcore_cpu_runtime_validation_test
+  )
+
   add_executable(matcore_public_context_c_api_test
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/public_context_c_api_test.cpp"
   )
