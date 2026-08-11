@@ -115,7 +115,7 @@ intended relative `$ORIGIN/../lib` RUNPATH.
 - legacy Python frontend contract: 14/14 passed
 - `git diff --check`: passed
 - `tests/check_repository_hygiene.sh`: passed
-- `git fsck --full --strict`: exit 0; only dangling objects were reported
+- `git fsck --full --strict`: exit 0; no corruption was reported
 - final detached validation tree: exact candidate, clean, no untracked files
 
 One guarded, pinned, build-idle 256-cubed GEMM run selected single-thread
