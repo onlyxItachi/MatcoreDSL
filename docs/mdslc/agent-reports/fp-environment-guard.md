@@ -19,7 +19,9 @@ The focused implementation is in commits:
 - `715936e` — native and OpenBLAS numerical/control-state conformance;
 - `847eff8` — complete storage/span validation before every FP guard;
 - `6e58c29` — whole-object byte-preservation assertions for rejected public
-  calls.
+  calls; and
+- `5d3fe70` — source-type FP evaluation enforcement after independent review
+  reproduced an excess-precision configure bypass.
 
 ## Authenticated runtime contract
 
@@ -54,16 +56,19 @@ non-IEEE denormal modes, and `/fp:fast`. It then applies a target-local precise
 profile to both `matcore_cpu_backends_v1` and `matcore_runtime`:
 
 - Clang GNU mode: `-fno-fast-math`, finite/NaN/Inf preservation,
-  `-ffp-contract=fast`, no approximate/reciprocal math, and
-  `-fdenormal-fp-math=ieee`;
+  `-ffp-contract=fast`, `-ffp-eval-method=source`, no
+  approximate/reciprocal math, and `-fdenormal-fp-math=ieee`;
 - GCC mode: the supported equivalent subset;
 - clang-cl/MSVC ABI: `/fp:precise`.
 
 A forced internal header rejects `__FAST_MATH__`, nonzero
-`__FINITE_MATH_ONLY__`, `_M_FP_FAST`, or a missing target-local profile macro.
-The compile-command test authenticated all 11 runtime/backend translation-unit
-commands in the focused build. A nested configure test proved that an injected
-`-ffast-math` fails with the MDSLC contract diagnostic.
+`__FINITE_MATH_ONLY__`, `_M_FP_FAST`, a missing target-local profile macro, or
+`FLT_EVAL_METHOD != 0`. The compile-command test authenticated all 11
+runtime/backend translation-unit commands in the focused build, including the
+final source-evaluation option. Nested configure tests proved that injected
+`-ffast-math`, `-ffp-eval-method=double`, and
+`-ffp-eval-method=extended` values fail with the MDSLC contract diagnostic;
+the exact safe value `-ffp-eval-method=source` remains accepted.
 
 ## Backend conformance
 
@@ -155,6 +160,11 @@ runtime.c_abi.public_context_v1        PASS
 The same 12/12 matrix passed in a Debug build compiled with
 `-fsanitize=address,undefined -fno-omit-frame-pointer`, using
 `ASAN_OPTIONS=detect_leaks=1` and `UBSAN_OPTIONS=print_stacktrace=1`.
+
+After independent review exposed the evaluation-method bypass, the final
+normal and ASan/UBSan matrices were rebuilt and rerun at `5d3fe70`; both again
+passed 12/12. No parity or whole-repository performance run was performed for
+this compile-contract correction.
 
 Physical tests exercise FTZ, DAZ, all three non-RNE modes in MXCSR and x87,
 every MXCSR/x87 exception-mask family (with pending flags cleared before
