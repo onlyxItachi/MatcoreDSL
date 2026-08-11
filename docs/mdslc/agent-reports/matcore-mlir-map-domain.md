@@ -2,7 +2,7 @@
 
 Date: 2026-08-11
 
-Implementation commits: `7a31f22`, `d2698fb`
+Implementation commits: `7a31f22`, `d2698fb`, `3f29b1c`
 
 Scope: Milestone C semantic composition only
 
@@ -32,7 +32,9 @@ The dialect now contains:
   incorrectly generalized.
 - `all` is the unique whole-tensor form. A full static slice and a statically
   complete indices set are rejected.
-- Static slice and index coordinates are verifier-bounded and exact. Dynamic
+- Static slice and index coordinates are verifier-bounded and exact. Index
+  coordinates additionally require strict lexicographic order, so equivalent
+  reversed/permuted sets cannot acquire different canonical bytes. Dynamic
   slice/indices are not yet supported.
 - A mask is a rank-compatible i1 tensor. Static dimension conflicts reject;
   dynamic dimension equality remains the explicit
@@ -54,10 +56,14 @@ The dialect now contains:
 - Map and sine carry exact FileLineCol-backed, versioned provenance with a
   closed authenticity discriminant: source-authenticated, derived from a
   producer, or synthetic test fixture. Derived goldens never forge a source
-  expression. Source-authenticated fixtures require an exact source range and
-  SHA-256 snapshot identity. Production composition rejects synthetic
-  provenance, and provenance anchors remain tied to the producing semantic
-  site.
+  expression. Source-authenticated syntax requires an exact source range and
+  SHA-256 snapshot identity, but syntax alone is not permission: the plain
+  production composition verifier fails closed. Its trusted overload requires
+  caller-supplied source identity, bytes, digest, and byte length, recomputes
+  the digest, and validates every source-authenticated range and line/column
+  against those bytes without filesystem I/O. Production composition rejects
+  synthetic provenance, and provenance anchors remain tied to the producing
+  semantic site.
 - Sine v1 requires `correctly_rounded_f32`, non-approximate math, nearest-even
   rounding, gradual subnormals, preserved signed zero, quiet NaN for infinity,
   and an explicit quiet-NaN/payload-unspecified contract. These are semantic
@@ -94,15 +100,19 @@ cmake --build /home/hamza-usta/.cache/mdslc-semantic-mlir-build \
 
 ctest --test-dir /home/hamza-usta/.cache/mdslc-semantic-mlir-build \
   --output-on-failure -R '^mlir\.semantic\.(core|map-domain)$' -j1
+
+clang++-21 -x c++ -std=c++20 -fsyntax-only -I compiler/include \
+  compiler/tests/mlir/map_sin_source_fixture.mdsl
 ```
 
 Results:
 
 ```text
-Matcore MLIR map/domain: 280 checks, 0 failures
+Matcore MLIR map/domain: 319 checks, 0 failures
 mlir.semantic.core: passed
 mlir.semantic.map-domain: passed
 2/2 focused CTest tests passed
+source-authentication C++ fixture syntax check: passed
 git diff --check: passed for the lane diff
 ```
 
@@ -110,8 +120,10 @@ The tests cover byte-deterministic parse/print goldens, generic SSA use-def,
 all four domain kinds, a dynamic mask guard obligation, an independent partial
 slice evaluator proving byte-preservation of all 52 inactive elements, exact
 tensor-contract propagation, effects, source/derived/synthetic provenance,
-real-fixture source hashing/ranges, numerical fields, rank/type/encoding
-bounds, malformed domains, full-domain canonicality, block count/arguments,
+real-fixture source hashing/ranges, trusted identity/digest/length/range and
+line/column authentication, context-free fail-closed behavior, numerical
+fields, rank/type/encoding bounds, malformed domains, strict lexicographic
+index ordering, full-domain canonicality, block count/arguments,
 missing/wrong/multiple terminators, region capture, unsupported nested and
 module operations, calls, helpers, site/source/location drift, dead semantic
 results, and the observable GEMM destination write.
@@ -135,6 +147,20 @@ The follow-up provenance review found that the original synthetic sine golden
 incorrectly claimed a source expression at a file containing only the GEMM.
 The canonical goldens now use `derived_from_producer`; a separate valid C++
 fixture exercises the source-authenticated shape without forging source text.
+
+The independent rereview then reproduced two remaining blockers. Commit
+`3f29b1c` resolved them as follows:
+
+- `domain(indices)` first validates type, rank, bounds, and uniqueness, then
+  requires strict ascending lexicographic coordinates. Reverse and interior
+  permutation negatives reject, and parse/print bytes are stable.
+- `source_authenticated` can no longer enter the production composition
+  envelope from self-asserted MLIR attributes. The new
+  `AuthenticatedSourceSnapshotV1` verification context binds the exact module
+  source identity, independently recomputed SHA-256 digest, byte length,
+  half-open ranges, and byte-derived locations. The context-free verifier
+  rejects source-authenticated semantics, and every nested source-authenticated
+  operation is checked separately.
 
 ## Deliberate limitations
 
