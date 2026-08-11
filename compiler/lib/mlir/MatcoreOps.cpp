@@ -2,6 +2,7 @@
 
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Location.h"
+#include "mlir/IR/Operation.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
@@ -11,6 +12,7 @@
 #include <cctype>
 #include <cstdint>
 #include <limits>
+#include <string>
 
 namespace matcore::mdslc::mlir_dialect {
 namespace {
@@ -647,6 +649,481 @@ mlir::LogicalResult verifyProvenance(GemmOp operation,
   return verifyRecoveredProvenance(operation, operation.getProvenance());
 }
 
+template <typename OpTy>
+mlir::LogicalResult requireExactDictionaryFor(
+    OpTy operation, mlir::DictionaryAttr dictionary,
+    llvm::ArrayRef<llvm::StringRef> names, llvm::StringRef context) {
+  if (!dictionary || dictionary.size() != names.size())
+    return operation.emitOpError()
+           << context << " must contain exactly " << names.size()
+           << " fields";
+  llvm::StringSet<> expected;
+  for (llvm::StringRef name : names)
+    expected.insert(name);
+  for (mlir::NamedAttribute attribute : dictionary) {
+    if (!expected.contains(attribute.getName().strref()))
+      return operation.emitOpError()
+             << context << " contains unexpected field '"
+             << attribute.getName().strref() << "'";
+  }
+  return mlir::success();
+}
+
+template <typename OpTy>
+mlir::LogicalResult requireStringFor(OpTy operation,
+                                     mlir::DictionaryAttr dictionary,
+                                     llvm::StringRef name,
+                                     llvm::StringRef expected,
+                                     llvm::StringRef context) {
+  const auto value = dictionary.template getAs<mlir::StringAttr>(name);
+  if (!value || value.getValue() != expected)
+    return operation.emitOpError()
+           << context << "." << name << " must be '" << expected << "'";
+  return mlir::success();
+}
+
+template <typename OpTy>
+mlir::LogicalResult requireBooleanFor(OpTy operation,
+                                      mlir::DictionaryAttr dictionary,
+                                      llvm::StringRef name, bool expected,
+                                      llvm::StringRef context) {
+  const auto value = dictionary.template getAs<mlir::BoolAttr>(name);
+  if (!value || value.getValue() != expected)
+    return operation.emitOpError()
+           << context << "." << name << " must be "
+           << (expected ? "true" : "false");
+  return mlir::success();
+}
+
+mlir::LogicalResult verifyMapScalarExpressions(
+    MapOp operation, mlir::ArrayAttr values, mlir::RankedTensorType type,
+    llvm::StringRef context, bool shape) {
+  if (!values || values.size() != static_cast<std::size_t>(type.getRank()))
+    return operation.emitOpError()
+           << context << " must have one entry per tensor dimension";
+  for (auto [index, encoded] : llvm::enumerate(values)) {
+    const auto expression = mlir::dyn_cast<mlir::DictionaryAttr>(encoded);
+    if (!expression)
+      return operation.emitOpError()
+             << context << " entries must be dictionaries";
+    const auto kind = expression.getAs<mlir::StringAttr>("kind");
+    if (!kind)
+      return operation.emitOpError() << context << " entry requires kind";
+    if (kind.getValue() == "static") {
+      if (mlir::failed(requireExactDictionaryFor(
+              operation, expression, {"kind", "value"}, context)))
+        return mlir::failure();
+      const auto value = expression.getAs<mlir::IntegerAttr>("value");
+      if (!value || !value.getType().isSignlessInteger(64) ||
+          value.getInt() <= 0)
+        return operation.emitOpError()
+               << context << " static values must be positive signless i64";
+      if (shape &&
+          (mlir::ShapedType::isDynamic(type.getDimSize(index)) ||
+           value.getInt() != type.getDimSize(index)))
+        return operation.emitOpError()
+               << context << " static values must match tensor dimensions";
+      continue;
+    }
+    if (kind.getValue() == "dynamic") {
+      if (mlir::failed(requireExactDictionaryFor(
+              operation, expression, {"kind", "symbol"}, context)))
+        return mlir::failure();
+      const auto symbol = expression.getAs<mlir::StringAttr>("symbol");
+      if (!symbol || !isCanonicalSymbol(symbol.getValue()) ||
+          (shape && !mlir::ShapedType::isDynamic(type.getDimSize(index))))
+        return operation.emitOpError()
+               << context
+               << " dynamic symbols must be canonical and map to dynamic dimensions";
+      continue;
+    }
+    return operation.emitOpError()
+           << context << " contains unsupported scalar-expression kind '"
+           << kind.getValue() << "'";
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult verifyMapTensorContract(MapOp operation,
+                                            mlir::RankedTensorType type) {
+  const auto contract = operation.getTensorContract();
+  if (mlir::failed(requireExactDictionaryFor(
+          operation, contract,
+          {"aliasing", "alignment_bytes", "alignment_contract", "dtype",
+           "input_mutability", "layout", "memory_space", "rank",
+           "result_mutability", "shape", "strides"},
+          "tensor_contract")) ||
+      mlir::failed(requireStringFor(operation, contract, "aliasing",
+                                    "functional_result_no_inplace",
+                                    "tensor_contract")) ||
+      mlir::failed(requireStringFor(
+          operation, contract, "alignment_contract",
+          "required_precondition_and_result_contract", "tensor_contract")) ||
+      mlir::failed(requireStringFor(operation, contract, "dtype", "f32",
+                                    "tensor_contract")) ||
+      mlir::failed(requireStringFor(operation, contract, "input_mutability",
+                                    "read", "tensor_contract")) ||
+      mlir::failed(requireStringFor(operation, contract, "layout",
+                                    "row_major_contiguous",
+                                    "tensor_contract")) ||
+      mlir::failed(requireStringFor(operation, contract, "memory_space",
+                                    "host", "tensor_contract")) ||
+      mlir::failed(requireStringFor(operation, contract, "result_mutability",
+                                    "functional_write_once",
+                                    "tensor_contract")))
+    return mlir::failure();
+
+  const auto rank = contract.getAs<mlir::IntegerAttr>("rank");
+  const auto alignment =
+      contract.getAs<mlir::IntegerAttr>("alignment_bytes");
+  if (!rank || !rank.getType().isSignlessInteger(64) || rank.getInt() <= 0 ||
+      rank.getInt() != type.getRank())
+    return operation.emitOpError()
+           << "tensor_contract.rank must match the positive tensor rank";
+  if (!alignment || !alignment.getType().isSignlessInteger(64) ||
+      alignment.getInt() < 4 ||
+      (alignment.getInt() & (alignment.getInt() - 1)) != 0)
+    return operation.emitOpError()
+           << "tensor_contract.alignment_bytes must be a power of two at least four";
+
+  const auto shape = contract.getAs<mlir::ArrayAttr>("shape");
+  const auto strides = contract.getAs<mlir::ArrayAttr>("strides");
+  if (mlir::failed(verifyMapScalarExpressions(operation, shape, type,
+                                               "tensor_contract.shape",
+                                               /*shape=*/true)) ||
+      mlir::failed(verifyMapScalarExpressions(operation, strides, type,
+                                               "tensor_contract.strides",
+                                               /*shape=*/false)))
+    return mlir::failure();
+
+  if (type.getRank() != 2 || !type.getElementType().isF32())
+    return operation.emitOpError()
+           << "version-1 map input and result must be rank-two f32 tensors";
+  const auto unit_stride =
+      mlir::dyn_cast<mlir::DictionaryAttr>(strides[type.getRank() - 1]);
+  const auto unit_kind = unit_stride.getAs<mlir::StringAttr>("kind");
+  const auto unit_value = unit_stride.getAs<mlir::IntegerAttr>("value");
+  if (!unit_kind || unit_kind.getValue() != "static" || !unit_value ||
+      !unit_value.getType().isSignlessInteger(64) || unit_value.getInt() != 1)
+    return operation.emitOpError()
+           << "row-major tensor contract requires static unit minor stride";
+  for (int64_t index = 0; index + 1 < type.getRank(); ++index) {
+    const auto stride = mlir::dyn_cast<mlir::DictionaryAttr>(strides[index]);
+    const auto dimension =
+        mlir::dyn_cast<mlir::DictionaryAttr>(shape[index + 1]);
+    if (stride != dimension)
+      return operation.emitOpError()
+             << "version-1 row-major strides must equal the following dimension";
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult verifyStaticCoordinate(MapOp operation,
+                                           mlir::Attribute encoded,
+                                           int64_t upper_bound,
+                                           llvm::StringRef context,
+                                           bool allow_upper_bound) {
+  const auto value = mlir::dyn_cast<mlir::IntegerAttr>(encoded);
+  if (!value || !value.getType().isSignlessInteger(64) || value.getInt() < 0)
+    return operation.emitOpError()
+           << context << " must contain nonnegative signless i64 values";
+  const bool in_bounds = allow_upper_bound ? value.getInt() <= upper_bound
+                                           : value.getInt() < upper_bound;
+  if (!in_bounds)
+    return operation.emitOpError() << context << " is out of bounds";
+  return mlir::success();
+}
+
+mlir::LogicalResult verifyDomain(MapOp operation,
+                                 mlir::RankedTensorType type) {
+  const auto domain = operation.getDomain();
+  const auto kind = domain.getAs<mlir::StringAttr>("kind");
+  const auto version = domain.getAs<mlir::IntegerAttr>("version");
+  if (!kind || !version || !version.getType().isSignlessInteger(32) ||
+      version.getInt() != 1)
+    return operation.emitOpError()
+           << "domain requires a closed kind and version 1 : i32";
+
+  const bool has_mask = static_cast<bool>(operation.getMask());
+  if (kind.getValue() == "all") {
+    if (mlir::failed(requireExactDictionaryFor(operation, domain,
+                                                {"kind", "version"},
+                                                "domain")))
+      return mlir::failure();
+    if (has_mask || operation.getOutsideDomain() != "not_applicable")
+      return operation.emitOpError()
+             << "domain(all) forbids a mask and requires outside_domain=not_applicable";
+    return mlir::success();
+  }
+
+  if (operation.getOutsideDomain() != "preserve_input")
+    return operation.emitOpError()
+           << "partial domains require outside_domain=preserve_input";
+
+  if (kind.getValue() == "mask") {
+    if (mlir::failed(requireExactDictionaryFor(operation, domain,
+                                                {"kind", "shape_equality",
+                                                 "version"},
+                                                "domain")))
+      return mlir::failure();
+    if (mlir::failed(requireStringFor(
+            operation, domain, "shape_equality", "required_precondition",
+            "domain")))
+      return mlir::failure();
+    if (!has_mask)
+      return operation.emitOpError()
+             << "domain(mask) requires one ranked i1 mask operand";
+    const auto mask_type =
+        mlir::dyn_cast<mlir::RankedTensorType>(operation.getMask().getType());
+    if (!mask_type || !mask_type.getElementType().isInteger(1) ||
+        mask_type.getRank() != type.getRank())
+      return operation.emitOpError()
+             << "domain(mask) requires a rank-compatible i1 tensor";
+    for (int64_t index = 0; index < type.getRank(); ++index) {
+      const int64_t input_dimension = type.getDimSize(index);
+      const int64_t mask_dimension = mask_type.getDimSize(index);
+      if (!mlir::ShapedType::isDynamic(input_dimension) &&
+          !mlir::ShapedType::isDynamic(mask_dimension) &&
+          input_dimension != mask_dimension)
+        return operation.emitOpError()
+               << "domain(mask) has a statically incompatible shape";
+    }
+    return mlir::success();
+  }
+
+  if (has_mask)
+    return operation.emitOpError()
+           << "only domain(mask) may carry a mask operand";
+  if (!type.hasStaticShape())
+    return operation.emitOpError()
+           << "version-1 slice/indices domains require a static tensor shape";
+
+  if (kind.getValue() == "slice") {
+    if (mlir::failed(requireExactDictionaryFor(
+            operation, domain, {"begin", "end", "kind", "step", "version"},
+            "domain")))
+      return mlir::failure();
+    const auto begin = domain.getAs<mlir::ArrayAttr>("begin");
+    const auto end = domain.getAs<mlir::ArrayAttr>("end");
+    const auto step = domain.getAs<mlir::ArrayAttr>("step");
+    const auto rank = static_cast<std::size_t>(type.getRank());
+    if (!begin || !end || !step || begin.size() != rank ||
+        end.size() != rank || step.size() != rank)
+      return operation.emitOpError()
+             << "domain(slice) begin/end/step must match tensor rank";
+    bool partial = false;
+    for (int64_t index = 0; index < type.getRank(); ++index) {
+      if (mlir::failed(verifyStaticCoordinate(
+              operation, begin[index], type.getDimSize(index),
+              "domain(slice).begin", /*allow_upper_bound=*/false)) ||
+          mlir::failed(verifyStaticCoordinate(
+              operation, end[index], type.getDimSize(index),
+              "domain(slice).end", /*allow_upper_bound=*/true)))
+        return mlir::failure();
+      const auto first = mlir::cast<mlir::IntegerAttr>(begin[index]).getInt();
+      const auto last = mlir::cast<mlir::IntegerAttr>(end[index]).getInt();
+      const auto increment = mlir::dyn_cast<mlir::IntegerAttr>(step[index]);
+      if (last <= first || !increment ||
+          !increment.getType().isSignlessInteger(64) ||
+          increment.getInt() <= 0)
+        return operation.emitOpError()
+               << "domain(slice) requires nonempty bounds and positive i64 steps";
+      partial = partial || first != 0 || last != type.getDimSize(index) ||
+                increment.getInt() != 1;
+    }
+    if (!partial)
+      return operation.emitOpError()
+             << "a full static slice must use the canonical domain(all) form";
+    return mlir::success();
+  }
+
+  if (kind.getValue() == "indices") {
+    if (mlir::failed(requireExactDictionaryFor(
+            operation, domain, {"coordinates", "kind", "version"},
+            "domain")))
+      return mlir::failure();
+    const auto coordinates = domain.getAs<mlir::ArrayAttr>("coordinates");
+    if (!coordinates || coordinates.empty())
+      return operation.emitOpError()
+             << "domain(indices) requires at least one coordinate";
+    llvm::StringSet<> seen;
+    for (mlir::Attribute encoded_coordinate : coordinates) {
+      const auto coordinate =
+          mlir::dyn_cast<mlir::ArrayAttr>(encoded_coordinate);
+      if (!coordinate ||
+          coordinate.size() != static_cast<std::size_t>(type.getRank()))
+        return operation.emitOpError()
+               << "domain(indices) coordinates must match tensor rank";
+      std::string key;
+      for (int64_t index = 0; index < type.getRank(); ++index) {
+        if (mlir::failed(verifyStaticCoordinate(
+                operation, coordinate[index], type.getDimSize(index),
+                "domain(indices).coordinate", /*allow_upper_bound=*/false)))
+          return mlir::failure();
+        key += std::to_string(
+            mlir::cast<mlir::IntegerAttr>(coordinate[index]).getInt());
+        key += ':';
+      }
+      if (!seen.insert(key).second)
+        return operation.emitOpError()
+               << "domain(indices) coordinates must be unique";
+    }
+    return mlir::success();
+  }
+
+  return operation.emitOpError()
+         << "domain.kind has unsupported value '" << kind.getValue() << "'";
+}
+
+mlir::LogicalResult verifyMapEffects(MapOp operation) {
+  const auto effects = operation.getEffects();
+  if (mlir::failed(requireExactDictionaryFor(
+          operation, effects, {"read_write", "reads", "writes"},
+          "effects")))
+    return mlir::failure();
+  const auto reads = effects.getAs<mlir::ArrayAttr>("reads");
+  const auto writes = effects.getAs<mlir::ArrayAttr>("writes");
+  const auto read_write = effects.getAs<mlir::ArrayAttr>("read_write");
+  const bool has_mask = static_cast<bool>(operation.getMask());
+  const std::size_t expected_reads = has_mask ? 2 : 1;
+  if (!reads || reads.size() != expected_reads ||
+      !mlir::isa<mlir::StringAttr>(reads[0]) ||
+      mlir::cast<mlir::StringAttr>(reads[0]).getValue() != "input" ||
+      (has_mask &&
+       (!mlir::isa<mlir::StringAttr>(reads[1]) ||
+        mlir::cast<mlir::StringAttr>(reads[1]).getValue() != "mask")) ||
+      !writes || !writes.empty() || !read_write || !read_write.empty())
+    return operation.emitOpError()
+           << "effects must encode input/mask reads and no writes/read_write effects";
+  return mlir::success();
+}
+
+mlir::LogicalResult verifyMapNumerical(MapOp operation) {
+  const auto numerical = operation.getNumerical();
+  if (mlir::failed(requireExactDictionaryFor(
+          operation, numerical,
+          {"approximate_math", "domain_application", "inplace", "profile",
+           "result_identity"},
+          "numerical")) ||
+      mlir::failed(requireStringFor(operation, numerical, "profile",
+                                    "map-f32-v1", "numerical")) ||
+      mlir::failed(requireStringFor(operation, numerical, "domain_application",
+                                    "active_elements_only", "numerical")) ||
+      mlir::failed(requireStringFor(operation, numerical, "result_identity",
+                                    "new_functional_value", "numerical")) ||
+      mlir::failed(requireBooleanFor(operation, numerical, "approximate_math",
+                                     false, "numerical")) ||
+      mlir::failed(requireBooleanFor(operation, numerical, "inplace", false,
+                                     "numerical")))
+    return mlir::failure();
+  return mlir::success();
+}
+
+template <typename OpTy>
+mlir::LogicalResult verifySemanticProvenance(OpTy operation,
+                                             llvm::StringRef kind) {
+  const auto provenance = operation.getProvenance();
+  if (mlir::failed(requireExactDictionaryFor(
+          operation, provenance,
+          {"column", "file", "kind", "line", "source_anchor", "version"},
+          "provenance")) ||
+      mlir::failed(requireStringFor(operation, provenance, "kind", kind,
+                                    "provenance")))
+    return mlir::failure();
+  const auto version = provenance.template getAs<mlir::IntegerAttr>("version");
+  const auto file = provenance.template getAs<mlir::StringAttr>("file");
+  const auto line = provenance.template getAs<mlir::IntegerAttr>("line");
+  const auto column = provenance.template getAs<mlir::IntegerAttr>("column");
+  const auto anchor =
+      provenance.template getAs<mlir::StringAttr>("source_anchor");
+  constexpr std::uint64_t max_unsigned =
+      std::numeric_limits<unsigned>::max();
+  if (!version || !version.getType().isSignlessInteger(32) ||
+      version.getInt() != 1 || !file || file.getValue().empty() || !line ||
+      !line.getType().isSignlessInteger(64) || line.getInt() <= 0 ||
+      static_cast<std::uint64_t>(line.getInt()) > max_unsigned || !column ||
+      !column.getType().isSignlessInteger(64) || column.getInt() <= 0 ||
+      static_cast<std::uint64_t>(column.getInt()) > max_unsigned || !anchor ||
+      anchor.getValue().empty())
+    return operation.emitOpError()
+           << "provenance requires a versioned source anchor and valid file/line/column";
+  const auto location =
+      mlir::dyn_cast<mlir::FileLineColLoc>(operation.getLoc());
+  if (!location || location.getFilename() != file.getValue() ||
+      location.getLine() != static_cast<unsigned>(line.getInt()) ||
+      location.getColumn() != static_cast<unsigned>(column.getInt()))
+    return operation.emitOpError()
+           << "location must match exact semantic provenance";
+  return mlir::success();
+}
+
+mlir::LogicalResult verifySinNumerical(SinOp operation) {
+  const auto numerical = operation.getNumerical();
+  if (mlir::failed(requireExactDictionaryFor(
+          operation, numerical,
+          {"accuracy", "approximate_math", "exception_status", "infinity",
+           "nan", "profile", "rounding", "signed_zero", "subnormals",
+           "trapping_exceptions"},
+          "numerical")) ||
+      mlir::failed(requireStringFor(operation, numerical, "profile",
+                                    "sin-f32-ieee-v1", "numerical")) ||
+      mlir::failed(requireStringFor(operation, numerical, "accuracy",
+                                    "correctly_rounded_f32", "numerical")) ||
+      mlir::failed(requireStringFor(operation, numerical, "nan",
+                                    "quiet_nan_payload_unspecified",
+                                    "numerical")) ||
+      mlir::failed(requireStringFor(operation, numerical, "infinity",
+                                    "quiet_nan", "numerical")) ||
+      mlir::failed(requireStringFor(operation, numerical, "signed_zero",
+                                    "preserve", "numerical")) ||
+      mlir::failed(requireStringFor(operation, numerical, "rounding",
+                                    "nearest_ties_even", "numerical")) ||
+      mlir::failed(requireStringFor(operation, numerical, "exception_status",
+                                    "postcall_unspecified", "numerical")) ||
+      mlir::failed(requireStringFor(
+          operation, numerical, "subnormals",
+          "ieee_gradual_ftz_daz_forbidden", "numerical")) ||
+      mlir::failed(requireStringFor(operation, numerical,
+                                    "trapping_exceptions", "unsupported",
+                                    "numerical")) ||
+      mlir::failed(requireBooleanFor(operation, numerical, "approximate_math",
+                                     false, "numerical")))
+    return mlir::failure();
+  return mlir::success();
+}
+
+mlir::LogicalResult verifyMapInputContractPropagation(MapOp operation) {
+  const auto contract = operation.getTensorContract();
+  const auto anchor =
+      operation.getProvenance().getAs<mlir::StringAttr>("source_anchor");
+  if (auto producer = operation.getInput().getDefiningOp<GemmOp>()) {
+    const auto semantics = producer.getOutputSemantics();
+    constexpr llvm::StringLiteral shared_fields[] = {
+        "alignment_bytes", "layout", "memory_space", "shape", "strides"};
+    for (llvm::StringRef field : shared_fields) {
+      if (contract.get(field) != semantics.get(field))
+        return operation.emitOpError()
+               << "tensor_contract." << field
+               << " must be propagated exactly from the GEMM result";
+    }
+    if (!anchor || anchor.getValue() != producer.getSiteId())
+      return operation.emitOpError()
+             << "provenance.source_anchor must authenticate the producing GEMM site";
+    return mlir::success();
+  }
+  if (auto producer = operation.getInput().getDefiningOp<MapOp>()) {
+    if (contract != producer.getTensorContract())
+      return operation.emitOpError()
+             << "tensor contract must be preserved exactly across map composition";
+    const auto producer_anchor =
+        producer.getProvenance().getAs<mlir::StringAttr>("source_anchor");
+    if (!anchor || !producer_anchor || anchor != producer_anchor)
+      return operation.emitOpError()
+             << "map composition must preserve the authenticated source anchor";
+  }
+  return mlir::success();
+}
+
 } // namespace
 
 mlir::LogicalResult GemmOp::verify() {
@@ -725,6 +1202,76 @@ void GemmOp::getEffects(
                        &getOperation()->getOpOperand(1));
   effects.emplace_back(mlir::MemoryEffects::Write::get(),
                        &getOperation()->getOpOperand(2));
+}
+
+mlir::LogicalResult MapOp::verify() {
+  const auto input_type =
+      mlir::dyn_cast<mlir::RankedTensorType>(getInput().getType());
+  const auto result_type =
+      mlir::dyn_cast<mlir::RankedTensorType>(getResult().getType());
+  if (!input_type || !result_type || input_type != result_type)
+    return emitOpError()
+           << "input and functional result must have identical ranked tensor types";
+  if (mlir::failed(verifyMapTensorContract(*this, input_type)) ||
+      mlir::failed(verifyDomain(*this, input_type)) ||
+      mlir::failed(verifyMapEffects(*this)) ||
+      mlir::failed(verifyMapNumerical(*this)) ||
+      mlir::failed(
+          verifySemanticProvenance(*this, "semantic_composition")) ||
+      mlir::failed(verifyMapInputContractPropagation(*this)))
+    return mlir::failure();
+
+  if (!getBody().hasOneBlock())
+    return emitOpError() << "body must contain exactly one block";
+  mlir::Block &block = getBody().front();
+  if (block.getNumArguments() != 1 || !block.getArgument(0).getType().isF32())
+    return emitOpError() << "body must accept exactly one scalar f32 argument";
+  if (block.empty())
+    return emitOpError() << "body must end in mdsl.yield";
+
+  mlir::Value current = block.getArgument(0);
+  const auto map_anchor =
+      getProvenance().getAs<mlir::StringAttr>("source_anchor");
+  bool saw_scalar_operation = false;
+  for (mlir::Operation &nested : block.without_terminator()) {
+    auto sin = mlir::dyn_cast<SinOp>(&nested);
+    if (!sin)
+      return emitOpError()
+             << "body permits only pure mdsl.sin operations before mdsl.yield";
+    if (sin.getInput() != current)
+      return emitOpError()
+             << "body must form one linear scalar SSA chain without dead computations";
+    const auto sin_anchor =
+        sin.getProvenance().getAs<mlir::StringAttr>("source_anchor");
+    if (!map_anchor || !sin_anchor || map_anchor != sin_anchor)
+      return emitOpError()
+             << "body scalar provenance must preserve the map source anchor";
+    current = sin.getResult();
+    saw_scalar_operation = true;
+  }
+  auto yield = mlir::dyn_cast<YieldOp>(block.getTerminator());
+  if (!yield || yield.getValue() != current || !saw_scalar_operation)
+    return emitOpError()
+           << "body must yield the result of a nonempty linear mdsl.sin chain";
+  return mlir::success();
+}
+
+mlir::LogicalResult SinOp::verify() {
+  if (!getInput().getType().isF32() || !getResult().getType().isF32())
+    return emitOpError() << "input and result must be scalar f32";
+  if (mlir::failed(verifySinNumerical(*this)) ||
+      mlir::failed(verifySemanticProvenance(*this, "source_expression")))
+    return mlir::failure();
+  return mlir::success();
+}
+
+mlir::LogicalResult YieldOp::verify() {
+  auto map = mlir::dyn_cast<MapOp>((*this)->getParentOp());
+  if (!map || (*this)->getBlock() != &map.getBody().front())
+    return emitOpError() << "must terminate the sole mdsl.map body block";
+  if (!getValue().getType().isF32())
+    return emitOpError() << "value must be scalar f32";
+  return mlir::success();
 }
 
 } // namespace matcore::mdslc::mlir_dialect
