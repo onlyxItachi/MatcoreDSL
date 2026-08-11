@@ -42,6 +42,26 @@ def run(
     return result
 
 
+def require_failure(
+    command: list[str],
+    expected: str,
+    *,
+    environment: dict[str, str] | None = None,
+) -> None:
+    result = subprocess.run(
+        command,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=environment,
+    )
+    if result.returncode == 0 or expected not in result.stdout:
+        raise RuntimeError(
+            f"command did not fail with {expected!r}: {command}\n{result.stdout}"
+        )
+
+
 def make_depfile_paths(path: Path) -> tuple[str, ...]:
     def encode(value: str) -> str:
         value = value.replace("\\", "\\\\").replace("$", "$$")
@@ -277,9 +297,20 @@ def main() -> int:
     parser.add_argument("--producer-build-dir", required=True)
     parser.add_argument("--test-root", required=True)
     parser.add_argument("--cxx-compiler", required=True)
+    parser.add_argument(
+        "--matcore-mlir-available", choices=("ON", "OFF"), required=True
+    )
+    parser.add_argument(
+        "--default-semantic-pipeline",
+        choices=("capture-v0", "matcore-mlir"),
+        required=True,
+    )
     parser.add_argument("--windows-import-report-out")
     args = parser.parse_args()
     is_windows = os.name == "nt"
+    matcore_mlir_available = args.matcore_mlir_available == "ON"
+    if args.default_semantic_pipeline == "matcore-mlir" and not matcore_mlir_available:
+        raise RuntimeError("package cannot default to unavailable matcore-mlir")
     executable_suffix = ".exe" if is_windows else ""
     artifact_suffix = ".lib" if is_windows else ".o"
 
@@ -318,6 +349,14 @@ def main() -> int:
         prefix / "lib" / "cmake" / "MatcoreDSL" / "MatcoreDSLTargets.cmake",
         prefix / "lib" / "cmake" / "MatcoreDSL" / "MatcoreDSLCompile.cmake",
     ]
+    if matcore_mlir_available:
+        expected_install_files.append(
+            prefix / "bin" / f"matcore-mlir{executable_suffix}"
+        )
+    elif (prefix / "bin" / f"matcore-mlir{executable_suffix}").exists():
+        raise RuntimeError(
+            "MLIR-disabled package installed an unadvertised matcore-mlir tool"
+        )
     if is_windows:
         expected_install_files.extend(
             [
@@ -341,6 +380,7 @@ def main() -> int:
     extractor = prefix / "bin" / f"matcore-extract{executable_suffix}"
     planner = prefix / "bin" / f"matcore-plan{executable_suffix}"
     benchmark = prefix / "bin" / f"matcore-bench{executable_suffix}"
+    mlir_tool = prefix / "bin" / f"matcore-mlir{executable_suffix}"
     installed_environment = os.environ.copy()
     build_environment = os.environ.copy()
     # Preserve the caller-visible driver basename.  On Unix, clang++ is often
@@ -473,6 +513,29 @@ def main() -> int:
             f"{benchmarked.stdout}"
         )
 
+    if matcore_mlir_available:
+        semantic_output = test_root / "installed semantic fixture.mlir"
+        bridged = run(
+            [
+                str(mlir_tool),
+                "--input",
+                str(repository / "compiler/tests/ir/gemm_capture.v1.golden.json"),
+                "--numerical-profile",
+                "explicit-gemm-f32-v1",
+                "--execution-intent",
+                "generic",
+                "--output",
+                str(semantic_output),
+            ],
+            capture=True,
+            environment=installed_environment,
+        )
+        if bridged.stdout or semantic_output.read_text(encoding="utf-8") != (
+            repository
+            / "compiler/tests/mlir/gemm_capture.semantic.golden.mlir"
+        ).read_text(encoding="utf-8"):
+            raise RuntimeError("relocated matcore-mlir output differs from golden")
+
     untrusted_source = test_root / "untrusted-source-header.mdsl"
     untrusted_ir = test_root / "untrusted-source-header.json"
     untrusted_source.write_text(
@@ -551,13 +614,52 @@ def main() -> int:
         "Ninja",
         f"-DCMAKE_PREFIX_PATH={prefix}",
         f"-DCMAKE_CXX_COMPILER={test_compiler}",
+        f"-DMATCOREDSL_EXPECT_MATCORE_MLIR_AVAILABLE={args.matcore_mlir_available}",
+        f"-DMATCOREDSL_EXPECT_DEFAULT_SEMANTIC_PIPELINE={args.default_semantic_pipeline}",
     ]
     if is_windows:
         # This test validates the redistributable Release package and rejects
         # every Debug CRT import.  Ninja has no portable implicit default
         # configuration, so make the consumer's runtime model explicit.
         configure_command.append("-DCMAKE_BUILD_TYPE=Release")
+
+    def alternate_configure(
+        alternate_build: Path, extra_arguments: list[str]
+    ) -> list[str]:
+        command = list(configure_command)
+        command[command.index("-B") + 1] = str(alternate_build)
+        command.extend(extra_arguments)
+        return command
+
     run(configure_command, environment=build_environment)
+    build_graph = (build / "build.ninja").read_text(encoding="utf-8")
+    expected_selector = (
+        f"--semantic-pipeline={args.default_semantic_pipeline}"
+    )
+    if expected_selector not in build_graph:
+        raise RuntimeError(
+            "installed helper did not materialize the package semantic default"
+        )
+
+    invalid_build = test_root / "invalid-semantic-consumer-build"
+    require_failure(
+        alternate_configure(
+            invalid_build,
+            ["-DMATCOREDSL_CONSUMER_SEMANTIC_PIPELINE=invalid"],
+        ),
+        "SEMANTIC_PIPELINE must be capture-v0 or matcore-mlir",
+        environment=build_environment,
+    )
+    if not matcore_mlir_available:
+        unavailable_build = test_root / "unavailable-semantic-consumer-build"
+        require_failure(
+            alternate_configure(
+                unavailable_build,
+                ["-DMATCOREDSL_CONSUMER_SEMANTIC_PIPELINE=matcore-mlir"],
+            ),
+            "requested semantic pipeline matcore-mlir is unavailable",
+            environment=build_environment,
+        )
     run(
         [args.cmake, "--build", str(build), "--parallel", "2"],
         environment=build_environment,
@@ -755,6 +857,41 @@ def main() -> int:
     if "no work to do" not in noop.stdout.lower():
         raise RuntimeError(f"second rebuild was not a no-op:\n{noop.stdout}")
 
+    if matcore_mlir_available:
+        override_pipeline = (
+            "capture-v0"
+            if args.default_semantic_pipeline == "matcore-mlir"
+            else "matcore-mlir"
+        )
+        override_build = test_root / "explicit-semantic-override-build"
+        run(
+            alternate_configure(
+                override_build,
+                [
+                    "-DMATCOREDSL_CONSUMER_SEMANTIC_PIPELINE="
+                    f"{override_pipeline}"
+                ],
+            ),
+            environment=build_environment,
+        )
+        override_graph = (override_build / "build.ninja").read_text(
+            encoding="utf-8"
+        )
+        if f"--semantic-pipeline={override_pipeline}" not in override_graph:
+            raise RuntimeError("installed helper lost explicit semantic override")
+        run(
+            [args.cmake, "--build", str(override_build), "--parallel", "2"],
+            environment=build_environment,
+        )
+        override_executable = override_build / f"matcore_consumer{executable_suffix}"
+        override_run = run(
+            [str(override_executable)],
+            capture=True,
+            environment=installed_environment,
+        )
+        if "consumer-pass" not in override_run.stdout:
+            raise RuntimeError("explicit semantic override consumer failed")
+
     forbidden = {
         str(Path(args.source_dir).resolve().parents[2]),
         str(Path(args.producer_build_dir).resolve()),
@@ -771,7 +908,7 @@ def main() -> int:
 
     print(
         "installed consumer: relocated configure/build/run/source+header "
-        "runtime-header rebuild/no-op PASS"
+        "runtime-header rebuild/no-op/semantic-capability PASS"
     )
     return 0
 

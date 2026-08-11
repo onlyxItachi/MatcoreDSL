@@ -47,6 +47,24 @@ def run(
     return completed
 
 
+def require_failure(
+    command: list[str], expected: str, *, cwd: Path | None = None
+) -> None:
+    completed = subprocess.run(
+        command,
+        check=False,
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if completed.returncode == 0 or expected not in completed.stdout:
+        raise TestFailure(
+            f"command did not fail with {expected!r}: {command}\n"
+            f"{completed.stdout}"
+        )
+
+
 def exact_commit(git: str, repository: Path) -> str:
     commit = run(
         [git, "-C", str(repository), "rev-parse", "--verify", "HEAD"],
@@ -247,8 +265,8 @@ def scan_forbidden_paths(
             )
 
 
-def require_install(prefix: Path) -> None:
-    required = (
+def require_install(prefix: Path, matcore_mlir_available: bool) -> None:
+    required = [
         prefix / "bin" / "mdslc++",
         prefix / "bin" / "matcore-extract",
         prefix / "bin" / "matcore-plan",
@@ -267,7 +285,13 @@ def require_install(prefix: Path) -> None:
         / "cmake"
         / "MatcoreDSL"
         / "MatcoreDSLTargets.cmake",
-    )
+    ]
+    if matcore_mlir_available:
+        required.append(prefix / "bin" / "matcore-mlir")
+    elif (prefix / "bin" / "matcore-mlir").exists():
+        raise TestFailure(
+            "MLIR-disabled package installed an unadvertised matcore-mlir tool"
+        )
     missing = [str(path) for path in required if not path.exists()]
     if missing:
         raise TestFailure(f"relocated installed package is incomplete: {missing}")
@@ -285,7 +309,25 @@ def main() -> int:
     parser.add_argument("--clangxx", required=True)
     parser.add_argument("--llvm-dir", required=True)
     parser.add_argument("--clang-dir", required=True)
+    parser.add_argument(
+        "--matcore-mlir-available", choices=("ON", "OFF"), required=True
+    )
+    parser.add_argument("--mlir-dir", default="")
+    parser.add_argument(
+        "--default-semantic-pipeline",
+        choices=("capture-v0", "matcore-mlir"),
+        required=True,
+    )
     arguments = parser.parse_args()
+
+    matcore_mlir_available = arguments.matcore_mlir_available == "ON"
+    if (
+        arguments.default_semantic_pipeline == "matcore-mlir"
+        and not matcore_mlir_available
+    ):
+        raise TestFailure("package cannot default to unavailable matcore-mlir")
+    if matcore_mlir_available and not arguments.mlir_dir:
+        raise TestFailure("MLIR-enabled source-inaccessible test requires MLIR_DIR")
 
     repository = Path(arguments.repository_root).resolve()
     c_compiler = absolute_tool(arguments.c_compiler, "C compiler")
@@ -305,6 +347,7 @@ def main() -> int:
     )
     consumer_source = test_root / "consumer-only"
     consumer_build = test_root / "consumer-build"
+    semantic_fixtures = test_root / "semantic-fixtures"
 
     commit = exact_commit(arguments.git, repository)
     clone_clean_commit(
@@ -314,6 +357,24 @@ def main() -> int:
         producer_source / "compiler" / "tests" / "consumer",
         consumer_source,
     )
+    if matcore_mlir_available:
+        semantic_fixtures.mkdir()
+        shutil.copy2(
+            producer_source
+            / "compiler"
+            / "tests"
+            / "ir"
+            / "gemm_capture.v1.golden.json",
+            semantic_fixtures / "gemm_capture.v1.golden.json",
+        )
+        shutil.copy2(
+            producer_source
+            / "compiler"
+            / "tests"
+            / "mlir"
+            / "gemm_capture.semantic.golden.mlir",
+            semantic_fixtures / "gemm_capture.semantic.golden.mlir",
+        )
 
     configure = [
         arguments.cmake,
@@ -330,11 +391,56 @@ def main() -> int:
         "-DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=ON",
         "-DMDSLC_ENABLE_OPENBLAS=OFF",
         "-DMDSLC_REQUIRE_OPENBLAS=OFF",
+        f"-DMDSLC_ENABLE_MATCORE_MLIR={arguments.matcore_mlir_available}",
+        "-DMDSLC_DEFAULT_SEMANTIC_PIPELINE="
+        f"{arguments.default_semantic_pipeline}",
         f"-DLLVM_DIR={Path(arguments.llvm_dir).resolve()}",
         f"-DClang_DIR={Path(arguments.clang_dir).resolve()}",
         "-DBUILD_TESTING=OFF",
         "-DCMAKE_BUILD_TYPE=Release",
     ]
+    if matcore_mlir_available:
+        configure.append(f"-DMLIR_DIR={Path(arguments.mlir_dir).resolve()}")
+
+    def alternate_producer_configure(
+        alternate_build: Path,
+        semantic_pipeline: str,
+        mlir_enabled: str,
+    ) -> list[str]:
+        command = list(configure)
+        command[command.index("-B") + 1] = str(alternate_build)
+        command = [
+            (
+                f"-DMDSLC_DEFAULT_SEMANTIC_PIPELINE={semantic_pipeline}"
+                if argument.startswith("-DMDSLC_DEFAULT_SEMANTIC_PIPELINE=")
+                else (
+                    f"-DMDSLC_ENABLE_MATCORE_MLIR={mlir_enabled}"
+                    if argument.startswith("-DMDSLC_ENABLE_MATCORE_MLIR=")
+                    else argument
+                )
+            )
+            for argument in command
+        ]
+        return command
+
+    invalid_configure_build = test_root / "invalid-default-configure"
+    require_failure(
+        alternate_producer_configure(
+            invalid_configure_build, "invalid", arguments.matcore_mlir_available
+        ),
+        "MDSLC_DEFAULT_SEMANTIC_PIPELINE must be capture-v0 or matcore-mlir",
+    )
+    shutil.rmtree(invalid_configure_build, ignore_errors=True)
+
+    unavailable_default_build = test_root / "unavailable-default-configure"
+    require_failure(
+        alternate_producer_configure(
+            unavailable_default_build, "matcore-mlir", "OFF"
+        ),
+        "MDSLC_DEFAULT_SEMANTIC_PIPELINE=matcore-mlir requires",
+    )
+    shutil.rmtree(unavailable_default_build, ignore_errors=True)
+
     run(configure)
     run([arguments.cmake, "--build", str(producer_build), "--parallel", "2"])
     run(
@@ -348,7 +454,7 @@ def main() -> int:
     )
     relocated_prefix.parent.mkdir(parents=True)
     shutil.move(staging_prefix, relocated_prefix)
-    require_install(relocated_prefix)
+    require_install(relocated_prefix, matcore_mlir_available)
 
     installed_forbidden_paths = [
         repository,
@@ -375,20 +481,84 @@ def main() -> int:
     if producer_source.exists() or producer_build.exists():
         raise TestFailure("producer source or build tree remained accessible")
 
-    run(
-        [
-            arguments.cmake,
-            "-S",
-            str(consumer_source),
-            "-B",
-            str(consumer_build),
-            "-G",
-            "Ninja",
-            f"-DCMAKE_PREFIX_PATH={relocated_prefix}",
-            f"-DCMAKE_CXX_COMPILER={cxx_compiler}",
-            "-DCMAKE_BUILD_TYPE=Release",
+    if matcore_mlir_available:
+        first_semantic = test_root / "installed-first.semantic.mlir"
+        second_semantic = test_root / "installed-second.semantic.mlir"
+        semantic_command = [
+            str(relocated_prefix / "bin" / "matcore-mlir"),
+            "--input",
+            str(semantic_fixtures / "gemm_capture.v1.golden.json"),
+            "--numerical-profile",
+            "explicit-gemm-f32-v1",
+            "--execution-intent",
+            "generic",
         ]
+        run([*semantic_command, "--output", str(first_semantic)])
+        run([*semantic_command, "--output", str(second_semantic)])
+        expected_semantic = (
+            semantic_fixtures / "gemm_capture.semantic.golden.mlir"
+        ).read_bytes()
+        if (
+            first_semantic.read_bytes() != expected_semantic
+            or second_semantic.read_bytes() != expected_semantic
+        ):
+            raise TestFailure(
+                "source-inaccessible installed matcore-mlir output is not "
+                "deterministic or differs from the copied exact golden"
+            )
+
+    consumer_configure = [
+        arguments.cmake,
+        "-S",
+        str(consumer_source),
+        "-B",
+        str(consumer_build),
+        "-G",
+        "Ninja",
+        f"-DCMAKE_PREFIX_PATH={relocated_prefix}",
+        f"-DCMAKE_CXX_COMPILER={cxx_compiler}",
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DMATCOREDSL_EXPECT_MATCORE_MLIR_AVAILABLE="
+        f"{arguments.matcore_mlir_available}",
+        "-DMATCOREDSL_EXPECT_DEFAULT_SEMANTIC_PIPELINE="
+        f"{arguments.default_semantic_pipeline}",
+    ]
+
+    def alternate_configure(
+        alternate_build: Path, extra_arguments: list[str]
+    ) -> list[str]:
+        command = list(consumer_configure)
+        command[command.index("-B") + 1] = str(alternate_build)
+        command.extend(extra_arguments)
+        return command
+
+    run(consumer_configure)
+    build_graph = (consumer_build / "build.ninja").read_text(encoding="utf-8")
+    if (
+        f"--semantic-pipeline={arguments.default_semantic_pipeline}"
+        not in build_graph
+    ):
+        raise TestFailure(
+            "source-inaccessible consumer lost the installed semantic default"
+        )
+
+    invalid_build = test_root / "invalid-semantic-consumer-build"
+    require_failure(
+        alternate_configure(
+            invalid_build,
+            ["-DMATCOREDSL_CONSUMER_SEMANTIC_PIPELINE=invalid"],
+        ),
+        "SEMANTIC_PIPELINE must be capture-v0 or matcore-mlir",
     )
+    if not matcore_mlir_available:
+        unavailable_build = test_root / "unavailable-semantic-consumer-build"
+        require_failure(
+            alternate_configure(
+                unavailable_build,
+                ["-DMATCOREDSL_CONSUMER_SEMANTIC_PIPELINE=matcore-mlir"],
+            ),
+            "requested semantic pipeline matcore-mlir is unavailable",
+        )
     run(
         [
             arguments.cmake,
@@ -415,6 +585,90 @@ def main() -> int:
                 f"{executed.stdout}"
             )
 
+    additional_consumer_builds: list[Path] = []
+    if matcore_mlir_available:
+        override_pipeline = (
+            "capture-v0"
+            if arguments.default_semantic_pipeline == "matcore-mlir"
+            else "matcore-mlir"
+        )
+        override_build = test_root / "explicit-semantic-override-build"
+        run(
+            alternate_configure(
+                override_build,
+                [
+                    "-DMATCOREDSL_CONSUMER_SEMANTIC_PIPELINE="
+                    f"{override_pipeline}"
+                ],
+            )
+        )
+        override_graph = (override_build / "build.ninja").read_text(
+            encoding="utf-8"
+        )
+        if f"--semantic-pipeline={override_pipeline}" not in override_graph:
+            raise TestFailure(
+                "source-inaccessible consumer lost explicit semantic override"
+            )
+        run(
+            [
+                arguments.cmake,
+                "--build",
+                str(override_build),
+                "--parallel",
+                "2",
+            ]
+        )
+        override_executed = run(
+            [str(override_build / "matcore_consumer")],
+            capture=True,
+            environment=environment,
+        )
+        if "consumer-pass" not in override_executed.stdout:
+            raise TestFailure(
+                "source-inaccessible explicit semantic override failed"
+            )
+        additional_consumer_builds.append(override_build)
+
+    if arguments.default_semantic_pipeline == "matcore-mlir":
+        bootstrap_default_build = test_root / "bootstrap-default-rejection-build"
+        require_failure(
+            alternate_configure(
+                bootstrap_default_build,
+                ["-DMATCOREDSL_CONSUMER_FRONTEND=ast-json-bootstrap"],
+            ),
+            "SEMANTIC_PIPELINE matcore-mlir requires FRONTEND native",
+        )
+
+        bootstrap_capture_build = test_root / "bootstrap-capture-build"
+        run(
+            alternate_configure(
+                bootstrap_capture_build,
+                [
+                    "-DMATCOREDSL_CONSUMER_FRONTEND=ast-json-bootstrap",
+                    "-DMATCOREDSL_CONSUMER_SEMANTIC_PIPELINE=capture-v0",
+                ],
+            )
+        )
+        run(
+            [
+                arguments.cmake,
+                "--build",
+                str(bootstrap_capture_build),
+                "--parallel",
+                "2",
+            ]
+        )
+        bootstrap_executed = run(
+            [str(bootstrap_capture_build / "matcore_consumer")],
+            capture=True,
+            environment=environment,
+        )
+        if "consumer-pass" not in bootstrap_executed.stdout:
+            raise TestFailure(
+                "explicit bootstrap plus capture-v0 compatibility pair failed"
+            )
+        additional_consumer_builds.append(bootstrap_capture_build)
+
     scan_forbidden_paths(
         relocated_prefix, installed_spellings, "installed package"
     )
@@ -429,6 +683,10 @@ def main() -> int:
     scan_forbidden_paths(
         consumer_build, producer_spellings, "consumer build"
     )
+    for extra_build in additional_consumer_builds:
+        scan_forbidden_paths(
+            extra_build, producer_spellings, "semantic override consumer build"
+        )
     if producer_source.exists() or producer_build.exists():
         raise TestFailure(
             "consumer execution recreated or accessed the producer tree"
@@ -436,7 +694,7 @@ def main() -> int:
 
     print(
         "installed source/build-inaccessible consumer: "
-        f"commit={commit} configure/build/run PASS"
+        f"commit={commit} configure/build/run/semantic-capability PASS"
     )
     return 0
 

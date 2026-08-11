@@ -18,10 +18,29 @@ cmake --build /tmp/matcoredsl-consumer -- -j2
 /tmp/matcoredsl-consumer/matcore_consumer
 ```
 
-The helper accepts one `SOURCE`, the bootstrap `cpu` target, a `FRONTEND`
-(`native` by default or explicit `ast-json-bootstrap` compatibility mode),
-optional `COMPILE_OPTIONS`, and optional `LINK_LIBRARIES`. Frontend failure is
-terminal; the helper and driver never retry through the compatibility frontend.
+The helper accepts one `SOURCE`, the `cpu` target, a `FRONTEND` (`native` by
+default or explicit `ast-json-bootstrap` compatibility mode), an optional
+`SEMANTIC_PIPELINE` (`capture-v0` or `matcore-mlir`), optional
+`COMPILE_OPTIONS`, and optional `LINK_LIBRARIES`. When omitted, the semantic
+pipeline comes from the installed package's
+`MatcoreDSL_DEFAULT_SEMANTIC_PIPELINE`. Consumers can inspect
+`MatcoreDSL_MATCORE_MLIR_AVAILABLE` before requesting `matcore-mlir`; an
+unavailable or invalid request fails during CMake configuration. Frontend or
+semantic-pipeline failure is terminal, and the helper and driver never retry
+through a compatibility route.
+
+In a package whose default is `matcore-mlir`, selecting the compatibility
+`ast-json-bootstrap` frontend without also selecting `capture-v0` is rejected.
+The complete deliberate compatibility pair is:
+
+```cmake
+matcoredsl_add_executable(example
+  SOURCE example.mdsl
+  MATCORE_TARGET cpu
+  FRONTEND ast-json-bootstrap
+  SEMANTIC_PIPELINE capture-v0)
+```
+
 Ninja depfile integration tracks both the `.mdsl` source and its included user
 headers. Editing either regenerates its object and relinks the consumer; an
 unchanged subsequent build is a Ninja no-op.

@@ -74,6 +74,34 @@ option(
   "Build the internal Matcore MLIR semantic dialect and inspection tool"
   OFF
 )
+set(
+  MDSLC_DEFAULT_SEMANTIC_PIPELINE
+  "capture-v0"
+  CACHE STRING
+  "Default mdslc++ CPU semantic pipeline (capture-v0 or matcore-mlir)"
+)
+set_property(
+  CACHE MDSLC_DEFAULT_SEMANTIC_PIPELINE
+  PROPERTY STRINGS capture-v0 matcore-mlir
+)
+set(MDSLC_VALID_SEMANTIC_PIPELINES capture-v0 matcore-mlir)
+if(NOT MDSLC_DEFAULT_SEMANTIC_PIPELINE IN_LIST MDSLC_VALID_SEMANTIC_PIPELINES)
+  message(FATAL_ERROR
+    "MDSLC_DEFAULT_SEMANTIC_PIPELINE must be capture-v0 or matcore-mlir; "
+    "found '${MDSLC_DEFAULT_SEMANTIC_PIPELINE}'")
+endif()
+if(MDSLC_DEFAULT_SEMANTIC_PIPELINE STREQUAL "matcore-mlir" AND
+   NOT MDSLC_ENABLE_MATCORE_MLIR)
+  message(FATAL_ERROR
+    "MDSLC_DEFAULT_SEMANTIC_PIPELINE=matcore-mlir requires "
+    "MDSLC_ENABLE_MATCORE_MLIR=ON")
+endif()
+set(MDSLC_MATCORE_MLIR_AVAILABLE "OFF")
+if(MDSLC_ENABLE_MATCORE_MLIR)
+  set(MDSLC_MATCORE_MLIR_AVAILABLE "ON")
+endif()
+message(STATUS
+  "MDSLC default semantic pipeline: ${MDSLC_DEFAULT_SEMANTIC_PIPELINE}")
 option(
   MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE
   "Enable the driver tool-prefix override for deliberate tests"
@@ -579,6 +607,8 @@ if(BUILD_TESTING)
               --clangxx "${MDSLC_CLANGXX_EXECUTABLE}"
               --repository-root "${CMAKE_CURRENT_SOURCE_DIR}/.."
               --build-dir "${CMAKE_BINARY_DIR}"
+              --expected-default-semantic-pipeline
+                "${MDSLC_DEFAULT_SEMANTIC_PIPELINE}"
           )
           set_tests_properties(
             integration.semantic_mlir_cpu_pipeline
@@ -602,6 +632,8 @@ if(BUILD_TESTING)
             --clangxx "${MDSLC_CLANGXX_EXECUTABLE}"
             --repository-root "${CMAKE_CURRENT_SOURCE_DIR}/.."
             --build-dir "${CMAKE_BINARY_DIR}"
+            --expected-default-semantic-pipeline
+              "${MDSLC_DEFAULT_SEMANTIC_PIPELINE}"
         )
         set_tests_properties(
           integration.semantic_mlir_unavailable
@@ -654,6 +686,8 @@ if(BUILD_TESTING)
           --producer-build-dir "${CMAKE_BINARY_DIR}"
           --test-root "${CMAKE_BINARY_DIR}/tests/installed-consumer"
           --cxx-compiler "${CMAKE_CXX_COMPILER}"
+          --matcore-mlir-available "${MDSLC_MATCORE_MLIR_AVAILABLE}"
+          --default-semantic-pipeline "${MDSLC_DEFAULT_SEMANTIC_PIPELINE}"
       )
     endif()
 
@@ -682,6 +716,11 @@ if(BUILD_TESTING)
 
     if(NOT WIN32 AND MDSLC_ENABLE_NATIVE_FRONTEND)
       find_program(MDSLC_PACKAGE_GIT_EXECUTABLE NAMES git REQUIRED)
+      set(MDSLC_SOURCE_INACCESSIBLE_MLIR_ARGUMENTS)
+      if(MDSLC_ENABLE_MATCORE_MLIR)
+        list(APPEND MDSLC_SOURCE_INACCESSIBLE_MLIR_ARGUMENTS
+          --mlir-dir "${MLIR_DIR}")
+      endif()
       add_test(
         NAME package.installed_source_inaccessible
         COMMAND
@@ -698,6 +737,9 @@ if(BUILD_TESTING)
           --clangxx "${MDSLC_CLANGXX_EXECUTABLE}"
           --llvm-dir "${LLVM_DIR}"
           --clang-dir "${Clang_DIR}"
+          --matcore-mlir-available "${MDSLC_MATCORE_MLIR_AVAILABLE}"
+          --default-semantic-pipeline "${MDSLC_DEFAULT_SEMANTIC_PIPELINE}"
+          ${MDSLC_SOURCE_INACCESSIBLE_MLIR_ARGUMENTS}
       )
       set_tests_properties(
         package.installed_source_inaccessible

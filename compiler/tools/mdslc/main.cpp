@@ -44,6 +44,15 @@ enum class FrontendMode { Native, AstJsonBootstrap };
 enum class SemanticPipelineMode { CaptureV0, MatcoreMlir };
 enum class CompilerFlavor { ClangGnu, ClangCl };
 
+constexpr std::string_view kConfiguredDefaultSemanticPipeline =
+    MDSLC_DEFAULT_SEMANTIC_PIPELINE;
+static_assert(kConfiguredDefaultSemanticPipeline == "capture-v0" ||
+              kConfiguredDefaultSemanticPipeline == "matcore-mlir");
+constexpr SemanticPipelineMode kDefaultSemanticPipeline =
+    kConfiguredDefaultSemanticPipeline == "matcore-mlir"
+        ? SemanticPipelineMode::MatcoreMlir
+        : SemanticPipelineMode::CaptureV0;
+
 struct CompilerToolchain {
   CompilerFlavor flavor = CompilerFlavor::ClangGnu;
   fs::path compiler;
@@ -58,7 +67,7 @@ struct WrapperArguments {
   bool frontend_was_explicit = false;
   bool semantic_pipeline_was_explicit = false;
   FrontendMode frontend = FrontendMode::Native;
-  SemanticPipelineMode semantic_pipeline = SemanticPipelineMode::CaptureV0;
+  SemanticPipelineMode semantic_pipeline = kDefaultSemanticPipeline;
   std::optional<fs::path> tool_prefix_for_testing;
   std::optional<std::string> dependency_file;
   std::vector<std::string> compiler_arguments;

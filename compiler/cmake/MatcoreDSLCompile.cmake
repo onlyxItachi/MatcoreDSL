@@ -1,11 +1,27 @@
 include_guard(GLOBAL)
 
+if(NOT DEFINED MatcoreDSL_MATCORE_MLIR_AVAILABLE OR
+   NOT DEFINED MatcoreDSL_DEFAULT_SEMANTIC_PIPELINE)
+  message(FATAL_ERROR
+    "MatcoreDSL package semantic capability metadata is incomplete")
+endif()
+if(NOT "${MatcoreDSL_MATCORE_MLIR_AVAILABLE}" STREQUAL "ON" AND
+   NOT "${MatcoreDSL_MATCORE_MLIR_AVAILABLE}" STREQUAL "OFF")
+  message(FATAL_ERROR
+    "MatcoreDSL package has an invalid Matcore MLIR capability value")
+endif()
+if(NOT "${MatcoreDSL_DEFAULT_SEMANTIC_PIPELINE}" STREQUAL "capture-v0" AND
+   NOT "${MatcoreDSL_DEFAULT_SEMANTIC_PIPELINE}" STREQUAL "matcore-mlir")
+  message(FATAL_ERROR
+    "MatcoreDSL package has an invalid default semantic pipeline")
+endif()
+
 function(matcoredsl_add_executable target_name)
   cmake_parse_arguments(
     PARSE_ARGV 1
     MDSLC
     ""
-    "SOURCE;CXX_STANDARD;MATCORE_TARGET;FRONTEND"
+    "SOURCE;CXX_STANDARD;MATCORE_TARGET;FRONTEND;SEMANTIC_PIPELINE"
     "COMPILE_OPTIONS;LINK_LIBRARIES"
   )
 
@@ -32,6 +48,10 @@ function(matcoredsl_add_executable target_name)
   if(NOT MDSLC_FRONTEND)
     set(MDSLC_FRONTEND native)
   endif()
+  if(NOT MDSLC_SEMANTIC_PIPELINE)
+    set(MDSLC_SEMANTIC_PIPELINE
+        "${MatcoreDSL_DEFAULT_SEMANTIC_PIPELINE}")
+  endif()
   if(NOT MDSLC_MATCORE_TARGET STREQUAL "cpu")
     message(FATAL_ERROR
       "matcoredsl_add_executable(${target_name}): bootstrap v0 supports only "
@@ -42,6 +62,24 @@ function(matcoredsl_add_executable target_name)
     message(FATAL_ERROR
       "matcoredsl_add_executable(${target_name}): FRONTEND must be native or "
       "ast-json-bootstrap; no automatic fallback is performed")
+  endif()
+  if(NOT MDSLC_SEMANTIC_PIPELINE STREQUAL "capture-v0" AND
+     NOT MDSLC_SEMANTIC_PIPELINE STREQUAL "matcore-mlir")
+    message(FATAL_ERROR
+      "matcoredsl_add_executable(${target_name}): SEMANTIC_PIPELINE must be "
+      "capture-v0 or matcore-mlir; no automatic fallback is performed")
+  endif()
+  if(MDSLC_SEMANTIC_PIPELINE STREQUAL "matcore-mlir" AND
+     NOT "${MatcoreDSL_MATCORE_MLIR_AVAILABLE}" STREQUAL "ON")
+    message(FATAL_ERROR
+      "matcoredsl_add_executable(${target_name}): requested semantic pipeline "
+      "matcore-mlir is unavailable in this MatcoreDSL package")
+  endif()
+  if(MDSLC_SEMANTIC_PIPELINE STREQUAL "matcore-mlir" AND
+     NOT MDSLC_FRONTEND STREQUAL "native")
+    message(FATAL_ERROR
+      "matcoredsl_add_executable(${target_name}): SEMANTIC_PIPELINE "
+      "matcore-mlir requires FRONTEND native")
   endif()
 
   get_filename_component(
@@ -104,6 +142,7 @@ function(matcoredsl_add_executable target_name)
       "${mdsl_standard_option}"
       "--matcore-target=${MDSLC_MATCORE_TARGET}"
       "--frontend=${MDSLC_FRONTEND}"
+      "--semantic-pipeline=${MDSLC_SEMANTIC_PIPELINE}"
       ${mdsl_frontend_options}
       ${MDSLC_COMPILE_OPTIONS}
       ${mdsl_dependency_options}

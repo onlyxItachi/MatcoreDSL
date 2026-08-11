@@ -88,6 +88,11 @@ def main() -> int:
     parser.add_argument("--clangxx", type=Path, required=True)
     parser.add_argument("--repository-root", type=Path, required=True)
     parser.add_argument("--build-dir", type=Path, required=True)
+    parser.add_argument(
+        "--expected-default-semantic-pipeline",
+        choices=("capture-v0", "matcore-mlir"),
+        required=True,
+    )
     parser.add_argument("--expect-unavailable", action="store_true")
     arguments = parser.parse_args()
 
@@ -112,6 +117,10 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="matcore-semantic-cpu-") as encoded:
         temporary = Path(encoded)
         if arguments.expect_unavailable:
+            checks.require(
+                arguments.expected_default_semantic_pipeline == "capture-v0",
+                "MLIR-disabled build advertised a matcore-mlir default",
+            )
             unavailable_ir = temporary / "unavailable.json"
             extractor_rejection = run(
                 [
@@ -363,6 +372,106 @@ def main() -> int:
         checks.require(saved_ir.is_file(), "--save-temps omitted typed capture IR")
         checks.require("mdsl.gemm" in saved_semantic.read_text(encoding="utf-8"), "saved semantic MLIR lost GEMM")
         checks.require("Producer: Matcore MLIR CPU runtime-dispatch lowering v1" in saved_backend.read_text(encoding="utf-8"), "saved backend used capture-v0 producer")
+
+        default_executable = temporary / "configured-default-program"
+        default_compile = run(
+            [
+                str(driver),
+                "--save-temps",
+                "--matcore-target=cpu",
+                "-std=c++20",
+                str(source),
+                "-o",
+                str(default_executable),
+            ],
+            repository,
+            timeout=180,
+        )
+        require_ok(checks, default_compile, "configured-default driver link")
+        default_run = run([str(default_executable)], temporary)
+        require_ok(checks, default_run, "configured-default executable")
+        checks.require(
+            default_run.stdout == "host-before\nMDSLC CPU GEMM PASS\n",
+            "configured-default executable produced wrong output",
+        )
+        default_semantic = temporary / "configured-default-program.semantic.mlir"
+        default_backend = temporary / "configured-default-program.backend.cpp"
+        checks.require(
+            default_backend.is_file(),
+            "configured-default driver omitted its saved backend",
+        )
+        default_backend_text = default_backend.read_text(encoding="utf-8")
+        checks.require(
+            "matcore_runtime_gemm_f32_v0" in default_backend_text,
+            "configured-default backend omitted the stable runtime dispatch",
+        )
+        if arguments.expected_default_semantic_pipeline == "matcore-mlir":
+            checks.require(
+                default_semantic.is_file(),
+                "configured matcore-mlir default omitted semantic MLIR",
+            )
+            checks.require(
+                default_semantic.read_bytes() == saved_semantic.read_bytes(),
+                "configured default and explicit matcore-mlir differ",
+            )
+            checks.require(
+                "Producer: Matcore MLIR CPU runtime-dispatch lowering v1"
+                in default_backend_text,
+                "configured matcore-mlir default emitted inspection IR but "
+                "executed a non-semantic backend",
+            )
+        else:
+            checks.require(
+                not default_semantic.exists(),
+                "configured capture-v0 default emitted semantic MLIR",
+            )
+            checks.require(
+                "Producer: Matcore MLIR CPU runtime-dispatch lowering v1"
+                not in default_backend_text,
+                "configured capture-v0 default used the Matcore MLIR backend",
+            )
+
+        capture_executable = temporary / "explicit-capture-program"
+        capture_compile = run(
+            [
+                str(driver),
+                "--semantic-pipeline=capture-v0",
+                "--save-temps",
+                "--matcore-target=cpu",
+                "-std=c++20",
+                str(source),
+                "-o",
+                str(capture_executable),
+            ],
+            repository,
+            timeout=180,
+        )
+        require_ok(checks, capture_compile, "explicit capture-v0 override link")
+        capture_run = run([str(capture_executable)], temporary)
+        require_ok(checks, capture_run, "explicit capture-v0 override executable")
+        checks.require(
+            capture_run.stdout == "host-before\nMDSLC CPU GEMM PASS\n",
+            "explicit capture-v0 override produced wrong output",
+        )
+        checks.require(
+            not (temporary / "explicit-capture-program.semantic.mlir").exists(),
+            "explicit capture-v0 override emitted semantic MLIR",
+        )
+        capture_backend = temporary / "explicit-capture-program.backend.cpp"
+        checks.require(
+            capture_backend.is_file(),
+            "explicit capture-v0 override omitted its saved backend",
+        )
+        capture_backend_text = capture_backend.read_text(encoding="utf-8")
+        checks.require(
+            "matcore_runtime_gemm_f32_v0" in capture_backend_text,
+            "explicit capture-v0 backend omitted stable runtime dispatch",
+        )
+        checks.require(
+            "Producer: Matcore MLIR CPU runtime-dispatch lowering v1"
+            not in capture_backend_text,
+            "explicit capture-v0 override used the Matcore MLIR backend",
+        )
 
         object_path = temporary / "semantic-object.o"
         object_compile = run(
