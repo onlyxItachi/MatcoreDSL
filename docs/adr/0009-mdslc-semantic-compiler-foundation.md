@@ -144,13 +144,10 @@ dialect verifier runs before printing, transformation, planning, or lowering.
 
 This is not yet a claim that current v1 contains every semantic fact required
 for a fully lossless optimizer bridge. In particular, v1 records accumulation
-dtype but lacks sufficient numerical-policy granularity. Milestone B must
-define and review one canonical explicit-GEMM policy with every field explicit:
-F32 accumulation, contraction/FMA, reassociation, reduction-order, NaN,
-signed-zero, and approximate-math behavior. The bridge may derive that policy
-only from the authenticated explicit operation contract, and the verifier must
-reject an unsupported or contradictory combination. It cannot invent
-permissions from a target, implementation, or performance preference.
+dtype but lacks sufficient numerical-policy granularity. This ADR therefore
+freezes the internal `explicit-gemm-f32-v1` policy below. Milestone B must
+represent and verify every field rather than infer permission from a target,
+implementation, or performance preference.
 
 Recovered ordinary-C++ loops do not inherit the explicit-eDSL policy merely
 because their algebra resembles GEMM. Their numerical policy must be proven
@@ -158,6 +155,44 @@ from source semantics and compiler options. Until that proof succeeds, raising
 is rejected and the ordinary C++ remains unchanged. A bridge may be described
 as lossless only after both structural fields and this numerical policy are
 represented and verified.
+
+### Canonical `explicit-gemm-f32-v1` numerical policy
+
+The explicit `matcore::mdsl::gemm` F32 operation is a mathematical eDSL
+operation, not a promise to reproduce the evaluation order of a handwritten
+C++ triple loop. Its canonical semantic profile is:
+
+| Property | Contract |
+| --- | --- |
+| input/output dtype | F32 |
+| accumulation dtype | F32 |
+| contraction/FMA | allowed |
+| reassociation | allowed only among the K-reduction terms contributing to one output element |
+| reduction order | implementation-defined within that K reduction; every K term is included exactly once |
+| NaN/non-finite behavior | NaNs are not assumed absent and may not be optimized away; if a NaN participates in a contributing arithmetic path, the corresponding result remains NaN. Payload, sign, signaling state, and which NaN propagates are not guaranteed. Infinity arithmetic follows IEEE behavior for the implementation's permitted contraction and reduction order; no `no-nans` or `no-infs` assumption is permitted. |
+| signed zero | relaxed; the sign of an exact zero result is not guaranteed |
+| approximate math | forbidden; no approximate reciprocal, transcendental, reduced-precision substitution, or term dropping is authorized |
+| mutation/aliasing | the explicit destination is overwritten, is not read as an accumulator input, and must not alias either input; input mutation and in-place operand transformation are forbidden |
+
+Reassociation permission is local: it does not permit moving arithmetic across
+another Matcore operation, changing effects, mixing output elements, adding or
+dropping K terms, or relaxing dtype conversion. FMA permission is explicit and
+does not imply general approximate math.
+
+This profile matches the already validated explicit-eDSL execution model: the
+native tiled/vector paths and mature BLAS providers may contract or partition a
+GEMM reduction without pretending to reproduce increasing-K scalar evaluation.
+Each backend still requires a conformance/legality check; the profile does not
+make a provider legal merely because it is available.
+
+The profile must not be inherited by recovered C++ loop nests. A loop's
+contraction, reassociation, order, non-finite, signed-zero, and approximation
+permissions come from its source semantics and effective compiler options. A
+strict increasing-K C++ loop therefore cannot be replaced by an
+implementation-defined reduction merely because the recognizer finds GEMM
+indices. If the recovered policy cannot be represented and honored by an
+available lowering, raising is rejected and ordinary C++ compilation remains
+untouched.
 
 Deterministic textual output is a test and inspection contract. It is not a
 new source-language or persistent JSON schema.
@@ -349,8 +384,9 @@ them only in TableGen or C++:
 
 - `docs/mdslc/MATCORE_MLIR_DIALECT_V1.md`: operation/type/attribute syntax,
   interfaces, invariants, canonical examples, and verifier failures;
-- `docs/mdslc/NUMERICAL_SEMANTICS_V1.md`: the canonical explicit-GEMM policy,
-  source-derived recovered-loop policy, and provider/lowering conformance;
+- `docs/mdslc/NUMERICAL_SEMANTICS_V1.md`: detailed encoding/tests for this
+  ADR's canonical explicit-GEMM policy, source-derived recovered-loop policy,
+  and provider/lowering conformance;
 - `docs/mdslc/MATCORE_V1_MLIR_BRIDGE.md`: exact field mapping, dynamic-symbol
   scope, provenance, deterministic printing, and rejection boundary;
 - `docs/mdslc/CPP_GEMM_RECOGNITION.md`: recognized form, permission proof,

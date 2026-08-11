@@ -105,10 +105,13 @@ Status: queued behind A's reviewable contract and the MLIR 21 dependency gate.
 Implement the `mdsl` textual dialect with generic SSA values, `mdsl.gemm`,
 minimal type/attribute mapping, exact destination/effect/alias semantics,
 source provenance, and a deterministic verified Matcore IR v1 bridge. Because
-v1 currently lacks a complete numerical policy, B must add a reviewed
-canonical explicit-GEMM policy with explicit F32 accumulation, contraction,
-reassociation, reduction-order, NaN, signed-zero, and approximation fields.
-Recovered loops require source-derived proof and cannot inherit permissions.
+v1 currently lacks a complete numerical policy, B must encode and verify the
+`explicit-gemm-f32-v1` profile frozen by ADR-0009: F32 accumulation,
+contraction allowed, K-reduction-only reassociation, implementation-defined K
+order, NaN/non-finite preservation without payload/order guarantees, relaxed
+signed zero, no approximate math, explicit destination overwrite, and no
+input/output aliasing or in-place operand mutation. Recovered loops require
+source-derived proof and cannot inherit these permissions.
 
 Gate: matching LLVM/Clang/MLIR 21.1.8; generated dialect build; deterministic
 parse/print and v1 bridge goldens; malformed semantic negatives; unchanged

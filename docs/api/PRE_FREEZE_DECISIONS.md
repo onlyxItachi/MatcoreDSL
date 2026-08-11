@@ -116,11 +116,14 @@ frozen.
     current executable CPU surface is intentionally concrete F32 rank-2
     row-major GEMM. The later freeze must distinguish compile-time constraints
     from runtime descriptor checks.
-11. **Numerical policy.** Accumulation dtype exists, but reassociation,
-    contraction/FMA, reduction order, NaN, signed-zero, approximate-math, and
-    in-place permissions do not yet have a reviewed device-neutral public
-    contract. Private optimizer attributes must be proven before deciding what
-    belongs in a public descriptor.
+11. **Numerical policy.** ADR-0009 freezes the internal
+    `explicit-gemm-f32-v1` policy: F32 accumulation; contraction allowed;
+    reassociation only inside one output's K reduction; implementation-defined
+    K order; NaN/non-finite preservation without payload/order guarantees;
+    relaxed signed zero; approximate math forbidden; explicit destination
+    overwrite; no input/output alias or in-place operand mutation. The MLIR
+    encoding and backend conformance still require tests, and the eventual
+    device-neutral public representation remains a pre-freeze decision.
 12. **Execution intent.** `generic`, `inference`, and `training` require a
     versioned compilation/execution context. Intent alone must not imply
     immutability, prepacking permission, saved-intermediate lifetime, or
@@ -156,8 +159,9 @@ their semantics are proven:
   operands/results, effect and alias interfaces, and explicit numerical
   legality;
 - a checked Matcore IR v1-to-MLIR bridge that preserves every represented
-  field and provenance/dynamic-symbol relationship, plus a reviewed canonical
-  explicit-GEMM numerical policy for facts v1 does not currently encode;
+  field and provenance/dynamic-symbol relationship, plus an exact encoding of
+  ADR-0009's canonical explicit-GEMM numerical policy for facts v1 does not
+  currently encode;
 - a versioned execution-intent context separate from target policy and
   detected capability; and
 - structured recognition/permission diagnostics for recovered C++ idioms.
@@ -213,8 +217,9 @@ Candidates for later design work, not approved APIs:
    operation descriptors.
 6. A selected-plan execution report that distinguishes requested, selected,
    compiled, physically validated and actually executed behavior.
-7. A versioned numerical-semantics record whose conservative default forbids
-   reassociation, order changes, approximation, and unproven in-place updates.
+7. A versioned numerical-semantics record that can encode the explicit eDSL
+   profile without making it a permissive default for recovered source. Any
+   unspecified or recovered-source field defaults conservatively to forbidden.
 8. A versioned execution-intent record independent from mathematical operation
    identity and detected target capability.
 9. A structured recognition report that separates pattern recognition from

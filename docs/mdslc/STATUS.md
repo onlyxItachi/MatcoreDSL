@@ -44,11 +44,16 @@ dialect with textual namespace `mdsl`, generic SSA values, verified operation
 semantics, regions/use-def relationships, numerical intent, domains, effects,
 aliases, mutation, and source provenance. The v1-to-dialect bridge must be
 exact for every represented v1 field and fail closed otherwise. Because v1
-does not yet contain sufficient numerical-policy granularity, Milestone B must
-define and verify one canonical explicit-GEMM policy; recovered loops require
-source-derived proof and cannot inherit its permissions. No bridge is called
-fully lossless until those semantics are represented and verified. No
-second JSON optimizer schema is planned.
+does not yet contain sufficient numerical-policy granularity, ADR-0009 freezes
+the internal `explicit-gemm-f32-v1` policy and Milestone B must encode and
+verify it. The policy permits FMA and reassociation only within a GEMM K
+reduction, leaves K order implementation-defined, preserves NaN/non-finite
+semantics without payload/order guarantees, relaxes signed zero, forbids
+approximate math, overwrites an explicit non-aliasing destination, and forbids
+in-place operand mutation. Recovered loops require source-derived proof and
+cannot inherit these permissions. No bridge is called fully lossless until
+those semantics are represented and verified. No second JSON optimizer schema
+is planned.
 
 Responsibilities are now explicit:
 

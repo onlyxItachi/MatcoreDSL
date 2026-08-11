@@ -61,14 +61,33 @@ gates, and the risks most likely to create semantic or ABI rework.
 ## Numerical-semantics correction
 
 Matcore IR v1 carries accumulation dtype but does not encode enough numerical
-policy to call the optimizer bridge fully lossless. Milestone B must define a
-reviewed canonical explicit-GEMM policy with explicit F32 accumulation,
-contraction/FMA, reassociation, reduction-order, NaN, signed-zero, and
-approximate-math fields. The bridge may not invent permissions.
+policy to call the optimizer bridge fully lossless. Follow-up architecture
+review therefore froze `explicit-gemm-f32-v1` with:
+
+- F32 accumulation;
+- contraction/FMA allowed;
+- reassociation only among one output element's K-reduction terms;
+- implementation-defined K reduction order with every term included once;
+- NaNs preserved without assuming their absence, but no payload, sign,
+  signaling-state, or propagation-order guarantee;
+- IEEE infinity behavior under the selected legal contraction/order, with no
+  `no-infs` assumption;
+- relaxed signed zero;
+- approximate math forbidden; and
+- explicit destination overwrite with input/output aliasing, input mutation,
+  and in-place operand transformation forbidden.
+
+This is the existing explicit mathematical eDSL contract, not strict scalar
+C++ loop order. It keeps native and OpenBLAS routes eligible only after their
+own conformance checks. The bridge may not invent further permissions.
 
 Recovered C++ loop nests require source-derived numerical proof and may not
 inherit the explicit eDSL policy from pattern similarity. If proof fails, the
 ordinary C++ is preserved.
+
+The initial architecture commit is
+`6b7870784264f9e8ef9401d37ef605d81458e715`. The numerical-profile follow-up
+is a separate focused commit whose SHA is supplied at handoff.
 
 ## Coherent MLIR 21 toolchain evidence
 
