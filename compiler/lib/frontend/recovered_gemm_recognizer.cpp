@@ -9,7 +9,9 @@
 #include <clang/AST/ParentMapContext.h>
 #include <clang/AST/RecursiveASTVisitor.h>
 #include <clang/AST/Stmt.h>
+#include <clang/AST/StmtOpenACC.h>
 #include <clang/AST/StmtOpenMP.h>
+#include <clang/AST/StmtSYCL.h>
 #include <clang/AST/ASTTypeTraits.h>
 #include <clang/Basic/LangOptions.h>
 #include <clang/Basic/SourceManager.h>
@@ -82,9 +84,33 @@ std::vector<const clang::Stmt *> statementsIn(const clang::Stmt *body) {
                                           compound->body_end());
 }
 
+bool containsNonDefaultAddressSpace(clang::QualType type) {
+  if (type.isNull()) {
+    return false;
+  }
+  if (type.getAddressSpace() != clang::LangAS::Default) {
+    return true;
+  }
+  type = type.getCanonicalType();
+  if (type.getAddressSpace() != clang::LangAS::Default) {
+    return true;
+  }
+  if (const auto *pointer = type->getAs<clang::PointerType>()) {
+    return containsNonDefaultAddressSpace(pointer->getPointeeType());
+  }
+  if (const auto *reference = type->getAs<clang::ReferenceType>()) {
+    return containsNonDefaultAddressSpace(reference->getPointeeType());
+  }
+  if (const clang::ArrayType *array = type->getAsArrayTypeUnsafe()) {
+    return containsNonDefaultAddressSpace(array->getElementType());
+  }
+  return false;
+}
+
 bool isCanonicalSizeType(clang::QualType type,
                          const clang::ASTContext &context) {
-  return context.hasSameType(type.getCanonicalType().getUnqualifiedType(),
+  return !containsNonDefaultAddressSpace(type) &&
+         context.hasSameType(type.getCanonicalType().getUnqualifiedType(),
                              static_cast<clang::QualType>(context.getSizeType())
                                  .getUnqualifiedType());
 }
@@ -93,6 +119,13 @@ bool isFloatType(clang::QualType type) {
   return type.getCanonicalType()
       .getUnqualifiedType()
       ->isSpecificBuiltinType(clang::BuiltinType::Float);
+}
+
+bool isFloatingEvaluationType(clang::QualType type) {
+  const auto *builtin = type.getCanonicalType()
+                            .getUnqualifiedType()
+                            ->getAs<clang::BuiltinType>();
+  return builtin != nullptr && builtin->isFloatingType();
 }
 
 bool containsAtomicType(clang::QualType type) {
@@ -121,6 +154,9 @@ bool containsAtomicType(clang::QualType type) {
 }
 
 bool isFloatPointer(clang::QualType type, bool require_const_pointee) {
+  if (containsNonDefaultAddressSpace(type)) {
+    return false;
+  }
   type = type.getCanonicalType().getUnqualifiedType();
   const auto *pointer = type->getAs<clang::PointerType>();
   if (pointer == nullptr || !isFloatType(pointer->getPointeeType())) {
@@ -267,7 +303,7 @@ bool parseCanonicalLoop(const clang::ForStmt &outer_loop,
   const auto *product = llvm::dyn_cast_or_null<clang::BinaryOperator>(
       withoutParenImplicitCasts(parsed.update->getRHS()));
   if (product == nullptr || product->getOpcode() != clang::BO_Mul ||
-      !isFloatType(product->getType())) {
+      !isFloatingEvaluationType(product->getType())) {
     return false;
   }
   parsed.lhs_load = llvm::dyn_cast_or_null<clang::ArraySubscriptExpr>(
@@ -387,6 +423,9 @@ public:
 
   bool VisitExpr(clang::Expr *expression) {
     clang::QualType type = expression->getType();
+    if (containsNonDefaultAddressSpace(type)) {
+      reasons_.insert("unsupported_address_space");
+    }
     if (!type.isNull() &&
         (type.isVolatileQualified() || containsAtomicType(type))) {
       reasons_.insert(containsAtomicType(type) ? "atomic_access"
@@ -399,6 +438,9 @@ public:
     const auto *value = llvm::dyn_cast<clang::ValueDecl>(reference->getDecl());
     if (value != nullptr) {
       clang::QualType type = value->getType();
+      if (containsNonDefaultAddressSpace(type)) {
+        reasons_.insert("unsupported_address_space");
+      }
       if (type.isVolatileQualified()) {
         reasons_.insert("volatile_access");
       }
@@ -413,6 +455,26 @@ public:
           reasons_.insert("atomic_access");
         }
       }
+    }
+    return true;
+  }
+
+  bool VisitVarDecl(clang::VarDecl *declaration) {
+    if (llvm::isa<clang::ParmVarDecl>(declaration)) {
+      return true;
+    }
+    if (declaration->getStorageDuration() != clang::SD_Automatic ||
+        declaration->getTLSKind() != clang::VarDecl::TLS_None ||
+        declaration->getStorageClass() != clang::SC_None) {
+      reasons_.insert("unsupported_storage_duration");
+    }
+    if (containsNonDefaultAddressSpace(declaration->getType())) {
+      reasons_.insert("unsupported_address_space");
+    }
+    for (const clang::Attr *attribute : declaration->attrs()) {
+      reasons_.insert(llvm::isa<clang::CleanupAttr>(attribute)
+                          ? "cleanup_attribute"
+                          : "unsupported_attribute");
     }
     return true;
   }
@@ -441,7 +503,17 @@ public:
   }
 
   bool VisitOMPExecutableDirective(clang::OMPExecutableDirective *) {
-    reasons_.insert("unsupported_control_flow");
+    reasons_.insert("offload_or_parallel_context");
+    return true;
+  }
+
+  bool VisitOpenACCConstructStmt(clang::OpenACCConstructStmt *) {
+    reasons_.insert("offload_or_parallel_context");
+    return true;
+  }
+
+  bool VisitSYCLKernelCallStmt(clang::SYCLKernelCallStmt *) {
+    reasons_.insert("offload_or_parallel_context");
     return true;
   }
 
@@ -558,6 +630,60 @@ std::string stringifyExceptionMode(
   return "invalid";
 }
 
+std::string stringifyEvaluationMethod(
+    clang::LangOptions::FPEvalMethodKind method) {
+  switch (method) {
+  case clang::LangOptions::FEM_Source:
+    return "source";
+  case clang::LangOptions::FEM_Double:
+    return "double";
+  case clang::LangOptions::FEM_Extended:
+    return "extended";
+  case clang::LangOptions::FEM_UnsetOnCommandLine:
+    return "unset";
+  }
+  return "invalid";
+}
+
+bool collectEnclosingFpScopes(
+    const clang::DynTypedNode &node, clang::ASTContext &context,
+    std::vector<const clang::CompoundStmt *> &scopes, unsigned depth = 0) {
+  if (depth > 64) {
+    return false;
+  }
+  const auto parents = context.getParents(node);
+  if (parents.empty()) {
+    return true;
+  }
+  // Statements in the authenticated canonical loop have one lexical parent.
+  // Refuse to invent a path when Clang reports an ambiguous ownership graph.
+  if (parents.size() != 1) {
+    return false;
+  }
+  const clang::DynTypedNode &parent = *parents.begin();
+  if (const auto *compound = parent.get<clang::CompoundStmt>()) {
+    scopes.push_back(compound);
+  }
+  if (parent.get<clang::Stmt>() != nullptr) {
+    return collectEnclosingFpScopes(parent, context, scopes, depth + 1);
+  }
+  return true;
+}
+
+clang::FPOptions effectiveFpOptionsAt(const clang::BinaryOperator &operation,
+                                      clang::ASTContext &context,
+                                      bool &scope_valid) {
+  std::vector<const clang::CompoundStmt *> scopes;
+  scope_valid = collectEnclosingFpScopes(
+      clang::DynTypedNode::create(operation), context, scopes);
+  clang::FPOptions result(context.getLangOpts());
+  for (auto scope = scopes.rbegin(); scope != scopes.rend(); ++scope) {
+    result.applyChanges((*scope)->getStoredFPFeaturesOrDefault());
+  }
+  result.applyChanges(operation.getStoredFPFeaturesOrDefault());
+  return result;
+}
+
 std::string sourceFileFor(const clang::SourceManager &source_manager,
                           clang::FileID file_id,
                           const RecoveredGemmInspectionInputs &inputs) {
@@ -602,6 +728,35 @@ void addContextReasons(const clang::ForStmt &outer_loop,
   if (function.hasAttr<clang::OptimizeNoneAttr>()) {
     reasons.insert("optimization_barrier");
   }
+  for (const clang::Attr *attribute : function.attrs()) {
+    if (llvm::isa<clang::OptimizeNoneAttr>(attribute)) {
+      continue;
+    }
+    reasons.insert(
+        llvm::isa<clang::OMPDeclareSimdDeclAttr,
+                  clang::OMPDeclareTargetDeclAttr>(attribute)
+            ? "offload_or_parallel_context"
+            : "unsupported_attribute");
+  }
+  for (const clang::ParmVarDecl *parameter : function.parameters()) {
+    if (parameter->getStorageClass() != clang::SC_None ||
+        parameter->getTLSKind() != clang::VarDecl::TLS_None) {
+      reasons.insert("unsupported_storage_duration");
+    }
+    if (containsNonDefaultAddressSpace(parameter->getType())) {
+      reasons.insert("unsupported_address_space");
+    }
+    for (const clang::Attr *attribute : parameter->attrs()) {
+      reasons.insert(llvm::isa<clang::CleanupAttr>(attribute)
+                         ? "cleanup_attribute"
+                         : "unsupported_attribute");
+    }
+  }
+  const clang::LangOptions &language_options = context.getLangOpts();
+  if (language_options.OpenACC || language_options.isSYCL() ||
+      language_options.isTargetDevice()) {
+    reasons.insert("offload_or_parallel_context");
+  }
   inspectAttributedAncestors(outer_loop, context, reasons);
   BarrierVisitor visitor(reasons);
   visitor.TraverseStmt(const_cast<clang::Stmt *>(function.getBody()));
@@ -611,6 +766,9 @@ void addFloatingPointReasons(const RecoveredFpProof &proof,
                              ReasonSet &reasons) {
   if (proof.optimization_level == 0) {
     reasons.insert("optimization_barrier");
+  }
+  if (proof.evaluation_method != "source") {
+    reasons.insert("fp_evaluation_method_mismatch");
   }
   if (!proof.allow_reassociation) {
     reasons.insert("fp_reassociation_forbidden");
@@ -717,14 +875,17 @@ RecoveredGemmCandidate inspectRecoveredGemmLoop(
     return candidate;
   }
 
+  bool fp_scope_valid = false;
   const clang::FPOptions fp =
-      parsed.update->getFPFeaturesInEffect(language_options);
+      effectiveFpOptionsAt(*parsed.update, context, fp_scope_valid);
   candidate.output_parameter = function.getParamDecl(0)->getNameAsString();
   candidate.lhs_parameter = function.getParamDecl(1)->getNameAsString();
   candidate.rhs_parameter = function.getParamDecl(2)->getNameAsString();
   candidate.m_parameter = function.getParamDecl(3)->getNameAsString();
   candidate.n_parameter = function.getParamDecl(4)->getNameAsString();
   candidate.k_parameter = function.getParamDecl(5)->getNameAsString();
+  candidate.semantic_contract =
+      "f32_row_major_overwrite_m_k__k_n__m_n";
   candidate.fp_proof.allow_reassociation = fp.getAllowFPReassociate();
   candidate.fp_proof.contract_across_statement =
       fp.allowFPContractAcrossStatement();
@@ -735,6 +896,8 @@ RecoveredGemmCandidate inspectRecoveredGemmLoop(
   candidate.fp_proof.allow_approximate_functions = fp.getAllowApproxFunc();
   candidate.fp_proof.fenv_access = fp.getAllowFEnvAccess();
   candidate.fp_proof.fast_math_profile = language_options.FastMath;
+  candidate.fp_proof.evaluation_method =
+      stringifyEvaluationMethod(fp.getFPEvalMethod());
   candidate.fp_proof.rounding_mode =
       stringifyRoundingMode(fp.getRoundingMode());
   candidate.fp_proof.exception_mode =
@@ -769,6 +932,9 @@ RecoveredGemmCandidate inspectRecoveredGemmLoop(
   add("output_base", parsed.output_base_expression);
 
   ReasonSet reasons = std::move(context_reasons);
+  if (!fp_scope_valid) {
+    reasons.insert("fp_scope_unavailable");
+  }
   if (!ranges_valid || invalid_buffer || candidate.source_file.empty() ||
       candidate.source_snapshot_sha256.empty()) {
     reasons.insert("unsafe_source_range");

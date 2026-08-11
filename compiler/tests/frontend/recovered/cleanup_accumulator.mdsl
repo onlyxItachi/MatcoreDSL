@@ -1,0 +1,16 @@
+#include <cstddef>
+
+static void consume_float(float *) {}
+
+void cleanup_accumulator_gemm(float *c, const float *a, const float *b,
+                              std::size_t m, std::size_t n, std::size_t k) {
+  for (std::size_t i = 0; i < m; ++i) {
+    for (std::size_t j = 0; j < n; ++j) {
+      float acc __attribute__((cleanup(consume_float))) = 0.0F;
+      for (std::size_t p = 0; p < k; ++p) {
+        acc += a[i * k + p] * b[p * n + j];
+      }
+      c[i * n + j] = acc;
+    }
+  }
+}

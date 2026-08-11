@@ -1,0 +1,14 @@
+using size_type = __SIZE_TYPE__;
+
+void i386_no_sse_gemm(float *c, const float *a, const float *b, size_type m,
+                       size_type n, size_type k) {
+  for (size_type i = 0; i < m; ++i) {
+    for (size_type j = 0; j < n; ++j) {
+      float acc = 0.0F;
+      for (size_type p = 0; p < k; ++p) {
+        acc += a[i * k + p] * b[p * n + j];
+      }
+      c[i * n + j] = acc;
+    }
+  }
+}

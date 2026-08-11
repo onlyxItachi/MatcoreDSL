@@ -61,6 +61,7 @@ struct RecoveredFpProof {
   bool allow_approximate_functions = false;
   bool fenv_access = false;
   bool fast_math_profile = false;
+  std::string evaluation_method;
   std::string rounding_mode;
   std::string exception_mode;
   std::string denormal_mode;
@@ -80,6 +81,9 @@ struct RecoveredGemmCandidate {
   std::string compilation_identity;
   std::string source_snapshot_sha256;
   std::string function_name;
+  // Populated only after the exact typed loop contract has been authenticated.
+  // A merely plausible or not-recognized loop must not claim GEMM semantics.
+  std::string semantic_contract;
   std::string output_parameter;
   std::string lhs_parameter;
   std::string rhs_parameter;

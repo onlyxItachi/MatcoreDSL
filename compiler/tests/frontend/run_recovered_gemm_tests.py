@@ -129,6 +129,8 @@ def main() -> int:
                       f"positive {name}[{index}] did not preserve C++")
                 check(report_values(report, index, "fp.rounding_mode") == ["tonearest"],
                       f"positive {name}[{index}] saw an unexpected rounding spelling")
+                check(report_values(report, index, "fp.evaluation_method") == ["source"],
+                      f"positive {name}[{index}] did not use source-type FP evaluation")
                 check(report_values(report, index, "fp.denormal_mode") == ["ieee,ieee"],
                       f"positive {name}[{index}] saw an unexpected denormal spelling")
                 check(report_values(report, index, "fp.fp32_denormal_mode") == ["ieee,ieee"],
@@ -196,21 +198,57 @@ def main() -> int:
               "recovered inspection report is not deterministic")
 
         rejected_cases = {
-            "macro": "macro_origin",
-            "template": "template_context",
-            "lambda": "lambda_context",
-            "optnone": "optimization_barrier",
-            "volatile": "volatile_access",
-            "atomic": "atomic_access",
-            "observable_call": "observable_call",
-            "early_return": "unsupported_control_flow",
-            "header_origin": "non_main_file",
-            "loop_hint": "optimization_barrier",
+            "macro": ("macro_origin", RELAXED_FP_FLAGS),
+            "template": ("template_context", RELAXED_FP_FLAGS),
+            "lambda": ("lambda_context", RELAXED_FP_FLAGS),
+            "optnone": ("optimization_barrier", RELAXED_FP_FLAGS),
+            "volatile": ("volatile_access", RELAXED_FP_FLAGS),
+            "atomic": ("atomic_access", RELAXED_FP_FLAGS),
+            "observable_call": ("observable_call", RELAXED_FP_FLAGS),
+            "early_return": ("unsupported_control_flow", RELAXED_FP_FLAGS),
+            "header_origin": ("non_main_file", RELAXED_FP_FLAGS),
+            "loop_hint": ("optimization_barrier", RELAXED_FP_FLAGS),
+            "static_induction": ("unsupported_storage_duration", RELAXED_FP_FLAGS),
+            "thread_local_induction": (
+                "unsupported_storage_duration", RELAXED_FP_FLAGS
+            ),
+            "cleanup_accumulator": ("cleanup_attribute", RELAXED_FP_FLAGS),
+            "var_attribute": ("unsupported_attribute", RELAXED_FP_FLAGS),
+            "function_attribute": ("unsupported_attribute", RELAXED_FP_FLAGS),
+            "parameter_attribute": ("unsupported_attribute", RELAXED_FP_FLAGS),
+            "address_space": ("unsupported_address_space", RELAXED_FP_FLAGS),
+            "omp_declare_simd": (
+                "offload_or_parallel_context", [*RELAXED_FP_FLAGS, "-fopenmp-simd"]
+            ),
+            "omp_declare_target": (
+                "offload_or_parallel_context", [*RELAXED_FP_FLAGS, "-fopenmp-simd"]
+            ),
+            "openacc_loop": (
+                "offload_or_parallel_context", [*RELAXED_FP_FLAGS, "-fopenacc"]
+            ),
+            "sycl_context": (
+                "offload_or_parallel_context",
+                [*RELAXED_FP_FLAGS, "-fsycl", "-fsycl-host-only"],
+            ),
+            "sycl_device_context": (
+                "offload_or_parallel_context",
+                [*RELAXED_FP_FLAGS, "-fsycl", "-fsycl-device-only"],
+            ),
+            "i386_no_sse": (
+                "fp_evaluation_method_mismatch",
+                [
+                    "-O2",
+                    "-ffp-eval-method=extended",
+                    "-target",
+                    "i386-unknown-linux-gnu",
+                    "-mno-sse",
+                ],
+            ),
         }
-        for name, reason in rejected_cases.items():
+        for name, (reason, flags) in rejected_cases.items():
             source = fixtures / f"{name}.mdsl"
             before = source.read_bytes()
-            completed, report, ir = inspect(source, name, RELAXED_FP_FLAGS)
+            completed, report, ir = inspect(source, name, flags)
             check(completed.returncode == 0,
                   f"recognized rejection {name} failed compilation: {completed.stderr}")
             check(source.read_bytes() == before,
@@ -226,7 +264,7 @@ def main() -> int:
             ordinary_object = root / f"{name}.o"
             ordinary_compile = subprocess.run(
                 [str(args.clang), "-x", "c++", "-std=c++20",
-                 *RELAXED_FP_FLAGS, f"-I{fixtures}", "-c", str(source),
+                 *flags, f"-I{fixtures}", "-c", str(source),
                  "-o", str(ordinary_object)],
                 cwd=repository,
                 text=True,
@@ -255,6 +293,8 @@ def main() -> int:
                   f"not-recognized {name} failed compilation: {completed.stderr}")
             check(report_values(report, 0, "state") == ["not_recognized"],
                   f"{name} was recognized too broadly")
+            check(report_values(report, 0, "semantic_contract") == [""],
+                  f"{name} falsely claimed an authenticated GEMM contract")
             check(report_values(report, 0, "rewrite") == ["preserve_original_cpp"],
                   f"{name} did not preserve ordinary C++")
             check(json.loads(ir.read_text()).get("operations") == [],
@@ -342,8 +382,31 @@ def main() -> int:
         )
         check(rewrite.returncode != 0 and "never authorizes" in rewrite.stderr,
               "recovery inspection accepted a host-rewrite request")
-        check(not (root / "rewrite.host.cpp").exists(),
-              "recovery inspection produced rewritten host source")
+        for suffix in ("host.cpp", "sites.h", "stubs.cpp", "backend.cpp"):
+            check(not (root / f"rewrite.{suffix}").exists(),
+                  f"recovery inspection produced forbidden rewrite.{suffix}")
+
+        compiler_alias_ir = root / "compiler-argument-alias.json"
+        compiler_alias_report = root / "compiler-argument-alias.report"
+        compiler_alias = subprocess.run(
+            [
+                str(args.extractor), "--input", str(canonical_source),
+                "--ir-out", str(compiler_alias_ir),
+                "--inspect-recovered-gemm", str(compiler_alias_report),
+                "--", "clang++", "-std=c++20", *RELAXED_FP_FLAGS,
+                "-o", str(compiler_alias_report), str(canonical_source),
+            ],
+            cwd=repository,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        check(compiler_alias.returncode != 0 and
+              "undeclared output-producing compiler argument" in
+              compiler_alias.stderr,
+              "compiler arguments could alias the inspection report output")
+        check(not compiler_alias_report.exists() and not compiler_alias_ir.exists(),
+              "rejected compiler output alias left a partial report or IR file")
 
         duplicate_stdout = subprocess.run(
             [

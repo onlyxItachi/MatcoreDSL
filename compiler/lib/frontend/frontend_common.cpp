@@ -137,8 +137,8 @@ std::string serializeRecoveredGemmInspection(const Result &result) {
            << escapedInspectionValue(candidate.n_parameter) << '\n';
     output << prefix << "binding.k="
            << escapedInspectionValue(candidate.k_parameter) << '\n';
-    output << prefix
-           << "semantic_contract=f32_row_major_overwrite_m_k__k_n__m_n\n";
+    output << prefix << "semantic_contract="
+           << escapedInspectionValue(candidate.semantic_contract) << '\n';
     output << prefix << "line=" << candidate.line << '\n';
     output << prefix << "column=" << candidate.column << '\n';
     output << prefix << "offset=" << candidate.offset << '\n';
@@ -172,6 +172,9 @@ std::string serializeRecoveredGemmInspection(const Result &result) {
            << candidate.fp_proof.fenv_access << '\n';
     output << prefix << "fp.fast_math_profile="
            << candidate.fp_proof.fast_math_profile << '\n';
+    output << prefix << "fp.evaluation_method="
+           << escapedInspectionValue(candidate.fp_proof.evaluation_method)
+           << '\n';
     output << prefix << "fp.rounding_mode="
            << escapedInspectionValue(candidate.fp_proof.rounding_mode) << '\n';
     output << prefix << "fp.exception_mode="
