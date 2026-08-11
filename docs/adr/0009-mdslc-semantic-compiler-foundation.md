@@ -1,7 +1,8 @@
 # ADR-0009: MDSLC semantic compiler foundation
 
-- Status: Proposed reviewable architecture boundary for Milestone A;
-  implementation proceeds only through the declared gates
+- Status: Accepted for the internal semantic-compiler architecture after
+  independent Milestone A review; implementation proceeds only through the
+  declared gates and public API/ABI/backend contracts remain unfrozen
 - Date: 2026-08-11
 - Scope: Additive standalone `compiler/` semantic optimizer foundation
 
