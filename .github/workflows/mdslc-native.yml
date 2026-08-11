@@ -31,16 +31,25 @@ jobs:
             openblas_require: "ON"
             mlir_label: Matcore MLIR enabled
             mlir_enable: "ON"
+            default_semantic_pipeline: matcore-mlir
+          - openblas_label: OpenBLAS required
+            openblas_enable: "ON"
+            openblas_require: "ON"
+            mlir_label: Matcore MLIR disabled
+            mlir_enable: "OFF"
+            default_semantic_pipeline: capture-v0
           - openblas_label: OpenBLAS explicitly disabled
             openblas_enable: "OFF"
             openblas_require: "OFF"
             mlir_label: Matcore MLIR enabled
             mlir_enable: "ON"
+            default_semantic_pipeline: matcore-mlir
           - openblas_label: OpenBLAS explicitly disabled
             openblas_enable: "OFF"
             openblas_require: "OFF"
             mlir_label: Matcore MLIR disabled
             mlir_enable: "OFF"
+            default_semantic_pipeline: capture-v0
 
     steps:
       - uses: actions/checkout@v4
@@ -153,6 +162,7 @@ jobs:
             -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=ON \
             -DMDSLC_ENABLE_OPENBLAS=${{ matrix.openblas_enable }} \
             -DMDSLC_REQUIRE_OPENBLAS=${{ matrix.openblas_require }} \
+            -DMDSLC_DEFAULT_SEMANTIC_PIPELINE=${{ matrix.default_semantic_pipeline }} \
             -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
             -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang \
             "${mlir_options[@]}" \
@@ -169,6 +179,8 @@ jobs:
             grep -F "MDSLC Matcore MLIR semantic layer: exact MLIR 21.1.8" \
               build-mdslc-configure.log
           fi
+          grep -F "MDSLC default semantic pipeline: ${{ matrix.default_semantic_pipeline }}" \
+            build-mdslc-configure.log
 
       - name: Build standalone MDSLC
         run: cmake --build build-mdslc --parallel 2
@@ -198,3 +210,246 @@ jobs:
 
       - name: Test standalone MDSLC
         run: ctest --test-dir build-mdslc --output-on-failure -j1
+
+  clang-21-debug-mlir:
+    name: Clang 21.1.8 Debug (Matcore MLIR enabled, OpenBLAS disabled)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add the official LLVM 21 repository
+        run: |
+          sudo install -d -m 0755 /etc/apt/keyrings
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/keyrings/apt.llvm.org.asc >/dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/apt.llvm.org.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+            | sudo tee /etc/apt/sources.list.d/apt.llvm.org.list
+
+      - name: Install the exact Clang and MLIR tuple
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ccache \
+            clang-21 \
+            cmake \
+            g++-multilib \
+            libclang-21-dev \
+            libclang-cpp21-dev \
+            libmlir-21-dev \
+            llvm-21-dev \
+            mlir-21-tools \
+            ninja-build \
+            pkg-config \
+            python3 \
+            rapidjson-dev
+          /usr/bin/clang++-21 --version | grep -F "clang version 21.1.8"
+          /usr/bin/mlir-opt-21 --version | grep -F "LLVM version 21.1.8"
+          /usr/bin/mlir-tblgen-21 --version | grep -F "LLVM version 21.1.8"
+          test -f /usr/lib/llvm-21/lib/cmake/mlir/MLIRConfig.cmake
+
+      - name: Configure exact-MLIR Debug validation
+        run: |
+          cmake -S compiler -B build-mdslc-debug -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=/usr/bin/clang-21 \
+            -DCMAKE_CXX_COMPILER=/usr/bin/clang++-21 \
+            -DMDSLC_CLANGXX_EXECUTABLE=/usr/bin/clang++-21 \
+            -DMDSLC_ENABLE_NATIVE_FRONTEND=ON \
+            -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=ON \
+            -DMDSLC_ENABLE_OPENBLAS=OFF \
+            -DMDSLC_REQUIRE_OPENBLAS=OFF \
+            -DMDSLC_ENABLE_MATCORE_MLIR=ON \
+            -DMDSLC_DEFAULT_SEMANTIC_PIPELINE=matcore-mlir \
+            -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
+            -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang \
+            -DMLIR_DIR=/usr/lib/llvm-21/lib/cmake/mlir \
+            | tee build-mdslc-debug-configure.log
+          grep -F "MDSLC OpenBLAS variant: unavailable (optional)" \
+            build-mdslc-debug-configure.log
+          grep -F "MDSLC Matcore MLIR semantic layer: exact MLIR 21.1.8" \
+            build-mdslc-debug-configure.log
+          grep -F "MDSLC default semantic pipeline: matcore-mlir" \
+            build-mdslc-debug-configure.log
+
+      - name: Build exact-MLIR Debug validation
+        run: cmake --build build-mdslc-debug --parallel 2
+
+      - name: Authenticate Debug linkage
+        run: |
+          test -x build-mdslc-debug/bin/matcore-mlir
+          if ldd build-mdslc-debug/bin/matcore-extract | grep -F libMLIR; then
+            echo "Aggregate shared libMLIR leaked into Debug matcore-extract" >&2
+            exit 1
+          fi
+          if ldd build-mdslc-debug/bin/matcore-mlir | grep -F libMLIR; then
+            echo "Aggregate shared libMLIR leaked into Debug matcore-mlir" >&2
+            exit 1
+          fi
+          if ldd build-mdslc-debug/lib/libmatcore_runtime.so | grep -qi openblas; then
+            echo "OpenBLAS leaked into the explicitly disabled Debug build" >&2
+            exit 1
+          fi
+
+      - name: Test exact-MLIR Debug validation
+        run: ctest --test-dir build-mdslc-debug --output-on-failure -j1
+
+  clang-21-asan-ubsan-mlir:
+    name: Clang 21.1.8 ASan+UBSan (Matcore MLIR enabled, OpenBLAS disabled)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add the official LLVM 21 repository
+        run: |
+          sudo install -d -m 0755 /etc/apt/keyrings
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/keyrings/apt.llvm.org.asc >/dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/apt.llvm.org.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+            | sudo tee /etc/apt/sources.list.d/apt.llvm.org.list
+
+      - name: Install the exact Clang and MLIR tuple
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ccache \
+            clang-21 \
+            cmake \
+            g++-multilib \
+            libclang-21-dev \
+            libclang-cpp21-dev \
+            libmlir-21-dev \
+            llvm-21-dev \
+            mlir-21-tools \
+            ninja-build \
+            pkg-config \
+            python3 \
+            rapidjson-dev
+          /usr/bin/clang++-21 --version | grep -F "clang version 21.1.8"
+          /usr/bin/mlir-opt-21 --version | grep -F "LLVM version 21.1.8"
+          /usr/bin/mlir-tblgen-21 --version | grep -F "LLVM version 21.1.8"
+          test -f /usr/lib/llvm-21/lib/cmake/mlir/MLIRConfig.cmake
+
+      - name: Configure exact-MLIR ASan+UBSan validation
+        run: |
+          cmake -S compiler -B build-mdslc-asan-ubsan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=/usr/bin/clang-21 \
+            -DCMAKE_CXX_COMPILER=/usr/bin/clang++-21 \
+            "-DCMAKE_C_FLAGS=-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer" \
+            "-DCMAKE_CXX_FLAGS=-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined \
+            -DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address,undefined \
+            -DMDSLC_CLANGXX_EXECUTABLE=/usr/bin/clang++-21 \
+            -DMDSLC_ENABLE_NATIVE_FRONTEND=ON \
+            -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=ON \
+            -DMDSLC_ENABLE_OPENBLAS=OFF \
+            -DMDSLC_REQUIRE_OPENBLAS=OFF \
+            -DMDSLC_ENABLE_MATCORE_MLIR=ON \
+            -DMDSLC_DEFAULT_SEMANTIC_PIPELINE=matcore-mlir \
+            -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
+            -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang \
+            -DMLIR_DIR=/usr/lib/llvm-21/lib/cmake/mlir \
+            | tee build-mdslc-asan-ubsan-configure.log
+          grep -F "MDSLC OpenBLAS variant: unavailable (optional)" \
+            build-mdslc-asan-ubsan-configure.log
+          grep -F "MDSLC Matcore MLIR semantic layer: exact MLIR 21.1.8" \
+            build-mdslc-asan-ubsan-configure.log
+          grep -F "MDSLC default semantic pipeline: matcore-mlir" \
+            build-mdslc-asan-ubsan-configure.log
+
+      - name: Build exact-MLIR ASan+UBSan validation
+        run: cmake --build build-mdslc-asan-ubsan --parallel 2
+
+      - name: Authenticate ASan+UBSan linkage
+        run: |
+          test -x build-mdslc-asan-ubsan/bin/matcore-mlir
+          if ldd build-mdslc-asan-ubsan/lib/libmatcore_runtime.so | grep -qi openblas; then
+            echo "OpenBLAS leaked into the explicitly disabled ASan+UBSan build" >&2
+            exit 1
+          fi
+
+      - name: Test focused in-process ASan+UBSan scope
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1:check_initialization_order=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          sanitizer_tests='^(ir\.v1\.core|mlir\.semantic\.(core|map-domain|recovered-gemm)|mlir\.cpu\.runtime_dispatch_lowering_v1|platform\.fp_environment\.v1|runtime\.cpu\.(reference_types|packed_avx2|packed_avx512|execution_context\.v1|parallel_packed\.v1|planner_v3_resources|workspace_v1|openblas_adapter|variant_conformance\.v1|gemm_v0)|runtime\.c_abi\.(typed_reference_v1|compatibility_v1|fp_environment_v1|public_context_v1))$'
+          ctest --test-dir build-mdslc-asan-ubsan -N -R "${sanitizer_tests}" \
+            | tee build-mdslc-asan-ubsan/focused-test-list.txt
+          grep -F "Total Tests: 20" \
+            build-mdslc-asan-ubsan/focused-test-list.txt
+          ctest --test-dir build-mdslc-asan-ubsan --output-on-failure -j1 \
+            -R "${sanitizer_tests}"
+
+  clang-21-tsan-runtime:
+    name: Clang 21.1.8 TSan runtime (Matcore MLIR and OpenBLAS disabled)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add the official LLVM 21 repository
+        run: |
+          sudo install -d -m 0755 /etc/apt/keyrings
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/keyrings/apt.llvm.org.asc >/dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/apt.llvm.org.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+            | sudo tee /etc/apt/sources.list.d/apt.llvm.org.list
+
+      - name: Install the exact Clang tuple
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-21 \
+            cmake \
+            ninja-build \
+            python3 \
+            rapidjson-dev
+          /usr/bin/clang++-21 --version | grep -F "clang version 21.1.8"
+
+      - name: Configure focused TSan runtime validation
+        run: |
+          cmake -S compiler -B build-mdslc-tsan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=/usr/bin/clang-21 \
+            -DCMAKE_CXX_COMPILER=/usr/bin/clang++-21 \
+            "-DCMAKE_C_FLAGS=-O1 -g -fsanitize=thread -fno-omit-frame-pointer" \
+            "-DCMAKE_CXX_FLAGS=-O1 -g -fsanitize=thread -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread \
+            -DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=thread \
+            -DMDSLC_CLANGXX_EXECUTABLE=/usr/bin/clang++-21 \
+            -DMDSLC_ENABLE_NATIVE_FRONTEND=OFF \
+            -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=ON \
+            -DMDSLC_ENABLE_OPENBLAS=OFF \
+            -DMDSLC_REQUIRE_OPENBLAS=OFF \
+            -DMDSLC_ENABLE_MATCORE_MLIR=OFF \
+            -DMDSLC_DEFAULT_SEMANTIC_PIPELINE=capture-v0 \
+            | tee build-mdslc-tsan-configure.log
+          grep -F "MDSLC OpenBLAS variant: unavailable (optional)" \
+            build-mdslc-tsan-configure.log
+          grep -F "MDSLC default semantic pipeline: capture-v0" \
+            build-mdslc-tsan-configure.log
+
+      - name: Build focused TSan runtime validation
+        run: |
+          cmake --build build-mdslc-tsan --parallel 2 --target \
+            matcore_execution_context_test \
+            matcore_parallel_packed_gemm_test \
+            matcore_planner_v3_resources_test \
+            matcore_public_context_c_api_test
+
+      - name: Test exact TSan runtime scope
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: |
+          tsan_tests='^runtime\.(cpu\.(execution_context\.v1|parallel_packed\.v1|planner_v3_resources)|c_abi\.public_context_v1)$'
+          ctest --test-dir build-mdslc-tsan -N -R "${tsan_tests}" \
+            | tee build-mdslc-tsan/focused-test-list.txt
+          grep -F "Total Tests: 4" build-mdslc-tsan/focused-test-list.txt
+          ctest --test-dir build-mdslc-tsan --output-on-failure -j1 \
+            -R "${tsan_tests}"

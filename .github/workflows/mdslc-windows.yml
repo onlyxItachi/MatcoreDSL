@@ -228,6 +228,8 @@ jobs:
             -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=OFF `
             -DMDSLC_ENABLE_OPENBLAS=OFF `
             -DMDSLC_REQUIRE_OPENBLAS=OFF `
+            -DMDSLC_ENABLE_MATCORE_MLIR=OFF `
+            -DMDSLC_DEFAULT_SEMANTIC_PIPELINE=capture-v0 `
             -DMDSLC_USE_CCACHE=OFF `
             "-DMATCORE_RAPIDJSON_INCLUDE_DIR:PATH=$env:RAPIDJSON_ROOT\include" `
             "-DLLVM_DIR:PATH=$env:LLVM_ROOT\lib\cmake\llvm" `
@@ -238,6 +240,8 @@ jobs:
             -Pattern "MDSLC native frontend link model:"
           Select-String -Path (Join-Path $env:RUNNER_TEMP "mdslc-windows-configure.log") `
             -SimpleMatch "MDSLC OpenBLAS variant: unavailable (optional)"
+          Select-String -Path (Join-Path $env:RUNNER_TEMP "mdslc-windows-configure.log") `
+            -SimpleMatch "MDSLC default semantic pipeline: capture-v0"
 
       - name: Build Release
         shell: pwsh
@@ -369,6 +373,8 @@ jobs:
             --producer-build-dir $env:MDSLC_WINDOWS_RELEASE_BUILD `
             --test-root (Join-Path $env:RUNNER_TEMP "MDSLC external consumer ünicode") `
             --cxx-compiler "$env:LLVM_ROOT\bin\clang-cl.exe" `
+            --matcore-mlir-available OFF `
+            --default-semantic-pipeline capture-v0 `
             --windows-import-report-out $consumerReport
           "MDSLC_WINDOWS_CONSUMER_REPORT=$consumerReport" | Out-File `
             -FilePath $env:GITHUB_ENV -Append -Encoding utf8
@@ -388,11 +394,16 @@ jobs:
             -DMDSLC_ENABLE_NATIVE_FRONTEND=ON `
             -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=OFF `
             -DMDSLC_ENABLE_OPENBLAS=OFF `
+            -DMDSLC_ENABLE_MATCORE_MLIR=OFF `
+            -DMDSLC_DEFAULT_SEMANTIC_PIPELINE=capture-v0 `
             -DMDSLC_USE_CCACHE=OFF `
             "-DMATCORE_RAPIDJSON_INCLUDE_DIR:PATH=$env:RAPIDJSON_ROOT\include" `
             "-DLLVM_DIR:PATH=$env:LLVM_ROOT\lib\cmake\llvm" `
             "-DClang_DIR:PATH=$env:LLVM_ROOT\lib\cmake\clang" `
-            "-DMDSLC_DIAGUIDS_LIBRARY:FILEPATH=$env:MDSLC_DIAGUIDS_LIBRARY"
+            "-DMDSLC_DIAGUIDS_LIBRARY:FILEPATH=$env:MDSLC_DIAGUIDS_LIBRARY" `
+            | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP "mdslc-windows-debug-configure.log")
+          Select-String -Path (Join-Path $env:RUNNER_TEMP "mdslc-windows-debug-configure.log") `
+            -SimpleMatch "MDSLC default semantic pipeline: capture-v0"
           cmake --build $build --parallel 2
           $junit = Join-Path $env:RUNNER_TEMP "mdslc-windows-debug-ctest.xml"
           ctest --test-dir $build `
@@ -465,11 +476,16 @@ jobs:
             -DMDSLC_ENABLE_NATIVE_FRONTEND=ON `
             -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=OFF `
             -DMDSLC_ENABLE_OPENBLAS=OFF `
+            -DMDSLC_ENABLE_MATCORE_MLIR=OFF `
+            -DMDSLC_DEFAULT_SEMANTIC_PIPELINE=capture-v0 `
             -DMDSLC_USE_CCACHE=OFF `
             "-DMATCORE_RAPIDJSON_INCLUDE_DIR:PATH=$env:RAPIDJSON_ROOT\include" `
             "-DLLVM_DIR:PATH=$env:LLVM_ROOT\lib\cmake\llvm" `
             "-DClang_DIR:PATH=$env:LLVM_ROOT\lib\cmake\clang" `
-            "-DMDSLC_DIAGUIDS_LIBRARY:FILEPATH=$env:MDSLC_DIAGUIDS_LIBRARY"
+            "-DMDSLC_DIAGUIDS_LIBRARY:FILEPATH=$env:MDSLC_DIAGUIDS_LIBRARY" `
+            | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP "mdslc-windows-asan-configure.log")
+          Select-String -Path (Join-Path $env:RUNNER_TEMP "mdslc-windows-asan-configure.log") `
+            -SimpleMatch "MDSLC default semantic pipeline: capture-v0"
           # The authenticated LLVM Tooling archive's LLVMSupport library
           # exports rpmalloc, which conflicts with the Windows ASan allocator
           # thunk if the extractor itself is instrumented. Keep the already
