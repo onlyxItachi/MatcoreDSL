@@ -3056,8 +3056,8 @@ matcore_runtime_gemm_f32_v0(const matcore_tensor_desc_v0 *out,
       matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
           validated.problem, 1);
   // The original one-shot ABI cannot receive caller-owned packing storage.
-  // Keep it allocation-free by removing workspace-requiring candidates while
-  // still allowing zero-workspace external and native variants.
+  // Remove MDSLC workspace-requiring candidates while still allowing
+  // zero-caller-workspace native and opaque external-provider variants.
   resources.native_packed_avx2_fma_compiled = false;
   resources.native_packed_workspace_size_valid = false;
   resources.native_packed_workspace_bytes = 0;

@@ -635,9 +635,11 @@ matcore_runtime_gemm_f32_workspace_size_v1(
     matcore_cpu_gemm_plan_report_v2 *report) MATCORE_RUNTIME_NOEXCEPT;
 
 /*
- * Executes exactly the selected resource-aware plan. The runtime allocates
- * nothing. Nonzero workspace must satisfy the queried size and alignment.
- * Every pre-execution validation failure leaves output data unchanged.
+ * Executes exactly the selected resource-aware plan. MDSLC allocates no
+ * packing/workspace memory; nonzero caller workspace must satisfy the queried
+ * size and alignment. A selected opaque provider may manage internal memory
+ * under its own contract. Every pre-execution validation failure leaves output
+ * data unchanged.
  */
 MATCORE_RUNTIME_API matcore_status_v0 matcore_runtime_gemm_f32_execute_v1(
     const matcore_tensor_desc_v0 *out,
