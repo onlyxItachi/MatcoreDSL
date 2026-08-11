@@ -29,7 +29,7 @@ int main() {
           planner::feature_bit(planner::CpuFeatureV1::fma),
       256};
   const planner::CpuGemmImplementationResourcesV1 resources{
-      true, true, true, true, 131072, 64, 24, 1};
+      true, true, true, true, 131072, 64, 24, 1, true, true};
 
   const planner::CpuGemmPlanV2 plan = planner::plan_cpu_gemm_v2(
       problem, capabilities, resources,

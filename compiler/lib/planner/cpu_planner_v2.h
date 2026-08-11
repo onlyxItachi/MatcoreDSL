@@ -41,12 +41,11 @@ struct CpuGemmImplementationResourcesV1 {
   std::uint32_t native_packed_workspace_alignment = 0;
   std::uint32_t openblas_maximum_threads = 0;
   std::uint32_t requested_threads = 1;
-  // Hand-authored planner fixtures historically treated linked OpenBLAS
-  // resources as already authenticated. Runtime discovery overwrites both
-  // fields explicitly so a request that deliberately excludes provider work
-  // remains distinguishable from an absent or nonconforming provider.
-  bool openblas_conformance_evaluated = true;
-  bool openblas_conformant = true;
+  // These are evidence, not implications of linkage. Every producer must set
+  // them explicitly after authenticating the provider; zero/default records
+  // fail closed.
+  bool openblas_conformance_evaluated = false;
+  bool openblas_conformant = false;
 };
 
 struct CpuGemmVariantRecordV2 {

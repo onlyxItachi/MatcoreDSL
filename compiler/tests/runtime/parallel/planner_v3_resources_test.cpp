@@ -31,6 +31,8 @@ int main() {
       planner::CpuLayoutV1::row_major_contiguous, 64};
   planner::CpuGemmImplementationResourcesV1 baseline;
   baseline.openblas_linked = true;
+  baseline.openblas_conformance_evaluated = true;
+  baseline.openblas_conformant = true;
   baseline.native_packed_avx2_fma_compiled = true;
   baseline.native_packed_workspace_size_valid = true;
   baseline.native_packed_workspace_bytes = 393216;
