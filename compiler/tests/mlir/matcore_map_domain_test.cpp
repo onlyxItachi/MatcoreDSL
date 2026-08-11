@@ -9,7 +9,10 @@
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/SHA256.h"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -202,10 +205,13 @@ mlir::DictionaryAttr maskDomain(mlir::Builder &builder) {
 mlir::DictionaryAttr semanticProvenance(mlir::Builder &builder,
                                         mlir::Location location,
                                         llvm::StringRef kind,
-                                        llvm::StringRef source_anchor) {
+                                        llvm::StringRef source_anchor,
+                                        llvm::StringRef authenticity) {
   const auto source = mlir::cast<mlir::FileLineColLoc>(location);
   return builder.getDictionaryAttr(
-      {builder.getNamedAttr("column",
+      {builder.getNamedAttr("authenticity",
+                            builder.getStringAttr(authenticity)),
+       builder.getNamedAttr("column",
                             builder.getI64IntegerAttr(source.getColumn())),
        builder.getNamedAttr("file",
                             builder.getStringAttr(source.getFilename().getValue())),
@@ -215,6 +221,35 @@ mlir::DictionaryAttr semanticProvenance(mlir::Builder &builder,
        builder.getNamedAttr("source_anchor",
                             builder.getStringAttr(source_anchor)),
        builder.getNamedAttr("version", builder.getI32IntegerAttr(1))});
+}
+
+mlir::DictionaryAttr sourceAuthenticatedProvenance(
+    mlir::Builder &builder, mlir::Location location, llvm::StringRef kind,
+    llvm::StringRef source_anchor, llvm::StringRef source_snapshot,
+    std::uint64_t begin, std::uint64_t end) {
+  llvm::SmallVector<mlir::NamedAttribute> attributes;
+  for (mlir::NamedAttribute attribute :
+       semanticProvenance(builder, location, kind, source_anchor,
+                          "source_authenticated"))
+    attributes.push_back(attribute);
+  attributes.push_back(builder.getNamedAttr(
+      "source_range",
+      builder.getDictionaryAttr(
+          {builder.getNamedAttr("begin", builder.getI64IntegerAttr(begin)),
+           builder.getNamedAttr("end", builder.getI64IntegerAttr(end))})));
+  attributes.push_back(builder.getNamedAttr(
+      "source_snapshot", builder.getStringAttr(source_snapshot)));
+  return builder.getDictionaryAttr(attributes);
+}
+
+mlir::DictionaryAttr withAddedField(mlir::Builder &builder,
+                                    mlir::DictionaryAttr dictionary,
+                                    llvm::StringRef field,
+                                    mlir::Attribute value) {
+  llvm::SmallVector<mlir::NamedAttribute> attributes(dictionary.begin(),
+                                                      dictionary.end());
+  attributes.push_back(builder.getNamedAttr(field, value));
+  return builder.getDictionaryAttr(attributes);
 }
 
 mlir::DictionaryAttr withField(mlir::Builder &builder,
@@ -251,22 +286,31 @@ dialect::MapOp appendSinMap(mlir::OpBuilder &builder, mlir::Location location,
                             mlir::DictionaryAttr domain,
                             llvm::StringRef outside_domain,
                             mlir::ArrayAttr shape,
-                            llvm::StringRef source_anchor) {
+                            llvm::StringRef source_anchor,
+                            bool derived_from_producer) {
   const auto type = mlir::cast<mlir::RankedTensorType>(input.getType());
   auto map = builder.create<dialect::MapOp>(
       location, type, input, mask, domain,
       builder.getStringAttr(outside_domain), tensorContract(builder, type, shape),
       mapEffects(builder, static_cast<bool>(mask)), mapNumerical(builder),
-      semanticProvenance(builder, location, "semantic_composition",
-                         source_anchor));
+      semanticProvenance(
+          builder, location,
+          derived_from_producer ? "derived_semantic_composition"
+                                : "synthetic_semantic_composition",
+          source_anchor, derived_from_producer ? "derived_from_producer"
+                                               : "synthetic_test_fixture"));
   auto *body = new mlir::Block();
   map.getBody().push_back(body);
   mlir::Value element = body->addArgument(builder.getF32Type(), location);
   builder.setInsertionPointToEnd(body);
   auto sin = builder.create<dialect::SinOp>(
       location, builder.getF32Type(), element, sinNumerical(builder),
-      semanticProvenance(builder, location, "source_expression",
-                         source_anchor));
+      semanticProvenance(
+          builder, location,
+          derived_from_producer ? "derived_elementwise_expression"
+                                : "synthetic_elementwise_expression",
+          source_anchor, derived_from_producer ? "derived_from_producer"
+                                               : "synthetic_test_fixture"));
   builder.create<dialect::YieldOp>(location, sin.getResult());
   return map;
 }
@@ -298,15 +342,23 @@ bridge::BridgeResult buildGemmMap(v1::Module capture, mlir::MLIRContext &context
   auto map = appendSinMap(builder, gemm.getLoc(), gemm.getResult(), {},
                           use_slice ? sliceDomain(builder) : allDomain(builder),
                           use_slice ? "preserve_input" : "not_applicable",
-                          shape, gemm.getSiteId());
+                          shape, gemm.getSiteId(),
+                          /*derived_from_producer=*/true);
   return_op.setOperand(0, map.getResult());
+  mlir::Builder module_builder(&context);
+  (*result.module)->setAttr(
+      "mdsl.composition_schema",
+      module_builder.getStringAttr(dialect::kCompositionSchemaV1));
+  (*result.module)->setAttr("mdsl.composition_version",
+                            module_builder.getI32IntegerAttr(1));
   return result;
 }
 
 mlir::OwningOpRef<mlir::ModuleOp>
 buildStandaloneMap(mlir::MLIRContext &context, mlir::DictionaryAttr domain,
                    bool with_mask, bool dynamic_shape = false,
-                   bool rank_three = false, int64_t mask_columns = 8) {
+                   bool rank_three = false, int64_t mask_columns = 8,
+                   bool encoded_tensor = false, bool encoded_mask = false) {
   mlir::OpBuilder builder(&context);
   const auto location =
       mlir::FileLineColLoc::get(&context, "map_domain_fixture.mdsl", 1, 1);
@@ -317,13 +369,17 @@ buildStandaloneMap(mlir::MLIRContext &context, mlir::DictionaryAttr domain,
                                        mlir::ShapedType::kDynamic,
                                        mlir::ShapedType::kDynamic}
                                  : llvm::ArrayRef<int64_t>{8, 8},
-      builder.getF32Type());
+      builder.getF32Type(),
+      encoded_tensor ? mlir::Attribute(builder.getStringAttr("test.encoding"))
+                     : mlir::Attribute{});
   const auto mask = mlir::RankedTensorType::get(
       dynamic_shape
           ? llvm::ArrayRef<int64_t>{mlir::ShapedType::kDynamic,
                                     mlir::ShapedType::kDynamic}
           : llvm::ArrayRef<int64_t>{8, mask_columns},
-      builder.getI1Type());
+      builder.getI1Type(),
+      encoded_mask ? mlir::Attribute(builder.getStringAttr("test.encoding"))
+                   : mlir::Attribute{});
   llvm::SmallVector<mlir::Type> inputs = {tensor};
   if (with_mask)
     inputs.push_back(mask);
@@ -350,10 +406,73 @@ buildStandaloneMap(mlir::MLIRContext &context, mlir::DictionaryAttr domain,
       domain, domain.getAs<mlir::StringAttr>("kind").getValue() == "all"
                   ? "not_applicable"
                   : "preserve_input",
-      shape, "standalone_map_fixture");
+      shape, "standalone_map_fixture",
+      /*derived_from_producer=*/false);
   builder.setInsertionPointAfter(map);
   builder.create<mlir::func::ReturnOp>(location,
                                        map.getResult());
+  return module;
+}
+
+mlir::OwningOpRef<mlir::ModuleOp>
+buildSourceAuthenticatedMap(mlir::MLIRContext &context) {
+  constexpr llvm::StringLiteral source_name =
+      "compiler/tests/mlir/map_sin_source_fixture.mdsl";
+  const std::string source =
+      readFile(std::string(MDSLC_MLIR_TEST_SOURCE_DIR) +
+               "/map_sin_source_fixture.mdsl");
+  constexpr llvm::StringLiteral expression = "std::sin(value)";
+  const std::size_t begin = source.find(expression.str());
+  check(begin != std::string::npos,
+        "source-authenticated map fixture must contain its sine expression");
+  if (begin == std::string::npos)
+    return {};
+  const std::size_t end = begin + expression.size();
+  const std::size_t line_start = source.rfind('\n', begin);
+  const unsigned line =
+      static_cast<unsigned>(1 + std::count(source.begin(),
+                                           source.begin() + begin, '\n'));
+  const unsigned column = static_cast<unsigned>(
+      begin - (line_start == std::string::npos ? 0 : line_start + 1) + 1);
+  const std::array<std::uint8_t, 32> digest =
+      llvm::SHA256::hash(llvm::arrayRefFromStringRef(source));
+  const std::string snapshot =
+      "sha256:" + llvm::toHex(llvm::ArrayRef(digest), true);
+
+  mlir::OpBuilder builder(&context);
+  const auto location =
+      mlir::FileLineColLoc::get(&context, source_name, line, column);
+  auto module = mlir::ModuleOp::create(location);
+  const auto tensor =
+      mlir::RankedTensorType::get({8, 8}, builder.getF32Type());
+  auto function = mlir::func::FuncOp::create(
+      location, "source_authenticated_map_fixture",
+      builder.getFunctionType({tensor}, {tensor}));
+  module.push_back(function);
+  mlir::Block *entry = function.addEntryBlock();
+  builder.setInsertionPointToStart(entry);
+  const auto shape = builder.getArrayAttr(
+      {scalarStatic(builder, 8), scalarStatic(builder, 8)});
+  auto map = builder.create<dialect::MapOp>(
+      location, tensor, entry->getArgument(0), mlir::Value{},
+      allDomain(builder), builder.getStringAttr("not_applicable"),
+      tensorContract(builder, tensor, shape), mapEffects(builder, false),
+      mapNumerical(builder),
+      sourceAuthenticatedProvenance(
+          builder, location, "source_authenticated_map",
+          "map_sin_source_fixture", snapshot, begin, end));
+  auto *body = new mlir::Block();
+  map.getBody().push_back(body);
+  mlir::Value element = body->addArgument(builder.getF32Type(), location);
+  builder.setInsertionPointToEnd(body);
+  auto sin = builder.create<dialect::SinOp>(
+      location, builder.getF32Type(), element, sinNumerical(builder),
+      sourceAuthenticatedProvenance(
+          builder, location, "source_authenticated_expression",
+          "map_sin_source_fixture", snapshot, begin, end));
+  builder.create<dialect::YieldOp>(location, sin.getResult());
+  builder.setInsertionPointAfter(map);
+  builder.create<mlir::func::ReturnOp>(location, map.getResult());
   return module;
 }
 
@@ -365,6 +484,8 @@ dialect::MapOp findMap(mlir::ModuleOp module) {
 
 using MapMutation =
     std::function<void(dialect::MapOp, mlir::OpBuilder &)>;
+using ModuleMutation =
+    std::function<void(mlir::ModuleOp, mlir::OpBuilder &)>;
 
 void expectRejected(llvm::StringRef valid_text, const MapMutation &mutate,
                     std::string_view message) {
@@ -381,10 +502,39 @@ void expectRejected(llvm::StringRef valid_text, const MapMutation &mutate,
   check(mlir::failed(mlir::verify(*module)), message);
 }
 
+void expectEnvelopeRejected(llvm::StringRef valid_text,
+                            const ModuleMutation &mutate,
+                            llvm::StringRef expected_reason,
+                            std::string_view message) {
+  mlir::MLIRContext context;
+  context.allowUnregisteredDialects();
+  bridge::registerMatcoreSemanticDialects(context);
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(valid_text, &context);
+  check(static_cast<bool>(module),
+        "composition-envelope negative fixture must parse before mutation");
+  if (!module)
+    return;
+  mlir::OpBuilder builder(&context);
+  mutate(*module, builder);
+  mlir::ScopedDiagnosticHandler silence(
+      &context, [](mlir::Diagnostic &) { return mlir::success(); });
+  check(mlir::succeeded(mlir::verify(*module)),
+        std::string(message) +
+            " (mutation must remain valid generic/dialect MLIR)");
+  std::string error;
+  check(!dialect::verifyCompositionV1Module(*module, error), message);
+  check(error.find(expected_reason.str()) != std::string::npos,
+        std::string(message) +
+            " (rejection must report the deterministic reason)");
+}
+
 void checkGolden(mlir::ModuleOp module, llvm::StringRef name,
                  std::string &serialized) {
   check(mlir::succeeded(mlir::verify(module)),
         "canonical multi-op module must verify");
+  std::string envelope_error;
+  check(dialect::verifyCompositionV1Module(module, envelope_error),
+        "canonical multi-op module must satisfy composition-v1 envelope");
   serialized = bridge::serializeDeterministicMlir(module);
   const std::string expected =
       readFile(std::string(MDSLC_MLIR_TEST_SOURCE_DIR) + "/" + name.str());
@@ -396,6 +546,9 @@ void checkGolden(mlir::ModuleOp module, llvm::StringRef name,
   check(static_cast<bool>(parsed), "canonical text must parse and verify");
   check(parsed && bridge::serializeDeterministicMlir(*parsed) == serialized,
         "canonical text must be byte-stable across parse/print");
+  check(parsed &&
+            dialect::verifyCompositionV1Module(*parsed, envelope_error),
+        "reparsed canonical text must satisfy composition-v1 envelope");
 }
 
 void checkIndependentSlicePreservation() {
@@ -480,12 +633,25 @@ int main() {
   auto rank_three = buildStandaloneMap(
       domains_context, allDomain(domains_builder), false,
       /*dynamic_shape=*/false, /*rank_three=*/true);
+  auto encoded_tensor = buildStandaloneMap(
+      domains_context, allDomain(domains_builder), false,
+      /*dynamic_shape=*/false, /*rank_three=*/false,
+      /*mask_columns=*/8, /*encoded_tensor=*/true);
+  auto encoded_mask = buildStandaloneMap(
+      domains_context, maskDomain(domains_builder), true,
+      /*dynamic_shape=*/false, /*rank_three=*/false,
+      /*mask_columns=*/8, /*encoded_tensor=*/false,
+      /*encoded_mask=*/true);
+  auto source_authenticated = buildSourceAuthenticatedMap(domains_context);
   check(mlir::succeeded(mlir::verify(*indices)),
         "closed indices domain must verify");
   check(mlir::succeeded(mlir::verify(*mask)),
         "closed predicate mask domain must verify");
   check(mlir::succeeded(mlir::verify(*dynamic_mask)),
         "dynamic mask shapes must remain legal behind an explicit guard obligation");
+  check(source_authenticated &&
+            mlir::succeeded(mlir::verify(*source_authenticated)),
+        "source-authenticated map/sine provenance must verify against a real textual fixture");
   check(findMap(*dynamic_mask)
             .getDomain()
             .getAs<mlir::StringAttr>("shape_equality")
@@ -498,8 +664,29 @@ int main() {
           "statically incompatible mask shapes must be rejected");
     check(mlir::failed(mlir::verify(*rank_three)),
           "version-1 map must fail closed for rank greater than two");
+    check(mlir::failed(mlir::verify(*encoded_tensor)),
+          "host row-major map tensors must reject non-null encodings");
+    check(mlir::failed(mlir::verify(*encoded_mask)),
+          "host predicate masks must reject non-null encodings");
   }
   checkIndependentSlicePreservation();
+
+  if (all) {
+    dialect::GemmOp gemm;
+    all.module->walk([&](dialect::GemmOp operation) { gemm = operation; });
+    const auto result_type =
+        mlir::cast<mlir::RankedTensorType>(gemm.getResult().getType());
+    gemm.getResult().setType(mlir::RankedTensorType::get(
+        result_type.getShape(), result_type.getElementType(),
+        mlir::StringAttr::get(&all_context, "test.encoding")));
+    mlir::ScopedDiagnosticHandler silence(
+        &all_context, [](mlir::Diagnostic &) { return mlir::success(); });
+    check(mlir::failed(mlir::verify(*all.module)),
+          "GEMM host row-major values must reject non-null tensor encodings");
+  }
+
+  check(all_text.find("kind = \"source_expression\"") == std::string::npos,
+        "derived GEMM-to-SIN fixture must never forge source-expression provenance");
 
   if (!all_text.empty()) {
     expectRejected(
@@ -791,6 +978,201 @@ int main() {
               mlir::ValueRange{});
         },
         "map body allowlist must reject non-Matcore/side-effecting operations");
+
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &) {
+          module->removeAttr("mdsl.composition_schema");
+        },
+        "exact schema/version",
+        "composition envelope must reject a missing schema marker");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &builder) {
+          module->setAttr("mdsl.composition_version",
+                          builder.getI32IntegerAttr(2));
+        },
+        "exact schema/version",
+        "composition envelope must reject an unsupported version");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &builder) {
+          module->setAttr("mdsl.source_file",
+                          builder.getStringAttr("different.mdsl"));
+        },
+        "function location must name the module source",
+        "composition envelope must bind functions to the declared module source");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &) {
+          module.walk([](mlir::func::FuncOp function) {
+            function->setLoc(mlir::FileLineColLoc::get(
+                function.getContext(), "different.mdsl", 21, 3));
+          });
+        },
+        "function location must name the module source",
+        "composition envelope must reject a foreign semantic-root location");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &builder) {
+          module.walk([&](mlir::func::FuncOp function) {
+            function->setAttr(
+                "mdsl.site_id",
+                builder.getStringAttr("mc_00000000000000000000000000000000"));
+          });
+        },
+        "GEMM site must match",
+        "composition envelope must tie the semantic root to its GEMM site");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &) {
+          dialect::GemmOp gemm;
+          module.walk([&](dialect::GemmOp operation) { gemm = operation; });
+          const mlir::Value lhs = gemm.getLhs();
+          gemm.getLhsMutable().assign(gemm.getRhs());
+          gemm.getRhsMutable().assign(lhs);
+        },
+        "preserve lhs/rhs/output root argument order",
+        "composition envelope must reject root operand permutation");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &builder) {
+          dialect::MapOp map = findMap(module);
+          map->setLoc(mlir::FileLineColLoc::get(
+              map.getContext(), "compiler/tests/frontend/gemm_capture.mdsl",
+              22, 3));
+          map->setAttr(
+              "provenance",
+              withField(builder, map.getProvenance(), "line",
+                        builder.getI64IntegerAttr(22)));
+        },
+        "derived map location must equal",
+        "composition envelope must tie a derived map location to its producer");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &builder) {
+          dialect::MapOp map = findMap(module);
+          auto sin = mlir::cast<dialect::SinOp>(&map.getBody().front().front());
+          sin->setLoc(mlir::FileLineColLoc::get(
+              sin.getContext(), "compiler/tests/frontend/gemm_capture.mdsl",
+              22, 3));
+          sin->setAttr(
+              "provenance",
+              withField(builder, sin.getProvenance(), "line",
+                        builder.getI64IntegerAttr(22)));
+        },
+        "derived scalar location must equal",
+        "composition envelope must tie a derived scalar location to its map");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &builder) {
+          dialect::MapOp map = findMap(module);
+          auto provenance = withField(
+              builder, map.getProvenance(), "authenticity",
+              builder.getStringAttr("synthetic_test_fixture"));
+          map->setAttr(
+              "provenance",
+              withField(builder, provenance, "kind",
+                        builder.getStringAttr("synthetic_semantic_composition")));
+        },
+        "must be non-synthetic",
+        "composition envelope must reject synthetic fixture provenance");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &builder) {
+          auto helper = mlir::func::FuncOp::create(
+              module.getLoc(), "unsupported_helper",
+              builder.getFunctionType({}, {}));
+          module.push_back(helper);
+          mlir::Block *entry = helper.addEntryBlock();
+          builder.setInsertionPointToEnd(entry);
+          builder.create<mlir::func::ReturnOp>(helper.getLoc());
+        },
+        "three tensor arguments",
+        "composition envelope must reject unsupported helper functions");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &) {
+          mlir::OperationState state(module.getLoc(), "review.top_level");
+          module.getBody()->push_back(mlir::Operation::create(state));
+        },
+        "only func.func at module scope",
+        "composition envelope must reject unknown top-level operations");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &builder) {
+          mlir::func::FuncOp function;
+          module.walk([&](mlir::func::FuncOp candidate) { function = candidate; });
+          auto return_op = mlir::cast<mlir::func::ReturnOp>(
+              function.getBody().front().getTerminator());
+          builder.setInsertionPoint(return_op);
+          builder.create<mlir::func::CallOp>(
+              function.getLoc(), function.getSymName(),
+              function.getFunctionType().getResults(),
+              function.getBody().front().getArguments());
+        },
+        "forbids function calls",
+        "composition envelope must reject calls even when generic MLIR accepts them");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &builder) {
+          mlir::func::FuncOp function;
+          module.walk([&](mlir::func::FuncOp candidate) { function = candidate; });
+          builder.setInsertionPoint(function.getBody().front().getTerminator());
+          mlir::OperationState state(function.getLoc(), "review.effectful");
+          state.addAttribute("effect", builder.getStringAttr("unknown"));
+          builder.insert(mlir::Operation::create(state));
+        },
+        "unsupported operation",
+        "composition envelope must reject unknown-effect function operations");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &builder) {
+          dialect::GemmOp gemm;
+          module.walk([&](dialect::GemmOp operation) { gemm = operation; });
+          builder.setInsertionPointAfter(gemm);
+          builder.clone(*gemm.getOperation());
+        },
+        "exactly one GEMM",
+        "composition envelope must reject multiple GEMM semantic roots in one function");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &) {
+          dialect::GemmOp gemm;
+          mlir::func::ReturnOp return_op;
+          module.walk([&](dialect::GemmOp operation) { gemm = operation; });
+          module.walk(
+              [&](mlir::func::ReturnOp operation) { return_op = operation; });
+          return_op.setOperand(0, gemm.getResult());
+        },
+        "unused functional map",
+        "composition envelope must reject dead semantic map results");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &) {
+          dialect::GemmOp gemm;
+          mlir::func::ReturnOp return_op;
+          module.walk([&](dialect::GemmOp operation) { gemm = operation; });
+          module.walk(
+              [&](mlir::func::ReturnOp operation) { return_op = operation; });
+          dialect::MapOp map = findMap(module);
+          return_op.setOperand(0, gemm.getResult());
+          map.erase();
+        },
+        "at least one map",
+        "composition envelope must reject a falsely labeled GEMM-only module");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &) {
+          dialect::MapOp map = findMap(module);
+          auto function = map->getParentOfType<mlir::func::FuncOp>();
+          auto return_op = mlir::cast<mlir::func::ReturnOp>(
+              function.getBody().front().getTerminator());
+          return_op.setOperand(0, function.getBody().front().getArgument(2));
+          map.erase();
+        },
+        "return must expose",
+        "composition envelope must reject a return that bypasses semantic results");
   }
 
   if (!slice_text.empty()) {
@@ -863,6 +1245,23 @@ int main() {
                                            builder.getI64IntegerAttr(1)})})));
       },
       "indices domain must reject out-of-range coordinates");
+  expectRejected(
+      indices_text,
+      [](dialect::MapOp map, mlir::Builder &builder) {
+        llvm::SmallVector<mlir::Attribute> coordinates;
+        for (std::int64_t row = 0; row < 8; ++row) {
+          for (std::int64_t column = 0; column < 8; ++column) {
+            coordinates.push_back(builder.getArrayAttr(
+                {builder.getI64IntegerAttr(row),
+                 builder.getI64IntegerAttr(column)}));
+          }
+        }
+        map->setAttr(
+            "domain",
+            withField(builder, map.getDomain(), "coordinates",
+                      builder.getArrayAttr(coordinates)));
+      },
+      "a statically complete indices set must canonicalize to domain(all)");
 
   const std::string mask_text = bridge::serializeDeterministicMlir(*mask);
   expectRejected(
@@ -889,6 +1288,65 @@ int main() {
                       builder.getArrayAttr({builder.getStringAttr("input")})));
       },
       "mask map effects must include the predicate read");
+
+  if (source_authenticated) {
+    const std::string source_text =
+        bridge::serializeDeterministicMlir(*source_authenticated);
+    check(source_text.find("source_authenticated_expression") !=
+              std::string::npos &&
+              source_text.find("source_snapshot = \"sha256:") !=
+                  std::string::npos,
+          "source-authenticated fixture must serialize its exact provenance discriminant and snapshot identity");
+    expectRejected(
+        source_text,
+        [](dialect::MapOp map, mlir::Builder &builder) {
+          map->setAttr(
+              "provenance",
+              withoutField(builder, map.getProvenance(), "source_range"));
+        },
+        "source-authenticated provenance must require an exact source range");
+    expectRejected(
+        source_text,
+        [](dialect::MapOp map, mlir::Builder &builder) {
+          map->setAttr(
+              "provenance",
+              withField(builder, map.getProvenance(), "source_snapshot",
+                        builder.getStringAttr("sha256:not-a-digest")));
+        },
+        "source-authenticated provenance must reject malformed snapshot identities");
+    expectRejected(
+        source_text,
+        [](dialect::MapOp map, mlir::Builder &builder) {
+          auto range = map.getProvenance().getAs<mlir::DictionaryAttr>(
+              "source_range");
+          range = withAddedField(builder, range, "extra",
+                                 builder.getI64IntegerAttr(1));
+          map->setAttr(
+              "provenance",
+              withField(builder, map.getProvenance(), "source_range", range));
+        },
+        "source-authenticated source ranges must reject unknown fields");
+    expectRejected(
+        source_text,
+        [](dialect::MapOp map, mlir::Builder &builder) {
+          map->setAttr(
+              "provenance",
+              withField(builder, map.getProvenance(), "authenticity",
+                        builder.getStringAttr("derived_from_producer")));
+        },
+        "provenance authenticity and kind must form an exact cross-product");
+    expectRejected(
+        source_text,
+        [](dialect::MapOp map, mlir::Builder &builder) {
+          auto sin = mlir::cast<dialect::SinOp>(
+              &map.getBody().front().front());
+          sin->setAttr(
+              "provenance",
+              withField(builder, sin.getProvenance(), "kind",
+                        builder.getStringAttr("derived_elementwise_expression")));
+        },
+        "source-authenticated scalar provenance must reject a derived kind");
+  }
 
   std::cout << "Matcore MLIR map/domain: " << checks << " checks, " << failures
             << " failures\n";

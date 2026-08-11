@@ -1,0 +1,5 @@
+#include <cmath>
+
+float map_sin_source_fixture(float value) {
+  return std::sin(value);
+}

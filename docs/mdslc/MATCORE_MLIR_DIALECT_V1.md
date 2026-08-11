@@ -125,7 +125,7 @@ Matcore v1 permission. Named nested dictionaries below are exact and closed.
 
 ## 4. `mdsl.gemm`
 
-The sole version-1 operation is:
+The sole Matcore IR v1 **capture-bridge** operation is:
 
 ```text
 %result = mdsl.gemm %lhs, %rhs outs(%output : tensor<...>) {...}
@@ -549,8 +549,10 @@ tree run.
    forms are core representation tests, not a producer or lowering.
 3. Only generic execution intent is accepted. Inference and training are
    enumerated but deliberately unsupported.
-4. `mdsl.map`, domains, `mdsl.sin`, reductions, contractions, views, and
-   multi-operation modules are not part of Milestone B.
+4. `mdsl.map`, domains, and `mdsl.sin` are not part of the strict Milestone B
+   capture bridge. Their separate multi-operation envelope is documented in
+   `docs/mdslc/MATCORE_MLIR_COMPOSITION_V1.md`; reductions, contractions, and
+   views remain unsupported.
 5. No Matcore-to-Linalg/LLVM/native lowering or runtime execution goes through
    this MLIR path yet. The established CPU route remains separate and intact.
 6. The runtime does not yet enforce the complete rounding-mode, exception-mask,
@@ -564,8 +566,9 @@ tree run.
    symbolic relationships are retained in verified attributes in addition to
    builtin ranked tensor types; no custom Matcore tensor type exists.
 10. The strict explicit bridge envelope is intentionally not a general
-    compositional-module verifier. Future multi-op/recovered envelopes require
-    their own explicit contracts.
+    compositional-module verifier. The separate composition-v1 verifier does
+    not loosen this bridge; future recovered or broader multi-op envelopes
+    require their own explicit contracts.
 11. Unknown extra generic MLIR module/function/op attributes are not globally
     prohibited. They carry no Matcore permission; all version-1 semantic
     dictionaries and closed values documented above remain exact.
@@ -581,6 +584,7 @@ tree run.
 ## 14. Authoritative implementation and evidence
 
 - architecture: `docs/adr/0009-mdslc-semantic-compiler-foundation.md`;
+- multi-operation contract: `docs/mdslc/MATCORE_MLIR_COMPOSITION_V1.md`;
 - TableGen schema: `compiler/lib/mlir/MatcoreOps.td`;
 - core verifier/interfaces: `compiler/lib/mlir/MatcoreOps.cpp`;
 - bridge/envelope: `compiler/lib/mlir/MatcoreV1Bridge.{h,cpp}`;

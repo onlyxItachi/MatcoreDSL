@@ -1,8 +1,10 @@
 #include "MatcoreOps.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/IR/Verifier.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
@@ -879,6 +881,9 @@ mlir::LogicalResult verifyDomain(MapOp operation,
         mask_type.getRank() != type.getRank())
       return operation.emitOpError()
              << "domain(mask) requires a rank-compatible i1 tensor";
+    if (mask_type.getEncoding())
+      return operation.emitOpError()
+             << "host predicate masks forbid non-null tensor encodings";
     for (int64_t index = 0; index < type.getRank(); ++index) {
       const int64_t input_dimension = type.getDimSize(index);
       const int64_t mask_dimension = mask_type.getDimSize(index);
@@ -968,6 +973,20 @@ mlir::LogicalResult verifyDomain(MapOp operation,
         return operation.emitOpError()
                << "domain(indices) coordinates must be unique";
     }
+    std::uint64_t element_count = 1;
+    bool count_overflow = false;
+    for (int64_t dimension : type.getShape()) {
+      const auto extent = static_cast<std::uint64_t>(dimension);
+      if (extent > std::numeric_limits<std::uint64_t>::max() / element_count) {
+        count_overflow = true;
+        break;
+      }
+      element_count *= extent;
+    }
+    if (!count_overflow &&
+        element_count == static_cast<std::uint64_t>(coordinates.size()))
+      return operation.emitOpError()
+             << "a statically complete indices set must use domain(all)";
     return mlir::success();
   }
 
@@ -1021,14 +1040,38 @@ mlir::LogicalResult verifyMapNumerical(MapOp operation) {
 
 template <typename OpTy>
 mlir::LogicalResult verifySemanticProvenance(OpTy operation,
-                                             llvm::StringRef kind) {
+                                             llvm::StringRef derived_kind,
+                                             llvm::StringRef source_kind,
+                                             llvm::StringRef synthetic_kind) {
   const auto provenance = operation.getProvenance();
+  const auto authenticity =
+      provenance.template getAs<mlir::StringAttr>("authenticity");
+  if (!authenticity)
+    return operation.emitOpError()
+           << "provenance.authenticity must distinguish source, derived, and synthetic semantics";
+  const bool source_authenticated =
+      authenticity.getValue() == "source_authenticated";
+  const bool derived = authenticity.getValue() == "derived_from_producer";
+  const bool synthetic = authenticity.getValue() == "synthetic_test_fixture";
+  if (!source_authenticated && !derived && !synthetic)
+    return operation.emitOpError()
+           << "provenance.authenticity has an unsupported value";
   if (mlir::failed(requireExactDictionaryFor(
           operation, provenance,
-          {"column", "file", "kind", "line", "source_anchor", "version"},
+          source_authenticated
+              ? llvm::ArrayRef<llvm::StringRef>{
+                    "authenticity", "column", "file", "kind", "line",
+                    "source_anchor", "source_range", "source_snapshot",
+                    "version"}
+              : llvm::ArrayRef<llvm::StringRef>{
+                    "authenticity", "column", "file", "kind", "line",
+                    "source_anchor", "version"},
           "provenance")) ||
-      mlir::failed(requireStringFor(operation, provenance, "kind", kind,
-                                    "provenance")))
+      mlir::failed(requireStringFor(
+          operation, provenance, "kind",
+          source_authenticated ? source_kind
+                               : derived ? derived_kind : synthetic_kind,
+          "provenance")))
     return mlir::failure();
   const auto version = provenance.template getAs<mlir::IntegerAttr>("version");
   const auto file = provenance.template getAs<mlir::StringAttr>("file");
@@ -1054,6 +1097,32 @@ mlir::LogicalResult verifySemanticProvenance(OpTy operation,
       location.getColumn() != static_cast<unsigned>(column.getInt()))
     return operation.emitOpError()
            << "location must match exact semantic provenance";
+  if (derived && !isCanonicalSiteId(anchor.getValue()))
+    return operation.emitOpError()
+           << "derived provenance must use the canonical producing site ID";
+  if (source_authenticated) {
+    const auto snapshot =
+        provenance.template getAs<mlir::StringAttr>("source_snapshot");
+    const auto range =
+        provenance.template getAs<mlir::DictionaryAttr>("source_range");
+    if (!snapshot || !isSha256Identity(snapshot.getValue()) || !range ||
+        range.size() != 2)
+      return operation.emitOpError()
+             << "source-authenticated provenance requires an exact source range and SHA-256 snapshot";
+    const auto begin = range.template getAs<mlir::IntegerAttr>("begin");
+    const auto end = range.template getAs<mlir::IntegerAttr>("end");
+    if (!begin || !end || !begin.getType().isSignlessInteger(64) ||
+        !end.getType().isSignlessInteger(64) || begin.getInt() < 0 ||
+        end.getInt() <= begin.getInt())
+      return operation.emitOpError()
+             << "source-authenticated provenance range must be nonempty signless i64";
+    for (mlir::NamedAttribute field : range) {
+      if (field.getName().strref() != "begin" &&
+          field.getName().strref() != "end")
+        return operation.emitOpError()
+               << "source-authenticated provenance range contains an unexpected field";
+    }
+  }
   return mlir::success();
 }
 
@@ -1143,6 +1212,10 @@ mlir::LogicalResult GemmOp::verify() {
       mlir::dyn_cast<mlir::RankedTensorType>(getResult().getType());
   if (!lhs_type || !rhs_type || !output_type || !result_type)
     return emitOpError() << "all values must have ranked tensor types";
+  if (lhs_type.getEncoding() || rhs_type.getEncoding() ||
+      output_type.getEncoding() || result_type.getEncoding())
+    return emitOpError()
+           << "host row-major tensor contracts forbid non-null tensor encodings";
   if (output_type != result_type)
     return emitOpError()
            << "destination and result types must be identical";
@@ -1212,12 +1285,16 @@ mlir::LogicalResult MapOp::verify() {
   if (!input_type || !result_type || input_type != result_type)
     return emitOpError()
            << "input and functional result must have identical ranked tensor types";
+  if (input_type.getEncoding() || result_type.getEncoding())
+    return emitOpError()
+           << "host row-major tensor contracts forbid non-null tensor encodings";
   if (mlir::failed(verifyMapTensorContract(*this, input_type)) ||
       mlir::failed(verifyDomain(*this, input_type)) ||
       mlir::failed(verifyMapEffects(*this)) ||
       mlir::failed(verifyMapNumerical(*this)) ||
-      mlir::failed(
-          verifySemanticProvenance(*this, "semantic_composition")) ||
+      mlir::failed(verifySemanticProvenance(
+          *this, "derived_semantic_composition", "source_authenticated_map",
+          "synthetic_semantic_composition")) ||
       mlir::failed(verifyMapInputContractPropagation(*this)))
     return mlir::failure();
 
@@ -1260,7 +1337,10 @@ mlir::LogicalResult SinOp::verify() {
   if (!getInput().getType().isF32() || !getResult().getType().isF32())
     return emitOpError() << "input and result must be scalar f32";
   if (mlir::failed(verifySinNumerical(*this)) ||
-      mlir::failed(verifySemanticProvenance(*this, "source_expression")))
+      mlir::failed(verifySemanticProvenance(
+          *this, "derived_elementwise_expression",
+          "source_authenticated_expression",
+          "synthetic_elementwise_expression")))
     return mlir::failure();
   return mlir::success();
 }
@@ -1272,6 +1352,176 @@ mlir::LogicalResult YieldOp::verify() {
   if (!getValue().getType().isF32())
     return emitOpError() << "value must be scalar f32";
   return mlir::success();
+}
+
+bool verifyCompositionV1Module(mlir::ModuleOp module, std::string &error) {
+  error.clear();
+  const auto reject = [&](llvm::Twine message) {
+    error = message.str();
+    return false;
+  };
+  if (!module)
+    return reject("composition-v1 module is null");
+  if (mlir::failed(mlir::verify(module)))
+    return reject("composition-v1 module fails core MLIR/dialect verification");
+
+  const auto schema =
+      module->getAttrOfType<mlir::StringAttr>("mdsl.composition_schema");
+  const auto version =
+      module->getAttrOfType<mlir::IntegerAttr>("mdsl.composition_version");
+  const auto semantic_version =
+      module->getAttrOfType<mlir::IntegerAttr>("mdsl.semantic_version");
+  const auto intent =
+      module->getAttrOfType<mlir::StringAttr>("mdsl.execution_intent");
+  const auto source_file =
+      module->getAttrOfType<mlir::StringAttr>("mdsl.source_file");
+  if (!schema || schema.getValue() != kCompositionSchemaV1 || !version ||
+      !version.getType().isSignlessInteger(32) || version.getInt() != 1 ||
+      !semantic_version ||
+      !semantic_version.getType().isSignlessInteger(32) ||
+      semantic_version.getInt() != 1 || !intent ||
+      intent.getValue() != "generic" || !source_file ||
+      source_file.getValue().empty() ||
+      !source_file.getValue().ends_with(".mdsl"))
+    return reject(
+        "composition-v1 requires exact schema/version, semantic version, generic intent, and .mdsl source");
+
+  std::size_t function_count = 0;
+  for (mlir::Operation &top_level : module.getBody()->getOperations()) {
+    auto function = mlir::dyn_cast<mlir::func::FuncOp>(&top_level);
+    if (!function)
+      return reject("composition-v1 permits only func.func at module scope");
+    ++function_count;
+    if (!function.isPublic() || function.isDeclaration() ||
+        !function.getBody().hasOneBlock())
+      return reject(
+          "composition-v1 functions must be public, defined, single-block semantic roots");
+    if (function.getNumArguments() != 3 || function.getNumResults() != 1)
+      return reject(
+          "composition-v1 semantic roots require three tensor arguments and one tensor result");
+    for (mlir::Type type : function.getFunctionType().getInputs()) {
+      const auto tensor = mlir::dyn_cast<mlir::RankedTensorType>(type);
+      if (!tensor || tensor.getEncoding())
+        return reject(
+            "composition-v1 function inputs require unencoded ranked tensors");
+    }
+    const auto function_result = mlir::dyn_cast<mlir::RankedTensorType>(
+        function.getFunctionType().getResult(0));
+    if (!function_result || function_result.getEncoding())
+      return reject(
+          "composition-v1 function result requires an unencoded ranked tensor");
+    const auto function_location =
+        mlir::dyn_cast<mlir::FileLineColLoc>(function.getLoc());
+    if (!function_location ||
+        function_location.getFilename() != source_file.getValue())
+      return reject(
+          "composition-v1 function location must name the module source");
+    const auto function_site =
+        function->getAttrOfType<mlir::StringAttr>("mdsl.site_id");
+    if (!function_site || !isCanonicalSiteId(function_site.getValue()))
+      return reject("composition-v1 function requires a canonical site ID");
+
+    std::size_t gemm_count = 0;
+    std::size_t map_count = 0;
+    std::size_t return_count = 0;
+    for (mlir::Operation &operation : function.getBody().front()) {
+      if (auto gemm = mlir::dyn_cast<GemmOp>(&operation)) {
+        ++gemm_count;
+        mlir::Block &entry = function.getBody().front();
+        if (gemm.getLhs() != entry.getArgument(0) ||
+            gemm.getRhs() != entry.getArgument(1) ||
+            gemm.getOutput() != entry.getArgument(2))
+          return reject(
+              "composition-v1 GEMM operands must preserve lhs/rhs/output root argument order");
+        if (gemm.getSiteId() != function_site.getValue())
+          return reject(
+              "composition-v1 GEMM site must match its semantic root");
+        const auto location =
+            mlir::dyn_cast<mlir::FileLineColLoc>(gemm.getLoc());
+        if (!location || location.getFilename() != source_file.getValue())
+          return reject(
+              "composition-v1 GEMM location must name the module source");
+        if (gemm.getLoc() != function.getLoc())
+          return reject(
+              "composition-v1 semantic-root and GEMM locations must match exactly");
+        continue;
+      }
+      if (auto map = mlir::dyn_cast<MapOp>(&operation)) {
+        ++map_count;
+        mlir::Operation *producer = map.getInput().getDefiningOp();
+        if (!mlir::isa_and_nonnull<GemmOp, MapOp>(producer))
+          return reject(
+              "composition-v1 maps must extend an authenticated semantic producer chain");
+        const auto authenticity =
+            map.getProvenance().getAs<mlir::StringAttr>("authenticity");
+        const auto file =
+            map.getProvenance().getAs<mlir::StringAttr>("file");
+        const auto anchor =
+            map.getProvenance().getAs<mlir::StringAttr>("source_anchor");
+        const auto location =
+            mlir::dyn_cast<mlir::FileLineColLoc>(map.getLoc());
+        if (!authenticity || authenticity.getValue() == "synthetic_test_fixture" ||
+            !file || file.getValue() != source_file.getValue() || !anchor ||
+            anchor.getValue() != function_site.getValue() || !location ||
+            location.getFilename() != source_file.getValue())
+          return reject(
+              "composition-v1 map location/provenance must be non-synthetic and tied to the module source and semantic site");
+        if (authenticity.getValue() == "derived_from_producer" &&
+            map.getLoc() != producer->getLoc())
+          return reject(
+              "composition-v1 derived map location must equal its producing semantic location");
+        if (map.getResult().use_empty())
+          return reject("composition-v1 rejects unused functional map results");
+        for (mlir::Operation &nested : map.getBody().front()) {
+          if (auto sin = mlir::dyn_cast<SinOp>(&nested)) {
+            const auto sin_authenticity =
+                sin.getProvenance().getAs<mlir::StringAttr>("authenticity");
+            const auto sin_file =
+                sin.getProvenance().getAs<mlir::StringAttr>("file");
+            const auto sin_anchor =
+                sin.getProvenance().getAs<mlir::StringAttr>("source_anchor");
+            const auto sin_location =
+                mlir::dyn_cast<mlir::FileLineColLoc>(sin.getLoc());
+            if (!sin_authenticity ||
+                sin_authenticity.getValue() == "synthetic_test_fixture" ||
+                !sin_file || sin_file.getValue() != source_file.getValue() ||
+                !sin_anchor || sin_anchor.getValue() != function_site.getValue() ||
+                !sin_location ||
+                sin_location.getFilename() != source_file.getValue())
+              return reject(
+                  "composition-v1 scalar location/provenance must be non-synthetic and tied to the module source and semantic site");
+            if (sin_authenticity.getValue() == "derived_from_producer" &&
+                sin.getLoc() != map.getLoc())
+              return reject(
+                  "composition-v1 derived scalar location must equal its map location");
+            continue;
+          }
+          if (!mlir::isa<YieldOp>(nested))
+            return reject(
+                "composition-v1 map body contains an unsupported operation");
+        }
+        continue;
+      }
+      if (auto return_op = mlir::dyn_cast<mlir::func::ReturnOp>(&operation)) {
+        ++return_count;
+        if (return_op.getNumOperands() != 1 ||
+            (!return_op.getOperand(0).getDefiningOp<GemmOp>() &&
+             !return_op.getOperand(0).getDefiningOp<MapOp>()))
+          return reject(
+              "composition-v1 return must expose one authenticated semantic result");
+        continue;
+      }
+      if (mlir::isa<mlir::func::CallOp>(operation))
+        return reject("composition-v1 forbids function calls");
+      return reject("composition-v1 function contains an unsupported operation");
+    }
+    if (gemm_count != 1 || map_count == 0 || return_count != 1)
+      return reject(
+          "composition-v1 semantic roots require exactly one GEMM, at least one map, and one return");
+  }
+  if (function_count == 0)
+    return reject("composition-v1 module requires at least one semantic root");
+  return true;
 }
 
 } // namespace matcore::mdslc::mlir_dialect
