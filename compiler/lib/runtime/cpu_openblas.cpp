@@ -1,5 +1,7 @@
 #include "cpu_openblas.h"
 
+#include "fp_environment_v1.h"
+
 #include <climits>
 
 #if MATCORE_MDSLC_HAS_OPENBLAS
@@ -57,6 +59,14 @@ OpenBlasExecutionStatusV1 execute_openblas_gemm_f32_v1(
   if (maximum_threads <= 0 ||
       requested_threads > static_cast<std::uint32_t>(maximum_threads))
     return OpenBlasExecutionStatusV1::invalid_thread_count;
+  // Only the calling thread's floating-point environment is observable.
+  // OpenBLAS worker state is provider-private, so multi-thread execution
+  // cannot satisfy the explicit-gemm-f32-v1 proof obligation yet.
+  if (requested_threads != 1)
+    return OpenBlasExecutionStatusV1::unsupported_fp_environment;
+  if (!platform::inspect_current_fp_environment_v1()
+           .explicit_gemm_f32_v1_compatible)
+    return OpenBlasExecutionStatusV1::unsupported_fp_environment;
 
   const int previous_threads =
       openblas_set_num_threads_local(static_cast<int>(requested_threads));

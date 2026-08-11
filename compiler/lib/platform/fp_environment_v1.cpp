@@ -56,13 +56,16 @@ FpEnvironmentReportV1 inspect_current_fp_environment_v1() noexcept {
   result.mxcsr_exceptions_masked = simd.mxcsr_exceptions_masked;
   result.control_word_exceptions_masked =
       (control & _MCW_EM) == _MCW_EM;
+  result.control_word_denormals_preserved =
+      (control & _MCW_DN) == _DN_SAVE;
   result.flush_to_zero = simd.flush_to_zero;
   result.denormals_are_zero = simd.denormals_are_zero;
   result.explicit_gemm_f32_v1_compatible =
       result.mxcsr_rounding == FpRoundingModeV1::nearest_even &&
       result.control_word_rounding == FpRoundingModeV1::nearest_even &&
       result.mxcsr_exceptions_masked &&
-      result.control_word_exceptions_masked && !result.flush_to_zero &&
+      result.control_word_exceptions_masked &&
+      result.control_word_denormals_preserved && !result.flush_to_zero &&
       !result.denormals_are_zero;
   return result;
 #else
@@ -83,6 +86,8 @@ const char *fp_environment_rejection_reason_v1(
   if (!report.mxcsr_exceptions_masked ||
       !report.control_word_exceptions_masked)
     return "floating-point exceptions must be masked";
+  if (!report.control_word_denormals_preserved)
+    return "floating-point control state must preserve denormal operands and results";
   if (report.flush_to_zero)
     return "flush-to-zero is incompatible with gradual subnormal semantics";
   if (report.denormals_are_zero)

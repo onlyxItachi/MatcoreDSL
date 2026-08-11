@@ -35,7 +35,13 @@ class ScopedX86FpEnvironment {
   }
 
   void set_mxcsr(std::uint32_t value) noexcept { _mm_setcsr(value); }
+  void set_x87_control_word(std::uint16_t value) noexcept {
+    __asm__ volatile("fnclex\n\tfldcw %0" : : "m"(value));
+  }
   std::uint32_t mxcsr() const noexcept { return mxcsr_; }
+  std::uint16_t x87_control_word() const noexcept {
+    return x87_control_word_;
+  }
 
  private:
   std::uint32_t mxcsr_ = 0;
@@ -65,6 +71,14 @@ void pure_decoder_contract() {
       default_mxcsr | 0x3FU, default_x87);
   expect(status_flags.explicit_gemm_f32_v1_compatible,
          "MXCSR exception status flags are ignored for legality");
+
+  const auto double_precision = platform::decode_linux_x86_fp_environment_v1(
+      default_mxcsr,
+      static_cast<std::uint16_t>((default_x87 & ~(3U << 8U)) | (2U << 8U)));
+  expect(double_precision.x87_precision ==
+             platform::X87PrecisionModeV1::double_53 &&
+             double_precision.explicit_gemm_f32_v1_compatible,
+         "x87 precision is diagnostic-only for the consumed F32 backend contract");
 
   expect(!platform::decode_linux_x86_fp_environment_v1(
               default_mxcsr | (1U << 13U), default_x87)
@@ -112,6 +126,53 @@ void physical_environment_contract() {
                    violated))
                        .find("flush-to-zero") != std::string_view::npos,
            "physical FTZ violation is detected with an actionable reason");
+  }
+  {
+    ScopedX86FpEnvironment scope;
+    scope.set_mxcsr(scope.mxcsr() | (1U << 6U));
+    expect(!platform::inspect_current_fp_environment_v1()
+                .explicit_gemm_f32_v1_compatible,
+           "physical DAZ violation is detected");
+  }
+  {
+    ScopedX86FpEnvironment scope;
+    scope.set_mxcsr((scope.mxcsr() & ~(3U << 13U)) | (1U << 13U));
+    expect(!platform::inspect_current_fp_environment_v1()
+                .explicit_gemm_f32_v1_compatible,
+           "physical MXCSR rounding violation is detected");
+  }
+  {
+    ScopedX86FpEnvironment scope;
+    const auto downward = static_cast<std::uint16_t>(
+        (scope.x87_control_word() & ~(3U << 10U)) | (1U << 10U));
+    scope.set_x87_control_word(downward);
+    expect(!platform::inspect_current_fp_environment_v1()
+                .explicit_gemm_f32_v1_compatible,
+           "physical x87 rounding violation is detected");
+  }
+  {
+    ScopedX86FpEnvironment scope;
+    // Clear pending status flags before unmasking invalid-operation.
+    scope.set_mxcsr((scope.mxcsr() & ~0x3FU) & ~(1U << 7U));
+    expect(!platform::inspect_current_fp_environment_v1()
+                .explicit_gemm_f32_v1_compatible,
+           "physical MXCSR exception-mask violation is detected");
+  }
+  {
+    ScopedX86FpEnvironment scope;
+    const auto unmasked = static_cast<std::uint16_t>(
+        scope.x87_control_word() & ~(1U << 0U));
+    scope.set_x87_control_word(unmasked);
+    expect(!platform::inspect_current_fp_environment_v1()
+                .explicit_gemm_f32_v1_compatible,
+           "physical x87 exception-mask violation is detected");
+  }
+  {
+    ScopedX86FpEnvironment scope;
+    scope.set_mxcsr((scope.mxcsr() & ~0x3FU) | 0x3FU);
+    expect(platform::inspect_current_fp_environment_v1()
+               .explicit_gemm_f32_v1_compatible,
+           "physical MXCSR status flags remain legality-neutral");
   }
   expect(platform::inspect_current_fp_environment_v1()
              .explicit_gemm_f32_v1_compatible,

@@ -29,8 +29,11 @@ static_assert(sizeof(WorkerResultV1) % kWorkerCacheLineBytes == 0);
 struct SubmissionV1 {
   std::size_t task_count = 0;
   std::uint32_t active_threads = 0;
+  CpuExecutionPreflightV1 preflight = nullptr;
   CpuExecutionTaskV1 task = nullptr;
   void *user_data = nullptr;
+  std::uint32_t completed_preflights = 0;
+  bool preflight_failed = false;
   std::uint32_t completed_workers = 0;
 };
 
@@ -61,6 +64,7 @@ struct CpuExecutionContextV1::Impl {
 
   mutable std::mutex state_mutex;
   std::condition_variable work_available;
+  std::condition_variable preflight_complete;
   std::condition_variable submission_complete;
   std::condition_variable worker_startup_complete;
   SubmissionV1 *submission = nullptr;
@@ -121,15 +125,38 @@ struct CpuExecutionContextV1::Impl {
       if (current == nullptr) continue;
 
       WorkerResultV1 &result = results[worker_index];
-      for (std::size_t task_index = worker_index;
-           task_index < current->task_count;
-           task_index += current->active_threads) {
-        const CpuExecutionStatusV1 status =
-            current->task(task_index, worker_index, current->user_data);
-        if (status != CpuExecutionStatusV1::success) {
-          result.status = status;
-          result.first_failed_task = task_index;
-          break;
+      bool execute_tasks = true;
+      if (current->preflight != nullptr) {
+        const CpuExecutionStatusV1 preflight_status =
+            current->preflight(worker_index, current->user_data);
+        std::unique_lock lock(state_mutex);
+        if (preflight_status != CpuExecutionStatusV1::success) {
+          result.status = preflight_status;
+          result.first_failed_task = 0;
+          current->preflight_failed = true;
+        }
+        ++current->completed_preflights;
+        if (current->completed_preflights == current->active_threads) {
+          preflight_complete.notify_all();
+        } else {
+          preflight_complete.wait(lock, [&] {
+            return current->completed_preflights == current->active_threads;
+          });
+        }
+        execute_tasks = !current->preflight_failed;
+      }
+
+      if (execute_tasks) {
+        for (std::size_t task_index = worker_index;
+             task_index < current->task_count;
+             task_index += current->active_threads) {
+          const CpuExecutionStatusV1 task_status =
+              current->task(task_index, worker_index, current->user_data);
+          if (task_status != CpuExecutionStatusV1::success) {
+            result.status = task_status;
+            result.first_failed_task = task_index;
+            break;
+          }
         }
       }
 
@@ -309,6 +336,15 @@ CpuExecutionStatusV1 CpuExecutionContextV1::run_tasks(
     std::size_t task_count, std::uint32_t active_threads,
     CpuProviderNestingPolicyV1 nesting_policy,
     CpuExecutionTaskV1 task, void *user_data) noexcept {
+  return run_tasks_with_preflight(task_count, active_threads, nesting_policy,
+                                  nullptr, task, user_data);
+}
+
+CpuExecutionStatusV1 CpuExecutionContextV1::run_tasks_with_preflight(
+    std::size_t task_count, std::uint32_t active_threads,
+    CpuProviderNestingPolicyV1 nesting_policy,
+    CpuExecutionPreflightV1 preflight,
+    CpuExecutionTaskV1 task, void *user_data) noexcept {
   if (impl_ == nullptr || task_count == 0 || active_threads == 0 ||
       active_threads > impl_->worker_count || active_threads > task_count ||
       task == nullptr) {
@@ -330,6 +366,7 @@ CpuExecutionStatusV1 CpuExecutionContextV1::run_tasks(
     SubmissionV1 submission;
     submission.task_count = task_count;
     submission.active_threads = active_threads;
+    submission.preflight = preflight;
     submission.task = task;
     submission.user_data = user_data;
 

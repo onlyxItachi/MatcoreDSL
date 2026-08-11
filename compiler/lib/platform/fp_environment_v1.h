@@ -48,6 +48,7 @@ struct FpEnvironmentReportV1 {
   X87PrecisionModeV1 x87_precision = X87PrecisionModeV1::unknown;
   bool mxcsr_exceptions_masked = false;
   bool control_word_exceptions_masked = false;
+  bool control_word_denormals_preserved = false;
   bool flush_to_zero = false;
   bool denormals_are_zero = false;
   bool explicit_gemm_f32_v1_compatible = false;
@@ -111,13 +112,15 @@ constexpr FpEnvironmentReportV1 decode_linux_x86_fp_environment_v1(
   result.mxcsr_exceptions_masked = (mxcsr & 0x1F80U) == 0x1F80U;
   result.control_word_exceptions_masked =
       (x87_control_word & 0x003FU) == 0x003FU;
+  result.control_word_denormals_preserved = true;
   result.flush_to_zero = (mxcsr & (1U << 15U)) != 0;
   result.denormals_are_zero = (mxcsr & (1U << 6U)) != 0;
   result.explicit_gemm_f32_v1_compatible =
       result.mxcsr_rounding == FpRoundingModeV1::nearest_even &&
       result.control_word_rounding == FpRoundingModeV1::nearest_even &&
       result.mxcsr_exceptions_masked &&
-      result.control_word_exceptions_masked && !result.flush_to_zero &&
+      result.control_word_exceptions_masked &&
+      result.control_word_denormals_preserved && !result.flush_to_zero &&
       !result.denormals_are_zero;
   return result;
 }

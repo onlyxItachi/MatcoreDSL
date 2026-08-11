@@ -622,14 +622,16 @@ void runtime_variants_and_generation(
     const bool provider_unavailable =
         provider_report.external_provider != nullptr &&
         std::strcmp(provider_report.external_provider, "unavailable") == 0;
-    expect(provider_query.code == MATCORE_STATUS_UNAVAILABLE_VARIANT_V0 &&
-               provider_report.candidates[3].legal == 0 &&
-               provider_report.candidates[3].reason != nullptr &&
-               (provider_unavailable ||
-                std::strstr(provider_report.candidates[3].reason,
-                            "bound native workers") != nullptr) &&
-               provider_rejected.unchanged(),
-           "multi-thread OpenBLAS is rejected under a bound native placement policy");
+    const bool provider_contract =
+        provider_unavailable
+            ? provider_query.code == MATCORE_STATUS_UNAVAILABLE_VARIANT_V0 &&
+                  provider_report.candidates[3].legal == 0
+            : provider_query.code == MATCORE_STATUS_OK_V0 &&
+                  provider_report.candidates[3].legal != 0 &&
+                  provider_report.candidates[3].actual_threads == 1 &&
+                  provider_report.selected_actual_threads == 1;
+    expect(provider_contract && provider_rejected.unchanged(),
+           "OpenBLAS never advertises unauthenticated provider workers");
   }
 
   GemmFixture provider_single(64, 64, 64);

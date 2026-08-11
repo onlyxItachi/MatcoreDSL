@@ -5,11 +5,32 @@
 #include <cstdint>
 #include <iostream>
 
+#if defined(__linux__) && defined(__x86_64__)
+#include <xmmintrin.h>
+#endif
+
 namespace {
 
 bool close(float actual, float expected) {
   return std::fabs(static_cast<double>(actual) - expected) <= 1.0e-5;
 }
+
+#if defined(__linux__) && defined(__x86_64__)
+class ScopedMxcsr {
+ public:
+  ScopedMxcsr() noexcept : saved_(_mm_getcsr()) {}
+  ScopedMxcsr(const ScopedMxcsr &) = delete;
+  ScopedMxcsr &operator=(const ScopedMxcsr &) = delete;
+  ~ScopedMxcsr() { _mm_setcsr(saved_); }
+
+  void enable_flush_to_zero() noexcept {
+    _mm_setcsr(saved_ | (1U << 15U));
+  }
+
+ private:
+  std::uint32_t saved_ = 0;
+};
+#endif
 
 }  // namespace
 
@@ -45,15 +66,35 @@ int main() {
   }
 
   out.fill(-8.0F);
-  if (runtime::execute_openblas_gemm_f32_v1(
-          problem, lhs.data(), rhs.data(), out.data(), 2,
-          &actual_threads) != runtime::OpenBlasExecutionStatusV1::success ||
-      actual_threads != 2 || !close(out[0], 19.0F) ||
-      !close(out[1], 22.0F) || !close(out[2], 43.0F) ||
-      !close(out[3], 50.0F)) {
-    std::cerr << "two-thread row-major OpenBLAS SGEMM failed\n";
+  const auto two_thread_status = runtime::execute_openblas_gemm_f32_v1(
+      problem, lhs.data(), rhs.data(), out.data(), 2, &actual_threads);
+  const auto expected_two_thread_status =
+      provider.maximum_reported_threads >= 2
+          ? runtime::OpenBlasExecutionStatusV1::unsupported_fp_environment
+          : runtime::OpenBlasExecutionStatusV1::invalid_thread_count;
+  if (two_thread_status != expected_two_thread_status ||
+      actual_threads != 0 ||
+      out != std::array<float, 4>{-8.0F, -8.0F, -8.0F, -8.0F}) {
+    std::cerr << "unauthenticated two-thread OpenBLAS execution was not rejected\n";
     return 1;
   }
+
+#if defined(__linux__) && defined(__x86_64__)
+  out.fill(-4.0F);
+  {
+    ScopedMxcsr scope;
+    scope.enable_flush_to_zero();
+    if (runtime::execute_openblas_gemm_f32_v1(
+            problem, lhs.data(), rhs.data(), out.data(), 1,
+            &actual_threads) !=
+            runtime::OpenBlasExecutionStatusV1::unsupported_fp_environment ||
+        actual_threads != 0 ||
+        out != std::array<float, 4>{-4.0F, -4.0F, -4.0F, -4.0F}) {
+      std::cerr << "OpenBLAS accepted an unsupported caller FP environment\n";
+      return 1;
+    }
+  }
+#endif
 
   out.fill(-6.0F);
   if (runtime::execute_openblas_gemm_f32_v1(

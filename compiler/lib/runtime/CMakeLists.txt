@@ -310,6 +310,18 @@ if(BUILD_TESTING)
     COMMAND matcore_runtime_abi_compat_test
   )
 
+  add_executable(matcore_fp_environment_runtime_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/fp_environment_runtime_test.cpp"
+  )
+  target_compile_features(matcore_fp_environment_runtime_test PRIVATE cxx_std_20)
+  mdslc_target_enable_warnings(matcore_fp_environment_runtime_test WERROR)
+  target_link_libraries(matcore_fp_environment_runtime_test
+    PRIVATE MatcoreDSL::Runtime
+  )
+  add_test(NAME runtime.c_abi.fp_environment_v1
+    COMMAND matcore_fp_environment_runtime_test
+  )
+
   add_executable(matcore_public_context_c_api_test
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/public_context_c_api_test.cpp"
   )

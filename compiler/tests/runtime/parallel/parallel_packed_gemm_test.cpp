@@ -1,6 +1,7 @@
 #include "cpu_parallel_gemm.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -9,6 +10,10 @@
 #include <random>
 #include <string_view>
 #include <vector>
+
+#if defined(__linux__) && defined(__x86_64__)
+#include <xmmintrin.h>
+#endif
 
 namespace {
 
@@ -136,6 +141,80 @@ std::unique_ptr<runtime::CpuExecutionContextV1> make_context() {
   expect(status == runtime::CpuExecutionStatusV1::success && result != nullptr,
          "four-worker execution context is created");
   return result;
+}
+
+#if defined(__linux__) && defined(__x86_64__)
+struct WorkerMxcsrState {
+  explicit WorkerMxcsrState(std::uint32_t workers) : saved(workers, 0) {}
+  std::vector<std::uint32_t> saved;
+};
+
+runtime::CpuExecutionStatusV1 poison_parallel_worker(
+    std::size_t, std::size_t worker_index, void *user_data) noexcept {
+  auto &state = *static_cast<WorkerMxcsrState *>(user_data);
+  state.saved[worker_index] = _mm_getcsr();
+  if (worker_index == 2) _mm_setcsr(_mm_getcsr() | (1U << 15U));
+  return runtime::CpuExecutionStatusV1::success;
+}
+
+runtime::CpuExecutionStatusV1 restore_parallel_worker(
+    std::size_t, std::size_t worker_index, void *user_data) noexcept {
+  auto &state = *static_cast<WorkerMxcsrState *>(user_data);
+  _mm_setcsr(state.saved[worker_index]);
+  return runtime::CpuExecutionStatusV1::success;
+}
+#endif
+
+void worker_fp_rejection_preserves_output_and_workspace() {
+#if defined(__linux__) && defined(__x86_64__)
+  if (!runtime::cpu_packed_avx2_runtime_usable_v1()) return;
+  constexpr std::size_t m = 385;
+  constexpr std::size_t k = 67;
+  constexpr std::size_t n = 65;
+  const auto gemm_problem = problem(m, k, n);
+  std::vector<float> lhs(m * k);
+  std::vector<float> rhs(k * n);
+  std::vector<float> out(m * n, -123.0F);
+  fill(lhs, 2501);
+  fill(rhs, 2502);
+  auto context = make_context();
+  if (context == nullptr) return;
+
+  runtime::CpuParallelGemmWorkspaceRequirementsV1 requirements;
+  expect(runtime::cpu_parallel_packed_avx2_workspace_requirements_v1(
+             gemm_problem, 4, &requirements) ==
+             runtime::CpuParallelGemmStatusV1::success,
+         "FP-rejection workspace query succeeds");
+  AlignedBuffer workspace(requirements.total_bytes);
+  std::fill_n(static_cast<std::byte *>(workspace.data()), workspace.size(),
+              std::byte{0x5A});
+  const std::vector<std::byte> workspace_before(
+      static_cast<const std::byte *>(workspace.data()),
+      static_cast<const std::byte *>(workspace.data()) + workspace.size());
+  WorkerMxcsrState fp_state(4);
+  expect(context->run_tasks(
+             4, 4, runtime::CpuProviderNestingPolicyV1::native_only,
+             poison_parallel_worker, &fp_state) ==
+             runtime::CpuExecutionStatusV1::success,
+         "one parallel worker is physically poisoned for fail-closed test");
+  runtime::CpuParallelGemmReportV1 report;
+  const auto rejected = runtime::cpu_execute_parallel_packed_avx2_v1(
+      *context, gemm_problem, lhs.data(), rhs.data(), out.data(),
+      workspace.data(), workspace.size(), 4,
+      runtime::CpuProviderNestingPolicyV1::native_only, &report);
+  expect(rejected ==
+             runtime::CpuParallelGemmStatusV1::unsupported_fp_environment &&
+             std::all_of(out.begin(), out.end(),
+                         [](float value) { return value == -123.0F; }) &&
+             std::equal(workspace_before.begin(), workspace_before.end(),
+                        static_cast<const std::byte *>(workspace.data())),
+         "one poisoned worker rejects before shared packing, workspace, or output mutation");
+  expect(context->run_tasks(
+             4, 4, runtime::CpuProviderNestingPolicyV1::native_only,
+             restore_parallel_worker, &fp_state) ==
+             runtime::CpuExecutionStatusV1::success,
+         "parallel worker FP state is restored after rejection test");
+#endif
 }
 
 void run_parallel_correctness() {
@@ -631,6 +710,7 @@ void run_parallel_avx512_correctness() {
 
 int main() {
   run_parallel_correctness();
+  worker_fp_rejection_preserves_output_and_workspace();
   run_balanced_partition_correctness();
   run_parallel_b_pack_correctness();
   run_low_alignment_row_only_correctness();

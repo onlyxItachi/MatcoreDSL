@@ -21,6 +21,7 @@ enum class OpenBlasExecutionStatusV1 : std::uint8_t {
   unavailable = 1,
   invalid_problem = 2,
   invalid_thread_count = 3,
+  unsupported_fp_environment = 4,
 };
 
 OpenBlasProviderInfoV1 openblas_provider_info_v1() noexcept;

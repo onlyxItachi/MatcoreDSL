@@ -14,8 +14,9 @@ discover_cpu_gemm_implementation_resources_v1(
   resources.openblas_linked = provider.linked;
   resources.openblas_local_thread_control = provider.linked;
   if (provider.maximum_reported_threads > 0) {
-    resources.openblas_maximum_threads =
-        static_cast<std::uint32_t>(provider.maximum_reported_threads);
+    // Runtime conformance authenticates only the calling thread. Do not
+    // advertise opaque provider workers as numerically validated.
+    resources.openblas_maximum_threads = 1;
   }
   resources.native_packed_avx2_fma_compiled =
       cpu_packed_avx2_build_available_v1();

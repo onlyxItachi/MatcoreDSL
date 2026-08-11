@@ -113,6 +113,7 @@ static_assert(offsetof(matcore_cpu_execution_context_report_v1,
 static_assert(MATCORE_STATUS_INVALID_ALIGNMENT_V0 == 16);
 static_assert(MATCORE_STATUS_PREPACK_MISMATCH_V0 == 21);
 static_assert(MATCORE_STATUS_ACCUMULATOR_OVERFLOW_V0 == 25);
+static_assert(MATCORE_STATUS_UNSUPPORTED_FLOATING_POINT_ENVIRONMENT_V0 == 26);
 static_assert(MATCORE_CPU_FEATURE_PORTABLE_SCALAR_F32_V1 == UINT64_C(1));
 static_assert(MATCORE_CPU_FEATURE_AVX2_V1 == (UINT64_C(1) << 1));
 static_assert(MATCORE_CPU_FEATURE_FMA_V1 == (UINT64_C(1) << 2));

@@ -30,6 +30,7 @@ enum class CpuParallelGemmStatusV1 : std::uint32_t {
   context_unavailable = 10,
   nested_parallelism_rejected = 11,
   worker_task_failed = 12,
+  unsupported_fp_environment = 13,
 };
 
 struct CpuParallelGemmWorkspaceRequirementsV1 {
@@ -48,9 +49,10 @@ struct CpuParallelGemmReportV1 {
   std::uint32_t version = kCpuParallelGemmVersionV1;
   std::uint32_t requested_threads = 0;
   std::uint32_t actual_threads = 0;
-  // Internal runtime evidence: zero means B was prepared by the submitting
-  // thread before dispatch; values greater than one mean the caller-owned B
-  // image was prepared cooperatively by that many persistent workers.
+  // Internal runtime evidence: zero means B was prepared serially by worker
+  // zero after the all-worker preflight; values greater than one mean the
+  // caller-owned B image was prepared cooperatively by that many persistent
+  // workers.
   std::uint32_t packed_b_threads = 0;
   std::size_t macro_tile_count = 0;
   std::size_t row_task_count = 0;
@@ -76,10 +78,12 @@ CpuParallelGemmStatusV1 cpu_parallel_packed_avx512_workspace_requirements_v1(
 // planner. Task t is owned by worker (t % actual_threads). The complete
 // workspace is a caller-owned arena containing one shared immutable packed-B
 // image followed by cache-line-aligned, non-overlapping transient-A worker
-// slices. B packing remains part of end-to-end execution and is completed by
-// the submitting thread before dispatch. Private cooperative-preparation
-// infrastructure is deliberately dormant until a final-checkpoint boundary
-// matrix authenticates a complete activation region.
+// slices. B packing remains part of end-to-end execution. After every active
+// worker passes one fail-closed floating-point-environment barrier, worker
+// zero prepares and publishes the shared packed-B image; no workspace or
+// output byte is touched before that barrier. Private cooperative-preparation
+// infrastructure remains dormant until a final-checkpoint boundary matrix
+// authenticates a complete activation region.
 CpuParallelGemmStatusV1 cpu_execute_parallel_packed_avx2_v1(
     CpuExecutionContextV1 &context,
     const planner::CpuGemmProblemV1 &problem, const float *lhs,
