@@ -1,4 +1,5 @@
 #include "frontend.h"
+#include "recovered_gemm_recognizer.h"
 #include "../support/platform_support.h"
 
 #include <clang/AST/ASTContext.h>
@@ -13,6 +14,7 @@
 #include <clang/ASTMatchers/ASTMatchFinder.h>
 #include <clang/Basic/Diagnostic.h>
 #include <clang/Basic/DiagnosticOptions.h>
+#include <clang/Basic/CodeGenOptions.h>
 #include <clang/Basic/FileEntry.h>
 #include <clang/Basic/SourceManager.h>
 #include <clang/Frontend/CompilerInstance.h>
@@ -248,6 +250,13 @@ struct NativeState {
   clang::SourceLocation first_candidate_location;
   std::vector<const clang::CallExpr *> calls;
   std::vector<const clang::DeclRefExpr *> function_references;
+  bool inspect_recovered_cpp_gemm = false;
+  unsigned optimization_level = 0;
+  std::string denormal_mode;
+  std::string fp32_denormal_mode;
+  bool denormal_mode_is_ieee = false;
+  bool fp32_denormal_mode_is_ieee = false;
+  std::vector<const clang::ForStmt *> recovered_outer_loops;
 };
 
 bool isTrustedFile(const clang::FileEntry *entry, const NativeState &state) {
@@ -935,6 +944,10 @@ public:
             result.Nodes.getNodeAs<clang::DeclRefExpr>("function-reference")) {
       state_.function_references.push_back(reference);
     }
+    if (const auto *outer =
+            result.Nodes.getNodeAs<clang::ForStmt>("recovered-outer-loop")) {
+      state_.recovered_outer_loops.push_back(outer);
+    }
   }
 
 private:
@@ -949,6 +962,13 @@ public:
     finder_.addMatcher(callExpr().bind("matcore-call"), &collector_);
     finder_.addMatcher(declRefExpr(to(functionDecl())).bind("function-reference"),
                        &collector_);
+    if (state_.inspect_recovered_cpp_gemm) {
+      finder_.addMatcher(
+          forStmt(unless(hasAncestor(forStmt())),
+                  unless(isExpansionInSystemHeader()))
+              .bind("recovered-outer-loop"),
+          &collector_);
+    }
   }
 
   void HandleTranslationUnit(clang::ASTContext &context) override {
@@ -957,6 +977,91 @@ public:
   }
 
 private:
+  const clang::FunctionDecl *
+  enclosingFunction(const clang::Stmt &statement, clang::ASTContext &context,
+                    unsigned depth = 0) {
+    if (depth > 64) {
+      return nullptr;
+    }
+    for (const clang::DynTypedNode &parent :
+         context.getParents(clang::DynTypedNode::create(statement))) {
+      if (const auto *function = parent.get<clang::FunctionDecl>()) {
+        return function;
+      }
+      if (const auto *parent_statement = parent.get<clang::Stmt>()) {
+        if (const clang::FunctionDecl *function =
+                enclosingFunction(*parent_statement, context, depth + 1)) {
+          return function;
+        }
+      }
+      if (const auto *declaration = parent.get<clang::Decl>()) {
+        for (const clang::DynTypedNode &grandparent :
+             context.getParents(clang::DynTypedNode::create(*declaration))) {
+          if (const auto *function = grandparent.get<clang::FunctionDecl>()) {
+            return function;
+          }
+        }
+      }
+    }
+    return nullptr;
+  }
+
+  void inspectRecoveredLoops(clang::ASTContext &context) {
+    if (!state_.inspect_recovered_cpp_gemm) {
+      return;
+    }
+    const clang::SourceManager &source_manager = context.getSourceManager();
+    std::sort(state_.recovered_outer_loops.begin(),
+              state_.recovered_outer_loops.end(),
+              [&source_manager](const clang::ForStmt *left,
+                                const clang::ForStmt *right) {
+                return source_manager.isBeforeInTranslationUnit(
+                    left->getBeginLoc(), right->getBeginLoc());
+              });
+    state_.recovered_outer_loops.erase(
+        std::unique(state_.recovered_outer_loops.begin(),
+                    state_.recovered_outer_loops.end()),
+        state_.recovered_outer_loops.end());
+    const RecoveredGemmInspectionInputs inputs{
+        .main_display_path = state_.display_path,
+        .main_canonical_path = state_.canonical_input,
+        .compilation_identity = state_.compilation_identity,
+        .optimization_level = state_.optimization_level,
+        .denormal_mode = state_.denormal_mode,
+        .fp32_denormal_mode = state_.fp32_denormal_mode,
+        .denormal_mode_is_ieee = state_.denormal_mode_is_ieee,
+        .fp32_denormal_mode_is_ieee = state_.fp32_denormal_mode_is_ieee,
+    };
+    for (const clang::ForStmt *outer : state_.recovered_outer_loops) {
+      const clang::FunctionDecl *function = enclosingFunction(*outer, context);
+      if (function == nullptr) {
+        continue;
+      }
+      state_.result.recovered_gemm_candidates.push_back(
+          inspectRecoveredGemmLoop(*outer, *function, context, inputs));
+    }
+    std::sort(state_.result.recovered_gemm_candidates.begin(),
+              state_.result.recovered_gemm_candidates.end(),
+              [](const RecoveredGemmCandidate &left,
+                 const RecoveredGemmCandidate &right) {
+                if (left.source_identity != right.source_identity) {
+                  return left.source_identity < right.source_identity;
+                }
+                if (left.offset != right.offset) {
+                  return left.offset < right.offset;
+                }
+                return left.site_id < right.site_id;
+              });
+    state_.result.recovered_gemm_candidates.erase(
+        std::unique(state_.result.recovered_gemm_candidates.begin(),
+                    state_.result.recovered_gemm_candidates.end(),
+                    [](const RecoveredGemmCandidate &left,
+                       const RecoveredGemmCandidate &right) {
+                      return left.site_id == right.site_id;
+                    }),
+        state_.result.recovered_gemm_candidates.end());
+  }
+
   void reject(const clang::SourceManager &source_manager,
               clang::SourceLocation location, std::string message) {
     state_.result.diagnostics.push_back(diagnosticAt(
@@ -1219,6 +1324,8 @@ private:
              "are not supported");
     }
 
+    inspectRecoveredLoops(context);
+
     if (state_.saw_candidate && !state_.saw_direct_trusted_include) {
       reject(source_manager, state_.first_candidate_location,
              state_.saw_direct_expected_include
@@ -1271,6 +1378,14 @@ public:
   std::unique_ptr<clang::ASTConsumer>
   CreateASTConsumer(clang::CompilerInstance &compiler,
                     llvm::StringRef) override {
+    const clang::CodeGenOptions &codegen = compiler.getCodeGenOpts();
+    state_.optimization_level = codegen.OptimizationLevel;
+    state_.denormal_mode = codegen.FPDenormalMode.str();
+    state_.fp32_denormal_mode = codegen.FP32DenormalMode.str();
+    state_.denormal_mode_is_ieee =
+        codegen.FPDenormalMode == llvm::DenormalMode::getIEEE();
+    state_.fp32_denormal_mode_is_ieee =
+        codegen.FP32DenormalMode == llvm::DenormalMode::getIEEE();
     compiler.getPreprocessor().addPPCallbacks(
         std::make_unique<TrustedHeaderCallbacks>(compiler.getSourceManager(),
                                                  state_));
@@ -1318,6 +1433,7 @@ public:
 
     NativeState state(result, display_path, canonicalPath(options.input_path),
                       stableCompilationIdentity(options), *source);
+    state.inspect_recovered_cpp_gemm = options.inspect_recovered_cpp_gemm;
     for (const std::string &trusted_header : options.trusted_public_headers) {
       llvm::sys::fs::UniqueID identity;
       const std::optional<std::string> contents = readFile(trusted_header);

@@ -1,0 +1,27 @@
+#include <cstddef>
+
+void first(float *c, const float *a, const float *b, std::size_t m,
+           std::size_t n, std::size_t k) {
+  for (std::size_t i = 0; i < m; ++i) {
+    for (std::size_t j = 0; j < n; ++j) {
+      float acc = 0.0F;
+      for (std::size_t p = 0; p < k; ++p) {
+        acc += a[i * k + p] * b[p * n + j];
+      }
+      c[i * n + j] = acc;
+    }
+  }
+}
+
+void second(float *z, const float *x, const float *y, std::size_t r,
+            std::size_t q, std::size_t d) {
+  for (std::size_t row = 0; row < r; ++row) {
+    for (std::size_t column = 0; column < q; ++column) {
+      float sum = 0.0F;
+      for (std::size_t depth = 0; depth < d; ++depth) {
+        sum += x[row * d + depth] * y[depth * q + column];
+      }
+      z[row * q + column] = sum;
+    }
+  }
+}

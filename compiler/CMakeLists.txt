@@ -454,6 +454,21 @@ if(BUILD_TESTING)
         PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
       )
 
+      if(NOT WIN32)
+        add_test(
+          NAME frontend.native.recovered_gemm_inspection
+          COMMAND
+            "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/run_recovered_gemm_tests.py"
+            --extractor "$<TARGET_FILE:matcore-extract>"
+            --clang "${MDSLC_CLANGXX_EXECUTABLE}"
+        )
+        set_tests_properties(
+          frontend.native.recovered_gemm_inspection
+          PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+        )
+      endif()
+
       add_test(
         NAME frontend.native.adversarial
         COMMAND

@@ -26,7 +26,10 @@ if(MDSLC_ENABLE_BOOTSTRAP_FRONTEND)
 endif()
 
 if(MDSLC_ENABLE_NATIVE_FRONTEND)
-  add_library(matcore_frontend_native STATIC native_frontend.cpp)
+  add_library(matcore_frontend_native STATIC
+    native_frontend.cpp
+    recovered_gemm_recognizer.cpp
+  )
   target_compile_features(matcore_frontend_native PUBLIC cxx_std_20)
   target_include_directories(matcore_frontend_native
     PUBLIC

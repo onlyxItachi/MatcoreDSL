@@ -41,6 +41,7 @@ struct CommandLine {
   std::string backend_output;
   std::string verify_ir;
   std::string compiler_arguments_file;
+  std::string recovered_gemm_report;
   std::uint32_t ir_version = matcore::mdslc::ir::kMatcoreIrVersion;
   bool compiler_was_explicit = false;
   bool ir_version_was_explicit = false;
@@ -145,10 +146,22 @@ bool validateOutputPaths(const CommandLine &command) {
       {"--sites-out", command.sites_output},
       {"--stubs-out", command.stubs_output},
       {"--backend-out", command.backend_output},
+      {"--inspect-recovered-gemm", command.recovered_gemm_report},
   };
   std::vector<std::pair<std::string_view, std::filesystem::path>> validated;
+  std::optional<std::string_view> standard_output_owner;
   for (const auto &[option, encoded_path] : outputs) {
-    if (encoded_path.empty() || encoded_path == "-") {
+    if (encoded_path.empty()) {
+      continue;
+    }
+    if (encoded_path == "-") {
+      if (standard_output_owner) {
+        std::cerr << "matcore-extract: " << option << " and "
+                  << *standard_output_owner
+                  << " cannot both write to standard output\n";
+        return false;
+      }
+      standard_output_owner = option;
       continue;
     }
     const std::optional<std::filesystem::path> path =
@@ -201,6 +214,9 @@ void usage(std::ostream &output) {
       << "  --ir-version N        emit Matcore IR 0 (default) or typed IR 1\n"
       << "  --verify-ir FILE      verify serialized Matcore IR v0/v1 and exit\n"
       << "  --frontend-info       describe the built frontend modes\n"
+      << "  --inspect-recovered-gemm FILE\n"
+         "                         native-only ordinary-C++ GEMM inspection; "
+         "never rewrites\n"
       << "  --compiler-arguments-file FILE\n"
          "                         bounded v1 argv transport used by mdslc++\n"
       << "\n"
@@ -411,6 +427,11 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
                      "--compiler-arguments-file")) {
         return std::nullopt;
       }
+    } else if (argument == "--inspect-recovered-gemm") {
+      if (!takeValue(argc, argv, index, command.recovered_gemm_report,
+                     "--inspect-recovered-gemm")) {
+        return std::nullopt;
+      }
     } else if (argument == "--ir-version") {
       std::string value;
       if (!takeValue(argc, argv, index, value, "--ir-version") ||
@@ -491,6 +512,7 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
     if (!command.frontend.input_path.empty() || !command.ir_output.empty() ||
         !command.rewrite_output.empty() || !command.sites_output.empty() ||
         !command.stubs_output.empty() || !command.backend_output.empty() ||
+        !command.recovered_gemm_report.empty() ||
         !command.compiler_arguments_file.empty() ||
         !command.frontend.compiler_arguments.empty() ||
         command.ir_version_was_explicit) {
@@ -504,6 +526,12 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
       command.frontend_name != "ast-json-bootstrap") {
     std::cerr << "matcore-extract: unsupported --frontend value: "
               << command.frontend_name << '\n';
+    return std::nullopt;
+  }
+  if (!command.recovered_gemm_report.empty() &&
+      command.frontend_name != "native") {
+    std::cerr << "matcore-extract: --inspect-recovered-gemm is available only "
+                 "with --frontend=native\n";
     return std::nullopt;
   }
   if (!command.compiler_arguments_file.empty()) {
@@ -590,6 +618,13 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
       static_cast<unsigned>(!command.sites_output.empty()) +
       static_cast<unsigned>(!command.stubs_output.empty()) +
       static_cast<unsigned>(!command.backend_output.empty());
+  if (!command.recovered_gemm_report.empty() && generated_output_count != 0) {
+    std::cerr << "matcore-extract: recovered GEMM inspection never authorizes "
+                 "host rewrite or generated execution artifacts\n";
+    return std::nullopt;
+  }
+  command.frontend.inspect_recovered_cpp_gemm =
+      !command.recovered_gemm_report.empty();
   if (generated_output_count != 0 && generated_output_count != 4) {
     std::cerr << "matcore-extract: --rewrite-out, --sites-out, --stubs-out, "
                  "and --backend-out must be supplied together\n";
@@ -823,6 +858,12 @@ int ExtractorMain(int argc, char **argv) {
           ? matcore::mdslc::ir::v1::serializeDeterministicJson(typed_module)
           : matcore::mdslc::ir::serializeDeterministicJson(projected_module);
   if (command->rewrite_output.empty()) {
+    if (!command->recovered_gemm_report.empty() &&
+        !writeAtomically(command->recovered_gemm_report,
+                         matcore::mdslc::frontend::
+                             serializeRecoveredGemmInspection(result))) {
+      return 1;
+    }
     return writeAtomically(command->ir_output, json) ? 0 : 1;
   }
 
