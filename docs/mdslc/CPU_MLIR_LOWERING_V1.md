@@ -122,14 +122,15 @@ symbols and layouts do not change. No MLIR type, C++ container, exception, or
 template crosses the runtime boundary.
 
 This v1 semantic backend calls the existing one-shot
-`matcore_runtime_gemm_f32_v0` entry and therefore inherits its zero-workspace,
-allocation-free candidate boundary. It may select legal reference, tiled,
-compiler-vectorized, or linked single-thread OpenBLAS implementations. It does
-not silently allocate workspace and cannot select packed or parallel candidates
-that require explicit caller workspace or an execution context. Those native
-variants remain available through the existing additive workspace/context C
-APIs; claiming that the one-shot semantic path can select every registered CPU
-variant would be incorrect.
+`matcore_runtime_gemm_f32_v0` entry and therefore inherits its zero-caller-
+workspace boundary. MDSLC performs no hidden packing/workspace allocation on
+this route. It may select legal reference, tiled, compiler-vectorized, or linked
+single-thread OpenBLAS implementations; the opaque provider may manage internal
+memory under its own contract. The route cannot select packed or parallel
+candidates that require explicit caller workspace or an execution context.
+Those native variants remain available through the existing additive
+workspace/context C APIs; claiming that the one-shot semantic path can select
+every registered CPU variant would be incorrect.
 
 Backend text generation should be shared with the existing code generator
 through one normalized internal entry representation. Copying two independent

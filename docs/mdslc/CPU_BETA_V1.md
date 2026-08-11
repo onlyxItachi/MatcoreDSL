@@ -82,10 +82,11 @@ tool.
 ## Execution and resource boundary
 
 The private semantic backend calls the existing one-shot
-`matcore_runtime_gemm_f32_v0` entry. That ABI remains allocation-free and
-permits only legal zero-workspace candidates: reference, tiled,
-compiler-vectorized, and linked single-thread OpenBLAS where available. It
-cannot select workspace-requiring packed or parallel variants.
+`matcore_runtime_gemm_f32_v0` entry. That ABI requires zero caller workspace
+and performs no MDSLC-owned packing/workspace allocation. It permits reference,
+tiled, compiler-vectorized, and linked single-thread OpenBLAS where available;
+an opaque OpenBLAS provider may manage internal memory under its own contract.
+The path cannot select workspace-requiring packed or parallel variants.
 
 Native packed and persistent-parallel variants remain supported through the
 existing additive caller-workspace and execution-context C APIs. Their

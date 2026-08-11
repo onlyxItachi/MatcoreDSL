@@ -52,10 +52,12 @@ as a leaf tool; private MLIR libraries, targets, headers, and development paths
 remain unexported.
 
 The executable semantic backend's one-shot
-`matcore_runtime_gemm_f32_v0` boundary is also explicit: it is allocation-free
-and selects zero-workspace candidates only. Workspace/context native packed and
-parallel variants remain available through their existing additive APIs; they
-are not silently made available through the one-shot semantic route.
+`matcore_runtime_gemm_f32_v0` boundary is also explicit: it requires zero caller
+workspace and performs no MDSLC-owned packing/workspace allocation. A selected
+opaque OpenBLAS provider may manage internal memory under its own contract.
+Workspace/context native packed and parallel variants remain available through
+their existing additive APIs; they are not silently made available through the
+one-shot semantic route.
 
 ## Claims intentionally withheld
 
