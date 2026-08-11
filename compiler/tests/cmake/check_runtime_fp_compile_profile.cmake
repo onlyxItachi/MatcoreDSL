@@ -19,9 +19,16 @@ endif()
 string(REPLACE "\n" ";" command_lines "${commands}")
 set(critical_compile_lines 0)
 foreach(line IN LISTS command_lines)
+  set(is_critical_compile_line FALSE)
   if((line MATCHES "matcore_cpu_backends_v1\\.dir.*\\.(c|cc|cpp|cxx)" OR
       line MATCHES "matcore_runtime\\.dir.*\\.(c|cc|cpp|cxx)") AND
      NOT line MATCHES "(^| )(:|cmake -E) ")
+    if((MDSLC_MSVC_ABI AND line MATCHES "(^| )(/c|-c)( |$)") OR
+       (NOT MDSLC_MSVC_ABI AND line MATCHES "(^| )-c( |$)"))
+      set(is_critical_compile_line TRUE)
+    endif()
+  endif()
+  if(is_critical_compile_line)
     math(EXPR critical_compile_lines "${critical_compile_lines} + 1")
     if(MDSLC_MSVC_ABI)
       foreach(required_option IN ITEMS "/fp:precise" "/FI" "fp_compile_contract_v1.h")

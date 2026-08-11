@@ -149,12 +149,12 @@ const char *fp_environment_rejection_reason_v1(
   if (!report.mxcsr_exceptions_masked ||
       !report.control_word_exceptions_masked)
     return "floating-point exceptions must be masked";
-  if (!report.control_word_denormals_preserved)
-    return "floating-point control state must preserve denormal operands and results";
   if (report.flush_to_zero)
     return "flush-to-zero is incompatible with gradual subnormal semantics";
   if (report.denormals_are_zero)
     return "denormals-are-zero is incompatible with gradual subnormal semantics";
+  if (!report.control_word_denormals_preserved)
+    return "floating-point control state must preserve denormal operands and results";
   if (!report.explicit_gemm_f32_v1_compatible)
     return "floating-point environment is incompatible with explicit-gemm-f32-v1";
   return "ok";

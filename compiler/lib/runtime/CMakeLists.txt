@@ -4,6 +4,9 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   project(MatcoreRuntimeV0 LANGUAGES CXX)
   include(CTest)
   include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/MatcoreDSLCompilerOptions.cmake")
+  set(CMAKE_CXX_STANDARD 20)
+  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+  set(CMAKE_CXX_EXTENSIONS OFF)
 endif()
 
 option(
@@ -60,6 +63,13 @@ if(MDSLC_REQUIRE_OPENBLAS AND NOT MDSLC_HAS_OPENBLAS)
 endif()
 if(NOT MDSLC_HAS_OPENBLAS)
   message(STATUS "MDSLC OpenBLAS variant: unavailable (optional)")
+endif()
+
+if(NOT TARGET matcore_platform_v1)
+  add_subdirectory(
+    "${CMAKE_CURRENT_SOURCE_DIR}/../platform"
+    "${CMAKE_CURRENT_BINARY_DIR}/matcore_platform_v1"
+  )
 endif()
 
 if(NOT TARGET matcore_cpu_planner_v1)
@@ -184,7 +194,9 @@ if(BUILD_TESTING)
       "-DMDSLC_NINJA=${CMAKE_MAKE_PROGRAM}"
       "-DMDSLC_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
       "-DMDSLC_TEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/unsafe-fp-configure-test"
+      "-DMDSLC_C_COMPILER=${CMAKE_C_COMPILER}"
       "-DMDSLC_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+      "-DMDSLC_RAPIDJSON_INCLUDE_DIR=${MATCORE_RAPIDJSON_INCLUDE_DIR}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/cmake/reject_unsafe_fp_flags.cmake"
   )
 

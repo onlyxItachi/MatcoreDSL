@@ -5,6 +5,21 @@ foreach(required IN ITEMS MDSLC_CMAKE MDSLC_NINJA MDSLC_SOURCE_DIR
   endif()
 endforeach()
 
+set(nested_compiler_arguments
+  "-DCMAKE_CXX_COMPILER=${MDSLC_CXX_COMPILER}"
+)
+if(DEFINED MDSLC_C_COMPILER AND NOT "${MDSLC_C_COMPILER}" STREQUAL "")
+  list(APPEND nested_compiler_arguments
+    "-DCMAKE_C_COMPILER=${MDSLC_C_COMPILER}"
+  )
+endif()
+if(DEFINED MDSLC_RAPIDJSON_INCLUDE_DIR AND
+   NOT "${MDSLC_RAPIDJSON_INCLUDE_DIR}" STREQUAL "")
+  list(APPEND nested_compiler_arguments
+    "-DMATCORE_RAPIDJSON_INCLUDE_DIR=${MDSLC_RAPIDJSON_INCLUDE_DIR}"
+  )
+endif()
+
 set(unsafe_flags
   -ffast-math
   -ffp-eval-method=double
@@ -21,7 +36,7 @@ foreach(unsafe_flag IN LISTS unsafe_flags)
             -B "${case_binary_dir}"
             -G Ninja
             "-DCMAKE_MAKE_PROGRAM=${MDSLC_NINJA}"
-            "-DCMAKE_CXX_COMPILER=${MDSLC_CXX_COMPILER}"
+            ${nested_compiler_arguments}
             "-DCMAKE_CXX_FLAGS=${unsafe_flag}"
             -DMDSLC_ENABLE_NATIVE_FRONTEND=OFF
             -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=ON
@@ -51,7 +66,7 @@ execute_process(
           -B "${safe_binary_dir}"
           -G Ninja
           "-DCMAKE_MAKE_PROGRAM=${MDSLC_NINJA}"
-          "-DCMAKE_CXX_COMPILER=${MDSLC_CXX_COMPILER}"
+          ${nested_compiler_arguments}
           -DCMAKE_CXX_FLAGS=-ffp-eval-method=source
           -DMDSLC_ENABLE_NATIVE_FRONTEND=OFF
           -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=ON
