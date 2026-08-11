@@ -18,6 +18,7 @@ add_library(
     MatcoreDialect.cpp
     MatcoreOps.cpp
     MatcoreV1Bridge.cpp
+    MatcoreCpuRuntimeLowering.cpp
 )
 add_dependencies(
   matcore_mlir_semantics
@@ -99,4 +100,29 @@ if(BUILD_TESTING)
   )
   mdslc_target_enable_warnings(matcore_mlir_map_domain_tests)
   add_test(NAME mlir.semantic.map-domain COMMAND matcore_mlir_map_domain_tests)
+
+  add_executable(
+    matcore_mlir_cpu_runtime_lowering_tests
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/mlir/matcore_cpu_runtime_lowering_test.cpp"
+  )
+  target_link_libraries(
+    matcore_mlir_cpu_runtime_lowering_tests
+    PRIVATE
+      matcore_mlir_semantics
+      MLIRParser
+  )
+  target_include_directories(
+    matcore_mlir_cpu_runtime_lowering_tests
+    SYSTEM PRIVATE "${LLVM_INCLUDE_DIRS}" "${MLIR_INCLUDE_DIRS}"
+  )
+  target_compile_definitions(
+    matcore_mlir_cpu_runtime_lowering_tests
+    PRIVATE
+      MDSLC_MLIR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/mlir"
+      MDSLC_IR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/ir"
+  )
+  mdslc_target_enable_warnings(matcore_mlir_cpu_runtime_lowering_tests)
+  add_test(NAME mlir.cpu.runtime_dispatch_lowering_v1
+    COMMAND matcore_mlir_cpu_runtime_lowering_tests
+  )
 endif()
