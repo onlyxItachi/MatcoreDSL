@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   clang-21-release:
-    name: Clang 21.1.8 Release (${{ matrix.openblas_label }})
+    name: Clang 21.1.8 Release (${{ matrix.openblas_label }}, ${{ matrix.mlir_label }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -29,9 +29,18 @@ jobs:
           - openblas_label: OpenBLAS required
             openblas_enable: "ON"
             openblas_require: "ON"
+            mlir_label: Matcore MLIR enabled
+            mlir_enable: "ON"
           - openblas_label: OpenBLAS explicitly disabled
             openblas_enable: "OFF"
             openblas_require: "OFF"
+            mlir_label: Matcore MLIR enabled
+            mlir_enable: "ON"
+          - openblas_label: OpenBLAS explicitly disabled
+            openblas_enable: "OFF"
+            openblas_require: "OFF"
+            mlir_label: Matcore MLIR disabled
+            mlir_enable: "OFF"
 
     steps:
       - uses: actions/checkout@v4
@@ -60,6 +69,16 @@ jobs:
             python3 \
             rapidjson-dev
           /usr/bin/clang++-21 --version | grep -F "clang version 21.1.8"
+
+      - name: Install the matching MLIR tuple
+        if: matrix.mlir_enable == 'ON'
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            libmlir-21-dev \
+            mlir-21-tools
+          /usr/bin/mlir-opt-21 --version | grep -F "LLVM version 21.1.8"
+          /usr/bin/mlir-tblgen-21 --version | grep -F "LLVM version 21.1.8"
+          test -f /usr/lib/llvm-21/lib/cmake/mlir/MLIRConfig.cmake
 
       - name: Build the verified OpenBLAS 0.3.32 provider
         if: matrix.openblas_require == 'ON'
@@ -117,6 +136,14 @@ jobs:
 
       - name: Configure standalone MDSLC
         run: |
+          mlir_options=(
+            -DMDSLC_ENABLE_MATCORE_MLIR=${{ matrix.mlir_enable }}
+          )
+          if [[ "${{ matrix.mlir_enable }}" == "ON" ]]; then
+            mlir_options+=(
+              -DMLIR_DIR=/usr/lib/llvm-21/lib/cmake/mlir
+            )
+          fi
           cmake -S compiler -B build-mdslc -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=/usr/bin/clang-21 \
@@ -128,6 +155,7 @@ jobs:
             -DMDSLC_REQUIRE_OPENBLAS=${{ matrix.openblas_require }} \
             -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
             -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang \
+            "${mlir_options[@]}" \
             | tee build-mdslc-configure.log
 
           if [[ "${{ matrix.openblas_require }}" == "ON" ]]; then
@@ -137,9 +165,26 @@ jobs:
             grep -F "MDSLC OpenBLAS variant: unavailable (optional)" \
               build-mdslc-configure.log
           fi
+          if [[ "${{ matrix.mlir_enable }}" == "ON" ]]; then
+            grep -F "MDSLC Matcore MLIR semantic layer: exact MLIR 21.1.8" \
+              build-mdslc-configure.log
+          fi
 
       - name: Build standalone MDSLC
         run: cmake --build build-mdslc --parallel 2
+
+      - name: Authenticate the MLIR link boundary
+        if: matrix.mlir_enable == 'ON'
+        run: |
+          test -x build-mdslc/bin/matcore-mlir
+          if ldd build-mdslc/bin/matcore-extract | grep -F libMLIR; then
+            echo "Aggregate shared libMLIR leaked into matcore-extract" >&2
+            exit 1
+          fi
+          if ldd build-mdslc/bin/matcore-mlir | grep -F libMLIR; then
+            echo "Aggregate shared libMLIR leaked into matcore-mlir" >&2
+            exit 1
+          fi
 
       - name: Authenticate the configured BLAS linkage
         run: |

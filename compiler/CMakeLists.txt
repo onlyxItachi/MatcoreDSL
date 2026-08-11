@@ -567,8 +567,8 @@ if(BUILD_TESTING)
     endif()
 
     if(MDSLC_ENABLE_NATIVE_FRONTEND)
-      if(NOT WIN32)
-        if(MDSLC_ENABLE_MATCORE_MLIR)
+      if(MDSLC_ENABLE_MATCORE_MLIR)
+        if(NOT WIN32)
           add_test(
             NAME integration.semantic_mlir_cpu_pipeline
             COMMAND
@@ -586,26 +586,29 @@ if(BUILD_TESTING)
               WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
               TIMEOUT 300
           )
-        else()
-          add_test(
-            NAME integration.semantic_mlir_unavailable
-            COMMAND
-              "${Python3_EXECUTABLE}"
-              "${CMAKE_CURRENT_SOURCE_DIR}/tests/mlir/run_semantic_cpu_pipeline_tests.py"
-              --expect-unavailable
-              --extractor "$<TARGET_FILE:matcore-extract>"
-              --driver "$<TARGET_FILE:mdslc_driver>"
-              --clangxx "${MDSLC_CLANGXX_EXECUTABLE}"
-              --repository-root "${CMAKE_CURRENT_SOURCE_DIR}/.."
-              --build-dir "${CMAKE_BINARY_DIR}"
-          )
-          set_tests_properties(
-            integration.semantic_mlir_unavailable
-            PROPERTIES
-              WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
-              TIMEOUT 180
-          )
         endif()
+      else()
+        # The unavailable-path contract is platform-neutral. In particular,
+        # Windows distributions that do not yet contain the audited MLIR tuple
+        # must reject an explicit semantic-pipeline request without artifacts.
+        add_test(
+          NAME integration.semantic_mlir_unavailable
+          COMMAND
+            "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/mlir/run_semantic_cpu_pipeline_tests.py"
+            --expect-unavailable
+            --extractor "$<TARGET_FILE:matcore-extract>"
+            --driver "$<TARGET_FILE:mdslc_driver>"
+            --clangxx "${MDSLC_CLANGXX_EXECUTABLE}"
+            --repository-root "${CMAKE_CURRENT_SOURCE_DIR}/.."
+            --build-dir "${CMAKE_BINARY_DIR}"
+        )
+        set_tests_properties(
+          integration.semantic_mlir_unavailable
+          PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+            TIMEOUT 180
+        )
       endif()
 
       if(WIN32)
