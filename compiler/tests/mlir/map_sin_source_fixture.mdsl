@@ -1,5 +1,19 @@
 #include <cmath>
+#include <matcore/mdsl.h>
 
 float map_sin_source_fixture(float value) {
   return std::sin(value);
+}
+
+void composition_source_fixture() {
+  float a_storage[64]{};
+  float b_storage[64]{};
+  float c_storage[64]{};
+  float transformed_storage[64]{};
+  matcore::mdsl::matrix_view A{a_storage, 8, 8};
+  matcore::mdsl::matrix_view B{b_storage, 8, 8};
+  matcore::mdsl::matrix_view C{c_storage, 8, 8};
+  matcore::mdsl::gemm(matcore::mdsl::out(C), A, B);
+  for (unsigned index = 0; index < 64; ++index)
+    transformed_storage[index] = std::sin(c_storage[index]);
 }

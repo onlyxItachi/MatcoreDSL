@@ -134,10 +134,14 @@ Inactive elements use `outside_domain = "preserve_input"`.
 ```
 
 Each coordinate is a zero-based, full-rank list of in-bounds signless i64
-values. The set is nonempty and coordinates are unique. Indices v1 requires a
-static tensor shape. A statically complete coordinate set is rejected in favor
-of `all`; coordinate order does not change mathematical semantics. Inactive
-elements use `outside_domain = "preserve_input"`.
+values. The set is nonempty and coordinates are unique. Its serialized
+representation must use strict ascending lexicographic coordinate order after
+rank, type, bounds, and uniqueness validation. A reversed or otherwise
+permuted spelling is rejected rather than silently normalized. This ordering
+does not change the mathematical set; it provides one deterministic byte
+representation. Indices v1 requires a static tensor shape. A statically
+complete coordinate set is rejected in favor of `all`. Inactive elements use
+`outside_domain = "preserve_input"`.
 
 ### 4.4 `mask`
 
@@ -199,6 +203,28 @@ are `derived_elementwise_expression`, `source_authenticated_expression`, and
 `synthetic_elementwise_expression`. Crossed authenticity/kind combinations or
 extra fields reject.
 
+The operation verifier validates the closed syntax of source-authenticated
+provenance, but syntax is not authentication. The context-free production
+`verifyCompositionV1Module` entry point therefore fails closed whenever a map
+or sine claims `source_authenticated`.
+
+A caller may instead provide `AuthenticatedSourceSnapshotV1` to the trusted
+composition-verification overload. That context binds:
+
+- the exact `mdsl.source_file` identity;
+- caller-trusted source bytes;
+- their separately supplied canonical SHA-256 identity; and
+- their exact byte length.
+
+The verifier checks the declared length, recomputes the digest, requires every
+source-authenticated operation to carry that file and digest, bounds every
+half-open range by the trusted byte length, and derives its one-based
+file/line/column from the range begin. Columns are byte-oriented; LF, CRLF, and
+lone-CR line endings are handled as source line breaks. Every nested
+source-authenticated scalar operation is checked independently. The generic
+verifier performs no filesystem I/O: loading and trusting source bytes is the
+caller's responsibility.
+
 The canonical GEMM-to-sine goldens use derived provenance. They do not claim
 that the captured GEMM source contains a sine expression.
 
@@ -212,7 +238,9 @@ after that round trip.
 Focused adversarial tests cover all domain kinds, dynamic-mask guard
 obligations, exact inactive-element preservation, malformed region structure,
 captures/effects, tensor encodings, full-domain canonicality, provenance
-authenticity/ranges/snapshots, source and site binding, calls, unknown
+authenticity/ranges/snapshots, strict lexicographic index ordering, trusted
+source identity/digest/length/range/line binding, context-free fail-closed
+behavior, source and site binding, calls, unknown
 operations, unsupported functions, dead semantic results, and malformed
 composition versions.
 

@@ -8,9 +8,12 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/Support/SHA256.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <limits>
@@ -952,6 +955,8 @@ mlir::LogicalResult verifyDomain(MapOp operation,
       return operation.emitOpError()
              << "domain(indices) requires at least one coordinate";
     llvm::StringSet<> seen;
+    llvm::SmallVector<llvm::SmallVector<std::int64_t>> decoded_coordinates;
+    decoded_coordinates.reserve(coordinates.size());
     for (mlir::Attribute encoded_coordinate : coordinates) {
       const auto coordinate =
           mlir::dyn_cast<mlir::ArrayAttr>(encoded_coordinate);
@@ -960,18 +965,31 @@ mlir::LogicalResult verifyDomain(MapOp operation,
         return operation.emitOpError()
                << "domain(indices) coordinates must match tensor rank";
       std::string key;
+      llvm::SmallVector<std::int64_t> decoded_coordinate;
+      decoded_coordinate.reserve(coordinate.size());
       for (int64_t index = 0; index < type.getRank(); ++index) {
         if (mlir::failed(verifyStaticCoordinate(
                 operation, coordinate[index], type.getDimSize(index),
                 "domain(indices).coordinate", /*allow_upper_bound=*/false)))
           return mlir::failure();
-        key += std::to_string(
-            mlir::cast<mlir::IntegerAttr>(coordinate[index]).getInt());
+        const std::int64_t value =
+            mlir::cast<mlir::IntegerAttr>(coordinate[index]).getInt();
+        decoded_coordinate.push_back(value);
+        key += std::to_string(value);
         key += ':';
       }
       if (!seen.insert(key).second)
         return operation.emitOpError()
                << "domain(indices) coordinates must be unique";
+      decoded_coordinates.push_back(std::move(decoded_coordinate));
+    }
+    for (std::size_t index = 1; index < decoded_coordinates.size(); ++index) {
+      const auto &previous = decoded_coordinates[index - 1];
+      const auto &current = decoded_coordinates[index];
+      if (!std::lexicographical_compare(previous.begin(), previous.end(),
+                                        current.begin(), current.end()))
+        return operation.emitOpError()
+               << "domain(indices) coordinates must use strict lexicographic order";
     }
     std::uint64_t element_count = 1;
     bool count_overflow = false;
@@ -1193,6 +1211,117 @@ mlir::LogicalResult verifyMapInputContractPropagation(MapOp operation) {
   return mlir::success();
 }
 
+std::string sha256Identity(llvm::StringRef bytes) {
+  const std::array<std::uint8_t, 32> digest =
+      llvm::SHA256::hash(llvm::arrayRefFromStringRef(bytes));
+  return "sha256:" + llvm::toHex(llvm::ArrayRef(digest), true);
+}
+
+bool sourceLineColumnAtOffset(llvm::StringRef bytes, std::uint64_t offset,
+                              std::uint64_t &line, std::uint64_t &column) {
+  if (offset >= bytes.size())
+    return false;
+  line = 1;
+  column = 1;
+  for (std::uint64_t index = 0; index < offset; ++index) {
+    const char byte = bytes[static_cast<std::size_t>(index)];
+    if (byte == '\r') {
+      if (index + 1 < offset &&
+          bytes[static_cast<std::size_t>(index + 1)] == '\n')
+        ++index;
+      ++line;
+      column = 1;
+      continue;
+    }
+    if (byte == '\n') {
+      ++line;
+      column = 1;
+      continue;
+    }
+    ++column;
+  }
+  return true;
+}
+
+bool validateAuthenticatedSourceContext(
+    llvm::StringRef module_source,
+    const AuthenticatedSourceSnapshotV1 &authenticated_source,
+    std::string &error) {
+  if (authenticated_source.source_identity.empty() ||
+      authenticated_source.source_identity != module_source) {
+    error = "trusted source identity must exactly match mdsl.source_file";
+    return false;
+  }
+  if (authenticated_source.source_byte_length !=
+      authenticated_source.source_bytes.size()) {
+    error = "trusted source byte length does not match the supplied bytes";
+    return false;
+  }
+  if (!isSha256Identity(authenticated_source.source_digest) ||
+      authenticated_source.source_digest !=
+          sha256Identity(authenticated_source.source_bytes)) {
+    error = "trusted source digest does not authenticate the supplied bytes";
+    return false;
+  }
+  return true;
+}
+
+bool validateSourceAuthenticatedProvenance(
+    mlir::Operation *operation, mlir::DictionaryAttr provenance,
+    const AuthenticatedSourceSnapshotV1 *authenticated_source,
+    std::string &error) {
+  const auto authenticity = provenance.getAs<mlir::StringAttr>("authenticity");
+  if (!authenticity || authenticity.getValue() != "source_authenticated")
+    return true;
+  if (authenticated_source == nullptr) {
+    error =
+        "source-authenticated provenance requires a trusted source snapshot context";
+    return false;
+  }
+  const auto file = provenance.getAs<mlir::StringAttr>("file");
+  const auto digest =
+      provenance.getAs<mlir::StringAttr>("source_snapshot");
+  const auto range =
+      provenance.getAs<mlir::DictionaryAttr>("source_range");
+  const auto line = provenance.getAs<mlir::IntegerAttr>("line");
+  const auto column = provenance.getAs<mlir::IntegerAttr>("column");
+  const auto begin = range ? range.getAs<mlir::IntegerAttr>("begin")
+                           : mlir::IntegerAttr{};
+  const auto end = range ? range.getAs<mlir::IntegerAttr>("end")
+                         : mlir::IntegerAttr{};
+  if (!file || file.getValue() != authenticated_source->source_identity ||
+      !digest || digest.getValue() != authenticated_source->source_digest ||
+      !begin || !end || begin.getInt() < 0 || end.getInt() <= begin.getInt() ||
+      static_cast<std::uint64_t>(end.getInt()) >
+          authenticated_source->source_byte_length) {
+    error =
+        "source-authenticated provenance does not match the trusted source identity, digest, or byte bounds";
+    return false;
+  }
+  std::uint64_t trusted_line = 0;
+  std::uint64_t trusted_column = 0;
+  if (!sourceLineColumnAtOffset(
+          authenticated_source->source_bytes,
+          static_cast<std::uint64_t>(begin.getInt()), trusted_line,
+          trusted_column) ||
+      !line || !column || line.getInt() <= 0 || column.getInt() <= 0 ||
+      static_cast<std::uint64_t>(line.getInt()) != trusted_line ||
+      static_cast<std::uint64_t>(column.getInt()) != trusted_column) {
+    error =
+        "source-authenticated provenance line/column does not match its trusted byte-range begin";
+    return false;
+  }
+  const auto location =
+      mlir::dyn_cast<mlir::FileLineColLoc>(operation->getLoc());
+  if (!location || location.getFilename() != file.getValue() ||
+      location.getLine() != trusted_line ||
+      location.getColumn() != trusted_column) {
+    error = "source-authenticated operation location does not match the trusted source range";
+    return false;
+  }
+  return true;
+}
+
 } // namespace
 
 mlir::LogicalResult GemmOp::verify() {
@@ -1354,7 +1483,10 @@ mlir::LogicalResult YieldOp::verify() {
   return mlir::success();
 }
 
-bool verifyCompositionV1Module(mlir::ModuleOp module, std::string &error) {
+static bool verifyCompositionV1ModuleImpl(
+    mlir::ModuleOp module,
+    const AuthenticatedSourceSnapshotV1 *authenticated_source,
+    std::string &error) {
   error.clear();
   const auto reject = [&](llvm::Twine message) {
     error = message.str();
@@ -1385,6 +1517,10 @@ bool verifyCompositionV1Module(mlir::ModuleOp module, std::string &error) {
       !source_file.getValue().ends_with(".mdsl"))
     return reject(
         "composition-v1 requires exact schema/version, semantic version, generic intent, and .mdsl source");
+  if (authenticated_source != nullptr &&
+      !validateAuthenticatedSourceContext(source_file.getValue(),
+                                          *authenticated_source, error))
+    return false;
 
   std::size_t function_count = 0;
   for (mlir::Operation &top_level : module.getBody()->getOperations()) {
@@ -1466,6 +1602,10 @@ bool verifyCompositionV1Module(mlir::ModuleOp module, std::string &error) {
             location.getFilename() != source_file.getValue())
           return reject(
               "composition-v1 map location/provenance must be non-synthetic and tied to the module source and semantic site");
+        if (!validateSourceAuthenticatedProvenance(
+                map.getOperation(), map.getProvenance(), authenticated_source,
+                error))
+          return false;
         if (authenticity.getValue() == "derived_from_producer" &&
             map.getLoc() != producer->getLoc())
           return reject(
@@ -1490,6 +1630,10 @@ bool verifyCompositionV1Module(mlir::ModuleOp module, std::string &error) {
                 sin_location.getFilename() != source_file.getValue())
               return reject(
                   "composition-v1 scalar location/provenance must be non-synthetic and tied to the module source and semantic site");
+            if (!validateSourceAuthenticatedProvenance(
+                    sin.getOperation(), sin.getProvenance(),
+                    authenticated_source, error))
+              return false;
             if (sin_authenticity.getValue() == "derived_from_producer" &&
                 sin.getLoc() != map.getLoc())
               return reject(
@@ -1522,6 +1666,17 @@ bool verifyCompositionV1Module(mlir::ModuleOp module, std::string &error) {
   if (function_count == 0)
     return reject("composition-v1 module requires at least one semantic root");
   return true;
+}
+
+bool verifyCompositionV1Module(mlir::ModuleOp module, std::string &error) {
+  return verifyCompositionV1ModuleImpl(module, nullptr, error);
+}
+
+bool verifyCompositionV1Module(
+    mlir::ModuleOp module,
+    const AuthenticatedSourceSnapshotV1 &authenticated_source,
+    std::string &error) {
+  return verifyCompositionV1ModuleImpl(module, &authenticated_source, error);
 }
 
 } // namespace matcore::mdslc::mlir_dialect
