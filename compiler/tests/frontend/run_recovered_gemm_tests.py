@@ -220,6 +220,9 @@ def main() -> int:
             "omp_declare_simd": (
                 "offload_or_parallel_context", [*RELAXED_FP_FLAGS, "-fopenmp-simd"]
             ),
+            "omp_redecl_simd": (
+                "offload_or_parallel_context", [*RELAXED_FP_FLAGS, "-fopenmp-simd"]
+            ),
             "omp_declare_target": (
                 "offload_or_parallel_context", [*RELAXED_FP_FLAGS, "-fopenmp-simd"]
             ),

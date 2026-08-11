@@ -725,31 +725,39 @@ void addContextReasons(const clang::ForStmt &outer_loop,
   if (function.isConstexpr() || function.isConsteval()) {
     reasons.insert("constexpr_context");
   }
-  if (function.hasAttr<clang::OptimizeNoneAttr>()) {
-    reasons.insert("optimization_barrier");
-  }
-  for (const clang::Attr *attribute : function.attrs()) {
-    if (llvm::isa<clang::OptimizeNoneAttr>(attribute)) {
+  // Clang does not necessarily inherit every optimization/offload attribute
+  // from a prototype onto the defining FunctionDecl.  Permission therefore
+  // authenticates the complete redeclaration chain instead of inspecting only
+  // the definition that owns the loop body.
+  for (const clang::FunctionDecl *redecl : function.redecls()) {
+    if (redecl == nullptr) {
+      reasons.insert("unsupported_attribute");
       continue;
     }
-    reasons.insert(
-        llvm::isa<clang::OMPDeclareSimdDeclAttr,
-                  clang::OMPDeclareTargetDeclAttr>(attribute)
-            ? "offload_or_parallel_context"
-            : "unsupported_attribute");
-  }
-  for (const clang::ParmVarDecl *parameter : function.parameters()) {
-    if (parameter->getStorageClass() != clang::SC_None ||
-        parameter->getTLSKind() != clang::VarDecl::TLS_None) {
-      reasons.insert("unsupported_storage_duration");
+    for (const clang::Attr *attribute : redecl->attrs()) {
+      if (llvm::isa<clang::OptimizeNoneAttr>(attribute)) {
+        reasons.insert("optimization_barrier");
+      } else {
+        reasons.insert(
+            llvm::isa<clang::OMPDeclareSimdDeclAttr,
+                      clang::OMPDeclareTargetDeclAttr>(attribute)
+                ? "offload_or_parallel_context"
+                : "unsupported_attribute");
+      }
     }
-    if (containsNonDefaultAddressSpace(parameter->getType())) {
-      reasons.insert("unsupported_address_space");
-    }
-    for (const clang::Attr *attribute : parameter->attrs()) {
-      reasons.insert(llvm::isa<clang::CleanupAttr>(attribute)
-                         ? "cleanup_attribute"
-                         : "unsupported_attribute");
+    for (const clang::ParmVarDecl *parameter : redecl->parameters()) {
+      if (parameter->getStorageClass() != clang::SC_None ||
+          parameter->getTLSKind() != clang::VarDecl::TLS_None) {
+        reasons.insert("unsupported_storage_duration");
+      }
+      if (containsNonDefaultAddressSpace(parameter->getType())) {
+        reasons.insert("unsupported_address_space");
+      }
+      for (const clang::Attr *attribute : parameter->attrs()) {
+        reasons.insert(llvm::isa<clang::CleanupAttr>(attribute)
+                           ? "cleanup_attribute"
+                           : "unsupported_attribute");
+      }
     }
   }
   const clang::LangOptions &language_options = context.getLangOpts();
