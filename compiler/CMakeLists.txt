@@ -70,6 +70,11 @@ option(
   ON
 )
 option(
+  MDSLC_ENABLE_MATCORE_MLIR
+  "Build the internal Matcore MLIR semantic dialect and inspection tool"
+  OFF
+)
+option(
   MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE
   "Enable the driver tool-prefix override for deliberate tests"
   OFF
@@ -83,6 +88,40 @@ endif()
 
 if(NOT MDSLC_ENABLE_NATIVE_FRONTEND AND NOT MDSLC_ENABLE_BOOTSTRAP_FRONTEND)
   message(FATAL_ERROR "At least one MDSLC frontend must be enabled")
+endif()
+
+if(MDSLC_ENABLE_MATCORE_MLIR)
+  if(NOT DEFINED MLIR_DIR OR MLIR_DIR STREQUAL "")
+    message(FATAL_ERROR
+      "MDSLC_ENABLE_MATCORE_MLIR requires an explicit MLIR_DIR for the "
+      "audited LLVM/Clang/MLIR 21.1.8 tuple")
+  endif()
+  find_package(LLVM 21.1.8 EXACT CONFIG REQUIRED)
+  find_package(Clang 21.1.8 EXACT CONFIG REQUIRED)
+  find_package(MLIR 21.1.8 EXACT CONFIG REQUIRED)
+  if(NOT LLVM_PACKAGE_VERSION VERSION_EQUAL "21.1.8" OR
+     NOT MLIR_VERSION VERSION_EQUAL "21.1.8")
+    message(FATAL_ERROR
+      "Matcore MLIR requires exact LLVM/Clang/MLIR 21.1.8 packages; found "
+      "LLVM ${LLVM_PACKAGE_VERSION} and MLIR ${MLIR_VERSION}")
+  endif()
+  foreach(MDSLC_REQUIRED_MLIR_TARGET IN ITEMS
+      MLIRIR
+      MLIRFuncDialect
+      MLIRParser
+      MLIRDestinationStyleOpInterface
+      MLIRSideEffectInterfaces)
+    if(NOT TARGET ${MDSLC_REQUIRED_MLIR_TARGET})
+      message(FATAL_ERROR
+        "MLIR 21.1.8 package is missing required component target "
+        "${MDSLC_REQUIRED_MLIR_TARGET}")
+    endif()
+  endforeach()
+  list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
+  include(AddLLVM)
+  include(AddMLIR)
+  message(STATUS
+    "MDSLC Matcore MLIR semantic layer: exact MLIR ${MLIR_VERSION} at ${MLIR_DIR}")
 endif()
 
 if(MDSLC_ENABLE_NATIVE_FRONTEND)
@@ -283,6 +322,9 @@ configure_file(
 
 add_subdirectory(lib/support)
 add_subdirectory(lib/ir)
+if(MDSLC_ENABLE_MATCORE_MLIR)
+  add_subdirectory(lib/mlir)
+endif()
 add_subdirectory(lib/frontend)
 add_subdirectory(lib/codegen)
 add_subdirectory(lib/platform)
@@ -290,6 +332,9 @@ add_subdirectory(tools/matcore-extract)
 add_subdirectory(lib/runtime)
 add_subdirectory(tools/matcore-plan)
 add_subdirectory(tools/matcore-bench)
+if(MDSLC_ENABLE_MATCORE_MLIR)
+  add_subdirectory(tools/matcore-mlir)
+endif()
 
 add_executable(mdslc_driver tools/mdslc/main.cpp)
 set_property(TARGET mdslc_driver PROPERTY EXPORT_NAME Compiler)
@@ -316,6 +361,13 @@ install(
   LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
   ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
 )
+if(MDSLC_ENABLE_MATCORE_MLIR)
+  # The semantic inspection tool is installed as a leaf executable. Its
+  # private MLIR implementation libraries are deliberately not exported, so
+  # installed MatcoreDSL consumers acquire no MLIR dependency.
+  install(TARGETS matcore-mlir
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endif()
 if(WIN32 AND MDSLC_ENABLE_NATIVE_FRONTEND)
   # Official LLVM distributions may expose clang-cpp/LLVM as imported shared
   # targets or as static component targets.  Copy only declared imported DLL
