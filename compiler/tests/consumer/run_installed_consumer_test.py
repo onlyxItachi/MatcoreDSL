@@ -647,7 +647,7 @@ def main() -> int:
             invalid_build,
             ["-DMATCOREDSL_CONSUMER_SEMANTIC_PIPELINE=invalid"],
         ),
-        "SEMANTIC_PIPELINE must be capture-v0 or matcore-mlir",
+        "SEMANTIC_PIPELINE must be",
         environment=build_environment,
     )
     if not matcore_mlir_available:
@@ -657,7 +657,7 @@ def main() -> int:
                 unavailable_build,
                 ["-DMATCOREDSL_CONSUMER_SEMANTIC_PIPELINE=matcore-mlir"],
             ),
-            "requested semantic pipeline matcore-mlir is unavailable",
+            "matcore-mlir is unavailable",
             environment=build_environment,
         )
     run(

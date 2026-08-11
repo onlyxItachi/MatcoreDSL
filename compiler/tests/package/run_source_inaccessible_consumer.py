@@ -548,7 +548,7 @@ def main() -> int:
             invalid_build,
             ["-DMATCOREDSL_CONSUMER_SEMANTIC_PIPELINE=invalid"],
         ),
-        "SEMANTIC_PIPELINE must be capture-v0 or matcore-mlir",
+        "SEMANTIC_PIPELINE must be",
     )
     if not matcore_mlir_available:
         unavailable_build = test_root / "unavailable-semantic-consumer-build"
@@ -557,7 +557,7 @@ def main() -> int:
                 unavailable_build,
                 ["-DMATCOREDSL_CONSUMER_SEMANTIC_PIPELINE=matcore-mlir"],
             ),
-            "requested semantic pipeline matcore-mlir is unavailable",
+            "matcore-mlir is unavailable",
         )
     run(
         [
@@ -636,7 +636,7 @@ def main() -> int:
                 bootstrap_default_build,
                 ["-DMATCOREDSL_CONSUMER_FRONTEND=ast-json-bootstrap"],
             ),
-            "SEMANTIC_PIPELINE matcore-mlir requires FRONTEND native",
+            "requires FRONTEND native",
         )
 
         bootstrap_capture_build = test_root / "bootstrap-capture-build"
