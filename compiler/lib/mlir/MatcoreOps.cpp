@@ -1523,11 +1523,12 @@ static bool verifyCompositionV1ModuleImpl(
     return false;
 
   std::size_t function_count = 0;
+  llvm::StringSet<> semantic_sites;
   for (mlir::Operation &top_level : module.getBody()->getOperations()) {
     auto function = mlir::dyn_cast<mlir::func::FuncOp>(&top_level);
     if (!function)
       return reject("composition-v1 permits only func.func at module scope");
-    ++function_count;
+    const std::size_t expected_ordinal = function_count++;
     if (!function.isPublic() || function.isDeclaration() ||
         !function.getBody().hasOneBlock())
       return reject(
@@ -1556,6 +1557,21 @@ static bool verifyCompositionV1ModuleImpl(
         function->getAttrOfType<mlir::StringAttr>("mdsl.site_id");
     if (!function_site || !isCanonicalSiteId(function_site.getValue()))
       return reject("composition-v1 function requires a canonical site ID");
+    if (!semantic_sites.insert(function_site.getValue()).second)
+      return reject("composition-v1 rejects duplicate semantic site IDs");
+    const auto capture_ordinal =
+        function->getAttrOfType<mlir::IntegerAttr>("mdsl.capture_ordinal");
+    if (!capture_ordinal ||
+        !capture_ordinal.getType().isSignlessInteger(64) ||
+        capture_ordinal.getInt() !=
+            static_cast<std::int64_t>(expected_ordinal))
+      return reject(
+          "composition-v1 capture ordinals must be contiguous and match module order");
+    const std::string expected_name =
+        "__matcore_semantic_" + function_site.getValue().str();
+    if (function.getName() != expected_name)
+      return reject(
+          "composition-v1 function symbol must match its semantic site ID");
 
     std::size_t gemm_count = 0;
     std::size_t map_count = 0;

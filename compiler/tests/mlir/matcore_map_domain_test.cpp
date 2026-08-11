@@ -608,6 +608,38 @@ dialect::MapOp findMap(mlir::ModuleOp module) {
   return result;
 }
 
+mlir::func::FuncOp appendSemanticRootClone(mlir::ModuleOp module,
+                                           mlir::OpBuilder &builder,
+                                           llvm::StringRef site_id,
+                                           std::int64_t capture_ordinal) {
+  auto original = *module.getOps<mlir::func::FuncOp>().begin();
+  auto duplicate =
+      mlir::cast<mlir::func::FuncOp>(original->clone());
+  duplicate->setAttr(
+      "sym_name",
+      builder.getStringAttr("__matcore_semantic_" + site_id.str()));
+  duplicate->setAttr("mdsl.site_id", builder.getStringAttr(site_id));
+  duplicate->setAttr("mdsl.capture_ordinal",
+                     builder.getI64IntegerAttr(capture_ordinal));
+  duplicate.walk([&](dialect::GemmOp gemm) {
+    gemm->setAttr("site_id", builder.getStringAttr(site_id));
+  });
+  duplicate.walk([&](dialect::MapOp map) {
+    map->setAttr(
+        "provenance",
+        withField(builder, map.getProvenance(), "source_anchor",
+                  builder.getStringAttr(site_id)));
+  });
+  duplicate.walk([&](dialect::SinOp sin) {
+    sin->setAttr(
+        "provenance",
+        withField(builder, sin.getProvenance(), "source_anchor",
+                  builder.getStringAttr(site_id)));
+  });
+  module.getBody()->push_back(duplicate);
+  return duplicate;
+}
+
 using MapMutation =
     std::function<void(dialect::MapOp, mlir::OpBuilder &)>;
 using ModuleMutation =
@@ -1202,13 +1234,65 @@ int main() {
         all_text,
         [](mlir::ModuleOp module, mlir::OpBuilder &builder) {
           module.walk([&](mlir::func::FuncOp function) {
+            constexpr llvm::StringLiteral changed_site =
+                "mc_00000000000000000000000000000000";
+            function->setAttr("mdsl.site_id",
+                              builder.getStringAttr(changed_site));
             function->setAttr(
-                "mdsl.site_id",
-                builder.getStringAttr("mc_00000000000000000000000000000000"));
+                "sym_name",
+                builder.getStringAttr("__matcore_semantic_" +
+                                      changed_site.str()));
           });
         },
         "GEMM site must match",
         "composition envelope must tie the semantic root to its GEMM site");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &builder) {
+          auto function = *module.getOps<mlir::func::FuncOp>().begin();
+          mlir::Operation *duplicate = function->clone();
+          duplicate->setAttr(
+              "sym_name",
+              builder.getStringAttr("__matcore_semantic_duplicate_root"));
+          module.getBody()->push_back(duplicate);
+        },
+        "duplicate semantic site IDs",
+        "composition envelope must reject duplicate semantic-root site identities");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &builder) {
+          auto function = *module.getOps<mlir::func::FuncOp>().begin();
+          function->setAttr("sym_name",
+                            builder.getStringAttr("semantic_root_alias"));
+        },
+        "function symbol must match",
+        "composition envelope must bind each function symbol to its site identity");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &builder) {
+          auto function = *module.getOps<mlir::func::FuncOp>().begin();
+          function->setAttr("mdsl.capture_ordinal",
+                            builder.getI64IntegerAttr(1));
+        },
+        "capture ordinals must be contiguous",
+        "composition envelope must require a zero-based first capture ordinal");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &builder) {
+          appendSemanticRootClone(
+              module, builder, "mc_11111111111111111111111111111111", 0);
+        },
+        "capture ordinals must be contiguous",
+        "composition envelope must reject duplicate capture ordinals");
+    expectEnvelopeRejected(
+        all_text,
+        [](mlir::ModuleOp module, mlir::OpBuilder &builder) {
+          mlir::func::FuncOp second = appendSemanticRootClone(
+              module, builder, "mc_11111111111111111111111111111111", 1);
+          second->moveBefore(&module.getBody()->front());
+        },
+        "capture ordinals must be contiguous",
+        "composition envelope must reject semantic-root reordering");
     expectEnvelopeRejected(
         all_text,
         [](mlir::ModuleOp module, mlir::OpBuilder &) {

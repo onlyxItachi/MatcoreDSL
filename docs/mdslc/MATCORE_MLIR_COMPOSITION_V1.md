@@ -29,7 +29,12 @@ mdsl.source_file         = <nonempty .mdsl path>
 At module scope, only `func.func` is allowed. Each semantic-root function is
 public, defined, and single-block, with three unencoded ranked-tensor
 arguments and one unencoded ranked-tensor result. Its `FileLineColLoc` names
-the module source and it carries a canonical `mdsl.site_id`.
+the module source. Semantic roots remain in capture order: each carries a
+unique canonical `mdsl.site_id`, has the exact symbol
+`__matcore_semantic_<site-id>`, and has a signless-i64
+`mdsl.capture_ordinal` equal to its zero-based module position. Duplicate site
+IDs, missing/duplicate/noncontiguous ordinals, reordered roots, and symbols
+that do not match their site reject.
 
 The version-1 function body contains exactly one `mdsl.gemm`, at least one
 `mdsl.map`, and exactly one `func.return`. Direct function calls, declarations,
