@@ -71,6 +71,13 @@ frozen.
 11. **Semantic/execution separation.** Mathematical operation identity should
     remain independent of execution intent, target capability, selected
     provider, private blocking profile, and microkernel identity.
+12. **Destination-tied semantic result.** The semantic GEMM result is the
+    post-overwrite value of the explicit write-only destination, not an
+    independently allocated tensor. Bufferization must alias those identities
+    and preserve the observable destination write.
+13. **Preconditions are not facts.** Required alignment and no-alias contracts
+    may guide legality, but an optimizer may consume them only after static
+    proof or a dominating guard that rejects before output mutation.
 
 ## Interfaces that may need redesign before freeze
 
@@ -121,9 +128,12 @@ frozen.
     reassociation only inside one output's K reduction; implementation-defined
     K order; NaN/non-finite preservation without payload/order guarantees;
     relaxed signed zero; approximate math forbidden; explicit destination
-    overwrite; no input/output alias or in-place operand mutation. The MLIR
-    encoding and backend conformance still require tests, and the eventual
-    device-neutral public representation remains a pre-freeze decision.
+    overwrite; no input/output alias or in-place operand mutation;
+    round-to-nearest-ties-even; non-trapping exceptions; gradual subnormals
+    with FTZ/DAZ disabled; and no exact exception-status-flag preservation
+    guarantee. The MLIR encoding, runtime environment preflight, and backend
+    conformance still require tests, and the eventual device-neutral public
+    representation remains a pre-freeze decision.
 12. **Execution intent.** `generic`, `inference`, and `training` require a
     versioned compilation/execution context. Intent alone must not imply
     immutability, prepacking permission, saved-intermediate lifetime, or
@@ -192,6 +202,10 @@ The freeze milestone must answer these explicitly:
   external provider changes?
 - Which numerical permissions originate in the language contract, which are
   compilation options, and which may a backend only consume after planning?
+- Which component checks rounding, trap masks, FTZ/DAZ, and provider
+  conformance on each supported platform before any output mutation?
+- Are floating-point exception-status flags intentionally outside the public
+  semantic result, and how is that limitation diagnosed?
 - How are untouched elements defined for partial-domain transformations, and
   when may a semantic result alias its destination?
 - How are MLIR-cloned/transformed operations tied back to authenticated source
@@ -224,6 +238,8 @@ Candidates for later design work, not approved APIs:
    identity and detected target capability.
 9. A structured recognition report that separates pattern recognition from
    legal permission to replace ordinary C++.
+10. A required-precondition record distinguishable from statically proven or
+    guard-established alignment/alias facts.
 
 ## Operation readiness
 
@@ -253,6 +269,8 @@ The separate freeze milestone should not begin until:
 - transformed-operand ownership and invalidation are decided;
 - numerical semantics, execution intent, target policy versus capability, and
   source-provenance ownership are decided;
+- the supported floating-point environment and exception-status behavior are
+  encoded, checked before execution, and covered by backend conformance tests;
 - operation/version evolution and deprecation rules are written; and
 - an independent ABI/backend-contract review has no unresolved high or medium
   finding.

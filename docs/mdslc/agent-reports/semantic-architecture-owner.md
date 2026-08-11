@@ -87,7 +87,38 @@ ordinary C++ is preserved.
 
 The initial architecture commit is
 `6b7870784264f9e8ef9401d37ef605d81458e715`. The numerical-profile follow-up
-is a separate focused commit whose SHA is supplied at handoff.
+is `f603c9b5649e527762d7b3197a27a8738525f8fe`. The M1--M4 review-closure
+commit is reported at handoff because recording its own object ID in its
+contents would be self-referential.
+
+## Milestone A review closure M1--M4
+
+The accepted architecture review identified four medium findings. This lane
+resolved them as follows:
+
+1. **Precondition/fact separation.** V1 alignment and no-alias fields are
+   required preconditions, not proven properties of runtime SSA values. Static
+   proof or a dominating runtime guard is required before optimization uses
+   them. Dynamic failure precedes packing and every destination mutation.
+2. **Destination/result identity.** `mdsl.gemm` returns the post-overwrite
+   semantic value tied to the explicit write-only destination, not new storage.
+   Bufferization aliases result and destination storage, while the observable
+   write remains non-DCE even when the SSA result is unused.
+3. **Floating-point environment.** `explicit-gemm-f32-v1` requires
+   round-to-nearest-ties-even, masked/non-trapping exceptions, and gradual
+   subnormals with FTZ/DAZ disabled. Incoming exception flags need not be
+   preserved and the exact post-call set may reflect the permitted contraction
+   and reduction order. The current runtime does not yet check all these
+   conditions; Milestone E must fail closed before mutation and prove backend
+   conformance with subnormal/non-finite fixtures.
+4. **HOW/MACHINE boundary.** Linalg, Tensor, MemRef, Vector, and generic GPU
+   dialects remain HOW-level substrates while implementation alternatives
+   exist. MACHINE begins when LLVM or a target-specific dialect/toolchain such
+   as NVGPU/NVVM or AMDGPU/ROCDL structurally commits the machine choice.
+
+These are architecture and future acceptance requirements. They do not claim
+the current runtime has already implemented the new floating-point-environment
+guard.
 
 ## Coherent MLIR 21 toolchain evidence
 

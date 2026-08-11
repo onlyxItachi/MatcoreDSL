@@ -64,13 +64,21 @@ The architecture has three non-overlapping responsibility layers:
 | Layer | Owner | Examples |
 | --- | --- | --- |
 | WHAT | authenticated capture plus the Matcore MLIR semantic dialect | GEMM, map domain, types, shapes, numerical intent, effects, aliases, provenance |
-| HOW | MDSLC legality, planning, structured transformation, scheduling, and library/generated-code selection | OpenBLAS versus native, fusion legality, tiling, vectorization, target constraints |
-| MACHINE | upstream target dialects, LLVM and platform/vendor toolchains | Linalg/Tensor/MemRef/Vector/GPU, LLVM, NVVM, ROCDL, object generation, linking |
+| HOW | MDSLC legality, planning, structured transformation, scheduling, and library/generated-code selection | Linalg/Tensor/MemRef/Vector and generic GPU substrates, OpenBLAS versus native, fusion legality, bufferization, tiling, vectorization, target constraints |
+| MACHINE | LLVM and target-specific dialects plus platform/vendor toolchains | LLVM, NVGPU/NVVM, AMDGPU/ROCDL, target object generation, assembly, and linking |
 
 The semantic dialect never contains a premature implementation name such as
 `tensor_core_gemm`, `openblas_gemm`, or a particular microkernel tile. Such a
 choice belongs to HOW until the selected lower representation structurally
 encodes it.
+
+An upstream dialect is not automatically MACHINE-level merely because it is
+downstream. Linalg, Tensor, MemRef, and Vector remain HOW substrates while
+alternative layouts, schedules, libraries, or targets are still possible. The
+boundary is crossed only when LLVM or a target-specific representation such as
+NVGPU/NVVM or AMDGPU/ROCDL structurally commits the relevant machine choice.
+The transition may occur operation by operation; it is not a single
+module-wide phase switch.
 
 Clang remains the C++ parser, Sema implementation, source manager, and host
 compiler. It is not the matrix optimizer. MLIR supplies SSA values, regions,
@@ -117,11 +125,18 @@ meaning. Matcore attributes/interfaces add only semantics not already encoded
 upstream.
 
 The initial GEMM is destination-aware so the explicit `out(C)` mutation is not
-lost. Its semantic result participates in SSA composition while the
-destination relationship, write effect, and required no-alias facts remain
-explicit until bufferization or a later lowering structurally consumes them.
-The verifier rejects any bridge that cannot represent the current overwrite,
-shape, alias, or synchronization contract exactly.
+lost. Its SSA result is the post-overwrite semantic tensor value tied to that
+explicit destination; it is not a newly allocated independent tensor. The
+destination is write-only for GEMM and is not read as an initialization or
+accumulator operand. Bufferization must alias the result to the destination's
+storage. The destination write remains an observable effect and cannot be
+removed merely because the SSA result is unused.
+
+The result participates in composition while the destination relationship,
+write effect, and required no-alias preconditions remain explicit until a
+verified lowering structurally consumes them. The verifier rejects any bridge
+that cannot represent the overwrite, result/destination identity, shape,
+preconditions, or synchronization contract exactly.
 
 ### Deterministic v1-to-dialect bridge
 
@@ -172,6 +187,10 @@ C++ triple loop. Its canonical semantic profile is:
 | NaN/non-finite behavior | NaNs are not assumed absent and may not be optimized away; if a NaN participates in a contributing arithmetic path, the corresponding result remains NaN. Payload, sign, signaling state, and which NaN propagates are not guaranteed. Infinity arithmetic follows IEEE behavior for the implementation's permitted contraction and reduction order; no `no-nans` or `no-infs` assumption is permitted. |
 | signed zero | relaxed; the sign of an exact zero result is not guaranteed |
 | approximate math | forbidden; no approximate reciprocal, transcendental, reduced-precision substitution, or term dropping is authorized |
+| rounding mode | round-to-nearest, ties-to-even is required |
+| trapping exceptions | unsupported; an environment with unmasked/trapping floating-point exceptions is illegal for this profile |
+| exception status flags | incoming flag state need not be preserved and no exact post-call flag set is guaranteed; flags may reflect the selected permitted contraction and reduction order |
+| subnormals | IEEE gradual underflow is required; flush-to-zero and denormals-are-zero must be disabled unless a separately represented future policy explicitly permits them |
 | mutation/aliasing | the explicit destination is overwritten, is not read as an accumulator input, and must not alias either input; input mutation and in-place operand transformation are forbidden |
 
 Reassociation permission is local: it does not permit moving arithmetic across
@@ -185,6 +204,16 @@ GEMM reduction without pretending to reproduce increasing-K scalar evaluation.
 Each backend still requires a conformance/legality check; the profile does not
 make a provider legal merely because it is available.
 
+The current runtime does not yet perform the complete rounding, trap-mask, and
+FTZ/DAZ preflight required by this profile. This ADR records the required
+semantics; it does not retroactively validate that missing guard. Before the
+Milestone E execution route is accepted, each platform/backend combination
+must prove conformance and the runtime must verify every dynamically observable
+environment requirement it relies on. An unsupported rounding mode, enabled
+trapping exception, or disallowed FTZ/DAZ state fails closed before packing or
+destination mutation. Subnormal and non-finite correctness fixtures are part
+of that gate.
+
 The profile must not be inherited by recovered C++ loop nests. A loop's
 contraction, reassociation, order, non-finite, signed-zero, and approximation
 permissions come from its source semantics and effective compiler options. A
@@ -196,6 +225,26 @@ untouched.
 
 Deterministic textual output is a test and inspection contract. It is not a
 new source-language or persistent JSON schema.
+
+### Required preconditions are not proven facts
+
+Matcore IR v1's alignment and alias fields state requirements that a legal
+execution must satisfy. They are not evidence that a particular runtime value
+is aligned or that two buffers cannot overlap. The bridge therefore represents
+them as required preconditions, not unconditional optimizer facts.
+
+An optimization may consume an alignment or no-alias precondition only after:
+
+- static analysis proves it for the actual SSA values; or
+- a dominating runtime guard checks it on every path reaching the optimized
+  operation.
+
+A planner may form a conditional candidate from such a requirement, but the
+selected implementation cannot execute until its guard succeeds. Dynamic
+rejection must occur before packing, destination writes, or any other output
+mutation. A check after speculative vector access or partial computation is not
+a legal guard. Hoisting or combining guards must itself preserve effects and
+observable failure order.
 
 ### Numerical semantics
 
@@ -310,6 +359,10 @@ C ABI/library route, provided the decision is explicit, loss-checked, and
 tested. A later structured Linalg/Vector/LLVM route must earn acceptance with
 the same artifact and correctness gates.
 
+In that route, Linalg, Tensor, MemRef, and Vector are still HOW-level
+representations. The MACHINE boundary begins only after lowering commits to
+LLVM or an equivalent target-specific dialect/toolchain contract.
+
 Native/OpenBLAS parity remains valuable evidence, not the definition of the
 CPU beta. The planner selects the best validated legal candidate in its
 supported search space and continues to report when that candidate is
@@ -402,10 +455,10 @@ schemas or public API specifications.
 | Milestone | Required before normal merge |
 | --- | --- |
 | A | repository/GitHub truth recorded; ADR, roadmap, status, and pre-freeze log agree; coherent toolchain gate documented; independent architecture review; docs/hygiene checks |
-| B | coherent MLIR 21 configure; generated dialect builds; parser/printer round-trip; deterministic v1 bridge with reviewed explicit-GEMM numerical policy; source-derived numerical proof required for recovered loops; verifier negatives for every represented contract; no v0/v1 regression; independent semantic review |
+| B | coherent MLIR 21 configure; generated dialect builds; parser/printer round-trip; deterministic v1 bridge with reviewed explicit-GEMM numerical policy, destination-tied result, and precondition/fact distinction; source-derived numerical proof required for recovered loops; verifier negatives for every represented contract; no v0/v1 regression; independent semantic review |
 | C | GEMM-to-SIN(all) and partial-domain goldens; SSA/use-def verification; domain, effect, alias, mutation, and numerical negative tests; deterministic round-trip; no broad op catalog |
 | D | explicit and canonical-loop semantic equivalence; recognition-only diagnostics; alias/dependence/numerical/barrier/macro/volatile/atomic fail-closed fixtures; unchanged ordinary-C++ artifacts on rejection |
-| E | `.mdsl` through verified MLIR to legal CPU route; independent oracle; ordinary object and executable inspection; forced-illegal failure; Release, Debug, supported sanitizers, install, relocation, and external consumer on Linux; Windows compatibility plan/gate remains green |
+| E | `.mdsl` through verified MLIR to legal CPU route; static proof or dominating runtime guards for alias/alignment; round-to-nearest, non-trapping, gradual-subnormal environment checks before mutation; backend numerical conformance; independent oracle; ordinary object and executable inspection; forced-illegal failure; Release, Debug, supported sanitizers, install, relocation, and external consumer on Linux; Windows compatibility plan/gate remains green |
 | F | unchanged authenticated forward/reverse envelope on a quiescent host, or an explicit bounded technical-limit report; no benchmark-contract mutation; issue #15 updated honestly |
 | G | transformed-operand ownership/identity/lifetime/invalidation, report iteration, variant identity, execution context, dynamic shape, diagnostics ownership, execution intent, and operation evolution decisions reviewed; compatibility tests cover retained exports |
 | H | clean Release/Debug/sanitizer/package/consumer/Windows/native-artifact/IR/recognition/planner/performance-sanity/hygiene suite; independent adversarial review; beta claim matches executed scope |
@@ -439,24 +492,27 @@ The highest semantic and ABI rework risks are:
 
 1. mapping explicit overwrite/destination effects into tensor SSA without
    losing observable mutation;
-2. specifying numerical behavior tightly enough that existing native and
+2. preventing alignment/no-alias preconditions from being treated as facts
+   before proof or a dominating guard;
+3. specifying and dynamically enforcing the floating-point environment tightly
+   enough that existing native and
    external-library variants can be proven legal;
-3. representing dynamic symbol equality without accidental cross-operation
+4. representing dynamic symbol equality without accidental cross-operation
    unification;
-4. distinguishing source recognition from permission to remove a loop;
-5. expressing partial-domain untouched elements and in-place behavior;
-6. preserving exact source/provenance identity through MLIR cloning and
+5. distinguishing source recognition from permission to remove a loop;
+6. expressing partial-domain untouched elements and in-place behavior;
+7. preserving exact source/provenance identity through MLIR cloning and
    transformations;
-7. preventing execution intent from becoming an implicit immutability or cache
+8. preventing execution intent from becoming an implicit immutability or cache
    promise;
-8. preventing target policy, detected capability, and selected implementation
+9. preventing target policy, detected capability, and selected implementation
    from collapsing into one field;
-9. transformed-operand source identity, ownership, cross-context sharing,
+10. transformed-operand source identity, ownership, cross-context sharing,
    lifetime, invalidation, and size bounds;
-10. fixed candidate arrays and public forced-variant enums coupling ABI growth
+11. fixed candidate arrays and public forced-variant enums coupling ABI growth
     to private microkernels;
-11. structured diagnostics and requested-versus-actual resource reporting; and
-12. operation/version evolution before a public beta contract is named.
+12. structured diagnostics and requested-versus-actual resource reporting; and
+13. operation/version evolution before a public beta contract is named.
 
 These are design gates, not reasons to leak private packing or microkernel
 details into public headers.

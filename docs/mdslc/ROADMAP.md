@@ -77,6 +77,9 @@ The invariant is that lowering consumes information only after its meaning is
 structurally represented downstream or every optimizer that needs it has made
 its decision. WHAT, HOW, and MACHINE responsibilities are defined by
 [ADR-0009](../adr/0009-mdslc-semantic-compiler-foundation.md).
+Linalg, Tensor, MemRef, and Vector remain HOW-level structured substrates;
+MACHINE begins when LLVM or a target-specific dialect/toolchain structurally
+encodes the selected target choice.
 
 ## Milestones A--H
 
@@ -113,9 +116,17 @@ signed zero, no approximate math, explicit destination overwrite, and no
 input/output aliasing or in-place operand mutation. Recovered loops require
 source-derived proof and cannot inherit these permissions.
 
+`mdsl.gemm` produces the post-overwrite semantic value of its explicit
+write-only destination, not independent allocated storage. Bufferization must
+alias result storage to that destination and preserve the observable write.
+Alignment and no-alias fields are required preconditions, not proven facts;
+they become optimization facts only after static proof or a dominating runtime
+guard whose rejection occurs before output mutation.
+
 Gate: matching LLVM/Clang/MLIR 21.1.8; generated dialect build; deterministic
-parse/print and v1 bridge goldens; malformed semantic negatives; unchanged
-v0/v1 compatibility tests; independent semantic review.
+parse/print and v1 bridge goldens; destination/result and precondition/fact
+verifier negatives; malformed semantic negatives; unchanged v0/v1
+compatibility tests; independent semantic review.
 
 ### C — Multi-op and domain semantics
 
@@ -148,12 +159,16 @@ Status: depends on B and the relevant C semantics.
 
 Route authenticated capture through verified Matcore MLIR into legal CPU
 planning/lowering, reusing the current runtime and implementation registry.
-Structured Linalg/Vector/LLVM work may be added only when it provides a
-validated, explicit alternative. Do not replace proven code merely to claim
-MLIR usage.
+Structured Linalg/Tensor/MemRef/Vector work may be added as HOW-level
+substrates only when it provides a validated, explicit alternative. LLVM and
+target-specific dialect/toolchain lowering begins MACHINE. Do not replace
+proven code merely to claim MLIR usage.
 
 Gate: correct `.mdsl -> v1 -> mdsl MLIR -> CPU -> .o -> executable`,
-independent oracle, artifact inspection, forced-illegal failure, Release,
+static proof or dominating pre-mutation guards for alias/alignment,
+round-to-nearest-ties-even, non-trapping exceptions, gradual subnormal
+handling with FTZ/DAZ disabled, backend numerical conformance, independent
+oracle, artifact inspection, forced-illegal/environment failure, Release,
 Debug, sanitizers, package relocation, external consumer, and Windows
 compatibility.
 

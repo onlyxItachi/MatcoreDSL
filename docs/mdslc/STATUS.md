@@ -50,23 +50,41 @@ verify it. The policy permits FMA and reassociation only within a GEMM K
 reduction, leaves K order implementation-defined, preserves NaN/non-finite
 semantics without payload/order guarantees, relaxes signed zero, forbids
 approximate math, overwrites an explicit non-aliasing destination, and forbids
-in-place operand mutation. Recovered loops require source-derived proof and
-cannot inherit these permissions. No bridge is called fully lossless until
-those semantics are represented and verified. No second JSON optimizer schema
-is planned.
+in-place operand mutation. It additionally requires round-to-nearest-ties-even,
+masked/non-trapping exceptions, gradual subnormals with FTZ/DAZ disabled, and
+makes no exact exception-status-flag preservation guarantee. Recovered loops
+require source-derived proof and cannot inherit these permissions. No bridge is
+called fully lossless until those semantics are represented and verified. No
+second JSON optimizer schema is planned.
 
 Responsibilities are now explicit:
 
 ```text
 WHAT     authenticated capture + Matcore semantic MLIR
-HOW      MDSLC legality, planning, transformations, scheduling and selection
-MACHINE  upstream target dialects, LLVM and platform/vendor toolchains
+HOW      planning/transformation plus Linalg/Tensor/MemRef/Vector substrates
+MACHINE  LLVM or target-specific dialects and platform/vendor toolchains
 ```
 
 Lowering may consume a semantic fact only after the next representation
 structurally encodes it or every optimization needing it has completed.
+Linalg/Tensor/MemRef/Vector remain HOW while alternatives are still possible;
+being an upstream dialect does not itself make a representation MACHINE-level.
 Recognition of an ordinary C++ idiom is not permission to replace it. Failed
 or unproven implicit raising preserves ordinary C++ behavior.
+
+The `mdsl.gemm` result is defined as the post-overwrite semantic value tied to
+the explicit write-only destination. It is not an independent allocation;
+bufferization must alias it to destination storage, and the observable write
+cannot be removed because the SSA result is unused. V1 alignment and alias
+requirements are preconditions rather than facts. An optimization may consume
+them only after static proof or a dominating runtime guard, with dynamic
+rejection before packing or output mutation.
+
+The existing CPU runtime does not yet validate the full rounding mode,
+trap-mask, and FTZ/DAZ environment contract. Milestone E must add fail-closed
+preflight and backend conformance/subnormal/non-finite tests before the new
+semantic route executes. Earlier CPU correctness evidence is not retroactively
+claimed as this floating-point-environment gate.
 
 The first staged work is architecture freeze, the MLIR core and deterministic
 v1 bridge, GEMM-to-SIN domain composition, conservative explicit/recovered
