@@ -96,6 +96,7 @@ add_library(matcore_cpu_backends_v1 STATIC
 )
 add_library(MatcoreDSL::CpuBackendsV1 ALIAS matcore_cpu_backends_v1)
 target_compile_features(matcore_cpu_backends_v1 PUBLIC cxx_std_20)
+mdslc_target_enable_precise_fp(matcore_cpu_backends_v1)
 target_include_directories(matcore_cpu_backends_v1 PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
 )
@@ -114,6 +115,7 @@ add_library(MatcoreDSL::Runtime ALIAS matcore_runtime)
 set_property(TARGET matcore_runtime PROPERTY EXPORT_NAME Runtime)
 
 target_compile_features(matcore_runtime PUBLIC cxx_std_20)
+mdslc_target_enable_precise_fp(matcore_runtime)
 target_compile_definitions(matcore_runtime PRIVATE MATCORE_RUNTIME_BUILD)
 target_link_libraries(matcore_runtime PRIVATE MatcoreDSL::CpuPlannerV1)
 if(MDSLC_HAS_OPENBLAS)
@@ -165,6 +167,26 @@ if(WIN32)
 endif()
 
 if(BUILD_TESTING)
+  add_test(
+    NAME runtime.fp.compile_profile
+    COMMAND "${CMAKE_COMMAND}"
+      "-DMDSLC_NINJA=${CMAKE_MAKE_PROGRAM}"
+      "-DMDSLC_BINARY_DIR=${CMAKE_BINARY_DIR}"
+      "-DMDSLC_MSVC_ABI=${MDSLC_USING_MSVC_ABI_FRONTEND}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/cmake/check_runtime_fp_compile_profile.cmake"
+  )
+
+  add_test(
+    NAME runtime.fp.reject_unsafe_global_flags
+    COMMAND "${CMAKE_COMMAND}"
+      "-DMDSLC_CMAKE=${CMAKE_COMMAND}"
+      "-DMDSLC_NINJA=${CMAKE_MAKE_PROGRAM}"
+      "-DMDSLC_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
+      "-DMDSLC_TEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/unsafe-fp-configure-test"
+      "-DMDSLC_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/cmake/reject_unsafe_fp_flags.cmake"
+  )
+
   add_executable(matcore_numeric_reference_test
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/types/reference_types_test.cpp"
   )
