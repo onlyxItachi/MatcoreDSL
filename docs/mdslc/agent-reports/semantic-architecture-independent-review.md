@@ -1,7 +1,7 @@
 # Semantic architecture independent review
 
-Date: 2026-08-11  
-Reviewed branch: `mdslc/semantic-compiler-foundation-v1`  
+Date: 2026-08-11
+Reviewed branch: `mdslc/semantic-compiler-foundation-v1`
 Accepted checkpoint: `b233017`
 
 ## Verdict
