@@ -62,6 +62,7 @@ if(BUILD_TESTING)
     PRIVATE
       matcore_mlir_semantics
       MLIRParser
+      MLIRTransforms
   )
   target_include_directories(
     matcore_mlir_semantics_tests

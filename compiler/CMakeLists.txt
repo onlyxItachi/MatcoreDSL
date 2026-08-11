@@ -109,6 +109,7 @@ if(MDSLC_ENABLE_MATCORE_MLIR)
       MLIRIR
       MLIRFuncDialect
       MLIRParser
+      MLIRTransforms
       MLIRDestinationStyleOpInterface
       MLIRSideEffectInterfaces)
     if(NOT TARGET ${MDSLC_REQUIRED_MLIR_TARGET})

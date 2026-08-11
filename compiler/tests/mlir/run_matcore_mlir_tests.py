@@ -37,6 +37,8 @@ def main() -> int:
             str(v1_input),
             "--numerical-profile",
             profile,
+            "--execution-intent",
+            "generic",
         ]
     )
     require(first.returncode == 0, f"valid bridge failed: {first.stderr}")
@@ -50,6 +52,8 @@ def main() -> int:
             str(v1_input),
             "--numerical-profile",
             profile,
+            "--execution-intent",
+            "generic",
         ]
     )
     require(second.returncode == 0 and second.stdout == first.stdout,
@@ -64,6 +68,8 @@ def main() -> int:
                 str(v1_input),
                 "--numerical-profile",
                 profile,
+                "--execution-intent",
+                "generic",
                 "--output",
                 str(output),
             ]
@@ -74,8 +80,14 @@ def main() -> int:
 
     negative_cases = [
         (
-            [str(options.tool), "--input", str(v1_input)],
+            [str(options.tool), "--input", str(v1_input),
+             "--execution-intent", "generic"],
             "--numerical-profile is required",
+        ),
+        (
+            [str(options.tool), "--input", str(v1_input),
+             "--numerical-profile", profile],
+            "--execution-intent is required",
         ),
         (
             [
@@ -84,8 +96,22 @@ def main() -> int:
                 str(v1_input),
                 "--numerical-profile",
                 "implicit-default",
+                "--execution-intent",
+                "generic",
             ],
             "unsupported numerical profile",
+        ),
+        (
+            [
+                str(options.tool),
+                "--input",
+                str(v1_input),
+                "--numerical-profile",
+                profile,
+                "--execution-intent",
+                "training",
+            ],
+            "unsupported execution intent",
         ),
         (
             [
@@ -94,6 +120,8 @@ def main() -> int:
                 str(v0_input),
                 "--numerical-profile",
                 profile,
+                "--execution-intent",
+                "generic",
             ],
             "unsupported Matcore IR version; expected version 1",
         ),
@@ -104,6 +132,8 @@ def main() -> int:
                 str(malformed_input),
                 "--numerical-profile",
                 profile,
+                "--execution-intent",
+                "generic",
             ],
             "verified Matcore IR v1 input required",
         ),
@@ -114,6 +144,8 @@ def main() -> int:
                 str(v1_input),
                 "--numerical-profile",
                 profile,
+                "--execution-intent",
+                "generic",
                 "--output",
                 str(v1_input),
             ],

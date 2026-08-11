@@ -36,6 +36,12 @@ enum class NaNSemantics {
   PreserveClassificationPayloadOrderUnspecified,
 };
 
+enum class InfinitySemantics {
+  Invalid,
+  IeeeNoNoInfsAssumption,
+  AssumeAbsent,
+};
+
 enum class SignedZeroSemantics { Invalid, Preserve, Relaxed };
 enum class RoundingSemantics { Invalid, NearestTiesEven };
 enum class TrappingExceptionSemantics { Invalid, Unsupported };
@@ -53,6 +59,7 @@ struct NumericalSemantics {
   ReductionOrderSemantics reduction_order =
       ReductionOrderSemantics::Invalid;
   NaNSemantics nan = NaNSemantics::Invalid;
+  InfinitySemantics infinity = InfinitySemantics::Invalid;
   SignedZeroSemantics signed_zero = SignedZeroSemantics::Invalid;
   RoundingSemantics rounding = RoundingSemantics::Invalid;
   TrappingExceptionSemantics trapping_exceptions =
@@ -64,6 +71,13 @@ struct NumericalSemantics {
   Permission inplace = Permission::Invalid;
 };
 
+enum class ExecutionIntent {
+  Invalid,
+  Generic,
+  Inference,
+  Training,
+};
+
 struct BridgeContext {
   // A caller must name and supply a complete reviewed profile. An empty or
   // anonymous context is invalid and never acquires permissions from a target.
@@ -71,6 +85,7 @@ struct BridgeContext {
   // point environment; execution lowering must validate that separately.
   std::string numerical_profile;
   NumericalSemantics numerical;
+  ExecutionIntent execution_intent = ExecutionIntent::Invalid;
 };
 
 BridgeContext explicitGemmF32V1BridgeContext();
@@ -92,9 +107,11 @@ BridgeResult bridgeV1ToMatcoreMlir(const ir::v1::Module &source,
                                    mlir::MLIRContext &context,
                                    const BridgeContext &bridge_context);
 
-// Verifies module-level bridge structure in addition to normal MLIR/dialect
-// verification. This is used after construction and after textual parsing.
-bool verifyMatcoreSemanticModule(mlir::ModuleOp module, std::string &error);
+// Verifies the strict explicit Matcore IR v1 bridge envelope in addition to
+// normal MLIR/dialect verification. It is intentionally not the general
+// compositional-module verifier: recovered and future multi-op modules use
+// their own envelope while their operations remain dialect-verifiable.
+bool verifyMatcoreV1BridgeModule(mlir::ModuleOp module, std::string &error);
 
 // Stable inspection text with debug locations and exactly one trailing LF.
 std::string serializeDeterministicMlir(mlir::ModuleOp module);

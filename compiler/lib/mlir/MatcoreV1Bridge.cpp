@@ -37,6 +37,7 @@ bool exactExplicitGemmF32Context(const BridgeContext &context) {
              ReductionOrderSemantics::ImplementationDefinedWithinK &&
          numerical.nan ==
              NaNSemantics::PreserveClassificationPayloadOrderUnspecified &&
+         numerical.infinity == InfinitySemantics::IeeeNoNoInfsAssumption &&
          numerical.signed_zero == SignedZeroSemantics::Relaxed &&
          numerical.rounding == RoundingSemantics::NearestTiesEven &&
          numerical.trapping_exceptions ==
@@ -46,7 +47,8 @@ bool exactExplicitGemmF32Context(const BridgeContext &context) {
          numerical.subnormals ==
              SubnormalSemantics::IeeeGradualFtzDazForbidden &&
          numerical.approximate_math == Permission::Forbidden &&
-         numerical.inplace == Permission::Forbidden;
+         numerical.inplace == Permission::Forbidden &&
+         context.execution_intent == ExecutionIntent::Generic;
 }
 
 bool fitsSigned64(std::uint64_t value) {
@@ -204,11 +206,13 @@ mlir::DictionaryAttr provenanceAttribute(mlir::Builder &builder,
                             builder.getI64IntegerAttr(operation.source.column)),
        builder.getNamedAttr("file",
                             builder.getStringAttr(operation.source.file)),
+       builder.getNamedAttr("kind", builder.getStringAttr("explicit_call")),
        builder.getNamedAttr("line",
                             builder.getI64IntegerAttr(operation.source.line)),
        builder.getNamedAttr(
            "offset", builder.getI64IntegerAttr(
-                         static_cast<std::int64_t>(operation.source.offset)))});
+                         static_cast<std::int64_t>(operation.source.offset))),
+       builder.getNamedAttr("version", builder.getI32IntegerAttr(1))});
 }
 
 mlir::ArrayAttr stringArray(mlir::Builder &builder,
@@ -270,9 +274,14 @@ mlir::DictionaryAttr numericalAttribute(mlir::Builder &builder) {
       {builder.getNamedAttr("accumulation_dtype", builder.getStringAttr("f32")),
        builder.getNamedAttr("approximate_math", builder.getBoolAttr(false)),
        builder.getNamedAttr("contraction", builder.getStringAttr("allowed")),
+       builder.getNamedAttr("derivation",
+                            builder.getStringAttr("explicit_edsl_contract")),
        builder.getNamedAttr(
            "exception_status",
            builder.getStringAttr("incoming_not_preserved_postcall_unspecified")),
+       builder.getNamedAttr(
+           "infinity",
+           builder.getStringAttr("ieee_no_no_infs_assumption")),
        builder.getNamedAttr("inplace", builder.getBoolAttr(false)),
        builder.getNamedAttr(
            "nan",
@@ -333,7 +342,10 @@ mlir::LogicalResult addOperationFunction(
   builder.setInsertionPointToEnd(module.getBody());
   auto function = mlir::func::FuncOp::create(source_location, function_name,
                                               function_type);
-  function.setPrivate();
+  // Public visibility is an internal semantic-IR liveness root: MLIR 21
+  // SymbolDCE otherwise removes every unreferenced private capture function.
+  // It is not a promised native ABI. Milestone E must deliberately choose
+  // collision-safe names and visibility before machine artifact emission.
   function->setAttr("mdsl.capture_ordinal",
                     builder.getI64IntegerAttr(static_cast<std::int64_t>(ordinal)));
   function->setAttr("mdsl.site_id", builder.getStringAttr(operation.site_id));
@@ -355,7 +367,9 @@ mlir::LogicalResult addOperationFunction(
                     "canonical_callee",
                     builder.getStringAttr(operation.canonical_callee)),
                 builder.getNamedAttr("kind",
-                                     builder.getStringAttr("explicit_call"))})),
+                                     builder.getStringAttr("explicit_call")),
+                builder.getNamedAttr("version",
+                                     builder.getI32IntegerAttr(1))})),
        builder.getNamedAttr(
            "accumulation_type",
            mlir::TypeAttr::get(elementType(builder, operation.accumulation_dtype))),
@@ -416,6 +430,7 @@ BridgeContext explicitGemmF32V1BridgeContext() {
       ReductionOrderSemantics::ImplementationDefinedWithinK;
   context.numerical.nan =
       NaNSemantics::PreserveClassificationPayloadOrderUnspecified;
+  context.numerical.infinity = InfinitySemantics::IeeeNoNoInfsAssumption;
   context.numerical.signed_zero = SignedZeroSemantics::Relaxed;
   context.numerical.rounding = RoundingSemantics::NearestTiesEven;
   context.numerical.trapping_exceptions =
@@ -426,6 +441,7 @@ BridgeContext explicitGemmF32V1BridgeContext() {
       SubnormalSemantics::IeeeGradualFtzDazForbidden;
   context.numerical.approximate_math = Permission::Forbidden;
   context.numerical.inplace = Permission::Forbidden;
+  context.execution_intent = ExecutionIntent::Generic;
   return context;
 }
 
@@ -470,6 +486,8 @@ BridgeResult bridgeV1ToMatcoreMlir(const ir::v1::Module &source,
       builder.getI32IntegerAttr(ir::v1::kMatcoreIrVersion));
   (*result.module)->setAttr("mdsl.numerical_profile",
                             builder.getStringAttr(kExplicitGemmF32Profile));
+  (*result.module)->setAttr("mdsl.execution_intent",
+                            builder.getStringAttr("generic"));
   (*result.module)->setAttr("mdsl.producer",
                             builder.getStringAttr(source.producer));
   (*result.module)->setAttr(
@@ -488,14 +506,14 @@ BridgeResult bridgeV1ToMatcoreMlir(const ir::v1::Module &source,
       return result;
     }
   }
-  if (!verifyMatcoreSemanticModule(*result.module, result.error)) {
+  if (!verifyMatcoreV1BridgeModule(*result.module, result.error)) {
     result.module = nullptr;
     return result;
   }
   return result;
 }
 
-bool verifyMatcoreSemanticModule(mlir::ModuleOp module, std::string &error) {
+bool verifyMatcoreV1BridgeModule(mlir::ModuleOp module, std::string &error) {
   error.clear();
   if (!module) {
     error = "Matcore semantic module is null";
@@ -508,6 +526,7 @@ bool verifyMatcoreSemanticModule(mlir::ModuleOp module, std::string &error) {
   if (!requireModuleString(module, "mdsl.bridge_schema", kBridgeSchema, error) ||
       !requireModuleString(module, "mdsl.capture_schema", kCaptureSchema,
                            error) ||
+      !requireModuleString(module, "mdsl.execution_intent", "generic", error) ||
       !requireModuleString(module, "mdsl.numerical_profile",
                            kExplicitGemmF32Profile, error))
     return false;
@@ -521,8 +540,10 @@ bool verifyMatcoreSemanticModule(mlir::ModuleOp module, std::string &error) {
   const auto translation_unit =
       module->getAttrOfType<mlir::StringAttr>("mdsl.translation_unit");
   if (!capture_version ||
+      !capture_version.getType().isSignlessInteger(32) ||
       capture_version.getInt() != ir::v1::kMatcoreIrVersion ||
       !semantic_version ||
+      !semantic_version.getType().isSignlessInteger(32) ||
       semantic_version.getInt() != kMatcoreSemanticModuleVersion || !producer ||
       (producer.getValue() != "clang-libtooling-v1" &&
        producer.getValue() != "clang-ast-json-bootstrap-v0") || !source_file ||
@@ -544,10 +565,11 @@ bool verifyMatcoreSemanticModule(mlir::ModuleOp module, std::string &error) {
     const auto captured_ordinal =
         function->getAttrOfType<mlir::IntegerAttr>("mdsl.capture_ordinal");
     if (!site || !sites.insert(site.getValue()).second || !captured_ordinal ||
+        !captured_ordinal.getType().isSignlessInteger(64) ||
         captured_ordinal.getInt() != static_cast<std::int64_t>(ordinal) ||
         function.getName() !=
             (llvm::Twine("__matcore_semantic_") + site.getValue()).str() ||
-        !function.isPrivate()) {
+        !function.isPublic()) {
       error = "Matcore semantic functions require unique ordered site identity";
       return false;
     }
@@ -568,6 +590,22 @@ bool verifyMatcoreSemanticModule(mlir::ModuleOp module, std::string &error) {
         return_op.getNumOperands() != 1 ||
         return_op.getOperand(0) != gemm.getResult()) {
       error = "Matcore semantic site must return the destination-tied GEMM SSA result";
+      return false;
+    }
+    const auto origin_kind =
+        gemm.getOrigin().getAs<mlir::StringAttr>("kind");
+    const auto provenance_kind =
+        gemm.getProvenance().getAs<mlir::StringAttr>("kind");
+    const auto provenance_file =
+        gemm.getProvenance().getAs<mlir::StringAttr>("file");
+    const auto numerical_profile =
+        gemm.getNumerical().getAs<mlir::StringAttr>("profile");
+    if (!origin_kind || origin_kind.getValue() != "explicit_call" ||
+        !provenance_kind || provenance_kind.getValue() != "explicit_call" ||
+        !provenance_file || provenance_file.getValue() != source_file.getValue() ||
+        !numerical_profile ||
+        numerical_profile.getValue() != kExplicitGemmF32Profile) {
+      error = "Matcore IR v1 bridge sites require authenticated explicit-call provenance from mdsl.source_file";
       return false;
     }
     ++ordinal;

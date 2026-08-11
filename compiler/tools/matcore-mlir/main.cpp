@@ -16,12 +16,14 @@ struct Options {
   std::filesystem::path input;
   std::filesystem::path output;
   std::string numerical_profile;
+  std::string execution_intent;
   bool output_to_stdout = true;
 };
 
 void printUsage(std::ostream &stream) {
   stream << "usage: matcore-mlir --input <capture.v1.json> "
             "--numerical-profile explicit-gemm-f32-v1 "
+            "--execution-intent generic "
             "[--output <semantic.mlir>]\n";
 }
 
@@ -56,6 +58,9 @@ bool parseOptions(int argc, char **argv, Options &options,
     } else if (argument == "--numerical-profile") {
       if (!takeValue(argument, options.numerical_profile))
         return false;
+    } else if (argument == "--execution-intent") {
+      if (!takeValue(argument, options.execution_intent))
+        return false;
     } else {
       error = "unknown argument: " + std::string(argument);
       return false;
@@ -69,9 +74,18 @@ bool parseOptions(int argc, char **argv, Options &options,
     error = "--numerical-profile is required; numerical permissions are never inferred";
     return false;
   }
+  if (options.execution_intent.empty()) {
+    error = "--execution-intent is required; compilation intent is never inferred";
+    return false;
+  }
   if (options.numerical_profile !=
       matcore::mdslc::mlir_bridge::kExplicitGemmF32Profile) {
     error = "unsupported numerical profile: " + options.numerical_profile;
+    return false;
+  }
+  if (options.execution_intent != "generic") {
+    error = "unsupported execution intent for the v1 bridge: " +
+            options.execution_intent;
     return false;
   }
   if (!options.output_to_stdout) {
