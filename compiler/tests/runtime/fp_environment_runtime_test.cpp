@@ -380,11 +380,12 @@ void invalid_runtime_arguments_precede_fp_guard() {
                                   matcore_status_code_v0 expected,
                                   std::string_view message) {
     auto report = empty_report();
+    const auto report_before = report;
     const auto result = matcore_runtime_gemm_f32_execute_v1(
         &fixture.out_desc, &fixture.lhs_desc, &fixture.rhs_desc,
         &fixture.cpu_policy, &packed_options, workspace, bytes, &report);
     expect(result.code == expected && fixture.output_unchanged() &&
-               report.plan_status == 0,
+               std::memcmp(&report, &report_before, sizeof(report)) == 0,
            message);
   };
   expect_direct_status(
@@ -418,6 +419,7 @@ void invalid_runtime_arguments_precede_fp_guard() {
     expect(result.code == expected, message);
   };
   auto empty_descriptor = empty_packed_b();
+  const auto empty_descriptor_before = empty_descriptor;
   expect_prepack_status(
       nullptr, static_cast<std::size_t>(packed_requirements.packed_b_bytes),
       &empty_descriptor, MATCORE_STATUS_INVALID_ARGUMENT_V0,
@@ -442,12 +444,16 @@ void invalid_runtime_arguments_precede_fp_guard() {
       static_cast<std::size_t>(packed_requirements.packed_b_bytes),
       &empty_descriptor, MATCORE_STATUS_ALIAS_VIOLATION_V0,
       "prepack storage overlap precedes FP-state rejection");
+  expect(std::memcmp(&empty_descriptor, &empty_descriptor_before,
+                     sizeof(empty_descriptor)) == 0,
+         "prepack validation errors preserve every descriptor byte");
 
   alignas(64) std::array<std::byte, Fixture::m * Fixture::n * sizeof(float)>
       descriptor_output{};
   auto *overlapping_output_descriptor =
       ::new (descriptor_output.data()) matcore_packed_b_desc_v1(
           empty_packed_b());
+  const auto descriptor_output_before_prepack = descriptor_output;
   auto overlapping_out = fixture.out_desc;
   overlapping_out.data = descriptor_output.data();
   expect(matcore_runtime_gemm_f32_prepack_b_v1(
@@ -457,6 +463,8 @@ void invalid_runtime_arguments_precede_fp_guard() {
              overlapping_output_descriptor)
              .code == MATCORE_STATUS_ALIAS_VIOLATION_V0,
          "prepack descriptor/tensor overlap precedes FP-state rejection");
+  expect(descriptor_output == descriptor_output_before_prepack,
+         "prepack descriptor/tensor rejection preserves overlapping output bytes");
 
   auto expect_prepacked_status = [&](const matcore_packed_b_desc_v1 &descriptor,
                                      void *workspace, std::size_t bytes,
@@ -464,10 +472,13 @@ void invalid_runtime_arguments_precede_fp_guard() {
                                      matcore_status_code_v0 expected,
                                      std::string_view message) {
     auto report = empty_report();
+    const auto report_before = report;
     const auto result = matcore_runtime_gemm_f32_execute_prepacked_b_v1(
         &output, &fixture.lhs_desc, &fixture.rhs_desc, &fixture.cpu_policy,
         &packed_options, &descriptor, workspace, bytes, &report);
-    expect(result.code == expected && report.plan_status == 0, message);
+    expect(result.code == expected &&
+               std::memcmp(&report, &report_before, sizeof(report)) == 0,
+           message);
   };
 
   auto corrupted = packed_desc;
@@ -525,11 +536,14 @@ void invalid_runtime_arguments_precede_fp_guard() {
 
   auto *overlapping_input_descriptor =
       ::new (descriptor_output.data()) matcore_packed_b_desc_v1(packed_desc);
+  const auto descriptor_output_before_execute = descriptor_output;
   expect_prepacked_status(
       *overlapping_input_descriptor, execution_workspace.data(),
       static_cast<std::size_t>(packed_requirements.execution_workspace_bytes),
       overlapping_out, MATCORE_STATUS_ALIAS_VIOLATION_V0,
       "prepacked descriptor/tensor overlap precedes FP-state rejection");
+  expect(descriptor_output == descriptor_output_before_execute,
+         "prepacked descriptor/tensor rejection preserves overlapping output bytes");
 
   expect(fixture.output_unchanged() &&
              std::equal(direct_before.begin(), direct_before.end(),
