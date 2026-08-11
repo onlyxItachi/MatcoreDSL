@@ -65,16 +65,58 @@ def require_failure(
         )
 
 
+def canonical_commit_spelling(commit: str, description: str) -> str:
+    if len(commit) not in {40, 64} or any(
+        character not in "0123456789abcdefABCDEF" for character in commit
+    ):
+        raise TestFailure(f"{description} is not a canonical commit ID: {commit!r}")
+    return commit.lower()
+
+
 def exact_commit(git: str, repository: Path) -> str:
     commit = run(
         [git, "-C", str(repository), "rev-parse", "--verify", "HEAD"],
         capture=True,
     ).stdout.strip()
-    if len(commit) not in {40, 64} or any(
-        character not in "0123456789abcdefABCDEF" for character in commit
-    ):
-        raise TestFailure(f"Git returned an invalid HEAD object ID: {commit!r}")
-    return commit.lower()
+    return canonical_commit_spelling(commit, "Git HEAD object ID")
+
+
+def authenticate_repository(
+    git: str,
+    repository: Path,
+    expected_commit: str,
+    configured_source_clean: bool,
+) -> str:
+    expected = canonical_commit_spelling(
+        expected_commit, "configure-time source commit"
+    )
+    if not configured_source_clean:
+        raise TestFailure(
+            "source checkout was dirty when the package test was configured"
+        )
+    actual = exact_commit(git, repository)
+    if actual != expected:
+        raise TestFailure(
+            "source checkout HEAD changed after package-test configuration: "
+            f"expected {expected}, got {actual}"
+        )
+    status = run(
+        [
+            git,
+            "-C",
+            str(repository),
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        ],
+        capture=True,
+    ).stdout
+    if status:
+        raise TestFailure(
+            "source checkout became dirty after package-test configuration:\n"
+            f"{status}"
+        )
+    return expected
 
 
 def absolute_tool(spelling: str, description: str) -> Path:
@@ -302,6 +344,10 @@ def main() -> int:
     parser.add_argument("--cmake", required=True)
     parser.add_argument("--git", required=True)
     parser.add_argument("--repository-root", required=True)
+    parser.add_argument("--expected-source-commit", required=True)
+    parser.add_argument(
+        "--configured-source-clean", choices=("ON", "OFF"), required=True
+    )
     parser.add_argument("--expected-build-root", required=True)
     parser.add_argument("--test-root", required=True)
     parser.add_argument("--c-compiler", required=True)
@@ -330,6 +376,12 @@ def main() -> int:
         raise TestFailure("MLIR-enabled source-inaccessible test requires MLIR_DIR")
 
     repository = Path(arguments.repository_root).resolve()
+    commit = authenticate_repository(
+        arguments.git,
+        repository,
+        arguments.expected_source_commit,
+        arguments.configured_source_clean == "ON",
+    )
     c_compiler = absolute_tool(arguments.c_compiler, "C compiler")
     cxx_compiler = absolute_tool(arguments.cxx_compiler, "C++ compiler")
     clangxx = absolute_tool(arguments.clangxx, "Clang C++ driver")
@@ -349,7 +401,6 @@ def main() -> int:
     consumer_build = test_root / "consumer-build"
     semantic_fixtures = test_root / "semantic-fixtures"
 
-    commit = exact_commit(arguments.git, repository)
     clone_clean_commit(
         arguments.git, repository, producer_source, commit
     )

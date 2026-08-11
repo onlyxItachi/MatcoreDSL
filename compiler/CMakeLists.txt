@@ -716,6 +716,49 @@ if(BUILD_TESTING)
 
     if(NOT WIN32 AND MDSLC_ENABLE_NATIVE_FRONTEND)
       find_program(MDSLC_PACKAGE_GIT_EXECUTABLE NAMES git REQUIRED)
+      get_filename_component(MDSLC_PACKAGE_REPOSITORY_ROOT
+        "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+      execute_process(
+        COMMAND
+          "${MDSLC_PACKAGE_GIT_EXECUTABLE}" -C
+          "${MDSLC_PACKAGE_REPOSITORY_ROOT}" rev-parse --verify HEAD
+        RESULT_VARIABLE MDSLC_PACKAGE_SOURCE_COMMIT_RESULT
+        OUTPUT_VARIABLE MDSLC_PACKAGE_SOURCE_COMMIT
+        ERROR_VARIABLE MDSLC_PACKAGE_SOURCE_COMMIT_ERROR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+      )
+      string(LENGTH "${MDSLC_PACKAGE_SOURCE_COMMIT}"
+        MDSLC_PACKAGE_SOURCE_COMMIT_LENGTH)
+      if(NOT MDSLC_PACKAGE_SOURCE_COMMIT_RESULT EQUAL 0 OR
+         (NOT MDSLC_PACKAGE_SOURCE_COMMIT_LENGTH EQUAL 40 AND
+          NOT MDSLC_PACKAGE_SOURCE_COMMIT_LENGTH EQUAL 64) OR
+         NOT MDSLC_PACKAGE_SOURCE_COMMIT MATCHES "^[0-9a-fA-F]+$")
+        message(FATAL_ERROR
+          "Cannot authenticate the source-inaccessible package-test commit: "
+          "${MDSLC_PACKAGE_SOURCE_COMMIT_ERROR}")
+      endif()
+      string(TOLOWER "${MDSLC_PACKAGE_SOURCE_COMMIT}"
+        MDSLC_PACKAGE_SOURCE_COMMIT)
+      execute_process(
+        COMMAND
+          "${MDSLC_PACKAGE_GIT_EXECUTABLE}" -C
+          "${MDSLC_PACKAGE_REPOSITORY_ROOT}" status --porcelain=v1
+          --untracked-files=all
+        RESULT_VARIABLE MDSLC_PACKAGE_SOURCE_STATUS_RESULT
+        OUTPUT_VARIABLE MDSLC_PACKAGE_SOURCE_STATUS
+        ERROR_VARIABLE MDSLC_PACKAGE_SOURCE_STATUS_ERROR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+      )
+      if(NOT MDSLC_PACKAGE_SOURCE_STATUS_RESULT EQUAL 0)
+        message(FATAL_ERROR
+          "Cannot authenticate source-inaccessible package-test cleanliness: "
+          "${MDSLC_PACKAGE_SOURCE_STATUS_ERROR}")
+      endif()
+      if(MDSLC_PACKAGE_SOURCE_STATUS STREQUAL "")
+        set(MDSLC_PACKAGE_SOURCE_WAS_CLEAN ON)
+      else()
+        set(MDSLC_PACKAGE_SOURCE_WAS_CLEAN OFF)
+      endif()
       set(MDSLC_SOURCE_INACCESSIBLE_MLIR_ARGUMENTS)
       if(MDSLC_ENABLE_MATCORE_MLIR)
         list(APPEND MDSLC_SOURCE_INACCESSIBLE_MLIR_ARGUMENTS
@@ -728,7 +771,9 @@ if(BUILD_TESTING)
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/package/run_source_inaccessible_consumer.py"
           --cmake "${CMAKE_COMMAND}"
           --git "${MDSLC_PACKAGE_GIT_EXECUTABLE}"
-          --repository-root "${CMAKE_CURRENT_SOURCE_DIR}/.."
+          --repository-root "${MDSLC_PACKAGE_REPOSITORY_ROOT}"
+          --expected-source-commit "${MDSLC_PACKAGE_SOURCE_COMMIT}"
+          --configured-source-clean "${MDSLC_PACKAGE_SOURCE_WAS_CLEAN}"
           --expected-build-root "${CMAKE_BINARY_DIR}"
           --test-root
             "${CMAKE_BINARY_DIR}/tests/installed-source-inaccessible"
@@ -754,6 +799,7 @@ if(BUILD_TESTING)
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/package/run_source_inaccessible_consumer_safety_tests.py"
           --script
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/package/run_source_inaccessible_consumer.py"
+          --git "${MDSLC_PACKAGE_GIT_EXECUTABLE}"
       )
     endif()
   endif()

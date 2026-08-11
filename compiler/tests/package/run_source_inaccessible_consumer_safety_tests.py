@@ -8,6 +8,7 @@ import argparse
 import importlib.util
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 
 
@@ -43,9 +44,26 @@ def make_build_root(root: Path, name: str = "build") -> Path:
     return build
 
 
+def run_checked(command: list[str], cwd: Path | None = None) -> None:
+    completed = subprocess.run(
+        command,
+        cwd=cwd,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if completed.returncode != 0:
+        raise AssertionError(
+            f"setup command failed ({completed.returncode}): {command}\n"
+            f"{completed.stdout}"
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--script", required=True)
+    parser.add_argument("--git", required=True)
     arguments = parser.parse_args()
     module = load_test_module(Path(arguments.script).resolve())
 
@@ -150,6 +168,67 @@ def main() -> int:
             "must not equal or contain the real source checkout",
         )
         assert checkout_marker.read_text(encoding="utf-8") == "source\n"
+
+        authenticated = root / "authenticated-repository"
+        authenticated.mkdir()
+        run_checked([arguments.git, "init", "--quiet"], cwd=authenticated)
+        run_checked(
+            [arguments.git, "config", "user.name", "MatcoreDSL test"],
+            cwd=authenticated,
+        )
+        run_checked(
+            [arguments.git, "config", "user.email", "test@matcoredsl.invalid"],
+            cwd=authenticated,
+        )
+        tracked = authenticated / "tracked.txt"
+        tracked.write_text("first\n", encoding="utf-8")
+        run_checked([arguments.git, "add", "tracked.txt"], cwd=authenticated)
+        run_checked(
+            [arguments.git, "commit", "--quiet", "-m", "first"],
+            cwd=authenticated,
+        )
+        first_commit = module.exact_commit(arguments.git, authenticated)
+        assert (
+            module.authenticate_repository(
+                arguments.git, authenticated, first_commit, True
+            )
+            == first_commit
+        )
+        expect_rejection(
+            module,
+            lambda: module.authenticate_repository(
+                arguments.git, authenticated, first_commit, False
+            ),
+            "dirty when the package test was configured",
+        )
+        tracked.write_text("dirty\n", encoding="utf-8")
+        expect_rejection(
+            module,
+            lambda: module.authenticate_repository(
+                arguments.git, authenticated, first_commit, True
+            ),
+            "became dirty",
+        )
+        tracked.write_text("second\n", encoding="utf-8")
+        run_checked([arguments.git, "add", "tracked.txt"], cwd=authenticated)
+        run_checked(
+            [arguments.git, "commit", "--quiet", "-m", "second"],
+            cwd=authenticated,
+        )
+        expect_rejection(
+            module,
+            lambda: module.authenticate_repository(
+                arguments.git, authenticated, first_commit, True
+            ),
+            "HEAD changed",
+        )
+        expect_rejection(
+            module,
+            lambda: module.authenticate_repository(
+                arguments.git, authenticated, "not-a-commit", True
+            ),
+            "canonical commit ID",
+        )
 
     print("source-inaccessible package deletion safety: PASS")
     return 0
