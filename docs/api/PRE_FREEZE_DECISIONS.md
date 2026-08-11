@@ -1,6 +1,6 @@
 # Public API pre-freeze decision log
 
-Date: 2026-07-26
+Date: 2026-08-11
 
 Status: investigation input for a later, separately approved API / ABI /
 backend-contract freeze. Nothing in this document freezes an interface, adds a
@@ -9,11 +9,16 @@ the versions already tested.
 
 ## Scope boundary
 
-Milestone 6 is auditing CPU execution and Milestone 7 is reserved for
-evidence-backed internal GEMM work. Existing exported C symbols and installed
-consumer behavior remain compatibility requirements throughout those
-milestones. Proposed changes below must not be made merely to improve a
-benchmark.
+Milestone 6 is complete. Milestone 7's bounded partial implementation merged
+through PR #16, while its performance tracker remains open. The new primary
+work is the compositional semantic compiler and CPU-first beta described by
+ADR-0009. Existing exported C symbols and installed consumer behavior remain
+compatibility requirements throughout this work. Proposed changes below must
+not be made merely to improve a benchmark or simplify one lowering.
+
+This log is input to a later Milestone G contract-resolution review. It is not
+an API freeze. Native-BLAS parity alone neither starts nor completes that
+review.
 
 The current validated public surface consists of:
 
@@ -59,6 +64,13 @@ frozen.
 9. **Trusted canonical frontend declarations.** Post-Sema canonical identity,
    exact annotation payload and trusted-header origin remain the correct
    language opt-in boundary.
+10. **Capture/optimizer separation.** Matcore IR v1 is structurally sound as a
+    versioned capture/provenance DTO. A deterministic, verified bridge into
+    Matcore MLIR is preferable to turning the public JSON schema into a custom
+    SSA optimizer.
+11. **Semantic/execution separation.** Mathematical operation identity should
+    remain independent of execution intent, target capability, selected
+    provider, private blocking profile, and microkernel identity.
 
 ## Interfaces that may need redesign before freeze
 
@@ -104,6 +116,23 @@ frozen.
     current executable CPU surface is intentionally concrete F32 rank-2
     row-major GEMM. The later freeze must distinguish compile-time constraints
     from runtime descriptor checks.
+11. **Numerical policy.** Accumulation dtype exists, but reassociation,
+    contraction/FMA, reduction order, NaN, signed-zero, approximate-math, and
+    in-place permissions do not yet have a reviewed device-neutral public
+    contract. Private optimizer attributes must be proven before deciding what
+    belongs in a public descriptor.
+12. **Execution intent.** `generic`, `inference`, and `training` require a
+    versioned compilation/execution context. Intent alone must not imply
+    immutability, prepacking permission, saved-intermediate lifetime, or
+    hidden caching.
+13. **Domain and composition.** Future map/reduce/contract operations require
+    explicit whole/slice/index/predicate domains and effect-aware composition.
+    The public surface should not be frozen around GEMM-specific positional
+    roles before the generic SSA semantic model is validated.
+14. **Recognition provenance.** Recovered ordinary-C++ intent needs structured
+    diagnostics distinguishing recognized, legally raised, rejected, and
+    preserved source regions. This cannot be represented as an implicit
+    success/failure bit without losing actionable provenance.
 
 ## Missing internal backend abstractions
 
@@ -122,7 +151,16 @@ their semantics are proven:
   addition to socket/core/NUMA identity;
 - operation-specific arithmetic-intensity and bandwidth models; and
 - a generic transformed-operand identity carrying layout version, dtype, ISA,
-  dimensions, source identity, mutation generation and storage lifetime.
+  dimensions, source identity, mutation generation and storage lifetime;
+- a compositional semantic operation/value representation with generic SSA
+  operands/results, effect and alias interfaces, and explicit numerical
+  legality;
+- a checked Matcore IR v1-to-MLIR bridge that preserves every represented
+  field and provenance/dynamic-symbol relationship, plus a reviewed canonical
+  explicit-GEMM numerical policy for facts v1 does not currently encode;
+- a versioned execution-intent context separate from target policy and
+  detected capability; and
+- structured recognition/permission diagnostics for recovered C++ idioms.
 
 None of these internal abstractions should leak microkernel headers or packing
 layouts into the installed public include tree.
@@ -148,6 +186,14 @@ The freeze milestone must answer these explicitly:
   semantics?
 - Which numerical-order guarantees apply when thread decomposition or an
   external provider changes?
+- Which numerical permissions originate in the language contract, which are
+  compilation options, and which may a backend only consume after planning?
+- How are untouched elements defined for partial-domain transformations, and
+  when may a semantic result alias its destination?
+- How are MLIR-cloned/transformed operations tied back to authenticated source
+  provenance without treating locations as semantic identity?
+- Can an inference context prove transformed-weight reuse only through an
+  explicit immutable owner, rather than through an intent enum?
 
 Until these are resolved, no global mutable packed-weight cache is acceptable.
 
@@ -167,6 +213,12 @@ Candidates for later design work, not approved APIs:
    operation descriptors.
 6. A selected-plan execution report that distinguishes requested, selected,
    compiled, physically validated and actually executed behavior.
+7. A versioned numerical-semantics record whose conservative default forbids
+   reassociation, order changes, approximation, and unproven in-place updates.
+8. A versioned execution-intent record independent from mathematical operation
+   identity and detected target capability.
+9. A structured recognition report that separates pattern recognition from
+   legal permission to replace ordinary C++.
 
 ## Operation readiness
 
@@ -183,13 +235,19 @@ Candidates for later design work, not approved APIs:
 
 The separate freeze milestone should not begin until:
 
-- Milestone 7 has either met its declared native parity envelope or documented
-  the bounded technical limit;
+- the Matcore MLIR core, multi-operation domain semantics, and CPU semantic
+  lowering proof have passed their independent reviews;
+- explicit and conservatively recovered GEMM have a common verified semantic
+  representation, including fail-closed preservation when raising is illegal;
+- Milestone 7 has either met its declared native parity envelope or retained a
+  reviewed bounded technical-limit disposition under the unchanged contract;
 - internal blocking, packing and thread-decomposition experiments no longer
   require public request-enum churn;
 - existing Linux and Windows installed consumers remain green;
 - symbol and struct-layout compatibility tests cover every retained export;
 - transformed-operand ownership and invalidation are decided;
+- numerical semantics, execution intent, target policy versus capability, and
+  source-provenance ownership are decided;
 - operation/version evolution and deprecation rules are written; and
 - an independent ABI/backend-contract review has no unresolved high or medium
   finding.
@@ -239,7 +297,7 @@ an existing exported symbol.
 ## Milestone 7 bounded disposition
 
 The final locally validated Milestone 7 code checkpoint is `ff483af`; the
-candidate bounded disposition pending hosted gates is
+bounded disposition merged through PR #16 is
 [native-blas-parity-v1.md](../performance/cpu/native-blas-parity-v1.md).
 
 The private backend work validates that task geometry, packed-B preparation,
@@ -269,3 +327,23 @@ Milestone 7 issue #15 and GitHub milestone #5 remain open. A later
 exclusive-host forward/reverse collection may update the performance
 disposition, but it must not silently mutate an existing export or convert a
 private packed representation into a public lifetime contract.
+
+## Semantic-foundation pivot update
+
+ADR-0009 establishes an internal architecture freeze without freezing any
+installed interface. It keeps Matcore IR v1 as the typed capture DTO and uses
+Matcore MLIR as the compositional optimizer representation. Generic SSA values,
+effects, aliases, numerical intent, domains, execution intent, and target
+context will be validated on CPU before a final public contract is proposed.
+
+This changes the pre-freeze sequence in two important ways:
+
+1. a parity pass is no longer sufficient to freeze a GEMM-shaped ABI before
+   multi-operation semantics are understood; and
+2. a parity miss is not by itself a CPU-beta blocker when the deterministic
+   planner legally selects a faster authenticated provider.
+
+The freeze review must keep private implementation choices private. In
+particular, MLIR operation names, pass pipelines, blocking constants, packing
+formats, microkernel symbols, and provider adapter details are not public ABI
+merely because they are inspectable compiler internals.

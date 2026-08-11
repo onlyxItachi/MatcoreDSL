@@ -1,13 +1,17 @@
-# MDSLC native frontend status
+# MDSLC status
 
-Status date: 2026-07-26
+Status date: 2026-08-11
 
-- Canonical `origin/main` and published Milestone 6 merge:
-  `ddda3ccf628dae60bdb7f57d68d024fd02168fcb`
+- Canonical `origin/main` and merged Milestone 7 bounded disposition:
+  `e5069758ad04bdb459de2026cad8498b47fda707`
+- Strategic semantic-foundation branch:
+  `mdslc/semantic-compiler-foundation-v1`
 - Milestone 6 pull request: `#14`, merged normally
 - Milestone 6 umbrella issue / GitHub milestone: `#13` / `#4`, closed
 - Milestone 6 immutable tag: `mdslc-cpu-performance-audit-v1`
 - Milestone 7 integration branch: `mdslc/native-blas-parity-v1`
+- Milestone 7 pull request: `#16`, merged normally with all hosted Linux,
+  Windows x64, and repository-hygiene checks passing
 - Milestone 7 umbrella issue / GitHub milestone: `#15` / `#5`, open
 - Completed Milestone 5 merge before history sanitation:
   `091d74072a710389b4a8e9d51f696ad9773021e6`
@@ -28,13 +32,70 @@ Status date: 2026-07-26
   remapping commit IDs.
 - Milestone 3 tracker: GitHub milestone `#1`, completed
 
+## Strategic semantic-compiler pivot
+
+**The primary next objective is a compositional Matcore semantic compiler and
+CPU-first beta. It is not a parity-only continuation and it does not begin a
+public API/ABI/backend-contract freeze.**
+
+The existing Matcore IR v1 remains the deterministic typed capture and
+provenance DTO. The accepted next optimizer representation is a Matcore MLIR
+dialect with textual namespace `mdsl`, generic SSA values, verified operation
+semantics, regions/use-def relationships, numerical intent, domains, effects,
+aliases, mutation, and source provenance. The v1-to-dialect bridge must be
+exact for every represented v1 field and fail closed otherwise. Because v1
+does not yet contain sufficient numerical-policy granularity, Milestone B must
+define and verify one canonical explicit-GEMM policy; recovered loops require
+source-derived proof and cannot inherit its permissions. No bridge is called
+fully lossless until those semantics are represented and verified. No
+second JSON optimizer schema is planned.
+
+Responsibilities are now explicit:
+
+```text
+WHAT     authenticated capture + Matcore semantic MLIR
+HOW      MDSLC legality, planning, transformations, scheduling and selection
+MACHINE  upstream target dialects, LLVM and platform/vendor toolchains
+```
+
+Lowering may consume a semantic fact only after the next representation
+structurally encodes it or every optimization needing it has completed.
+Recognition of an ordinary C++ idiom is not permission to replace it. Failed
+or unproven implicit raising preserves ordinary C++ behavior.
+
+The first staged work is architecture freeze, the MLIR core and deterministic
+v1 bridge, GEMM-to-SIN domain composition, conservative explicit/recovered
+GEMM equivalence, and an end-to-end CPU MLIR route that reuses the validated
+planner/runtime. The full dependency graph and merge gates are in
+[ADR-0009](../adr/0009-mdslc-semantic-compiler-foundation.md) and the
+[roadmap](ROADMAP.md).
+
+### Toolchain gate
+
+The installed standalone frontend tuple remains Clang/LLVM 21.1.8, Ubuntu
+revision `1:21.1.8-6ubuntu1`. A system APT simulation showed that installing
+matching MLIR 21 development packages globally would remove the installed
+MLIR 22 surface. The exact `libmlir-21`, `libmlir-21-dev`, and
+`mlir-21-tools` 21.1.8 Debian payloads were instead extracted to a versioned
+user-local development prefix without changing system packages.
+
+The toolchain lane validated an in-process `clang-cpp` + MLIR + LLVM program,
+a TableGen-generated toy dialect/op, and a narrow static
+`MLIRIR`/`MLIRSupport` executable with neither a shared `libMLIR` dependency
+nor a local-prefix RUNPATH. Production configuration may accept the prefix via
+`MLIR_DIR`, but no installed artifact or package export may hardcode it. The
+frontend must not mix MLIR 22 or modify the legacy root MLIR 18.1.3 contract.
+The semantic-foundation implementation may advance only while this coherent
+isolated toolchain and its no-path-leak gate remain green.
+
 ## Milestone 7 native BLAS parity
 
-**Milestone 7 has a candidate manual partial disposition pending hosted gates.
+**Milestone 7 has a reviewed manual partial disposition merged through PR #16.
 The non-performance implementation, correctness, artifact, sanitizer, ABI,
-package, and consumer gates pass locally, but performance acceptance was not
-evaluated because the declared forward/reverse evidence pair is incomplete.
-Issue #15 and milestone #5 remain open; no completion tag exists.**
+package, consumer, Linux hosted, Windows x64 hosted, and hygiene gates passed,
+but performance acceptance was not evaluated because the declared
+forward/reverse evidence pair is incomplete. Issue #15 and milestone #5 remain
+open; no completion tag exists.**
 
 The private CPU backend now has a wider AVX-512 4x32 full-tile body,
 two-dimensional output-task planning, exact task-capacity diagnostics, and
@@ -72,10 +133,12 @@ Release 50/50, Debug 50/50, OpenBLAS-disabled 50/50, ASan/UBSan 19/19, TSan
 `.mdsl -> ELF .o -> executable` proof, repository hygiene, and the 14-case
 legacy frontend contract. The OpenBLAS-disabled forced request failed closed.
 Independent static review found no unresolved high- or medium-severity code
-finding. Hosted Linux, Windows x64, and hygiene checks remain a pull-request
-gate.
+finding. PR #16 subsequently passed the OpenBLAS-required and
+OpenBLAS-disabled Linux jobs, generic build/test, Windows x64, and repository
+hygiene jobs before its normal merge. The partial performance disposition did
+not become a parity claim through that merge.
 
-The bounded disposition is documented in
+The merged bounded disposition is documented in
 `docs/performance/cpu/native-blas-parity-v1.md` and
 `docs/mdslc/agent-reports/m7-integration-validation.md`. Milestone 7 must not
 be called complete, issue #15/milestone #5 must not be closed, and no parity
