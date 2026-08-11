@@ -144,8 +144,9 @@ evidence passes 204/204 semantic checks, 9/9 CLI checks, and 2/2 MLIR CTest
 entries. Independent review found zero unresolved high/medium findings. The
 last in-flight whole-suite run passed 51/52 after the branch advanced during
 execution; the sole failure was the expected authenticated source-commit guard
-rejecting a stale benchmark binary. A final clean rebuild from the settled
-documentation commit remains required before merge.
+rejecting a stale benchmark binary. The merge gate is a final clean rebuild
+from the settled documentation commit so every provenance-sensitive test sees
+the exact branch state under review.
 
 Milestone C's map/domain design and Milestone D's conservative C++ GEMM
 recognition contract are documented, but neither constitutes production
