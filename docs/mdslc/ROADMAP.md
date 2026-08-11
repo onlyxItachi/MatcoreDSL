@@ -253,9 +253,9 @@ policy remain open for the separate freeze milestone.
 
 Status: active. A--G have their required bounded dispositions. The full local
 integration matrix passed at immutable code candidate `6796fd8`, superseding
-the historical `69d099e` matrix after later product hardening. Final independent
-evidence review, hosted Linux/Windows integration, normal merge, and beta tag
-remain pending.
+the historical `69d099e` matrix after later product hardening. Final local
+independent review passed with no unresolved high or medium finding. Hosted
+Linux/Windows integration, normal merge, and beta tag remain pending.
 
 The intended initial claim is valid C++ `.mdsl`, preserved ordinary C++,
 explicit F32 rank-2 GEMM, verified capture and semantic IR, deterministic legal

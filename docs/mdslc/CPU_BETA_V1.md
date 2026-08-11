@@ -2,8 +2,8 @@
 
 Date: 2026-08-11
 
-Status: **local Milestone H matrix passed at code candidate `6796fd8`; final
-independent review, hosted validation, merge, and beta publication are
+Status: **local Milestone H matrix and final independent review passed for code
+candidate `6796fd8`; hosted validation, merge, and beta publication are
 pending.**
 
 This document fixes the claim and validation boundary for the first CPU beta.
@@ -176,7 +176,7 @@ code candidate.
 | Windows x64 | Release, Debug, supported sanitizer, MLIR-unavailable negative, DLL/import library, installed consumer, paths with spaces, ZIP artifact | pending hosted run |
 | Performance sanity | Correctness and planner sanity only; no new native-parity claim | passed locally at `6796fd8`; one guarded 256-cubed OpenBLAS selection sanity, not parity evidence |
 | Repository hygiene | Clean tree, `git diff --check`, generated-artifact and semantic-MLIR hygiene | passed locally at `6796fd8` |
-| Independent review | Fresh adversarial review of the exact candidate with no unresolved high or medium finding | static candidate review passed; final evidence/report review pending |
+| Independent review | Fresh adversarial review of the exact candidate with no unresolved high or medium finding | passed locally for `6796fd8` plus its docs-only evidence tip; no unresolved high or medium finding |
 | Hosted pull request | Normal PR checks green before normal merge | pending |
 
 The beta must not be described as shipped, merged, tagged, or validated by

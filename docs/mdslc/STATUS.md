@@ -180,7 +180,8 @@ semantic lowering rather than by an unused inspection sidecar. This is a
 library-dispatch lowering, not Linalg/Vector loop generation. The fresh local
 Release, Debug, sanitizer, installed-package, relocation,
 source-inaccessible, and ABI matrix passed at `6796fd8`; hosted Linux/Windows,
-normal merge/tag, and final independent review remain Milestone H work.
+normal merge, tag, and publication remain Milestone H work. The final local
+independent review passed with no unresolved high- or medium-severity finding.
 
 **Milestone F has an accepted bounded technical-limit disposition.** The
 unchanged Milestone 7 performance contract still lacks a complete authenticated
@@ -217,9 +218,9 @@ source-inaccessible packages, strict C17 ABI, legacy frontend, artifact,
 planner-sanity, and repository-hygiene gates are green. This evidence supersedes
 the earlier `69d099e` run because intervening compiler/runtime/package fixes
 were product changes. The following evidence/status commit is documentation
-only. Hosted pull-request and Windows results, normal merge, and final
-independent evidence review remain pending. No CPU beta release is claimed yet.
-The bounded product contract and exact remaining gates are in
+only. Final local independent review passed. Hosted pull-request and Windows
+results, normal merge, tag, and publication remain pending. No CPU beta release
+is claimed yet. The bounded product contract and exact remaining gates are in
 [CPU_BETA_V1.md](CPU_BETA_V1.md).
 
 ## Milestone 7 native BLAS parity
