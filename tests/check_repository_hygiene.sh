@@ -28,6 +28,7 @@ declare -a ignore_sentinels=(
   "hygiene.host.cpp"
   "hygiene.host-overlay.yaml"
   "hygiene.matcore.json"
+  "hygiene.semantic.mlir"
   "hygiene.sites.h"
   "hygiene.stubs.cpp"
   "hygiene.backend.cpp"
@@ -73,7 +74,8 @@ while IFS= read -r path; do
     *.fatbin | *.ptx | *.pyc | *.pyo | *.log)
       violations+=("$path (forbidden generated path)")
       ;;
-    *.host.cpp | *.host-overlay.yaml | *.matcore.json | *.sites.h | \
+    *.host.cpp | *.host-overlay.yaml | *.matcore.json | *.semantic.mlir | \
+    *.sites.h | \
     *.stubs.cpp | *.backend.cpp | .pytest_cache/* | */.pytest_cache/* | \
     .mypy_cache/* | */.mypy_cache/* | .ruff_cache/* | */.ruff_cache/* | \
     .coverage | */.coverage | htmlcov/* | */htmlcov/*)

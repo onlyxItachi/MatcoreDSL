@@ -56,6 +56,7 @@ htmlcov/
 *.host.cpp
 *.host-overlay.yaml
 *.matcore.json
+*.semantic.mlir
 *.sites.h
 *.stubs.cpp
 *.backend.cpp
