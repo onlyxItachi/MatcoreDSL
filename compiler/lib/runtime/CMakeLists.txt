@@ -173,6 +173,7 @@ if(BUILD_TESTING)
       "-DMDSLC_NINJA=${CMAKE_MAKE_PROGRAM}"
       "-DMDSLC_BINARY_DIR=${CMAKE_BINARY_DIR}"
       "-DMDSLC_MSVC_ABI=${MDSLC_USING_MSVC_ABI_FRONTEND}"
+      "-DMDSLC_CXX_COMPILER_ID=${CMAKE_CXX_COMPILER_ID}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/cmake/check_runtime_fp_compile_profile.cmake"
   )
 

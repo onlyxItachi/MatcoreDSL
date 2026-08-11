@@ -63,6 +63,19 @@ function(mdslc_reject_unsafe_global_fp_flags)
           "'${mdslc_denormal}' from ${mdslc_variable}.")
       endif()
     endforeach()
+
+    string(REGEX MATCHALL
+      "-ffp-eval-method=[^ \\t;]+"
+      mdslc_evaluation_options "${mdslc_value}")
+    foreach(mdslc_evaluation IN LISTS mdslc_evaluation_options)
+      if(NOT mdslc_evaluation STREQUAL "-ffp-eval-method=source")
+        message(FATAL_ERROR
+          "MDSLC rejects unsafe global floating-point option "
+          "'${mdslc_evaluation}' from ${mdslc_variable}. The "
+          "explicit-gemm-f32-v1 contract requires source-type evaluation "
+          "and F32 accumulation without excess intermediate precision.")
+      endif()
+    endforeach()
   endforeach()
 endfunction()
 
@@ -83,6 +96,7 @@ function(mdslc_target_enable_precise_fp target_name)
     target_compile_options(${target_name} PRIVATE
       -fno-fast-math
       -ffp-contract=fast
+      -ffp-eval-method=source
       -fhonor-infinities
       -fhonor-nans
       -fno-finite-math-only
