@@ -16,11 +16,20 @@ struct OpenBlasProviderInfoV1 {
   std::int32_t maximum_reported_threads = 0;
 };
 
+inline constexpr bool openblas_adapter_linked_at_build_v1() noexcept {
+#if MATCORE_MDSLC_HAS_OPENBLAS
+  return true;
+#else
+  return false;
+#endif
+}
+
 inline constexpr std::uint32_t kOpenBlasConformanceVersionV1 = 1;
 
 // Immutable process-local evidence for the exact linked
-// package/configuration/core identity. The probe is allocation-free and runs
-// at most once, on the first caller with an authenticated FP environment.
+// package/configuration/core identity. MDSLC uses fixed stack fixtures, but the
+// opaque provider may manage internal memory while the probe runs. The probe
+// runs at most once, on the first caller with an authenticated FP environment.
 struct OpenBlasConformanceReportV1 {
   std::uint32_t version = kOpenBlasConformanceVersionV1;
   std::uint64_t provider_identity_key = 0;
@@ -57,6 +66,8 @@ enum class OpenBlasExecutionStatusV1 : std::uint8_t {
 
 OpenBlasProviderInfoV1 openblas_provider_info_v1() noexcept;
 OpenBlasConformanceReportV1 openblas_conformance_report_v1() noexcept;
+bool openblas_provider_info_query_complete_v1() noexcept;
+bool openblas_conformance_probe_complete_v1() noexcept;
 
 OpenBlasExecutionStatusV1 execute_openblas_gemm_f32_v1(
     const planner::CpuGemmProblemV1 &problem, const float *lhs,

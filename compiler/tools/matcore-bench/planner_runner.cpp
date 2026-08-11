@@ -561,7 +561,7 @@ class PlannerRunner final : public GemmRunnerV1 {
     const auto probe_problem = problem({1, 1, 1}, alignof(float));
     const auto baseline =
         runtime::discover_cpu_gemm_implementation_resources_v1(probe_problem,
-                                                                1);
+            1, runtime::CpuExternalProviderProbeV1::include);
     const auto resources = runtime::augment_cpu_gemm_implementation_resources_v2(
         probe_problem, baseline,
         probe_context != nullptr ? probe_context->context.get() : nullptr,
@@ -717,7 +717,8 @@ class PlannerRunner final : public GemmRunnerV1 {
     const auto gemm_problem = problem(shape, minimum_alignment);
     const auto baseline =
         runtime::discover_cpu_gemm_implementation_resources_v1(
-            gemm_problem, requested_threads);
+            gemm_problem, requested_threads,
+            runtime::CpuExternalProviderProbeV1::include);
     const auto resources = runtime::augment_cpu_gemm_implementation_resources_v2(
         gemm_problem, baseline,
         context_record != nullptr ? context_record->context.get() : nullptr,

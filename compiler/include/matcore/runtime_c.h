@@ -620,9 +620,13 @@ MATCORE_RUNTIME_API matcore_status_v0 matcore_runtime_plan_gemm_f32_v1(
 
 /*
  * Returns the deterministic resource-aware plan and exact caller-owned
- * workspace requirement without executing or modifying output data. options,
- * requirements, and report use strict version/size checks. Output fields in
- * requirements and report must be zero before the call.
+ * workspace requirement without executing the requested GEMM or modifying
+ * output data. Automatic and forced-provider requests may run the process-once
+ * OpenBLAS conformance GEMM; a linked opaque provider may initialize or manage
+ * internal memory during that probe. Forced non-provider requests deliberately
+ * leave provider conformance uninspected. options, requirements, and report use
+ * strict version/size checks. Output fields in requirements and report must be
+ * zero before the call.
  */
 MATCORE_RUNTIME_API matcore_status_v0
 matcore_runtime_gemm_f32_workspace_size_v1(
@@ -637,9 +641,10 @@ matcore_runtime_gemm_f32_workspace_size_v1(
 /*
  * Executes exactly the selected resource-aware plan. MDSLC allocates no
  * packing/workspace memory; nonzero caller workspace must satisfy the queried
- * size and alignment. A selected opaque provider may manage internal memory
- * under its own contract. Every pre-execution validation failure leaves output
- * data unchanged.
+ * size and alignment. Automatic or forced-provider requests may probe or
+ * execute a linked opaque provider, which may manage internal memory under its
+ * own contract; forced non-provider requests leave it uninspected. Every pre-
+ * execution validation failure leaves output data unchanged.
  */
 MATCORE_RUNTIME_API matcore_status_v0 matcore_runtime_gemm_f32_execute_v1(
     const matcore_tensor_desc_v0 *out,
@@ -699,8 +704,15 @@ matcore_runtime_gemm_f32_execute_prepacked_b_v1(
 
 /*
  * Creates a reusable CPU worker context. Worker-management storage is runtime
- * owned; GEMM packing/workspace storage remains caller owned. The output
- * handle must initially be null and is written only on success.
+ * owned; GEMM packing/workspace storage remains caller owned. Context creation
+ * authenticates every compiled runtime variant. When OpenBLAS is linked and
+ * the floating-point environment is compatible, first process use runs one
+ * provider-conformance GEMM. If that provider is conformant, each context
+ * creation then runs finite and special-value provider validation GEMMs. The
+ * opaque provider may initialize or manage internal memory during either
+ * boundary. Later context-backed reports reuse that context's full validation
+ * evidence. The output handle must initially be null and is written only on
+ * success.
  */
 MATCORE_RUNTIME_API matcore_status_v0
 matcore_runtime_cpu_execution_context_create_v1(
@@ -771,9 +783,10 @@ matcore_runtime_gemm_i8_i32_reference_v1(
  * Synchronously computes out = lhs * rhs. Bootstrap v0 accepts only positive
  * rank-2, row-major contiguous f32 host tensors, CPU target, and
  * fallback=error. MDSLC performs no packing/workspace allocation and does not
- * copy input or output tensors; a selected opaque provider may manage internal
- * memory under its own contract. out must not overlap either input. All
- * failures are returned; no C++ exception crosses this boundary.
+ * copy input or output tensors; a linked opaque provider may manage internal
+ * memory under its own contract while being probed or executed. out must not
+ * overlap either input. All failures are returned; no C++ exception crosses
+ * this boundary.
  */
 MATCORE_RUNTIME_API matcore_status_v0 matcore_runtime_gemm_f32_v0(
     const matcore_tensor_desc_v0 *out,

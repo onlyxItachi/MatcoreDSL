@@ -651,6 +651,32 @@ bool forced_native_packed_request(
              force_native_packed_avx2_fma;
 }
 
+matcore::mdslc::runtime::CpuExternalProviderProbeV1 external_provider_probe(
+    matcore::mdslc::planner::CpuGemmRequestV2 request) noexcept {
+  return request == matcore::mdslc::planner::CpuGemmRequestV2::automatic ||
+                 request == matcore::mdslc::planner::CpuGemmRequestV2::
+                                force_external_openblas
+             ? matcore::mdslc::runtime::CpuExternalProviderProbeV1::include
+             : matcore::mdslc::runtime::CpuExternalProviderProbeV1::exclude;
+}
+
+matcore::mdslc::runtime::OpenBlasProviderInfoV1 external_provider_info(
+    matcore::mdslc::runtime::CpuExternalProviderProbeV1 probe,
+    bool linked_at_build) noexcept {
+  if (probe ==
+      matcore::mdslc::runtime::CpuExternalProviderProbeV1::include) {
+    return matcore::mdslc::runtime::openblas_provider_info_v1();
+  }
+  matcore::mdslc::runtime::OpenBlasProviderInfoV1 provider;
+  provider.linked = linked_at_build;
+  if (linked_at_build) {
+    provider.package_version = "uninspected";
+    provider.runtime_config = "uninspected";
+    provider.runtime_core = "uninspected";
+  }
+  return provider;
+}
+
 matcore_status_v0 packed_execution_status(
     matcore::mdslc::runtime::CpuPackedGemmStatusV1 packed_status) noexcept {
   using PackedStatus = matcore::mdslc::runtime::CpuPackedGemmStatusV1;
@@ -1864,7 +1890,8 @@ AdvancedGemmPlanV3 make_advanced_gemm_plan_v3(
     matcore::mdslc::planner::CpuGemmRequestV3 request) noexcept {
   auto baseline =
       matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
-          validated.problem, options.requested_threads);
+          validated.problem, options.requested_threads,
+          matcore::mdslc::runtime::CpuExternalProviderProbeV1::include);
   const CpuRuntimeSelfTestsV1 &self_tests = cpu_runtime_self_tests_v1();
   baseline.native_packed_avx2_fma_compiled =
       baseline.native_packed_avx2_fma_compiled &&
@@ -2601,7 +2628,8 @@ matcore_runtime_gemm_f32_workspace_size_v1(
   if (result.code != MATCORE_STATUS_OK_V0) return result;
   const auto resources =
       matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
-          validated.problem, options->requested_threads);
+          validated.problem, options->requested_threads,
+          external_provider_probe(request));
   const auto capabilities =
       matcore::mdslc::planner::discover_cpu_capabilities_v1();
   const auto plan = matcore::mdslc::planner::plan_cpu_gemm_v2(
@@ -2620,7 +2648,10 @@ matcore_runtime_gemm_f32_workspace_size_v1(
   output.selected_stable_id = candidate.stable_id.data();
   *requirements = output;
   populate_report_v2(
-      plan, matcore::mdslc::runtime::openblas_provider_info_v1(), report);
+      plan,
+      external_provider_info(external_provider_probe(request),
+                             plan.resources.openblas_linked),
+      report);
   return status(MATCORE_STATUS_OK_V0, "ok");
 }
 
@@ -2644,7 +2675,8 @@ matcore_runtime_gemm_f32_execute_v1(
   if (result.code != MATCORE_STATUS_OK_V0) return result;
   const auto resources =
       matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
-          validated.problem, options->requested_threads);
+          validated.problem, options->requested_threads,
+          external_provider_probe(request));
   const auto capabilities =
       matcore::mdslc::planner::discover_cpu_capabilities_v1();
   const auto plan = matcore::mdslc::planner::plan_cpu_gemm_v2(
@@ -2698,7 +2730,10 @@ matcore_runtime_gemm_f32_execute_v1(
                   "selected CPU GEMM implementation did not execute");
 
   populate_report_v2(
-      plan, matcore::mdslc::runtime::openblas_provider_info_v1(), report);
+      plan,
+      external_provider_info(external_provider_probe(request),
+                             plan.resources.openblas_linked),
+      report);
   return status(MATCORE_STATUS_OK_V0, "ok");
 }
 
@@ -2722,7 +2757,8 @@ matcore_runtime_gemm_f32_prepacked_b_size_v1(
   if (result.code != MATCORE_STATUS_OK_V0) return result;
   const auto resources =
       matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
-          validated.problem, options->requested_threads);
+          validated.problem, options->requested_threads,
+          matcore::mdslc::runtime::CpuExternalProviderProbeV1::exclude);
   const auto plan = matcore::mdslc::planner::plan_cpu_gemm_v2(
       validated.problem,
       matcore::mdslc::planner::discover_cpu_capabilities_v1(), resources,
@@ -2782,7 +2818,8 @@ matcore_runtime_gemm_f32_prepack_b_v1(
   if (result.code != MATCORE_STATUS_OK_V0) return result;
   const auto resources =
       matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
-          validated.problem, options->requested_threads);
+          validated.problem, options->requested_threads,
+          matcore::mdslc::runtime::CpuExternalProviderProbeV1::exclude);
   const auto plan = matcore::mdslc::planner::plan_cpu_gemm_v2(
       validated.problem,
       matcore::mdslc::planner::discover_cpu_capabilities_v1(), resources,
@@ -2947,7 +2984,8 @@ matcore_runtime_gemm_f32_execute_prepacked_b_v1(
 
   const auto resources =
       matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
-          validated.problem, options->requested_threads);
+          validated.problem, options->requested_threads,
+          matcore::mdslc::runtime::CpuExternalProviderProbeV1::exclude);
   auto plan = matcore::mdslc::planner::plan_cpu_gemm_v2(
       validated.problem,
       matcore::mdslc::planner::discover_cpu_capabilities_v1(), resources,
@@ -3003,7 +3041,11 @@ matcore_runtime_gemm_f32_execute_prepacked_b_v1(
   plan.candidates[packed_index].required_workspace_alignment =
       static_cast<std::uint32_t>(execution.alignment_bytes);
   populate_report_v2(
-      plan, matcore::mdslc::runtime::openblas_provider_info_v1(), report);
+      plan,
+      external_provider_info(
+          matcore::mdslc::runtime::CpuExternalProviderProbeV1::exclude,
+          plan.resources.openblas_linked),
+      report);
   return status(MATCORE_STATUS_OK_V0, "ok");
 }
 
@@ -3054,7 +3096,8 @@ matcore_runtime_gemm_f32_v0(const matcore_tensor_desc_v0 *out,
   if (result.code != MATCORE_STATUS_OK_V0) return result;
   auto resources =
       matcore::mdslc::runtime::discover_cpu_gemm_implementation_resources_v1(
-          validated.problem, 1);
+          validated.problem, 1,
+          matcore::mdslc::runtime::CpuExternalProviderProbeV1::include);
   // The original one-shot ABI cannot receive caller-owned packing storage.
   // Remove MDSLC workspace-requiring candidates while still allowing
   // zero-caller-workspace native and opaque external-provider variants.

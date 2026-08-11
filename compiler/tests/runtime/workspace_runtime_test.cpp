@@ -109,6 +109,24 @@ int main() {
     std::cerr << "workspace query omitted borrowed diagnostic strings\n";
     return 1;
   }
+  const bool linked_but_uninspected =
+      std::strcmp(report.external_provider, "OpenBLAS") == 0 &&
+      std::strcmp(report.external_provider_version, "uninspected") == 0 &&
+      std::strcmp(report.external_provider_config, "uninspected") == 0 &&
+      std::strcmp(report.candidates[3].reason,
+                  "OpenBLAS conformance was not evaluated for this request") ==
+          0;
+  const bool not_linked =
+      std::strcmp(report.external_provider, "unavailable") == 0 &&
+      std::strcmp(report.external_provider_version, "unavailable") == 0 &&
+      std::strcmp(report.external_provider_config, "unavailable") == 0 &&
+      std::strcmp(report.candidates[3].reason,
+                  "OpenBLAS CBLAS adapter is not linked") == 0;
+  if (!linked_but_uninspected && !not_linked) {
+    std::cerr <<
+        "forced non-provider report confused uninspected and absent OpenBLAS\n";
+    return 1;
+  }
   const char *borrowed_status_message = result.message;
   const char *borrowed_provider = report.external_provider;
   const char *borrowed_provider_version = report.external_provider_version;

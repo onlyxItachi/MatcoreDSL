@@ -59,6 +59,11 @@ bool complete_identity(const OpenBlasProviderInfoV1 &provider) noexcept {
 }
 
 #if MATCORE_MDSLC_HAS_OPENBLAS
+std::atomic<bool> openblas_provider_info_complete{false};
+std::once_flag openblas_conformance_once;
+OpenBlasConformanceReportV1 openblas_conformance_report;
+std::atomic<bool> openblas_conformance_complete{false};
+
 OpenBlasConformanceReportV1 run_openblas_conformance_probe_v1(
     const OpenBlasProviderInfoV1 &provider) noexcept {
   OpenBlasConformanceReportV1 report;
@@ -164,13 +169,15 @@ OpenBlasProviderInfoV1 openblas_provider_info_v1() noexcept {
   static const OpenBlasProviderInfoV1 provider = []() noexcept {
     const char *config = openblas_get_config();
     const char *core = openblas_get_corename();
-    return OpenBlasProviderInfoV1{
+    OpenBlasProviderInfoV1 result{
         true,
         MATCORE_MDSLC_OPENBLAS_VERSION,
         config != nullptr ? config : "unknown",
         core != nullptr ? core : "unknown",
         openblas_get_parallel(),
         openblas_get_num_procs()};
+    openblas_provider_info_complete.store(true, std::memory_order_release);
+    return result;
   }();
   return provider;
 #else
@@ -178,13 +185,18 @@ OpenBlasProviderInfoV1 openblas_provider_info_v1() noexcept {
 #endif
 }
 
+bool openblas_provider_info_query_complete_v1() noexcept {
+#if MATCORE_MDSLC_HAS_OPENBLAS
+  return openblas_provider_info_complete.load(std::memory_order_acquire);
+#else
+  return false;
+#endif
+}
+
 OpenBlasConformanceReportV1 openblas_conformance_report_v1() noexcept {
   const OpenBlasProviderInfoV1 provider = openblas_provider_info_v1();
 #if MATCORE_MDSLC_HAS_OPENBLAS
-  static std::once_flag once;
-  static OpenBlasConformanceReportV1 report;
-  static std::atomic<bool> complete{false};
-  if (!complete.load(std::memory_order_acquire) &&
+  if (!openblas_conformance_complete.load(std::memory_order_acquire) &&
       !platform::inspect_current_fp_environment_v1()
            .explicit_gemm_f32_v1_compatible) {
     OpenBlasConformanceReportV1 deferred;
@@ -193,15 +205,23 @@ OpenBlasConformanceReportV1 openblas_conformance_report_v1() noexcept {
     deferred.identity_complete = complete_identity(provider);
     return deferred;
   }
-  std::call_once(once, [&]() noexcept {
-    report = run_openblas_conformance_probe_v1(provider);
-    complete.store(true, std::memory_order_release);
+  std::call_once(openblas_conformance_once, [&]() noexcept {
+    openblas_conformance_report = run_openblas_conformance_probe_v1(provider);
+    openblas_conformance_complete.store(true, std::memory_order_release);
   });
-  return report;
+  return openblas_conformance_report;
 #else
   OpenBlasConformanceReportV1 report;
   report.provider_linked = provider.linked;
   return report;
+#endif
+}
+
+bool openblas_conformance_probe_complete_v1() noexcept {
+#if MATCORE_MDSLC_HAS_OPENBLAS
+  return openblas_conformance_complete.load(std::memory_order_acquire);
+#else
+  return false;
 #endif
 }
 
