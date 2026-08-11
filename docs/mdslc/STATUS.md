@@ -2,10 +2,15 @@
 
 Status date: 2026-08-11
 
-- Canonical `origin/main` and merged Milestone 7 bounded disposition:
+- PR #18 base `origin/main` and merged Milestone 7 bounded disposition:
   `e5069758ad04bdb459de2026cad8498b47fda707`
 - Strategic semantic-foundation branch:
   `mdslc/semantic-compiler-foundation-v1`
+- CPU-beta pull request / umbrella issue / GitHub milestone: `#18` / `#17` /
+  `#6`; hosted validation passed at product/test head
+  `1d084a175772f286b04eb1802e2c4d8272533ede`, while normal merge, post-merge
+  checks, the `mdslc-cpu-beta-v1` tag, tracker closure, and publication remain
+  pending
 - Milestone 6 pull request: `#14`, merged normally
 - Milestone 6 umbrella issue / GitHub milestone: `#13` / `#4`, closed
 - Milestone 6 immutable tag: `mdslc-cpu-performance-audit-v1`
@@ -89,8 +94,12 @@ uses the additive status
 `MATCORE_STATUS_UNSUPPORTED_FLOATING_POINT_ENVIRONMENT_V0` (numeric value 26)
 without changing an existing C record layout or function signature. Focused
 normal and ASan/UBSan review passed, and the later full local CPU-beta matrix
-passed at final local candidate `6796fd8`. Windows FP support remains bounded
-by its hosted compatibility lane rather than this physical Linux acceptance.
+passed at immutable local full-matrix candidate `6796fd8`. Focused CI/test and
+Windows FP-profile corrections later landed in `f8e38ea` and `1d084a1`; they
+are not documentation-only changes and passed their hosted lanes at
+`1d084a175772f286b04eb1802e2c4d8272533ede`. Windows FP support remains bounded
+by that hosted compatibility lane rather than the physical Linux acceptance,
+and Windows Matcore-MLIR semantic execution is not claimed.
 
 The first staged work is architecture freeze, the MLIR core and deterministic
 v1 bridge, GEMM-to-SIN domain composition, conservative explicit/recovered
@@ -179,9 +188,11 @@ compiled into an ordinary object/executable, and executed through the stable
 semantic lowering rather than by an unused inspection sidecar. This is a
 library-dispatch lowering, not Linalg/Vector loop generation. The fresh local
 Release, Debug, sanitizer, installed-package, relocation,
-source-inaccessible, and ABI matrix passed at `6796fd8`; hosted Linux/Windows,
-normal merge, tag, and publication remain Milestone H work. The final local
-independent review passed with no unresolved high- or medium-severity finding.
+source-inaccessible, and ABI matrix passed at `6796fd8`. Hosted Linux/Windows,
+sanitizer, legacy, and hygiene validation subsequently passed on PR #18 at
+`1d084a175772f286b04eb1802e2c4d8272533ede`. Normal merge, post-merge checks,
+tag, tracker closure, and publication remain Milestone H work. The independent
+review gate passed with no unresolved high- or medium-severity finding.
 
 **Milestone F has an accepted bounded technical-limit disposition.** The
 unchanged Milestone 7 performance contract still lacks a complete authenticated
@@ -217,11 +228,38 @@ full Debug with OpenBLAS, focused ASan+UBSan and TSan scopes, installed and
 source-inaccessible packages, strict C17 ABI, legacy frontend, artifact,
 planner-sanity, and repository-hygiene gates are green. This evidence supersedes
 the earlier `69d099e` run because intervening compiler/runtime/package fixes
-were product changes. The following evidence/status commit is documentation
-only. Final local independent review passed. Hosted pull-request and Windows
-results, normal merge, tag, and publication remain pending. No CPU beta release
-is claimed yet. The bounded product contract and exact remaining gates are in
-[CPU_BETA_V1.md](CPU_BETA_V1.md).
+were product changes. The later `f8e38ea` and `1d084a1` commits contain focused
+CI/test and Windows FP-profile fixes, so they must not be described as
+documentation-only. They do not replace `6796fd8` as the immutable full local
+matrix; instead, the hosted gates authenticate the resulting product/test head
+`1d084a175772f286b04eb1802e2c4d8272533ede`.
+
+Exact hosted evidence on PR #18 is:
+
+- `mdslc-native`: push run
+  [31522956062](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522956062)
+  passed 7/7 jobs; pull-request run
+  [31522958911](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522958911)
+  passed 7/7 jobs;
+- legacy `ci`: pull-request run
+  [31522958924](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522958924)
+  passed 1/1 job;
+- `repository-hygiene`: push run
+  [31522956052](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522956052)
+  and pull-request run
+  [31522958913](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522958913)
+  each passed 1/1 job; and
+- `mdslc-windows`: push run
+  [31522956094](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522956094)
+  and pull-request run
+  [31522958916](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522958916)
+  both completed with full success.
+
+Local, independent-review, and hosted gates are passed. Milestone H remains
+active only for the normal PR #18 merge, green post-merge checks on `main`, the
+immutable `mdslc-cpu-beta-v1` tag, Issue #17 / GitHub milestone #6 closure, and
+publication. No CPU beta release is claimed yet. The bounded product contract
+is in [CPU_BETA_V1.md](CPU_BETA_V1.md).
 
 ## Milestone 7 native BLAS parity
 

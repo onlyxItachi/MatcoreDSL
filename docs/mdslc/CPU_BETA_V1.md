@@ -2,9 +2,11 @@
 
 Date: 2026-08-11
 
-Status: **local Milestone H matrix and final independent review passed for code
-candidate `6796fd8`; hosted validation, merge, and beta publication are
-pending.**
+Status: **the immutable local Milestone H matrix, independent-review gate, and
+hosted PR #18 validation have passed. The hosted product/test head is
+`1d084a175772f286b04eb1802e2c4d8272533ede`; normal merge, post-merge checks,
+the `mdslc-cpu-beta-v1` tag, Issue #17 / GitHub milestone #6 closure, and
+publication remain pending.**
 
 This document fixes the claim and validation boundary for the first CPU beta.
 It does not freeze the public API, ABI, backend contract, operation set, or
@@ -50,10 +52,12 @@ available in an MLIR-enabled build. The `matcore-mlir` route requires the
 native frontend; the AST-JSON bootstrap compatibility frontend must be paired
 explicitly with `capture-v0`.
 
-Windows Release, Debug, and supported sanitizer profiles remain deliberately
+Windows Release, Debug, and the supported clang-cl AddressSanitizer profile
+remain deliberately
 MLIR-disabled/default-`capture-v0` for this beta. The current Windows lane does
 not claim Matcore-MLIR semantic execution, map execution, or recovered-loop
-execution.
+execution. Windows UBSan and a clean-machine VC++ Redistributable installation
+are not claimed.
 
 ## Installed package contract
 
@@ -119,10 +123,10 @@ the supported linked single-thread OpenBLAS adapter is checked for conformance.
 
 Unsupported execution state returns additive status
 `MATCORE_STATUS_UNSUPPORTED_FLOATING_POINT_ENVIRONMENT_V0` with numeric value
-26. No existing C function signature or record layout changes. The final beta
-gate must revalidate the retained 15 exported runtime C functions, strict C17
+26. No existing C function signature or record layout changes. The Milestone H
+gate revalidated the retained 15 exported runtime C functions, strict C17
 consumer compilation, enum values, sizes, offsets, and installed shared-library
-symbols on the exact candidate commit.
+symbols on the immutable local full-matrix candidate.
 
 Alias, overlap, descriptor, shape, stride, alignment, workspace, capability,
 and FP-environment failures remain pre-execution failures. Existing contracts
@@ -160,8 +164,10 @@ The final local matrix was run from a clean immutable clone of code candidate
 [cpu-beta-final-candidate-validation.md](agent-reports/cpu-beta-final-candidate-validation.md).
 It supersedes the historical `69d099e` matrix because later product changes
 hardened composition roots, package provenance, and provider-conformance
-routing. This documentation commit is intentionally separate from the tested
-code candidate.
+routing. The later commits `f8e38ea` and `1d084a1` are focused CI/test and
+Windows floating-point-profile fixes, not documentation-only commits; their
+focused hosted validation is recorded separately below. The immutable full
+local matrix remains the `6796fd8` evidence boundary.
 
 | Gate | Required final evidence | Candidate status |
 | --- | --- | --- |
@@ -173,15 +179,27 @@ code candidate.
 | Semantic artifact | Explicit `.mdsl -> v1 -> mdsl MLIR -> native object -> executable`; backend producer and stable runtime symbol inspected | passed locally at `6796fd8` |
 | ABI/install exports | Strict C17, 15 retained runtime C exports, status 26, layouts, SONAME/import boundary, no private MLIR export/path leak | passed locally at `6796fd8` |
 | Recognition and domains | Accepted focused verifier/equivalence suites plus executable-boundary rejection of recovered/map modules | passed locally at `6796fd8`; focused component reviews accepted |
-| Windows x64 | Release, Debug, supported sanitizer, MLIR-unavailable negative, DLL/import library, installed consumer, paths with spaces, ZIP artifact | pending hosted run |
+| Windows x64 | Release, Debug, supported sanitizer, MLIR-unavailable negative, DLL/import library, installed consumer, paths with spaces, ZIP artifact | passed at hosted head `1d084a175772f286b04eb1802e2c4d8272533ede`; push and PR #18 Windows workflows succeeded |
 | Performance sanity | Correctness and planner sanity only; no new native-parity claim | passed locally at `6796fd8`; one guarded 256-cubed OpenBLAS selection sanity, not parity evidence |
 | Repository hygiene | Clean tree, `git diff --check`, generated-artifact and semantic-MLIR hygiene | passed locally at `6796fd8` |
-| Independent review | Fresh adversarial review of the exact candidate with no unresolved high or medium finding | passed locally for `6796fd8` plus its docs-only evidence tip; no unresolved high or medium finding |
-| Hosted pull request | Normal PR checks green before normal merge | pending |
+| Independent review | Fresh adversarial review with no unresolved high or medium finding | passed; the immutable full-matrix baseline remains `6796fd8` and the later focused fixes have green hosted evidence |
+| Hosted pull request | Push and PR #18 workflow checks green before normal merge | passed at product/test head `1d084a175772f286b04eb1802e2c4d8272533ede` |
 
-The beta must not be described as shipped, merged, tagged, or validated by
-hosted checks until the remaining rows are replaced by exact evidence from the
-pull-request candidate.
+Exact hosted evidence for `1d084a175772f286b04eb1802e2c4d8272533ede` is:
+
+| Workflow | Push evidence | PR #18 evidence |
+| --- | --- | --- |
+| `mdslc-native` | [run 31522956062](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522956062), 7/7 jobs passed | [run 31522958911](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522958911), 7/7 jobs passed |
+| Legacy `ci` | not a required push duplicate | [run 31522958924](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522958924), 1/1 job passed |
+| `repository-hygiene` | [run 31522956052](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522956052), 1/1 job passed | [run 31522958913](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522958913), 1/1 job passed |
+| `mdslc-windows` | [run 31522956094](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522956094), Release 44/44, Debug 31/31, clang-cl ASan 1/1, install/consumer/artifact/ZIP passed | [run 31522958916](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522958916), Release 44/44, Debug 31/31, clang-cl ASan 1/1, install/consumer/artifact/ZIP passed |
+
+These runs close the hosted Linux, Windows compatibility, sanitizer, package,
+legacy, and hygiene validation gate. They do not make the beta shipped or
+merged. A normal PR #18 merge, green post-merge checks on `main`, creation of
+the immutable `mdslc-cpu-beta-v1` tag, Issue #17 / GitHub milestone #6 closure,
+and any publication are still pending. Windows remains a compatibility profile
+and does not gain a Matcore-MLIR semantic-execution claim.
 
 ## Explicitly unsupported claims
 
@@ -196,6 +214,6 @@ The CPU beta does not claim:
 - a final public API, ABI, backend-contract, or support-policy freeze; or
 - CUDA, HIP, Metal, Vulkan, NPU, heterogeneous placement, or any GPU work.
 
-After this candidate passes Milestone H and merges normally, a separate
+After the normal merge and beta-tag integration gates close, a separate
 explicitly authorized milestone may evaluate the public API/ABI/backend
 contract freeze. That freeze must not begin automatically.

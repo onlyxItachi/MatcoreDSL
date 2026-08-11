@@ -184,7 +184,8 @@ and are rejected by the executable CPU lowerer.
 
 Status: implemented and independently accepted for the focused Linux
 authenticated explicit-F32-GEMM runtime-dispatch path. Full CPU-beta
-configuration and hosted evidence remains Milestone H work.
+configuration and hosted evidence are now passed under Milestone H; normal
+integration and publication steps remain.
 
 Route authenticated capture through verified Matcore MLIR into legal CPU
 planning/lowering, reusing the current runtime and implementation registry.
@@ -253,9 +254,13 @@ policy remain open for the separate freeze milestone.
 
 Status: active. A--G have their required bounded dispositions. The full local
 integration matrix passed at immutable code candidate `6796fd8`, superseding
-the historical `69d099e` matrix after later product hardening. Final local
-independent review passed with no unresolved high or medium finding. Hosted
-Linux/Windows integration, normal merge, and beta tag remain pending.
+the historical `69d099e` matrix after later product hardening. The later
+`f8e38ea` and `1d084a1` commits are focused CI/test and Windows FP-profile
+fixes, not documentation-only commits; they passed the hosted gates at
+product/test head `1d084a175772f286b04eb1802e2c4d8272533ede`. The independent
+review gate passed with no unresolved high or medium finding. Normal merge,
+post-merge checks, the `mdslc-cpu-beta-v1` tag, Issue #17 / GitHub milestone #6
+closure, and publication remain pending.
 
 The intended initial claim is valid C++ `.mdsl`, preserved ordinary C++,
 explicit F32 rank-2 GEMM, verified capture and semantic IR, deterministic legal
@@ -267,6 +272,34 @@ fallback.
 Gate: fresh Release, Debug, supported sanitizers, package, external consumer,
 Windows, native artifact, IR/verifier, explicit/recovered recognition,
 planner, performance sanity, hygiene, and independent adversarial review.
+
+Exact PR #18 hosted evidence at
+`1d084a175772f286b04eb1802e2c4d8272533ede` is:
+
+- `mdslc-native` push run
+  [31522956062](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522956062)
+  and pull-request run
+  [31522958911](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522958911)
+  passed 7/7 jobs each;
+- legacy `ci` pull-request run
+  [31522958924](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522958924)
+  passed 1/1 job;
+- `repository-hygiene` push run
+  [31522956052](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522956052)
+  and pull-request run
+  [31522958913](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522958913)
+  passed 1/1 job each; and
+- `mdslc-windows` push run
+  [31522956094](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522956094)
+  and pull-request run
+  [31522958916](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522958916)
+  both completed with full success.
+
+These results complete the local, independent-review, and hosted Milestone H
+validation gates. Windows remains the MLIR-disabled compatibility profile and
+does not claim Matcore-MLIR semantic execution. Milestone 7 remains partial,
+with no parity completion tag, and this validation does not begin the public
+API/ABI/backend-contract freeze.
 
 Product-profile boundary:
 
@@ -306,8 +339,10 @@ F disposition, not a manufactured parity pass. H does not depend on GPU work.
   and non-overlapping files.
 - Milestone 7 remains tracked separately by Issue #15 and milestone #5.
 - Bounded contract resolution and the CPU-beta candidate are integrated on
-  `mdslc/semantic-compiler-foundation-v1`; publication still requires a normal
-  pull request from that branch after the final H gates pass.
+  `mdslc/semantic-compiler-foundation-v1`; PR #18 has passed its hosted gates,
+  while publication still requires its normal merge, green post-merge checks,
+  the immutable `mdslc-cpu-beta-v1` tag, and Issue #17 / GitHub milestone #6
+  closure.
 - Integration uses focused commits and normal merges. No rebase, history
   rewrite, tag movement, or deletion of legacy/user work is part of this plan.
 
