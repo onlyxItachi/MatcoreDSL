@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -137,17 +138,36 @@ def main() -> int:
                 "MLIR-disabled extractor emitted an artifact",
             )
 
-            unavailable_object = temporary / "unavailable.o"
-            driver_rejection = run(
+            unavailable_object = temporary / (
+                "unavailable.lib" if os.name == "nt" else "unavailable.o"
+            )
+            unavailable_compile_arguments = (
                 [
-                    str(driver),
-                    "--semantic-pipeline=matcore-mlir",
-                    "--matcore-target=cpu",
+                    "/nologo",
+                    "/TP",
+                    "/std:c++20",
+                    "/EHsc",
+                    "/MD",
+                    "/c",
+                    str(source),
+                    "-o",
+                    str(unavailable_object),
+                ]
+                if os.name == "nt"
+                else [
                     "-std=c++20",
                     "-c",
                     str(source),
                     "-o",
                     str(unavailable_object),
+                ]
+            )
+            driver_rejection = run(
+                [
+                    str(driver),
+                    "--semantic-pipeline=matcore-mlir",
+                    "--matcore-target=cpu",
+                    *unavailable_compile_arguments,
                 ],
                 repository,
             )
