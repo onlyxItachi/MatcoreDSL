@@ -29,6 +29,14 @@ bool validIdentifier(std::string_view value) {
   });
 }
 
+bool validCanonicalSiteId(std::string_view value) {
+  return value.size() == 35 && value.starts_with("mc_") &&
+         std::all_of(value.begin() + 3, value.end(), [](char character) {
+           return (character >= '0' && character <= '9') ||
+                  (character >= 'a' && character <= 'f');
+         });
+}
+
 bool safeDirectiveText(std::string_view value) {
   return value.find('\n') == std::string_view::npos &&
          value.find('\r') == std::string_view::npos;
@@ -251,8 +259,9 @@ bool generateRuntimeDispatchBackendV1(
   std::unordered_set<std::string> site_ids;
   site_ids.reserve(entries.size());
   for (const RuntimeDispatchBackendEntryV1 &entry : entries) {
-    if (!validIdentifier(entry.site_id)) {
-      error = "runtime-dispatch backend site ID is not a valid identifier";
+    if (!validIdentifier(entry.site_id) ||
+        !validCanonicalSiteId(entry.site_id)) {
+      error = "runtime-dispatch backend site ID is not canonical";
       return false;
     }
     if (!site_ids.insert(entry.site_id).second) {
