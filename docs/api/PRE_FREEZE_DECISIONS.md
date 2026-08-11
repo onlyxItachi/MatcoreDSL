@@ -20,6 +20,11 @@ This log is input to a later Milestone G contract-resolution review. It is not
 an API freeze. Native-BLAS parity alone neither starts nor completes that
 review.
 
+The bounded CPU-beta decisions recorded below are governed by
+[pre-freeze interface evolution policy v1](INTERFACE_EVOLUTION_POLICY_V1.md).
+They close ambiguity in existing versions without declaring the broader public
+surface frozen.
+
 The current validated public surface consists of:
 
 - valid C++ `.mdsl` source and `<matcore/mdsl.h>`;
@@ -79,6 +84,38 @@ frozen.
     may guide legality, but an optimizer may consume them only after static
     proof or a dominating guard that rejects before output mutation.
 
+## Bounded existing-version decisions for CPU beta
+
+These decisions define the existing v1 interfaces. They do not approve a
+general transformed-operand API or the later public freeze.
+
+1. **Packed-B v1 is caller-owned borrowed storage.** The caller owns both the
+   original RHS bytes and packed storage. `matcore_packed_b_desc_v1` is only an
+   address/shape/blocking/storage snapshot produced by `prepack_b_v1`; it owns
+   neither region. Its provenance token authenticates metadata and addresses,
+   not contents.
+2. **Packed-B v1 invalidation is manual and fail-before-use by contract.** The
+   caller keeps source and packed storage alive, at their original addresses,
+   and unmodified. Mutation of either region, relocation/move, or deallocation
+   invalidates the descriptor. The caller must repack before execution. The
+   runtime cannot detect same-address content mutation and makes no hash or
+   immutability claim.
+3. **Packed-B v1 reuse is serial and synchronous.** Repeated serial calls are
+   supported. Concurrent reuse of one descriptor or storage, including across
+   execution contexts, is unsupported. Context-backed parallel execution does
+   not accept this descriptor. A future shareable transformed operand needs a
+   new owner, identity, synchronization, and invalidation contract.
+4. **Existing returned C strings are borrowed.** Every non-null returned C
+   string is NUL-terminated read-only runtime-static or linked-provider storage,
+   valid only until the owning runtime/provider dynamic library unloads. Callers
+   copy text that must survive unload and never free or modify the pointer.
+   Exact diagnostic sentences are not machine ABI; status codes, enums,
+   versioned fields, and explicitly documented stable IDs carry machine meaning.
+5. **Existing versions evolve additively.** Matcore IR v1 remains an exact
+   capture/provenance schema. Source-operation semantics, serialized schemas,
+   and C ABI layouts are not changed in place. New semantics require explicit
+   versions, strict conversion, and new `_vN` records/symbols where applicable.
+
 ## Interfaces that may need redesign before freeze
 
 1. **Fixed candidate arrays.** Plan-report v1/v2/v3 structs encode a registry
@@ -95,14 +132,15 @@ frozen.
    are useful, but their placement in a GEMM-specific CPU record may not scale
    to a device-neutral execution contract. Separate semantic operation policy
    from backend execution hints.
-4. **Borrowed diagnostic strings.** Process-lifetime strings are simple but do
-   not provide a general serialization or foreign-runtime ownership model.
-   Evaluate caller buffers or structured diagnostic codes without weakening
-   actionable messages.
-5. **Packed-B identity.** The v1 descriptor binds source address, shape,
-   blocking constants and a provenance token. Address identity alone cannot
-   prove immutable contents. Any persistent cache or transformed-operand API
-   needs explicit content/lifetime/invalidation ownership.
+4. **Structured diagnostics beyond borrowed strings.** The existing pointer
+   lifetime is now explicit, but it does not provide general serialization or a
+   foreign-runtime ownership model. Evaluate caller buffers or structured
+   diagnostic codes without weakening actionable messages.
+5. **General transformed-operand identity beyond packed-B v1.** The v1
+   descriptor deliberately provides no content authentication and supports only
+   caller-disciplined serial reuse. Any persistent cache, concurrent sharing,
+   or general transformed-operand API needs an additive immutable identity,
+   generation/lifetime, synchronization, and invalidation model.
 6. **Parallel prepacking.** The single-thread packed path accepts prepacked B,
    while the parallel context path always packs B again. A future additive
    contract should let workers share a caller-owned, authenticated,
@@ -179,14 +217,23 @@ their semantics are proven:
 None of these internal abstractions should leak microkernel headers or packing
 layouts into the installed public include tree.
 
-## Ownership and lifetime questions
+## Ownership and lifetime disposition
 
-The freeze milestone must answer these explicitly:
+Resolved for the current v1 CPU-beta surface:
 
-- Who owns transformed matrix storage, and who proves the source remained
-  unchanged?
-- Is invalidation manual, generation-based, content-hash-based, or tied to a
-  typed immutable object?
+- The caller owns packed-B source and transformed storage. Address/metadata
+  provenance does not prove contents; mutation, relocation, or deallocation
+  requires explicit repacking.
+- Packed-B v1 supports synchronous serial reuse only. Cross-context concurrent
+  sharing is not part of this version.
+- Returned diagnostic/report strings are borrowed NUL-terminated static or
+  provider-lifetime storage. Callers copy before the owning dynamic library is
+  unloaded. Exact wording is not a machine interface.
+- Existing source operations, capture schemas, and C ABI versions follow the
+  additive rules in `INTERFACE_EVOLUTION_POLICY_V1.md`.
+
+The later freeze milestone must still answer these broader questions:
+
 - May multiple execution contexts consume one transformed operand
   concurrently?
 - Does context destruction wait for all submissions, and can submission ever
@@ -213,7 +260,9 @@ The freeze milestone must answer these explicitly:
 - Can an inference context prove transformed-weight reuse only through an
   explicit immutable owner, rather than through an intent enum?
 
-Until these are resolved, no global mutable packed-weight cache is acceptable.
+Until the remaining general transformed-operand questions are resolved, no
+global mutable packed-weight cache is acceptable. The bounded packed-B v1
+decision is not permission to infer immutability from an address.
 
 ## Candidate device-neutral contracts
 
@@ -266,12 +315,14 @@ The separate freeze milestone should not begin until:
   require public request-enum churn;
 - existing Linux and Windows installed consumers remain green;
 - symbol and struct-layout compatibility tests cover every retained export;
-- transformed-operand ownership and invalidation are decided;
+- transformed-operand ownership and invalidation beyond the bounded serial
+  packed-B v1 contract are decided;
 - numerical semantics, execution intent, target policy versus capability, and
   source-provenance ownership are decided;
 - the supported floating-point environment and exception-status behavior are
   encoded, checked before execution, and covered by backend conformance tests;
-- operation/version evolution and deprecation rules are written; and
+- the pre-freeze operation/version evolution policy has been exercised and its
+  final support/deprecation guarantees are approved; and
 - an independent ABI/backend-contract review has no unresolved high or medium
   finding.
 
