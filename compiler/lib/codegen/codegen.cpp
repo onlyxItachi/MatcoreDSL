@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <sstream>
+#include <unordered_set>
 #include <utility>
 
 namespace matcore::mdslc::codegen {
@@ -201,10 +202,15 @@ std::string generateStubs(const ir::Module &module,
   return output.str();
 }
 
-std::string generateBackend(const ir::Module &module) {
+std::string generateBackendText(
+    const std::vector<RuntimeDispatchBackendEntryV1> &entries,
+    RuntimeDispatchBackendProducerV1 producer) {
   std::ostringstream output;
   output << "#include <matcore/runtime_c.h>\n";
-  if (module.operations.empty()) {
+  if (producer == RuntimeDispatchBackendProducerV1::MatcoreMlirCpuV1) {
+    output << "// Producer: Matcore MLIR CPU runtime-dispatch lowering v1.\n";
+  }
+  if (entries.empty()) {
     output << "\n// No Matcore backend entries in this translation unit.\n";
     return output.str();
   }
@@ -215,9 +221,9 @@ std::string generateBackend(const ir::Module &module) {
             "#else\n"
             "#error \"MDSLC generated weak backends require Clang/GNU attributes\"\n"
             "#endif\n\n";
-  for (const ir::Operation &operation : module.operations) {
+  for (const RuntimeDispatchBackendEntryV1 &entry : entries) {
     output << "extern \"C\" MATCORE_MDSLC_WEAK matcore_status_v0 "
-           << backendFunction(operation)
+           << "matcore_generated_backend_" << entry.site_id << "_v0"
            << "(const matcore_tensor_desc_v0 *output,\n"
               "    const matcore_tensor_desc_v0 *lhs,\n"
               "    const matcore_tensor_desc_v0 *rhs,\n"
@@ -230,6 +236,33 @@ std::string generateBackend(const ir::Module &module) {
 }
 
 } // namespace
+
+bool generateRuntimeDispatchBackendV1(
+    const std::vector<RuntimeDispatchBackendEntryV1> &entries,
+    RuntimeDispatchBackendProducerV1 producer, std::string &backend_source,
+    std::string &error) {
+  backend_source.clear();
+  error.clear();
+  if (producer != RuntimeDispatchBackendProducerV1::CaptureV0 &&
+      producer != RuntimeDispatchBackendProducerV1::MatcoreMlirCpuV1) {
+    error = "runtime-dispatch backend producer is invalid";
+    return false;
+  }
+  std::unordered_set<std::string> site_ids;
+  site_ids.reserve(entries.size());
+  for (const RuntimeDispatchBackendEntryV1 &entry : entries) {
+    if (!validIdentifier(entry.site_id)) {
+      error = "runtime-dispatch backend site ID is not a valid identifier";
+      return false;
+    }
+    if (!site_ids.insert(entry.site_id).second) {
+      error = "runtime-dispatch backend site ID is duplicated";
+      return false;
+    }
+  }
+  backend_source = generateBackendText(entries, producer);
+  return true;
+}
 
 bool generate(const ir::Module &module, std::string_view original_source,
               std::string_view sites_include, Artifacts &artifacts,
@@ -337,7 +370,17 @@ bool generate(const ir::Module &module, std::string_view original_source,
   }
   artifacts.sites_header = generateSites(module);
   artifacts.stubs_source = generateStubs(module, sites_include);
-  artifacts.backend_source = generateBackend(module);
+  std::vector<RuntimeDispatchBackendEntryV1> backend_entries;
+  backend_entries.reserve(module.operations.size());
+  for (const ir::Operation &operation : module.operations) {
+    backend_entries.push_back({operation.site_id});
+  }
+  if (!generateRuntimeDispatchBackendV1(
+          backend_entries, RuntimeDispatchBackendProducerV1::CaptureV0,
+          artifacts.backend_source, error)) {
+    artifacts = Artifacts{};
+    return false;
+  }
   return true;
 }
 
