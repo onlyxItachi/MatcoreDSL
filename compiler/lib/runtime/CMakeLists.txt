@@ -333,17 +333,24 @@ if(BUILD_TESTING)
     COMMAND matcore_runtime_abi_compat_test
   )
 
-  add_executable(matcore_fp_environment_runtime_test
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/fp_environment_runtime_test.cpp"
-  )
-  target_compile_features(matcore_fp_environment_runtime_test PRIVATE cxx_std_20)
-  mdslc_target_enable_warnings(matcore_fp_environment_runtime_test WERROR)
-  target_link_libraries(matcore_fp_environment_runtime_test
-    PRIVATE MatcoreDSL::Runtime
-  )
-  add_test(NAME runtime.c_abi.fp_environment_v1
-    COMMAND matcore_fp_environment_runtime_test
-  )
+  # These physical rejection-path fixtures manipulate Linux x86-64 MXCSR/x87
+  # state. Do not register a vacuous executable on platforms where every test
+  # body is intentionally unavailable; the portable decoder/fail-closed
+  # contract remains covered by platform.fp_environment.v1.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+     CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    add_executable(matcore_fp_environment_runtime_test
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/fp_environment_runtime_test.cpp"
+    )
+    target_compile_features(matcore_fp_environment_runtime_test PRIVATE cxx_std_20)
+    mdslc_target_enable_warnings(matcore_fp_environment_runtime_test WERROR)
+    target_link_libraries(matcore_fp_environment_runtime_test
+      PRIVATE MatcoreDSL::Runtime
+    )
+    add_test(NAME runtime.c_abi.fp_environment_v1
+      COMMAND matcore_fp_environment_runtime_test
+    )
+  endif()
 
   add_executable(matcore_cpu_runtime_validation_test
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/cpu_runtime_validation_test.cpp"

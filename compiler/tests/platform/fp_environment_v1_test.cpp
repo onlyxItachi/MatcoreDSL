@@ -4,8 +4,13 @@
 #include <iostream>
 #include <string_view>
 
-#if defined(__linux__) && defined(__x86_64__)
+#if (defined(__linux__) && defined(__x86_64__)) || \
+    (defined(_WIN32) && defined(_M_X64))
 #include <xmmintrin.h>
+#endif
+
+#if defined(_WIN32) && defined(_M_X64)
+#include <float.h>
 #endif
 
 namespace platform = matcore::mdslc::platform;
@@ -46,6 +51,29 @@ class ScopedX86FpEnvironment {
  private:
   std::uint32_t mxcsr_ = 0;
   std::uint16_t x87_control_word_ = 0;
+};
+#elif defined(_WIN32) && defined(_M_X64)
+class ScopedWindowsFpEnvironment {
+ public:
+  explicit ScopedWindowsFpEnvironment(
+      const platform::FpEnvironmentReportV1 &snapshot) noexcept
+      : snapshot_(snapshot) {}
+  ScopedWindowsFpEnvironment(const ScopedWindowsFpEnvironment &) = delete;
+  ScopedWindowsFpEnvironment &operator=(const ScopedWindowsFpEnvironment &) =
+      delete;
+  ~ScopedWindowsFpEnvironment() {
+    if (snapshot_.explicit_gemm_f32_v1_compatible)
+      (void)platform::restore_fp_environment_control_state_v1(snapshot_);
+  }
+
+  void set_mxcsr(std::uint32_t value) noexcept { _mm_setcsr(value); }
+  bool set_control(unsigned int value, unsigned int mask) noexcept {
+    unsigned int ignored = 0;
+    return _controlfp_s(&ignored, value, mask) == 0;
+  }
+
+ private:
+  platform::FpEnvironmentReportV1 snapshot_;
 };
 #endif
 
@@ -200,6 +228,70 @@ void physical_environment_contract() {
   expect(platform::inspect_current_fp_environment_v1()
              .explicit_gemm_f32_v1_compatible,
          "physical RAII violation restores the original environment");
+#elif defined(_WIN32) && defined(_M_X64)
+  expect(initial.backend == platform::FpEnvironmentBackendV1::windows_x86_64 &&
+             initial.discovery_complete && initial.mxcsr_known &&
+             initial.control_word_known,
+         "physical Windows x86-64 environment is exactly discoverable");
+  expect(initial.explicit_gemm_f32_v1_compatible,
+         "Windows test process starts with the supported floating-point environment");
+  if (!initial.explicit_gemm_f32_v1_compatible) return;
+
+  {
+    ScopedWindowsFpEnvironment scope(initial);
+    scope.set_mxcsr(initial.raw_mxcsr | (1U << 15U));
+    const auto violated = platform::inspect_current_fp_environment_v1();
+    expect(!violated.explicit_gemm_f32_v1_compatible &&
+               std::string_view(platform::fp_environment_rejection_reason_v1(
+                   violated))
+                       .find("flush-to-zero") != std::string_view::npos,
+           "physical Windows FTZ violation is detected with an actionable reason");
+    expect(platform::restore_fp_environment_control_state_v1(initial) &&
+               platform::fp_environment_control_state_equal_v1(
+                   initial, platform::inspect_current_fp_environment_v1()),
+           "Windows restoration returns to the exact control state");
+  }
+  {
+    ScopedWindowsFpEnvironment scope(initial);
+    scope.set_mxcsr(initial.raw_mxcsr | (1U << 6U));
+    expect(!platform::inspect_current_fp_environment_v1()
+                .explicit_gemm_f32_v1_compatible,
+           "physical Windows DAZ violation is detected");
+  }
+  {
+    ScopedWindowsFpEnvironment scope(initial);
+    expect(scope.set_control(_RC_DOWN, _MCW_RC) &&
+               !platform::inspect_current_fp_environment_v1()
+                    .explicit_gemm_f32_v1_compatible,
+           "physical Windows non-RNE control state is rejected");
+  }
+  {
+    ScopedWindowsFpEnvironment scope(initial);
+    (void)_clearfp();
+    scope.set_mxcsr(initial.raw_mxcsr & ~0x3FU);
+    expect(scope.set_control(initial.raw_control_word & ~_EM_INVALID,
+                             _MCW_EM) &&
+               !platform::inspect_current_fp_environment_v1()
+                    .explicit_gemm_f32_v1_compatible,
+           "physical Windows unmasked exception state is rejected");
+  }
+  {
+    ScopedWindowsFpEnvironment scope(initial);
+    expect(scope.set_control(_DN_FLUSH, _MCW_DN) &&
+               !platform::inspect_current_fp_environment_v1()
+                    .explicit_gemm_f32_v1_compatible,
+           "physical Windows denormal-flush control state is rejected");
+  }
+  {
+    ScopedWindowsFpEnvironment scope(initial);
+    scope.set_mxcsr((initial.raw_mxcsr & ~0x3FU) | 0x3FU);
+    expect(platform::inspect_current_fp_environment_v1()
+               .explicit_gemm_f32_v1_compatible,
+           "physical Windows MXCSR status flags remain legality-neutral");
+  }
+  expect(platform::fp_environment_control_state_equal_v1(
+             initial, platform::inspect_current_fp_environment_v1()),
+         "physical Windows RAII violations restore the original environment");
 #else
   expect(!initial.discovery_complete &&
              !initial.explicit_gemm_f32_v1_compatible,

@@ -45,6 +45,9 @@ if(BUILD_TESTING)
   )
   target_compile_features(matcore_fp_environment_v1_test PRIVATE cxx_std_20)
   mdslc_target_enable_warnings(matcore_fp_environment_v1_test WERROR)
+  if(MDSLC_USING_MSVC_ABI_FRONTEND)
+    target_compile_options(matcore_fp_environment_v1_test PRIVATE /fp:strict)
+  endif()
   target_link_libraries(matcore_fp_environment_v1_test
     PRIVATE MatcoreDSL::PlatformV1
   )

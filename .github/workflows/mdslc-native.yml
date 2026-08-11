@@ -321,6 +321,7 @@ jobs:
             g++-multilib \
             libclang-21-dev \
             libclang-cpp21-dev \
+            libclang-rt-21-dev \
             libmlir-21-dev \
             llvm-21-dev \
             mlir-21-tools \
@@ -407,6 +408,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang-21 \
             cmake \
+            libclang-rt-21-dev \
             ninja-build \
             python3 \
             rapidjson-dev
