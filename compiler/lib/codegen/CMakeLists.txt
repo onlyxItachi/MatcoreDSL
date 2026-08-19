@@ -33,4 +33,18 @@ if(BUILD_TESTING)
   add_test(NAME codegen.static_aot_specialization_execution
     COMMAND matcore_static_aot_specialization_execution_test
   )
+  add_executable(matcore_numerical_semantics_adversarial_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/codegen/numerical_semantics_adversarial_test.cpp"
+  )
+  target_compile_features(matcore_numerical_semantics_adversarial_test PRIVATE cxx_std_20)
+  target_link_libraries(matcore_numerical_semantics_adversarial_test
+    PRIVATE matcore_codegen_v0 matcore_runtime
+  )
+  target_include_directories(matcore_numerical_semantics_adversarial_test
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+  )
+  mdslc_target_enable_warnings(matcore_numerical_semantics_adversarial_test WERROR)
+  add_test(NAME codegen.numerical_semantics_adversarial
+    COMMAND matcore_numerical_semantics_adversarial_test
+  )
 endif()
