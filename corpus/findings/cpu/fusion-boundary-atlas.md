@@ -1,6 +1,7 @@
 # Fusion Boundary Atlas: Across Compilers, JIT, and Numerical Libraries
 
 **Investigation Scope**: Multi-provider analysis across OpenBLAS, BLIS, Eigen, LIBXSMM, and MLIR/LLVM  
+**Audited Benchmark**: Real host micro-benchmark measuring GEMM + separate vs fused ReLU  
 **Confidence Level**: `STRONGLY_SUPPORTED`
 
 ---
@@ -17,15 +18,17 @@
 
 ---
 
-## 2. Why Fixed C ABIs Block Post-Op Fusion
+## 2. Program-Level Store/Reload Pass Elimination vs Physical DRAM Traffic
 
 Standard BLAS interfaces (`cblas_sgemm`) expose a fixed C signature:
 ```c
 void cblas_sgemm(OPENBLAS_CONST enum CBLAS_ORDER Order, ... float alpha, const float *A, ... float beta, float *C, ...);
 ```
-Because the signature cannot accept activation functions or auxiliary bias vectors, the application must:
-1. Execute `cblas_sgemm` $\rightarrow$ writes full matrix $C$ to RAM.
-2. Execute elementwise kernel (e.g. `bias_relu(C)`) $\rightarrow$ reads $C$ from RAM, applies bias+ReLU, writes $C$ back to RAM.
+Because the signature cannot accept activation functions or auxiliary bias vectors, the application must execute a separate activation pass over matrix $C$.
 
-**The Matcore / MLIR Architectural Advantage**:
-By fusing post-ops into the register writeback stage before the matrix tile is written to memory, the intermediate round-trip to RAM is **100% eliminated**, saving $2 \times M \times N \times 4$ bytes of memory bus bandwidth per layer!
+**Clarification of Memory Traffic Savings**:
+- **Logical Program Dataflow**: Fusing post-ops into the register writeback stage eliminates an entire intermediate store and subsequent load pass at the program level.
+- **Physical DRAM Traffic vs Cache Residency**:
+  - For **cache-resident working sets ($N \le 128$)**: Matrix $C$ remains in L1/L2 CPU cache. The separate pass hits L1/L2 cache, resulting in zero physical DRAM traffic in both cases.
+  - For **cache-exceeding matrices ($N \ge 512$)**: Fusing the epilogue eliminates an entire round-trip of matrix $C$ through the physical DRAM memory bus.
+  - For **elementwise chains (Bias + LayerNorm + ReLU)**: Fusing delivers substantial speedups on memory-bandwidth-bound inference layers.
