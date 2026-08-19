@@ -177,11 +177,32 @@ void test_direct_microkernels() {
   }
 }
 
+void test_descriptor_guard_and_fallback() {
+  std::vector<float> lhs(16 * 16, 1.0f);
+  std::vector<float> rhs(16 * 16, 2.0f);
+  std::vector<float> out(16 * 16, 0.0f);
+
+  matcore_tensor_desc_v0 out_desc = make_desc(out.data(), 16, 16, MATCORE_MUTABILITY_READ_WRITE_V0);
+  matcore_tensor_desc_v0 lhs_desc = make_desc(lhs.data(), 16, 16, MATCORE_MUTABILITY_READ_ONLY_V0);
+  matcore_tensor_desc_v0 rhs_desc = make_desc(rhs.data(), 16, 16, MATCORE_MUTABILITY_READ_ONLY_V0);
+
+  matcore_policy_v0 policy{};
+  policy.abi_version = MATCORE_RUNTIME_ABI_VERSION_V0;
+  policy.struct_size = sizeof(matcore_policy_v0);
+  policy.target = MATCORE_TARGET_CPU_V0;
+  policy.fallback = MATCORE_FALLBACK_ERROR_V0;
+
+  matcore_status_v0 status = matcore_runtime_gemm_f32_v0(&out_desc, &lhs_desc, &rhs_desc, &policy);
+  expect(status.code == MATCORE_STATUS_OK_V0, "runtime GEMM descriptor execution succeeds");
+  expect(out[0] == 32.0f, "runtime GEMM output value is correct");
+}
+
 } // namespace
 
 int main() {
   std::cout << "Starting static AOT specialization execution tests...\n";
   test_direct_microkernels();
+  test_descriptor_guard_and_fallback();
 
   if (failures != 0) {
     std::cerr << "Static AOT specialization execution tests: " << failures << " failure(s)\n";
