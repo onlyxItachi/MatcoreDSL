@@ -1,0 +1,16 @@
+# Windows MLIR Structured Lowering Recipe
+recipe_version: "1.0.0"
+lane: "upstream_mlir"
+pipeline_stages:
+  - stage: "linalg_tiling"
+    description: "Tile linalg.matmul to scf.forall / scf.for blocks"
+    options: "--linalg-fuse-elementwise-ops"
+  - stage: "bufferization"
+    description: "One-shot bufferize with destination passing style"
+    options: "--one-shot-bufferize=bufferize-function-boundaries"
+  - stage: "vectorization"
+    description: "Vectorize linalg operations to vector.contract"
+    options: "--linalg-generalize-named-ops --linalg-vectorization"
+  - stage: "vector_to_target"
+    description: "Unroll vector.contract to hardware matrix primitives or LLVM FMA"
+    options: "--convert-vector-to-llvm"

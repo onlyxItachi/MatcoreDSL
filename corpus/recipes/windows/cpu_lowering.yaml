@@ -1,0 +1,29 @@
+# Windows CPU Lowering Recipe (x86-64 / AVX2 / AVX-512)
+recipe_version: "1.0.0"
+lane: "cpu_native"
+target_triples:
+  - "x86_64-pc-windows-msvc"
+compiler_flags:
+  O0:
+    - "-S"
+    - "-emit-llvm"
+    - "-O0"
+  O2:
+    - "-S"
+    - "-emit-llvm"
+    - "-O2"
+  O3:
+    - "-S"
+    - "-emit-llvm"
+    - "-O3"
+code_generation:
+  avx2_fma:
+    flags:
+      - "-O3"
+      - "-march=x86-64"
+      - "-mattr=+avx2,+fma"
+  avx512:
+    flags:
+      - "-O3"
+      - "-march=x86-64"
+      - "-mattr=+avx512f,+avx512dq,+avx512vl"

@@ -1,0 +1,18 @@
+# Windows GPU Target Lowering Recipe (NVPTX & AMDGPU)
+recipe_version: "1.0.0"
+lane: "gpu_target"
+nvidia_sm89:
+  target_triple: "nvptx64-nvidia-cuda"
+  gpu_arch: "sm_89"
+  features: "+ptx80"
+  flags:
+    - "-S"
+    - "--cuda-device-only"
+    - "-nocudalib"
+amd_gfx90a:
+  target_triple: "amdgcn-amd-amdhsa"
+  gpu_arch: "gfx90a"
+  flags:
+    - "-S"
+    - "--hip-device-only"
+    - "-nogpulib"
