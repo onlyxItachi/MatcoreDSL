@@ -5,6 +5,7 @@ target_include_directories(matcore_codegen_v0
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
 )
 target_link_libraries(matcore_codegen_v0 PUBLIC matcore_ir_v0)
+mdslc_target_enable_warnings(matcore_codegen_v0)
 
 if(BUILD_TESTING)
   add_executable(matcore_runtime_dispatch_backend_test
@@ -113,5 +114,19 @@ if(BUILD_TESTING)
   mdslc_target_enable_warnings(matcore_prepacked_b_hoisting_test WERROR)
   add_test(NAME codegen.prepacked_b_hoisting
     COMMAND matcore_prepacked_b_hoisting_test
+  )
+  add_executable(matcore_triway_specialization_comparison_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/codegen/triway_specialization_comparison_test.cpp"
+  )
+  target_compile_features(matcore_triway_specialization_comparison_test PRIVATE cxx_std_20)
+  target_link_libraries(matcore_triway_specialization_comparison_test
+    PRIVATE matcore_codegen_v0 matcore_runtime
+  )
+  target_include_directories(matcore_triway_specialization_comparison_test
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+  )
+  mdslc_target_enable_warnings(matcore_triway_specialization_comparison_test)
+  add_test(NAME codegen.triway_specialization_comparison
+    COMMAND matcore_triway_specialization_comparison_test
   )
 endif()
