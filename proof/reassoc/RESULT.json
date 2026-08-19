@@ -1,0 +1,182 @@
+[
+  {
+    "Target": "SSE4.2",
+    "Experiment": "strict_fp",
+    "Vectorized": false,
+    "VectorWidth": "None",
+    "MissedReason": "cannot prove it is safe to reorder floating-point operations; allow reordering by specifying '#pragma clang loop vectorize(enable)' before the loop or by providing the compiler option '-ffast-math' [-Rpass-analysis=loop-vectorize]",
+    "FPFlags": "-O3",
+    "TargetFlags": "-target x86_64-pc-windows-msvc -msse4.2",
+    "ExitCode": 0
+  },
+  {
+    "Target": "SSE4.2",
+    "Experiment": "reassoc_enabled",
+    "Vectorized": true,
+    "VectorWidth": "None",
+    "MissedReason": "N/A (Successfully Vectorized)",
+    "FPFlags": "-O3 -fassociative-math -freciprocal-math",
+    "TargetFlags": "-target x86_64-pc-windows-msvc -msse4.2",
+    "ExitCode": 0
+  },
+  {
+    "Target": "SSE4.2",
+    "Experiment": "loop_interchanged",
+    "Vectorized": true,
+    "VectorWidth": "None",
+    "MissedReason": "N/A (Successfully Vectorized)",
+    "FPFlags": "-O3",
+    "TargetFlags": "-target x86_64-pc-windows-msvc -msse4.2",
+    "ExitCode": 0
+  },
+  {
+    "Target": "AVX2",
+    "Experiment": "strict_fp",
+    "Vectorized": false,
+    "VectorWidth": "None",
+    "MissedReason": "cannot prove it is safe to reorder floating-point operations; allow reordering by specifying '#pragma clang loop vectorize(enable)' before the loop or by providing the compiler option '-ffast-math' [-Rpass-analysis=loop-vectorize]",
+    "FPFlags": "-O3",
+    "TargetFlags": "-target x86_64-pc-windows-msvc -mavx2 -mfma",
+    "ExitCode": 0
+  },
+  {
+    "Target": "AVX2",
+    "Experiment": "reassoc_enabled",
+    "Vectorized": true,
+    "VectorWidth": "None",
+    "MissedReason": "N/A (Successfully Vectorized)",
+    "FPFlags": "-O3 -fassociative-math -freciprocal-math",
+    "TargetFlags": "-target x86_64-pc-windows-msvc -mavx2 -mfma",
+    "ExitCode": 0
+  },
+  {
+    "Target": "AVX2",
+    "Experiment": "loop_interchanged",
+    "Vectorized": true,
+    "VectorWidth": "None",
+    "MissedReason": "N/A (Successfully Vectorized)",
+    "FPFlags": "-O3",
+    "TargetFlags": "-target x86_64-pc-windows-msvc -mavx2 -mfma",
+    "ExitCode": 0
+  },
+  {
+    "Target": "AVX-512",
+    "Experiment": "strict_fp",
+    "Vectorized": false,
+    "VectorWidth": "None",
+    "MissedReason": "cannot prove it is safe to reorder floating-point operations; allow reordering by specifying '#pragma clang loop vectorize(enable)' before the loop or by providing the compiler option '-ffast-math' [-Rpass-analysis=loop-vectorize]",
+    "FPFlags": "-O3",
+    "TargetFlags": "-target x86_64-pc-windows-msvc -mavx512f -mavx512vl",
+    "ExitCode": 0
+  },
+  {
+    "Target": "AVX-512",
+    "Experiment": "reassoc_enabled",
+    "Vectorized": true,
+    "VectorWidth": "None",
+    "MissedReason": "N/A (Successfully Vectorized)",
+    "FPFlags": "-O3 -fassociative-math -freciprocal-math",
+    "TargetFlags": "-target x86_64-pc-windows-msvc -mavx512f -mavx512vl",
+    "ExitCode": 0
+  },
+  {
+    "Target": "AVX-512",
+    "Experiment": "loop_interchanged",
+    "Vectorized": true,
+    "VectorWidth": "None",
+    "MissedReason": "N/A (Successfully Vectorized)",
+    "FPFlags": "-O3",
+    "TargetFlags": "-target x86_64-pc-windows-msvc -mavx512f -mavx512vl",
+    "ExitCode": 0
+  },
+  {
+    "Target": "AArch64-NEON",
+    "Experiment": "strict_fp",
+    "Vectorized": false,
+    "VectorWidth": "None",
+    "MissedReason": "None",
+    "FPFlags": "-O3",
+    "TargetFlags": "-target aarch64-unknown-linux-gnu -march=armv8-a",
+    "ExitCode": 0
+  },
+  {
+    "Target": "AArch64-NEON",
+    "Experiment": "reassoc_enabled",
+    "Vectorized": true,
+    "VectorWidth": "None",
+    "MissedReason": "N/A (Successfully Vectorized)",
+    "FPFlags": "-O3 -fassociative-math -freciprocal-math",
+    "TargetFlags": "-target aarch64-unknown-linux-gnu -march=armv8-a",
+    "ExitCode": 0
+  },
+  {
+    "Target": "AArch64-NEON",
+    "Experiment": "loop_interchanged",
+    "Vectorized": true,
+    "VectorWidth": "None",
+    "MissedReason": "N/A (Successfully Vectorized)",
+    "FPFlags": "-O3",
+    "TargetFlags": "-target aarch64-unknown-linux-gnu -march=armv8-a",
+    "ExitCode": 0
+  },
+  {
+    "Target": "AArch64-SVE",
+    "Experiment": "strict_fp",
+    "Vectorized": false,
+    "VectorWidth": "None",
+    "MissedReason": "None",
+    "FPFlags": "-O3",
+    "TargetFlags": "-target aarch64-unknown-linux-gnu -march=armv8.4-a+sve",
+    "ExitCode": 0
+  },
+  {
+    "Target": "AArch64-SVE",
+    "Experiment": "reassoc_enabled",
+    "Vectorized": true,
+    "VectorWidth": "None",
+    "MissedReason": "N/A (Successfully Vectorized)",
+    "FPFlags": "-O3 -fassociative-math -freciprocal-math",
+    "TargetFlags": "-target aarch64-unknown-linux-gnu -march=armv8.4-a+sve",
+    "ExitCode": 0
+  },
+  {
+    "Target": "AArch64-SVE",
+    "Experiment": "loop_interchanged",
+    "Vectorized": true,
+    "VectorWidth": "None",
+    "MissedReason": "N/A (Successfully Vectorized)",
+    "FPFlags": "-O3",
+    "TargetFlags": "-target aarch64-unknown-linux-gnu -march=armv8.4-a+sve",
+    "ExitCode": 0
+  },
+  {
+    "Target": "RISCV-RVV",
+    "Experiment": "strict_fp",
+    "Vectorized": false,
+    "VectorWidth": "None",
+    "MissedReason": "None",
+    "FPFlags": "-O3",
+    "TargetFlags": "-target riscv64-unknown-linux-gnu -march=rv64gcv",
+    "ExitCode": 0
+  },
+  {
+    "Target": "RISCV-RVV",
+    "Experiment": "reassoc_enabled",
+    "Vectorized": true,
+    "VectorWidth": "None",
+    "MissedReason": "N/A (Successfully Vectorized)",
+    "FPFlags": "-O3 -fassociative-math -freciprocal-math",
+    "TargetFlags": "-target riscv64-unknown-linux-gnu -march=rv64gcv",
+    "ExitCode": 0
+  },
+  {
+    "Target": "RISCV-RVV",
+    "Experiment": "loop_interchanged",
+    "Vectorized": true,
+    "VectorWidth": "None",
+    "MissedReason": "N/A (Successfully Vectorized)",
+    "FPFlags": "-O3",
+    "TargetFlags": "-target riscv64-unknown-linux-gnu -march=rv64gcv",
+    "ExitCode": 0
+  }
+]
