@@ -79,5 +79,12 @@ if(BUILD_TESTING)
         --objdump "${LLVM_OBJDUMP_EXECUTABLE}"
         --include-dir "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
     )
+    add_test(NAME codegen.binary_bloat_and_compile_time_stress
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/codegen/run_binary_bloat_and_compile_time_stress_test.py"
+        --clangxx "${MDSLC_CLANGXX_EXECUTABLE}"
+        --include-dir "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+    )
   endif()
 endif()
