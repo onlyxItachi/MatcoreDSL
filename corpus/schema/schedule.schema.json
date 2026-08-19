@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MDSLC Schedule Knowledge Base Descriptor",
+  "description": "Schema for structured optimization, tiling, vectorization, and pipeline patterns",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "schedule_id",
+    "target_family",
+    "problem",
+    "schedule",
+    "memory_staging",
+    "mapping",
+    "vectorization",
+    "matrix_instruction"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "schedule_id": { "type": "string" },
+    "target_family": { "type": "string" },
+    "problem": {
+      "type": "object",
+      "properties": {
+        "operation": { "type": "string" },
+        "dtype": { "type": "string" },
+        "accum_dtype": { "type": "string" },
+        "dimensions": { "type": "object" }
+      }
+    },
+    "schedule": {
+      "type": "object",
+      "properties": {
+        "tile_m": { "type": "integer" },
+        "tile_n": { "type": "integer" },
+        "tile_k": { "type": "integer" },
+        "fused_epilogue": { "type": "string" }
+      }
+    },
+    "memory_staging": {
+      "type": "object",
+      "properties": {
+        "shared_or_lds_bytes": { "type": "integer" },
+        "staging_primitive": { "type": "string" },
+        "double_buffering": { "type": "boolean" },
+        "pipeline_stages": { "type": "integer" }
+      }
+    },
+    "mapping": {
+      "type": "object",
+      "properties": {
+        "workgroup_or_cta_shape": { "type": "array", "items": { "type": "integer" } },
+        "warp_or_wave_shape": { "type": "array", "items": { "type": "integer" } }
+      }
+    },
+    "vectorization": {
+      "type": "object",
+      "properties": {
+        "load_vector_bytes": { "type": "integer" },
+        "store_vector_bytes": { "type": "integer" }
+      }
+    },
+    "matrix_instruction": {
+      "type": "object",
+      "properties": {
+        "family": { "type": "string" },
+        "shape": { "type": "string" }
+      }
+    }
+  }
+}

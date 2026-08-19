@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MDSLC Toolchain Environment Descriptor",
+  "description": "Schema recording exact compiler and toolchain provenance",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "toolchain_id",
+    "llvm_version",
+    "acquisition",
+    "install_root",
+    "executables",
+    "targets_supported"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "toolchain_id": { "type": "string" },
+    "llvm_version": { "type": "string" },
+    "acquisition": {
+      "type": "object",
+      "required": ["method", "archive_url", "archive_sha256"],
+      "properties": {
+        "method": { "type": "string" },
+        "archive_url": { "type": "string" },
+        "archive_sha256": { "type": "string" }
+      }
+    },
+    "install_root": { "type": "string" },
+    "executables": {
+      "type": "object",
+      "properties": {
+        "clang": { "type": "string" },
+        "clangxx": { "type": "string" },
+        "clang_cl": { "type": "string" },
+        "lld_link": { "type": "string" },
+        "llc": { "type": "string" },
+        "opt": { "type": "string" },
+        "llvm_as": { "type": "string" },
+        "llvm_dis": { "type": "string" },
+        "llvm_config": { "type": "string" },
+        "mlir_opt": { "type": "string" }
+      }
+    },
+    "targets_supported": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

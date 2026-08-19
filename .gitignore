@@ -21,6 +21,8 @@ Testing/
 # Generated benchmark runs and agent-local context are not source inputs.
 /benchmark_reports/
 /memory/
+/.corpus-work/
+/raw-corpus/
 
 .venv_gladiator/
 .venv/

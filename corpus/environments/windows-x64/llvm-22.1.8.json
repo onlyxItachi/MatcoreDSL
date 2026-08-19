@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0.0",
+  "toolchain_id": "llvm-22.1.8-windows-x64",
+  "llvm_version": "22.1.8",
+  "acquisition": {
+    "archive_url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/clang+llvm-22.1.8-x86_64-pc-windows-msvc.tar.xz",
+    "method": "official_release_archive",
+    "archive_sha256": "audited"
+  },
+  "install_root": "C:\\Users\\hamza\\tools\\llvm-22.1.8",
+  "executables": {
+    "clang": "C:\\Users\\hamza\\tools\\llvm-22.1.8\\bin\\clang.exe",
+    "lld_link": "C:\\Users\\hamza\\tools\\llvm-22.1.8\\bin\\lld-link.exe",
+    "llc": "C:\\Users\\hamza\\tools\\llvm-22.1.8\\bin\\llc.exe",
+    "llvm_config": "C:\\Users\\hamza\\tools\\llvm-22.1.8\\bin\\llvm-config.exe",
+    "clang_cl": "C:\\Users\\hamza\\tools\\llvm-22.1.8\\bin\\clang-cl.exe",
+    "opt": "C:\\Users\\hamza\\tools\\llvm-22.1.8\\bin\\opt.exe"
+  },
+  "targets_supported": [
+    "x86_64",
+    "nvptx64"
+  ]
+}

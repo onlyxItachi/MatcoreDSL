@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MDSLC Lowering Corpus Entry Descriptor",
+  "description": "Schema for each diagnostic lowering case artifact in the Windows Lowering Corpus",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "case_id",
+    "lane",
+    "host",
+    "toolchain",
+    "target",
+    "input_kernel",
+    "artifacts",
+    "semantic_summary",
+    "status"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "case_id": { "type": "string" },
+    "lane": {
+      "type": "string",
+      "enum": ["upstream_mlir", "cpu_native", "nvidia_nvvm", "amd_rocdl", "spirv_portability"]
+    },
+    "host": {
+      "type": "object",
+      "required": ["os", "architecture", "windows_build"],
+      "properties": {
+        "os": { "type": "string" },
+        "architecture": { "type": "string" },
+        "windows_build": { "type": "string" }
+      }
+    },
+    "toolchain": {
+      "type": "object",
+      "required": ["name", "version", "compiler_path", "llvm_config_version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "compiler_path": { "type": "string" },
+        "llvm_config_version": { "type": "string" }
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": ["triple", "cpu_or_gpu"],
+      "properties": {
+        "triple": { "type": "string" },
+        "cpu_or_gpu": { "type": "string" },
+        "features": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "input_kernel": {
+      "type": "object",
+      "required": ["path", "language", "sha256"],
+      "properties": {
+        "path": { "type": "string" },
+        "language": { "type": "string" },
+        "sha256": { "type": "string" }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["stage", "relative_path", "artifact_type", "sha256"],
+        "properties": {
+          "stage": { "type": "string" },
+          "relative_path": { "type": "string" },
+          "artifact_type": { "type": "string" },
+          "sha256": { "type": "string" },
+          "size_bytes": { "type": "integer" }
+        }
+      }
+    },
+    "semantic_summary": {
+      "type": "object",
+      "properties": {
+        "operation": { "type": "string" },
+        "dtype": { "type": "string" },
+        "accumulation_dtype": { "type": "string" },
+        "shape_contract": { "type": "string" },
+        "memory_space": { "type": "string" },
+        "aliasing_contract": { "type": "string" },
+        "vectorization_width": { "type": "string" },
+        "fma_formation": { "type": "string" }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["available", "unavailable", "unsupported", "toolchain-unavailable", "hardware-unavailable", "not-collected"]
+    },
+    "notes": { "type": "string" }
+  }
+}

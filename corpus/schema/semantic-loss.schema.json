@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MDSLC Semantic Loss Transition Descriptor",
+  "description": "Schema for recording semantic fact evolution across compiler lowering boundaries",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "transition_id",
+    "source_stage",
+    "target_stage",
+    "semantic_fields",
+    "overall_classification"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "transition_id": { "type": "string" },
+    "source_stage": { "type": "string" },
+    "target_stage": { "type": "string" },
+    "semantic_fields": {
+      "type": "object",
+      "properties": {
+        "operation_identity": { "type": "string", "enum": ["preserved", "consumed_intentionally", "encoded_structurally", "weakened", "lost_accidentally", "not_representable", "unknown"] },
+        "shape_contract": { "type": "string", "enum": ["preserved", "consumed_intentionally", "encoded_structurally", "weakened", "lost_accidentally", "not_representable", "unknown"] },
+        "dtype_and_accum": { "type": "string", "enum": ["preserved", "consumed_intentionally", "encoded_structurally", "weakened", "lost_accidentally", "not_representable", "unknown"] },
+        "layout_and_strides": { "type": "string", "enum": ["preserved", "consumed_intentionally", "encoded_structurally", "weakened", "lost_accidentally", "not_representable", "unknown"] },
+        "alignment_precondition": { "type": "string", "enum": ["preserved", "consumed_intentionally", "encoded_structurally", "weakened", "lost_accidentally", "not_representable", "unknown"] },
+        "memory_space": { "type": "string", "enum": ["preserved", "consumed_intentionally", "encoded_structurally", "weakened", "lost_accidentally", "not_representable", "unknown"] },
+        "aliasing_and_effects": { "type": "string", "enum": ["preserved", "consumed_intentionally", "encoded_structurally", "weakened", "lost_accidentally", "not_representable", "unknown"] },
+        "numerical_policy": { "type": "string", "enum": ["preserved", "consumed_intentionally", "encoded_structurally", "weakened", "lost_accidentally", "not_representable", "unknown"] },
+        "source_provenance": { "type": "string", "enum": ["preserved", "consumed_intentionally", "encoded_structurally", "weakened", "lost_accidentally", "not_representable", "unknown"] }
+      }
+    },
+    "premature_loss_detected": { "type": "boolean" },
+    "architectural_impact": { "type": "string" }
+  }
+}
