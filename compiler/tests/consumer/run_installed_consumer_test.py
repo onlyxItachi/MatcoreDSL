@@ -254,7 +254,13 @@ def stage_windows_compiler(compiler: Path, readobj: Path, test_root: Path) -> Pa
     shutil.copy2(compiler, staged_compiler)
 
     staged_tools = [staged_compiler]
-    for helper_name, required in (("llvm-lib.exe", True), ("llvm-config.exe", False)):
+    for helper_name, required in (
+        ("llvm-lib.exe", True),
+        ("lld-link.exe", False),
+        ("llvm-rc.exe", False),
+        ("llvm-mt.exe", False),
+        ("llvm-config.exe", False),
+    ):
         helper = compiler.parent / helper_name
         if not helper.is_file():
             if required:
@@ -448,11 +454,20 @@ def main() -> int:
         )
         installed_environment = windows_test_environment(prefix / "bin")
         build_environment = installed_environment.copy()
-        build_environment["PATH"] = (
-            str(test_compiler.parent)
-            + os.pathsep
-            + build_environment.get("PATH", "")
-        )
+        ninja_dir = None
+        for candidate in (
+            shutil.which("ninja"),
+            r"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe",
+            r"C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe",
+        ):
+            if candidate and os.path.exists(candidate):
+                ninja_dir = str(Path(candidate).resolve().parent)
+                break
+        path_entries = [str(test_compiler.parent)]
+        if ninja_dir:
+            path_entries.append(ninja_dir)
+        path_entries.append(build_environment.get("PATH", ""))
+        build_environment["PATH"] = os.pathsep.join(path_entries)
     extractor_bytes = extractor.read_bytes()
     if any(
         spelling.encode() in extractor_bytes
