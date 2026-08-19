@@ -26,6 +26,9 @@ if(BUILD_TESTING)
   target_link_libraries(matcore_static_aot_specialization_execution_test
     PRIVATE matcore_codegen_v0 matcore_runtime_c_abi_v0
   )
+  target_include_directories(matcore_static_aot_specialization_execution_test
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+  )
   mdslc_target_enable_warnings(matcore_static_aot_specialization_execution_test WERROR)
   add_test(NAME codegen.static_aot_specialization_execution
     COMMAND matcore_static_aot_specialization_execution_test
