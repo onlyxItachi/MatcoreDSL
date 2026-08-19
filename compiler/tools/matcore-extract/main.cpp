@@ -298,13 +298,13 @@ discoverConfiguredCompiler(std::string_view requested_compiler,
                            bool require_prefix_coherence) {
   std::string error;
   const std::string_view requested = requested_compiler.empty()
-                                         ? (isWindowsHost()
-                                                ? std::string_view("clang-cl.exe")
-                                                : std::string_view(
-                                                      MDSLC_DEFAULT_CLANGXX))
+                                         ? std::string_view(MDSLC_DEFAULT_CLANGXX)
                                          : requested_compiler;
-  const std::optional<std::filesystem::path> discovered =
+  std::optional<std::filesystem::path> discovered =
       support::find_executable_v1(requested, error);
+  if (!discovered && isWindowsHost() && requested_compiler.empty()) {
+    discovered = support::find_executable_v1("clang-cl.exe", error);
+  }
   if (!discovered) {
     std::cerr << "matcore-extract: cannot locate the configured Clang driver: "
               << error << '\n';
