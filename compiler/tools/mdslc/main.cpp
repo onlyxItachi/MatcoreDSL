@@ -820,7 +820,10 @@ std::optional<CompilerToolchain> DiscoverCompilerToolchain(
   CompilerFlavor flavor = CompilerFlavor::ClangGnu;
   if (IsWindowsHost()) {
     flavor = CompilerFlavor::ClangCl;
-    compiler = support::find_executable_v1("clang-cl.exe", error);
+    compiler = support::find_executable_v1(MDSLC_DEFAULT_CLANGXX, error);
+    if (!compiler) {
+      compiler = support::find_executable_v1("clang-cl.exe", error);
+    }
   } else {
     // Preserve the configured clang++ spelling for invocation. Resolving its
     // symlink to `clang` would change C++ standard-library link behavior.
