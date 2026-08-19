@@ -24,7 +24,7 @@ if(BUILD_TESTING)
   )
   target_compile_features(matcore_static_aot_specialization_execution_test PRIVATE cxx_std_20)
   target_link_libraries(matcore_static_aot_specialization_execution_test
-    PRIVATE matcore_codegen_v0 matcore_runtime_c_abi_v0
+    PRIVATE matcore_codegen_v0 matcore_runtime
   )
   target_include_directories(matcore_static_aot_specialization_execution_test
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
