@@ -1,6 +1,6 @@
 {
   "manifest_version": "1.0.0",
-  "generated_at": "2026-08-19T16:32:51+03:00",
+  "generated_at": "2026-08-19T17:01:12+03:00",
   "corpus_root": "C:\\Users\\hamza\\MDSLC-Corpus\\windows-x64",
   "total_cases": 15,
   "cases": [
@@ -10,68 +10,78 @@
       "lane": "cpu_native",
       "host": {
         "os": "Windows 11",
-        "windows_build": "26100",
-        "architecture": "x86_64"
+        "architecture": "x86_64",
+        "windows_build": "26100"
       },
       "toolchain": {
+        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-20.1.8\\bin\\clang.exe",
         "name": "LLVM",
         "llvm_config_version": "20.1.8",
-        "version": "20.1.8",
-        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-20.1.8\\bin\\clang.exe"
+        "version": "20.1.8"
       },
       "target": {
         "cpu_or_gpu": "x86-64",
+        "triple": "x86_64-pc-windows-msvc",
         "features": [
           "avx2",
           "fma",
           "avx512"
-        ],
-        "triple": "x86_64-pc-windows-msvc"
+        ]
       },
       "input_kernel": {
         "path": "inputs/cpu/gemm_f32_epilogue_relu.cpp",
-        "sha256": "745fed4ea68808073756d52f336663f756556a4d663108ee2613415c5472b76f",
-        "language": "C/C++"
+        "language": "C/C++",
+        "sha256": "745fed4ea68808073756d52f336663f756556a4d663108ee2613415c5472b76f"
       },
       "artifacts": [
         {
-          "stage": "frontend_ir_O0",
+          "artifact_type": "llvm_ir",
           "size_bytes": 5504,
+          "stage": "frontend_ir_O0",
           "sha256": "7d9c6d37be2a953b3563694876af3d4f2dc90bc908eb6e472c6ae20e5e435df7",
-          "relative_path": "20.1.8/gemm_f32_epilogue_relu/O0.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "20.1.8/gemm_f32_epilogue_relu/O0.ll"
         },
         {
-          "stage": "optimized_ir_O2",
+          "artifact_type": "llvm_ir",
           "size_bytes": 6270,
+          "stage": "optimized_ir_O2",
           "sha256": "fcf9d8793cde39b2ebc2f456e79e198f6c0b0c5046f4417190aeda45617e1caa",
-          "relative_path": "20.1.8/gemm_f32_epilogue_relu/O2.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "20.1.8/gemm_f32_epilogue_relu/O2.ll"
         },
         {
-          "stage": "optimized_ir_O3",
+          "artifact_type": "llvm_ir",
           "size_bytes": 6620,
+          "stage": "optimized_ir_O3",
           "sha256": "650104da12428265011adf72fb5eaf95bd0f9076228bb26f70add56cd4e5a0aa",
-          "relative_path": "20.1.8/gemm_f32_epilogue_relu/O3.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "20.1.8/gemm_f32_epilogue_relu/O3.ll"
         },
         {
+          "artifact_type": "x86_assembly",
+          "size_bytes": 5576,
           "stage": "assembly_avx2",
-          "size_bytes": 5576,
           "sha256": "d1ea7f6649f49a25dc2c548441ca0b02873bc1941c1dbc2e3cb1977fb4648da7",
-          "relative_path": "20.1.8/gemm_f32_epilogue_relu/O3_avx2.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "20.1.8/gemm_f32_epilogue_relu/O3_avx2.s"
         },
         {
-          "stage": "assembly_avx512",
+          "artifact_type": "x86_assembly",
           "size_bytes": 5576,
+          "stage": "assembly_avx512",
           "sha256": "d1ea7f6649f49a25dc2c548441ca0b02873bc1941c1dbc2e3cb1977fb4648da7",
-          "relative_path": "20.1.8/gemm_f32_epilogue_relu/O3_avx512.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "20.1.8/gemm_f32_epilogue_relu/O3_avx512.s"
         }
       ],
+      "semantic_summary": {
+        "fma_formation": "supported",
+        "accumulation_dtype": "f32",
+        "memory_space": "host_global",
+        "shape_contract": "M_N_K",
+        "dtype": "f32",
+        "aliasing_contract": "may_alias",
+        "vectorization_width": "128bit_backend_retargeted",
+        "operation": "gemm"
+      },
       "status": "available",
-      "notes": "Automated CPU lowering diagnostic case"
+      "notes": "Automated CPU lowering baseline endpoint case"
     },
     {
       "schema_version": "1.0.0",
@@ -79,68 +89,78 @@
       "lane": "cpu_native",
       "host": {
         "os": "Windows 11",
-        "windows_build": "26100",
-        "architecture": "x86_64"
+        "architecture": "x86_64",
+        "windows_build": "26100"
       },
       "toolchain": {
+        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-20.1.8\\bin\\clang.exe",
         "name": "LLVM",
         "llvm_config_version": "20.1.8",
-        "version": "20.1.8",
-        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-20.1.8\\bin\\clang.exe"
+        "version": "20.1.8"
       },
       "target": {
         "cpu_or_gpu": "x86-64",
+        "triple": "x86_64-pc-windows-msvc",
         "features": [
           "avx2",
           "fma",
           "avx512"
-        ],
-        "triple": "x86_64-pc-windows-msvc"
+        ]
       },
       "input_kernel": {
         "path": "inputs/cpu/gemm_f32_epilogue_sin.cpp",
-        "sha256": "d5c089230a32f20c1334003707d70f03309c13eb7aae2609815b96b0d7be762d",
-        "language": "C/C++"
+        "language": "C/C++",
+        "sha256": "d5c089230a32f20c1334003707d70f03309c13eb7aae2609815b96b0d7be762d"
       },
       "artifacts": [
         {
-          "stage": "frontend_ir_O0",
+          "artifact_type": "llvm_ir",
           "size_bytes": 5811,
+          "stage": "frontend_ir_O0",
           "sha256": "45e1ab4b56f47c321865d17eef0ec61d372b4f656e32bf736b04307161d8a99c",
-          "relative_path": "20.1.8/gemm_f32_epilogue_sin/O0.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "20.1.8/gemm_f32_epilogue_sin/O0.ll"
         },
         {
-          "stage": "optimized_ir_O2",
+          "artifact_type": "llvm_ir",
           "size_bytes": 6617,
+          "stage": "optimized_ir_O2",
           "sha256": "dd4e5a4ecd915d0e153c6f58685fa87fe29e537f16e1e10d1b8b762ec930e7da",
-          "relative_path": "20.1.8/gemm_f32_epilogue_sin/O2.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "20.1.8/gemm_f32_epilogue_sin/O2.ll"
         },
         {
-          "stage": "optimized_ir_O3",
+          "artifact_type": "llvm_ir",
           "size_bytes": 6967,
+          "stage": "optimized_ir_O3",
           "sha256": "8ddcac51e7b3a63045714be07b9a05a1b87b784851452b89e1492de8be70e6b1",
-          "relative_path": "20.1.8/gemm_f32_epilogue_sin/O3.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "20.1.8/gemm_f32_epilogue_sin/O3.ll"
         },
         {
+          "artifact_type": "x86_assembly",
+          "size_bytes": 6094,
           "stage": "assembly_avx2",
-          "size_bytes": 6094,
           "sha256": "a093e0aea6e259c8dc7faa9eddc724f1a8b02567b54caf4401805d93ee8164c2",
-          "relative_path": "20.1.8/gemm_f32_epilogue_sin/O3_avx2.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "20.1.8/gemm_f32_epilogue_sin/O3_avx2.s"
         },
         {
-          "stage": "assembly_avx512",
+          "artifact_type": "x86_assembly",
           "size_bytes": 6094,
+          "stage": "assembly_avx512",
           "sha256": "a093e0aea6e259c8dc7faa9eddc724f1a8b02567b54caf4401805d93ee8164c2",
-          "relative_path": "20.1.8/gemm_f32_epilogue_sin/O3_avx512.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "20.1.8/gemm_f32_epilogue_sin/O3_avx512.s"
         }
       ],
+      "semantic_summary": {
+        "fma_formation": "supported",
+        "accumulation_dtype": "f32",
+        "memory_space": "host_global",
+        "shape_contract": "M_N_K",
+        "dtype": "f32",
+        "aliasing_contract": "may_alias",
+        "vectorization_width": "128bit_backend_retargeted",
+        "operation": "gemm"
+      },
       "status": "available",
-      "notes": "Automated CPU lowering diagnostic case"
+      "notes": "Automated CPU lowering baseline endpoint case"
     },
     {
       "schema_version": "1.0.0",
@@ -148,68 +168,78 @@
       "lane": "cpu_native",
       "host": {
         "os": "Windows 11",
-        "windows_build": "26100",
-        "architecture": "x86_64"
+        "architecture": "x86_64",
+        "windows_build": "26100"
       },
       "toolchain": {
+        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-20.1.8\\bin\\clang.exe",
         "name": "LLVM",
         "llvm_config_version": "20.1.8",
-        "version": "20.1.8",
-        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-20.1.8\\bin\\clang.exe"
+        "version": "20.1.8"
       },
       "target": {
         "cpu_or_gpu": "x86-64",
+        "triple": "x86_64-pc-windows-msvc",
         "features": [
           "avx2",
           "fma",
           "avx512"
-        ],
-        "triple": "x86_64-pc-windows-msvc"
+        ]
       },
       "input_kernel": {
         "path": "inputs/cpu/gemm_f32_naive.c",
-        "sha256": "105238c7f995ae8b08e7ccdf22902f070821a670cc5b53cba7af7e4dfb4e8627",
-        "language": "C/C++"
+        "language": "C/C++",
+        "sha256": "105238c7f995ae8b08e7ccdf22902f070821a670cc5b53cba7af7e4dfb4e8627"
       },
       "artifacts": [
         {
-          "stage": "frontend_ir_O0",
+          "artifact_type": "llvm_ir",
           "size_bytes": 5674,
+          "stage": "frontend_ir_O0",
           "sha256": "41a263b83f81f133d371d8e4b48250c8bda6ef88f5188ef8ae18c9d9012be514",
-          "relative_path": "20.1.8/gemm_f32_naive/O0.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "20.1.8/gemm_f32_naive/O0.ll"
         },
         {
-          "stage": "optimized_ir_O2",
+          "artifact_type": "llvm_ir",
           "size_bytes": 5892,
+          "stage": "optimized_ir_O2",
           "sha256": "c7b02d8a1031ab0c3fd851ed790b0016e15c3d016a20ff87edac7a63da8be57b",
-          "relative_path": "20.1.8/gemm_f32_naive/O2.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "20.1.8/gemm_f32_naive/O2.ll"
         },
         {
-          "stage": "optimized_ir_O3",
+          "artifact_type": "llvm_ir",
           "size_bytes": 8723,
+          "stage": "optimized_ir_O3",
           "sha256": "51f421dd6a17058a87ea22b6fb195fc64fc7160119310a5af81f70b793d55ec5",
-          "relative_path": "20.1.8/gemm_f32_naive/O3.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "20.1.8/gemm_f32_naive/O3.ll"
         },
         {
-          "stage": "assembly_avx2",
+          "artifact_type": "x86_assembly",
           "size_bytes": 7563,
+          "stage": "assembly_avx2",
           "sha256": "5c8912b7cbf1b2dfb163dc4c58230ada556e93cf21434107c6d4d5daa53de697",
-          "relative_path": "20.1.8/gemm_f32_naive/O3_avx2.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "20.1.8/gemm_f32_naive/O3_avx2.s"
         },
         {
-          "stage": "assembly_avx512",
+          "artifact_type": "x86_assembly",
           "size_bytes": 7291,
+          "stage": "assembly_avx512",
           "sha256": "005618c897aaafd8be9b2822302a81d81b39a8dcd067fb854978a9fe807e0d10",
-          "relative_path": "20.1.8/gemm_f32_naive/O3_avx512.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "20.1.8/gemm_f32_naive/O3_avx512.s"
         }
       ],
+      "semantic_summary": {
+        "fma_formation": "supported",
+        "accumulation_dtype": "f32",
+        "memory_space": "host_global",
+        "shape_contract": "M_N_K",
+        "dtype": "f32",
+        "aliasing_contract": "may_alias",
+        "vectorization_width": "128bit_backend_retargeted",
+        "operation": "gemm"
+      },
       "status": "available",
-      "notes": "Automated CPU lowering diagnostic case"
+      "notes": "Automated CPU lowering baseline endpoint case"
     },
     {
       "schema_version": "1.0.0",
@@ -217,68 +247,78 @@
       "lane": "cpu_native",
       "host": {
         "os": "Windows 11",
-        "windows_build": "26100",
-        "architecture": "x86_64"
+        "architecture": "x86_64",
+        "windows_build": "26100"
       },
       "toolchain": {
+        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-20.1.8\\bin\\clang.exe",
         "name": "LLVM",
         "llvm_config_version": "20.1.8",
-        "version": "20.1.8",
-        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-20.1.8\\bin\\clang.exe"
+        "version": "20.1.8"
       },
       "target": {
         "cpu_or_gpu": "x86-64",
+        "triple": "x86_64-pc-windows-msvc",
         "features": [
           "avx2",
           "fma",
           "avx512"
-        ],
-        "triple": "x86_64-pc-windows-msvc"
+        ]
       },
       "input_kernel": {
         "path": "inputs/cpu/gemm_f32_restrict.c",
-        "sha256": "066f17d2d8d262781fc824729d59c9509c50630c422e4b02ca62e655803b5579",
-        "language": "C/C++"
+        "language": "C/C++",
+        "sha256": "066f17d2d8d262781fc824729d59c9509c50630c422e4b02ca62e655803b5579"
       },
       "artifacts": [
         {
-          "stage": "frontend_ir_O0",
+          "artifact_type": "llvm_ir",
           "size_bytes": 6422,
+          "stage": "frontend_ir_O0",
           "sha256": "f5c80c2fa95a3046fcf710c042df601f5464d9265f6731b7ae23d0e47c6dc220",
-          "relative_path": "20.1.8/gemm_f32_restrict/O0.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "20.1.8/gemm_f32_restrict/O0.ll"
         },
         {
-          "stage": "optimized_ir_O2",
+          "artifact_type": "llvm_ir",
           "size_bytes": 6369,
+          "stage": "optimized_ir_O2",
           "sha256": "bc8a5f5c6762c786310d8825c9c484c923976c2d7fc99c5b5a9f9b919ca9e0b1",
-          "relative_path": "20.1.8/gemm_f32_restrict/O2.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "20.1.8/gemm_f32_restrict/O2.ll"
         },
         {
-          "stage": "optimized_ir_O3",
+          "artifact_type": "llvm_ir",
           "size_bytes": 9200,
+          "stage": "optimized_ir_O3",
           "sha256": "f9a3dbb30d210ae880275762c4d2b515dd255d9f47459c44604b62b287cb3a29",
-          "relative_path": "20.1.8/gemm_f32_restrict/O3.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "20.1.8/gemm_f32_restrict/O3.ll"
         },
         {
-          "stage": "assembly_avx2",
+          "artifact_type": "x86_assembly",
           "size_bytes": 7578,
+          "stage": "assembly_avx2",
           "sha256": "fac952e276df1514484bb824a22d6799ce1a485adfb40156d0ffe74156fa8296",
-          "relative_path": "20.1.8/gemm_f32_restrict/O3_avx2.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "20.1.8/gemm_f32_restrict/O3_avx2.s"
         },
         {
-          "stage": "assembly_avx512",
+          "artifact_type": "x86_assembly",
           "size_bytes": 7306,
+          "stage": "assembly_avx512",
           "sha256": "678bce93f562ad25cb365c58536ecc28e6433d1453471e7c27e88c446e495aad",
-          "relative_path": "20.1.8/gemm_f32_restrict/O3_avx512.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "20.1.8/gemm_f32_restrict/O3_avx512.s"
         }
       ],
+      "semantic_summary": {
+        "fma_formation": "supported",
+        "accumulation_dtype": "f32",
+        "memory_space": "host_global",
+        "shape_contract": "M_N_K",
+        "dtype": "f32",
+        "aliasing_contract": "noalias",
+        "vectorization_width": "128bit_backend_retargeted",
+        "operation": "gemm"
+      },
       "status": "available",
-      "notes": "Automated CPU lowering diagnostic case"
+      "notes": "Automated CPU lowering baseline endpoint case"
     },
     {
       "schema_version": "1.0.0",
@@ -286,68 +326,78 @@
       "lane": "cpu_native",
       "host": {
         "os": "Windows 11",
-        "windows_build": "26100",
-        "architecture": "x86_64"
+        "architecture": "x86_64",
+        "windows_build": "26100"
       },
       "toolchain": {
+        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-20.1.8\\bin\\clang.exe",
         "name": "LLVM",
         "llvm_config_version": "20.1.8",
-        "version": "20.1.8",
-        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-20.1.8\\bin\\clang.exe"
+        "version": "20.1.8"
       },
       "target": {
         "cpu_or_gpu": "x86-64",
+        "triple": "x86_64-pc-windows-msvc",
         "features": [
           "avx2",
           "fma",
           "avx512"
-        ],
-        "triple": "x86_64-pc-windows-msvc"
+        ]
       },
       "input_kernel": {
         "path": "inputs/cpu/gemm_f32_tiled.c",
-        "sha256": "37f78cd7af21db6835027d86747f0a39f19083f29eae5b82e076a0aa8f865c8d",
-        "language": "C/C++"
+        "language": "C/C++",
+        "sha256": "37f78cd7af21db6835027d86747f0a39f19083f29eae5b82e076a0aa8f865c8d"
       },
       "artifacts": [
         {
-          "stage": "frontend_ir_O0",
+          "artifact_type": "llvm_ir",
           "size_bytes": 7033,
+          "stage": "frontend_ir_O0",
           "sha256": "3433dcc538edf286259b6352f8e8413b8299d630c13ecea260fa1bbd59902588",
-          "relative_path": "20.1.8/gemm_f32_tiled/O0.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "20.1.8/gemm_f32_tiled/O0.ll"
         },
         {
-          "stage": "optimized_ir_O2",
+          "artifact_type": "llvm_ir",
           "size_bytes": 7396,
+          "stage": "optimized_ir_O2",
           "sha256": "1be0065ba333fb1d59b23208201155dd8b09c69e23d4d759700787b76490cf8a",
-          "relative_path": "20.1.8/gemm_f32_tiled/O2.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "20.1.8/gemm_f32_tiled/O2.ll"
         },
         {
-          "stage": "optimized_ir_O3",
+          "artifact_type": "llvm_ir",
           "size_bytes": 7358,
+          "stage": "optimized_ir_O3",
           "sha256": "55589883afba973e57bb61383024e665b20d10b00932f6c715a9be2cf4538ca3",
-          "relative_path": "20.1.8/gemm_f32_tiled/O3.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "20.1.8/gemm_f32_tiled/O3.ll"
         },
         {
-          "stage": "assembly_avx2",
+          "artifact_type": "x86_assembly",
           "size_bytes": 6683,
+          "stage": "assembly_avx2",
           "sha256": "69b1a961b198255fb132e830cd302dd1903a2c4ad184758323a192756134a520",
-          "relative_path": "20.1.8/gemm_f32_tiled/O3_avx2.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "20.1.8/gemm_f32_tiled/O3_avx2.s"
         },
         {
-          "stage": "assembly_avx512",
+          "artifact_type": "x86_assembly",
           "size_bytes": 6279,
+          "stage": "assembly_avx512",
           "sha256": "f4c84f659d4b0b76ff17d8e2a2a7e5865a023d5686cb8e5509484e85e282fb7b",
-          "relative_path": "20.1.8/gemm_f32_tiled/O3_avx512.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "20.1.8/gemm_f32_tiled/O3_avx512.s"
         }
       ],
+      "semantic_summary": {
+        "fma_formation": "supported",
+        "accumulation_dtype": "f32",
+        "memory_space": "host_global",
+        "shape_contract": "M_N_K",
+        "dtype": "f32",
+        "aliasing_contract": "may_alias",
+        "vectorization_width": "128bit_backend_retargeted",
+        "operation": "gemm"
+      },
       "status": "available",
-      "notes": "Automated CPU lowering diagnostic case"
+      "notes": "Automated CPU lowering baseline endpoint case"
     },
     {
       "schema_version": "1.0.0",
@@ -355,68 +405,78 @@
       "lane": "cpu_native",
       "host": {
         "os": "Windows 11",
-        "windows_build": "26100",
-        "architecture": "x86_64"
+        "architecture": "x86_64",
+        "windows_build": "26100"
       },
       "toolchain": {
+        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-21.1.8\\bin\\clang.exe",
         "name": "LLVM",
         "llvm_config_version": "21.1.8",
-        "version": "21.1.8",
-        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-21.1.8\\bin\\clang.exe"
+        "version": "21.1.8"
       },
       "target": {
         "cpu_or_gpu": "x86-64",
+        "triple": "x86_64-pc-windows-msvc",
         "features": [
           "avx2",
           "fma",
           "avx512"
-        ],
-        "triple": "x86_64-pc-windows-msvc"
+        ]
       },
       "input_kernel": {
         "path": "inputs/cpu/gemm_f32_epilogue_relu.cpp",
-        "sha256": "745fed4ea68808073756d52f336663f756556a4d663108ee2613415c5472b76f",
-        "language": "C/C++"
+        "language": "C/C++",
+        "sha256": "745fed4ea68808073756d52f336663f756556a4d663108ee2613415c5472b76f"
       },
       "artifacts": [
         {
-          "stage": "frontend_ir_O0",
+          "artifact_type": "llvm_ir",
           "size_bytes": 5962,
+          "stage": "frontend_ir_O0",
           "sha256": "5ef835f5fdd3cab0f1904382451e2a058d51100c9b667547fed1a23de8891b67",
-          "relative_path": "21.1.8/gemm_f32_epilogue_relu/O0.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "21.1.8/gemm_f32_epilogue_relu/O0.ll"
         },
         {
-          "stage": "optimized_ir_O2",
+          "artifact_type": "llvm_ir",
           "size_bytes": 6742,
+          "stage": "optimized_ir_O2",
           "sha256": "b67ecf312368729bb31222fe38788e56c119b7dc3e37962fceeff1905dfbb2a7",
-          "relative_path": "21.1.8/gemm_f32_epilogue_relu/O2.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "21.1.8/gemm_f32_epilogue_relu/O2.ll"
         },
         {
-          "stage": "optimized_ir_O3",
+          "artifact_type": "llvm_ir",
           "size_bytes": 7097,
+          "stage": "optimized_ir_O3",
           "sha256": "99c49bdd140fe15b072ca95a4d5655aa5be6e98c657eefa8f99754fc35ef6081",
-          "relative_path": "21.1.8/gemm_f32_epilogue_relu/O3.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "21.1.8/gemm_f32_epilogue_relu/O3.ll"
         },
         {
-          "stage": "assembly_avx2",
+          "artifact_type": "x86_assembly",
           "size_bytes": 6726,
+          "stage": "assembly_avx2",
           "sha256": "d89deed074ac7e35bf3945fe68728716546a14ad81f86a16a4ccbfc986992eff",
-          "relative_path": "21.1.8/gemm_f32_epilogue_relu/O3_avx2.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "21.1.8/gemm_f32_epilogue_relu/O3_avx2.s"
         },
         {
-          "stage": "assembly_avx512",
+          "artifact_type": "x86_assembly",
           "size_bytes": 6728,
+          "stage": "assembly_avx512",
           "sha256": "97951db2a52d8cd2af6f38ba78b9671d2efb7119a5f042e3f2147413c5a400d2",
-          "relative_path": "21.1.8/gemm_f32_epilogue_relu/O3_avx512.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "21.1.8/gemm_f32_epilogue_relu/O3_avx512.s"
         }
       ],
+      "semantic_summary": {
+        "fma_formation": "supported",
+        "accumulation_dtype": "f32",
+        "memory_space": "host_global",
+        "shape_contract": "M_N_K",
+        "dtype": "f32",
+        "aliasing_contract": "may_alias",
+        "vectorization_width": "128bit_backend_retargeted",
+        "operation": "gemm"
+      },
       "status": "available",
-      "notes": "Automated CPU lowering diagnostic case"
+      "notes": "Automated CPU lowering baseline endpoint case"
     },
     {
       "schema_version": "1.0.0",
@@ -424,68 +484,78 @@
       "lane": "cpu_native",
       "host": {
         "os": "Windows 11",
-        "windows_build": "26100",
-        "architecture": "x86_64"
+        "architecture": "x86_64",
+        "windows_build": "26100"
       },
       "toolchain": {
+        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-21.1.8\\bin\\clang.exe",
         "name": "LLVM",
         "llvm_config_version": "21.1.8",
-        "version": "21.1.8",
-        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-21.1.8\\bin\\clang.exe"
+        "version": "21.1.8"
       },
       "target": {
         "cpu_or_gpu": "x86-64",
+        "triple": "x86_64-pc-windows-msvc",
         "features": [
           "avx2",
           "fma",
           "avx512"
-        ],
-        "triple": "x86_64-pc-windows-msvc"
+        ]
       },
       "input_kernel": {
         "path": "inputs/cpu/gemm_f32_epilogue_sin.cpp",
-        "sha256": "d5c089230a32f20c1334003707d70f03309c13eb7aae2609815b96b0d7be762d",
-        "language": "C/C++"
+        "language": "C/C++",
+        "sha256": "d5c089230a32f20c1334003707d70f03309c13eb7aae2609815b96b0d7be762d"
       },
       "artifacts": [
         {
-          "stage": "frontend_ir_O0",
+          "artifact_type": "llvm_ir",
           "size_bytes": 6268,
+          "stage": "frontend_ir_O0",
           "sha256": "25d82b5912014851e2927eec4f3fdebb9a4a62dc3b84234fed4dced5fbcb0f5e",
-          "relative_path": "21.1.8/gemm_f32_epilogue_sin/O0.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "21.1.8/gemm_f32_epilogue_sin/O0.ll"
         },
         {
-          "stage": "optimized_ir_O2",
+          "artifact_type": "llvm_ir",
           "size_bytes": 7170,
+          "stage": "optimized_ir_O2",
           "sha256": "db06ac45ecca1332166c23eb725285e085d8874ba22611fa0b96ee06f6c157c4",
-          "relative_path": "21.1.8/gemm_f32_epilogue_sin/O2.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "21.1.8/gemm_f32_epilogue_sin/O2.ll"
         },
         {
-          "stage": "optimized_ir_O3",
+          "artifact_type": "llvm_ir",
           "size_bytes": 7525,
+          "stage": "optimized_ir_O3",
           "sha256": "3bd5b75599250d58118e7001d86e71b9da2649b4fbd6677439224641765d1fe5",
-          "relative_path": "21.1.8/gemm_f32_epilogue_sin/O3.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "21.1.8/gemm_f32_epilogue_sin/O3.ll"
         },
         {
-          "stage": "assembly_avx2",
+          "artifact_type": "x86_assembly",
           "size_bytes": 7243,
+          "stage": "assembly_avx2",
           "sha256": "5a3b0df939a9eaabebf55c2afbca124c89e15a88c4250efe89e50559dcbc5ecf",
-          "relative_path": "21.1.8/gemm_f32_epilogue_sin/O3_avx2.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "21.1.8/gemm_f32_epilogue_sin/O3_avx2.s"
         },
         {
-          "stage": "assembly_avx512",
+          "artifact_type": "x86_assembly",
           "size_bytes": 7245,
+          "stage": "assembly_avx512",
           "sha256": "21d519421aad0eac924583a54e51ab5de45b68ccce1bce166fb24d113343d428",
-          "relative_path": "21.1.8/gemm_f32_epilogue_sin/O3_avx512.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "21.1.8/gemm_f32_epilogue_sin/O3_avx512.s"
         }
       ],
+      "semantic_summary": {
+        "fma_formation": "supported",
+        "accumulation_dtype": "f32",
+        "memory_space": "host_global",
+        "shape_contract": "M_N_K",
+        "dtype": "f32",
+        "aliasing_contract": "may_alias",
+        "vectorization_width": "128bit_backend_retargeted",
+        "operation": "gemm"
+      },
       "status": "available",
-      "notes": "Automated CPU lowering diagnostic case"
+      "notes": "Automated CPU lowering baseline endpoint case"
     },
     {
       "schema_version": "1.0.0",
@@ -493,68 +563,78 @@
       "lane": "cpu_native",
       "host": {
         "os": "Windows 11",
-        "windows_build": "26100",
-        "architecture": "x86_64"
+        "architecture": "x86_64",
+        "windows_build": "26100"
       },
       "toolchain": {
+        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-21.1.8\\bin\\clang.exe",
         "name": "LLVM",
         "llvm_config_version": "21.1.8",
-        "version": "21.1.8",
-        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-21.1.8\\bin\\clang.exe"
+        "version": "21.1.8"
       },
       "target": {
         "cpu_or_gpu": "x86-64",
+        "triple": "x86_64-pc-windows-msvc",
         "features": [
           "avx2",
           "fma",
           "avx512"
-        ],
-        "triple": "x86_64-pc-windows-msvc"
+        ]
       },
       "input_kernel": {
         "path": "inputs/cpu/gemm_f32_naive.c",
-        "sha256": "105238c7f995ae8b08e7ccdf22902f070821a670cc5b53cba7af7e4dfb4e8627",
-        "language": "C/C++"
+        "language": "C/C++",
+        "sha256": "105238c7f995ae8b08e7ccdf22902f070821a670cc5b53cba7af7e4dfb4e8627"
       },
       "artifacts": [
         {
-          "stage": "frontend_ir_O0",
+          "artifact_type": "llvm_ir",
           "size_bytes": 6110,
+          "stage": "frontend_ir_O0",
           "sha256": "3d3820db7854ef526dd5d89307e8385e617d02766bd44ca24d4ce20947566e7a",
-          "relative_path": "21.1.8/gemm_f32_naive/O0.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "21.1.8/gemm_f32_naive/O0.ll"
         },
         {
-          "stage": "optimized_ir_O2",
+          "artifact_type": "llvm_ir",
           "size_bytes": 6344,
+          "stage": "optimized_ir_O2",
           "sha256": "522d482e2d5c4408d83253bfb495980da111e41824a4a4a76a8d73c7a6ffd887",
-          "relative_path": "21.1.8/gemm_f32_naive/O2.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "21.1.8/gemm_f32_naive/O2.ll"
         },
         {
-          "stage": "optimized_ir_O3",
+          "artifact_type": "llvm_ir",
           "size_bytes": 9175,
+          "stage": "optimized_ir_O3",
           "sha256": "d06766f4ad680c23b2d679af3eee945c81082efcf4bd8f56fbbaff42fc35698a",
-          "relative_path": "21.1.8/gemm_f32_naive/O3.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "21.1.8/gemm_f32_naive/O3.ll"
         },
         {
-          "stage": "assembly_avx2",
+          "artifact_type": "x86_assembly",
           "size_bytes": 8665,
+          "stage": "assembly_avx2",
           "sha256": "26dd05f56b19557e1a2ba1367b27760bb54f1fd2d3f13f6cc9a0b992e430a2d3",
-          "relative_path": "21.1.8/gemm_f32_naive/O3_avx2.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "21.1.8/gemm_f32_naive/O3_avx2.s"
         },
         {
-          "stage": "assembly_avx512",
+          "artifact_type": "x86_assembly",
           "size_bytes": 8395,
+          "stage": "assembly_avx512",
           "sha256": "a0c21224da9baa4da5fa459c29fc4b6452b5fb04062e33a412d7ab4147e912af",
-          "relative_path": "21.1.8/gemm_f32_naive/O3_avx512.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "21.1.8/gemm_f32_naive/O3_avx512.s"
         }
       ],
+      "semantic_summary": {
+        "fma_formation": "supported",
+        "accumulation_dtype": "f32",
+        "memory_space": "host_global",
+        "shape_contract": "M_N_K",
+        "dtype": "f32",
+        "aliasing_contract": "may_alias",
+        "vectorization_width": "128bit_backend_retargeted",
+        "operation": "gemm"
+      },
       "status": "available",
-      "notes": "Automated CPU lowering diagnostic case"
+      "notes": "Automated CPU lowering baseline endpoint case"
     },
     {
       "schema_version": "1.0.0",
@@ -562,68 +642,78 @@
       "lane": "cpu_native",
       "host": {
         "os": "Windows 11",
-        "windows_build": "26100",
-        "architecture": "x86_64"
+        "architecture": "x86_64",
+        "windows_build": "26100"
       },
       "toolchain": {
+        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-21.1.8\\bin\\clang.exe",
         "name": "LLVM",
         "llvm_config_version": "21.1.8",
-        "version": "21.1.8",
-        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-21.1.8\\bin\\clang.exe"
+        "version": "21.1.8"
       },
       "target": {
         "cpu_or_gpu": "x86-64",
+        "triple": "x86_64-pc-windows-msvc",
         "features": [
           "avx2",
           "fma",
           "avx512"
-        ],
-        "triple": "x86_64-pc-windows-msvc"
+        ]
       },
       "input_kernel": {
         "path": "inputs/cpu/gemm_f32_restrict.c",
-        "sha256": "066f17d2d8d262781fc824729d59c9509c50630c422e4b02ca62e655803b5579",
-        "language": "C/C++"
+        "language": "C/C++",
+        "sha256": "066f17d2d8d262781fc824729d59c9509c50630c422e4b02ca62e655803b5579"
       },
       "artifacts": [
         {
-          "stage": "frontend_ir_O0",
+          "artifact_type": "llvm_ir",
           "size_bytes": 6861,
+          "stage": "frontend_ir_O0",
           "sha256": "990ce9993e569ff8933d652939f956f66276278d11b0172afc97ccceb3332ab7",
-          "relative_path": "21.1.8/gemm_f32_restrict/O0.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "21.1.8/gemm_f32_restrict/O0.ll"
         },
         {
-          "stage": "optimized_ir_O2",
+          "artifact_type": "llvm_ir",
           "size_bytes": 6809,
+          "stage": "optimized_ir_O2",
           "sha256": "a12c720790819b998a3dbbcc950dbfa15b6d258d3501e5f46e9145e0d6365d43",
-          "relative_path": "21.1.8/gemm_f32_restrict/O2.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "21.1.8/gemm_f32_restrict/O2.ll"
         },
         {
-          "stage": "optimized_ir_O3",
+          "artifact_type": "llvm_ir",
           "size_bytes": 9640,
+          "stage": "optimized_ir_O3",
           "sha256": "82b4ea4f54901ab23078ad95b34f6f152d82ed636df2cd44dd2ad8a1f4ba8812",
-          "relative_path": "21.1.8/gemm_f32_restrict/O3.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "21.1.8/gemm_f32_restrict/O3.ll"
         },
         {
-          "stage": "assembly_avx2",
+          "artifact_type": "x86_assembly",
           "size_bytes": 8683,
+          "stage": "assembly_avx2",
           "sha256": "482c01cfab4f88b14285f389220b555ed4d76031b51c5a1ad85944c1235e5f64",
-          "relative_path": "21.1.8/gemm_f32_restrict/O3_avx2.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "21.1.8/gemm_f32_restrict/O3_avx2.s"
         },
         {
-          "stage": "assembly_avx512",
+          "artifact_type": "x86_assembly",
           "size_bytes": 8413,
+          "stage": "assembly_avx512",
           "sha256": "d79362e01d0cb570bb083fe4d6434ab640414c45a4a7d9a572798934b83aaf58",
-          "relative_path": "21.1.8/gemm_f32_restrict/O3_avx512.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "21.1.8/gemm_f32_restrict/O3_avx512.s"
         }
       ],
+      "semantic_summary": {
+        "fma_formation": "supported",
+        "accumulation_dtype": "f32",
+        "memory_space": "host_global",
+        "shape_contract": "M_N_K",
+        "dtype": "f32",
+        "aliasing_contract": "noalias",
+        "vectorization_width": "128bit_backend_retargeted",
+        "operation": "gemm"
+      },
       "status": "available",
-      "notes": "Automated CPU lowering diagnostic case"
+      "notes": "Automated CPU lowering baseline endpoint case"
     },
     {
       "schema_version": "1.0.0",
@@ -631,68 +721,78 @@
       "lane": "cpu_native",
       "host": {
         "os": "Windows 11",
-        "windows_build": "26100",
-        "architecture": "x86_64"
+        "architecture": "x86_64",
+        "windows_build": "26100"
       },
       "toolchain": {
+        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-21.1.8\\bin\\clang.exe",
         "name": "LLVM",
         "llvm_config_version": "21.1.8",
-        "version": "21.1.8",
-        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-21.1.8\\bin\\clang.exe"
+        "version": "21.1.8"
       },
       "target": {
         "cpu_or_gpu": "x86-64",
+        "triple": "x86_64-pc-windows-msvc",
         "features": [
           "avx2",
           "fma",
           "avx512"
-        ],
-        "triple": "x86_64-pc-windows-msvc"
+        ]
       },
       "input_kernel": {
         "path": "inputs/cpu/gemm_f32_tiled.c",
-        "sha256": "37f78cd7af21db6835027d86747f0a39f19083f29eae5b82e076a0aa8f865c8d",
-        "language": "C/C++"
+        "language": "C/C++",
+        "sha256": "37f78cd7af21db6835027d86747f0a39f19083f29eae5b82e076a0aa8f865c8d"
       },
       "artifacts": [
         {
-          "stage": "frontend_ir_O0",
+          "artifact_type": "llvm_ir",
           "size_bytes": 7471,
+          "stage": "frontend_ir_O0",
           "sha256": "1449bfeb8377de704456d8d04c23a089cc2c3ec3295758d2240ebd95f7c1c88e",
-          "relative_path": "21.1.8/gemm_f32_tiled/O0.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "21.1.8/gemm_f32_tiled/O0.ll"
         },
         {
-          "stage": "optimized_ir_O2",
+          "artifact_type": "llvm_ir",
           "size_bytes": 7849,
+          "stage": "optimized_ir_O2",
           "sha256": "75107ddcc74da0e71a0d48d87440b2ea96efb76e50665f0d4a6d4383778cf47c",
-          "relative_path": "21.1.8/gemm_f32_tiled/O2.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "21.1.8/gemm_f32_tiled/O2.ll"
         },
         {
-          "stage": "optimized_ir_O3",
+          "artifact_type": "llvm_ir",
           "size_bytes": 7811,
+          "stage": "optimized_ir_O3",
           "sha256": "699b94031ffabda667f4ae287b7c06e5ef55cbb4124ffd7f6c13c00201abeaa2",
-          "relative_path": "21.1.8/gemm_f32_tiled/O3.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "21.1.8/gemm_f32_tiled/O3.ll"
         },
         {
-          "stage": "assembly_avx2",
+          "artifact_type": "x86_assembly",
           "size_bytes": 7785,
+          "stage": "assembly_avx2",
           "sha256": "d7771c51594f853c4a0c6a079ea64ee75a373a24ed7756e40a3c3b332b906502",
-          "relative_path": "21.1.8/gemm_f32_tiled/O3_avx2.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "21.1.8/gemm_f32_tiled/O3_avx2.s"
         },
         {
-          "stage": "assembly_avx512",
+          "artifact_type": "x86_assembly",
           "size_bytes": 7383,
+          "stage": "assembly_avx512",
           "sha256": "29df1e046a7abf539935a580d7bf78cc5f1c8022cd27a31496c88aa1341ecde4",
-          "relative_path": "21.1.8/gemm_f32_tiled/O3_avx512.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "21.1.8/gemm_f32_tiled/O3_avx512.s"
         }
       ],
+      "semantic_summary": {
+        "fma_formation": "supported",
+        "accumulation_dtype": "f32",
+        "memory_space": "host_global",
+        "shape_contract": "M_N_K",
+        "dtype": "f32",
+        "aliasing_contract": "may_alias",
+        "vectorization_width": "128bit_backend_retargeted",
+        "operation": "gemm"
+      },
       "status": "available",
-      "notes": "Automated CPU lowering diagnostic case"
+      "notes": "Automated CPU lowering baseline endpoint case"
     },
     {
       "schema_version": "1.0.0",
@@ -700,68 +800,78 @@
       "lane": "cpu_native",
       "host": {
         "os": "Windows 11",
-        "windows_build": "26100",
-        "architecture": "x86_64"
+        "architecture": "x86_64",
+        "windows_build": "26100"
       },
       "toolchain": {
+        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-22.1.8\\bin\\clang.exe",
         "name": "LLVM",
         "llvm_config_version": "22.1.8",
-        "version": "22.1.8",
-        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-22.1.8\\bin\\clang.exe"
+        "version": "22.1.8"
       },
       "target": {
         "cpu_or_gpu": "x86-64",
+        "triple": "x86_64-pc-windows-msvc",
         "features": [
           "avx2",
           "fma",
           "avx512"
-        ],
-        "triple": "x86_64-pc-windows-msvc"
+        ]
       },
       "input_kernel": {
         "path": "inputs/cpu/gemm_f32_epilogue_relu.cpp",
-        "sha256": "745fed4ea68808073756d52f336663f756556a4d663108ee2613415c5472b76f",
-        "language": "C/C++"
+        "language": "C/C++",
+        "sha256": "745fed4ea68808073756d52f336663f756556a4d663108ee2613415c5472b76f"
       },
       "artifacts": [
         {
-          "stage": "frontend_ir_O0",
+          "artifact_type": "llvm_ir",
           "size_bytes": 6320,
+          "stage": "frontend_ir_O0",
           "sha256": "0a89062feb8f197c057a5fc0ceff2553c401984a2902b79194de0f1ab9574a8e",
-          "relative_path": "22.1.8/gemm_f32_epilogue_relu/O0.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "22.1.8/gemm_f32_epilogue_relu/O0.ll"
         },
         {
-          "stage": "optimized_ir_O2",
+          "artifact_type": "llvm_ir",
           "size_bytes": 7431,
+          "stage": "optimized_ir_O2",
           "sha256": "4920fb68190a73da52cb193e827875450d863a2d7b324fc833cb92bdd2dcbd8e",
-          "relative_path": "22.1.8/gemm_f32_epilogue_relu/O2.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "22.1.8/gemm_f32_epilogue_relu/O2.ll"
         },
         {
-          "stage": "optimized_ir_O3",
+          "artifact_type": "llvm_ir",
           "size_bytes": 7793,
+          "stage": "optimized_ir_O3",
           "sha256": "3f4fb3c1fccbaf800e70c08259ed19f382e2216dc10dd79611b4f3984ec63d95",
-          "relative_path": "22.1.8/gemm_f32_epilogue_relu/O3.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "22.1.8/gemm_f32_epilogue_relu/O3.ll"
         },
         {
-          "stage": "assembly_avx2",
+          "artifact_type": "x86_assembly",
           "size_bytes": 6741,
+          "stage": "assembly_avx2",
           "sha256": "0f2392f29457b0ae9890937bf2eb58e86d923e98cf758fe8424ead4e4b69e508",
-          "relative_path": "22.1.8/gemm_f32_epilogue_relu/O3_avx2.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "22.1.8/gemm_f32_epilogue_relu/O3_avx2.s"
         },
         {
-          "stage": "assembly_avx512",
+          "artifact_type": "x86_assembly",
           "size_bytes": 6743,
+          "stage": "assembly_avx512",
           "sha256": "b495b9a9314551826c03a7973f4479b2dd6b9d31f68aec69a3f9a7a7f67bc0b6",
-          "relative_path": "22.1.8/gemm_f32_epilogue_relu/O3_avx512.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "22.1.8/gemm_f32_epilogue_relu/O3_avx512.s"
         }
       ],
+      "semantic_summary": {
+        "fma_formation": "supported",
+        "accumulation_dtype": "f32",
+        "memory_space": "host_global",
+        "shape_contract": "M_N_K",
+        "dtype": "f32",
+        "aliasing_contract": "may_alias",
+        "vectorization_width": "128bit_backend_retargeted",
+        "operation": "gemm"
+      },
       "status": "available",
-      "notes": "Automated CPU lowering diagnostic case"
+      "notes": "Automated CPU lowering baseline endpoint case"
     },
     {
       "schema_version": "1.0.0",
@@ -769,68 +879,78 @@
       "lane": "cpu_native",
       "host": {
         "os": "Windows 11",
-        "windows_build": "26100",
-        "architecture": "x86_64"
+        "architecture": "x86_64",
+        "windows_build": "26100"
       },
       "toolchain": {
+        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-22.1.8\\bin\\clang.exe",
         "name": "LLVM",
         "llvm_config_version": "22.1.8",
-        "version": "22.1.8",
-        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-22.1.8\\bin\\clang.exe"
+        "version": "22.1.8"
       },
       "target": {
         "cpu_or_gpu": "x86-64",
+        "triple": "x86_64-pc-windows-msvc",
         "features": [
           "avx2",
           "fma",
           "avx512"
-        ],
-        "triple": "x86_64-pc-windows-msvc"
+        ]
       },
       "input_kernel": {
         "path": "inputs/cpu/gemm_f32_epilogue_sin.cpp",
-        "sha256": "d5c089230a32f20c1334003707d70f03309c13eb7aae2609815b96b0d7be762d",
-        "language": "C/C++"
+        "language": "C/C++",
+        "sha256": "d5c089230a32f20c1334003707d70f03309c13eb7aae2609815b96b0d7be762d"
       },
       "artifacts": [
         {
-          "stage": "frontend_ir_O0",
+          "artifact_type": "llvm_ir",
           "size_bytes": 6631,
+          "stage": "frontend_ir_O0",
           "sha256": "c708b0231f071099d2ef0062dff65a7208bb7fc255d773ca3c71bc5dadca9394",
-          "relative_path": "22.1.8/gemm_f32_epilogue_sin/O0.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "22.1.8/gemm_f32_epilogue_sin/O0.ll"
         },
         {
-          "stage": "optimized_ir_O2",
+          "artifact_type": "llvm_ir",
           "size_bytes": 7863,
+          "stage": "optimized_ir_O2",
           "sha256": "e5b0dbaebca6881c92487c7ee1426b671915f3492992ca15c22bab31096d0d09",
-          "relative_path": "22.1.8/gemm_f32_epilogue_sin/O2.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "22.1.8/gemm_f32_epilogue_sin/O2.ll"
         },
         {
-          "stage": "optimized_ir_O3",
+          "artifact_type": "llvm_ir",
           "size_bytes": 8225,
+          "stage": "optimized_ir_O3",
           "sha256": "7c7e02ca30a3a903ad9108f53f750fa138fa1e6feb70810de5092212576880c9",
-          "relative_path": "22.1.8/gemm_f32_epilogue_sin/O3.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "22.1.8/gemm_f32_epilogue_sin/O3.ll"
         },
         {
-          "stage": "assembly_avx2",
+          "artifact_type": "x86_assembly",
           "size_bytes": 7133,
+          "stage": "assembly_avx2",
           "sha256": "1f2a85e57fc177fbbcc0e4e8008b9bd27aa67e6c337533183f2dde26accabf1c",
-          "relative_path": "22.1.8/gemm_f32_epilogue_sin/O3_avx2.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "22.1.8/gemm_f32_epilogue_sin/O3_avx2.s"
         },
         {
-          "stage": "assembly_avx512",
+          "artifact_type": "x86_assembly",
           "size_bytes": 7135,
+          "stage": "assembly_avx512",
           "sha256": "9ee32196d8c4415088aa80a2e4a3a77cd9f76f446db18375c275c50184b766bf",
-          "relative_path": "22.1.8/gemm_f32_epilogue_sin/O3_avx512.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "22.1.8/gemm_f32_epilogue_sin/O3_avx512.s"
         }
       ],
+      "semantic_summary": {
+        "fma_formation": "supported",
+        "accumulation_dtype": "f32",
+        "memory_space": "host_global",
+        "shape_contract": "M_N_K",
+        "dtype": "f32",
+        "aliasing_contract": "may_alias",
+        "vectorization_width": "128bit_backend_retargeted",
+        "operation": "gemm"
+      },
       "status": "available",
-      "notes": "Automated CPU lowering diagnostic case"
+      "notes": "Automated CPU lowering baseline endpoint case"
     },
     {
       "schema_version": "1.0.0",
@@ -838,68 +958,78 @@
       "lane": "cpu_native",
       "host": {
         "os": "Windows 11",
-        "windows_build": "26100",
-        "architecture": "x86_64"
+        "architecture": "x86_64",
+        "windows_build": "26100"
       },
       "toolchain": {
+        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-22.1.8\\bin\\clang.exe",
         "name": "LLVM",
         "llvm_config_version": "22.1.8",
-        "version": "22.1.8",
-        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-22.1.8\\bin\\clang.exe"
+        "version": "22.1.8"
       },
       "target": {
         "cpu_or_gpu": "x86-64",
+        "triple": "x86_64-pc-windows-msvc",
         "features": [
           "avx2",
           "fma",
           "avx512"
-        ],
-        "triple": "x86_64-pc-windows-msvc"
+        ]
       },
       "input_kernel": {
         "path": "inputs/cpu/gemm_f32_naive.c",
-        "sha256": "105238c7f995ae8b08e7ccdf22902f070821a670cc5b53cba7af7e4dfb4e8627",
-        "language": "C/C++"
+        "language": "C/C++",
+        "sha256": "105238c7f995ae8b08e7ccdf22902f070821a670cc5b53cba7af7e4dfb4e8627"
       },
       "artifacts": [
         {
-          "stage": "frontend_ir_O0",
+          "artifact_type": "llvm_ir",
           "size_bytes": 6474,
+          "stage": "frontend_ir_O0",
           "sha256": "92b4e231a5cdc5b2f0f3b2506d2fc004d3a29026a6654c0828a10db9c7d5c1a7",
-          "relative_path": "22.1.8/gemm_f32_naive/O0.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "22.1.8/gemm_f32_naive/O0.ll"
         },
         {
-          "stage": "optimized_ir_O2",
+          "artifact_type": "llvm_ir",
           "size_bytes": 7032,
+          "stage": "optimized_ir_O2",
           "sha256": "e3f8f5d99bce80b4605ecf287d6ac919aec48279b8e2d246ca91b2ddd77af18e",
-          "relative_path": "22.1.8/gemm_f32_naive/O2.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "22.1.8/gemm_f32_naive/O2.ll"
         },
         {
-          "stage": "optimized_ir_O3",
+          "artifact_type": "llvm_ir",
           "size_bytes": 9974,
+          "stage": "optimized_ir_O3",
           "sha256": "5afb8b4eb705a9cd73376e7df18501307e32c1915f4060e71c0966cf42d2a6c6",
-          "relative_path": "22.1.8/gemm_f32_naive/O3.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "22.1.8/gemm_f32_naive/O3.ll"
         },
         {
-          "stage": "assembly_avx2",
+          "artifact_type": "x86_assembly",
           "size_bytes": 8680,
+          "stage": "assembly_avx2",
           "sha256": "c3bf017fc8cfd78b92f0322f15b77b266e967c253d6faf299c9f8db816ff9321",
-          "relative_path": "22.1.8/gemm_f32_naive/O3_avx2.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "22.1.8/gemm_f32_naive/O3_avx2.s"
         },
         {
-          "stage": "assembly_avx512",
+          "artifact_type": "x86_assembly",
           "size_bytes": 8410,
+          "stage": "assembly_avx512",
           "sha256": "cc3db16f46d4ccf592c0c53e1d3573cc7e5b6d724d88ed68e37ba4ddf23dfc86",
-          "relative_path": "22.1.8/gemm_f32_naive/O3_avx512.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "22.1.8/gemm_f32_naive/O3_avx512.s"
         }
       ],
+      "semantic_summary": {
+        "fma_formation": "supported",
+        "accumulation_dtype": "f32",
+        "memory_space": "host_global",
+        "shape_contract": "M_N_K",
+        "dtype": "f32",
+        "aliasing_contract": "may_alias",
+        "vectorization_width": "128bit_backend_retargeted",
+        "operation": "gemm"
+      },
       "status": "available",
-      "notes": "Automated CPU lowering diagnostic case"
+      "notes": "Automated CPU lowering baseline endpoint case"
     },
     {
       "schema_version": "1.0.0",
@@ -907,68 +1037,78 @@
       "lane": "cpu_native",
       "host": {
         "os": "Windows 11",
-        "windows_build": "26100",
-        "architecture": "x86_64"
+        "architecture": "x86_64",
+        "windows_build": "26100"
       },
       "toolchain": {
+        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-22.1.8\\bin\\clang.exe",
         "name": "LLVM",
         "llvm_config_version": "22.1.8",
-        "version": "22.1.8",
-        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-22.1.8\\bin\\clang.exe"
+        "version": "22.1.8"
       },
       "target": {
         "cpu_or_gpu": "x86-64",
+        "triple": "x86_64-pc-windows-msvc",
         "features": [
           "avx2",
           "fma",
           "avx512"
-        ],
-        "triple": "x86_64-pc-windows-msvc"
+        ]
       },
       "input_kernel": {
         "path": "inputs/cpu/gemm_f32_restrict.c",
-        "sha256": "066f17d2d8d262781fc824729d59c9509c50630c422e4b02ca62e655803b5579",
-        "language": "C/C++"
+        "language": "C/C++",
+        "sha256": "066f17d2d8d262781fc824729d59c9509c50630c422e4b02ca62e655803b5579"
       },
       "artifacts": [
         {
-          "stage": "frontend_ir_O0",
+          "artifact_type": "llvm_ir",
           "size_bytes": 7241,
+          "stage": "frontend_ir_O0",
           "sha256": "1ddafc3f9e0a0edfeb18be547363782e75b4ed8e08c55071208bfc8697a489e6",
-          "relative_path": "22.1.8/gemm_f32_restrict/O0.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "22.1.8/gemm_f32_restrict/O0.ll"
         },
         {
-          "stage": "optimized_ir_O2",
+          "artifact_type": "llvm_ir",
           "size_bytes": 7331,
+          "stage": "optimized_ir_O2",
           "sha256": "d2aee4df1e96c94534046e548153cabf50ed7b904d6ecde1f31d01649b330fde",
-          "relative_path": "22.1.8/gemm_f32_restrict/O2.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "22.1.8/gemm_f32_restrict/O2.ll"
         },
         {
-          "stage": "optimized_ir_O3",
+          "artifact_type": "llvm_ir",
           "size_bytes": 10273,
+          "stage": "optimized_ir_O3",
           "sha256": "e6ca7788462a1ef51fbf5091b7cad5efb36d037eb911ca942ff73be9da550305",
-          "relative_path": "22.1.8/gemm_f32_restrict/O3.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "22.1.8/gemm_f32_restrict/O3.ll"
         },
         {
-          "stage": "assembly_avx2",
+          "artifact_type": "x86_assembly",
           "size_bytes": 8698,
+          "stage": "assembly_avx2",
           "sha256": "070d92e468d1a9a295b5e7d66e42f33e6ac06ce056b184d20c3b207edcf88533",
-          "relative_path": "22.1.8/gemm_f32_restrict/O3_avx2.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "22.1.8/gemm_f32_restrict/O3_avx2.s"
         },
         {
-          "stage": "assembly_avx512",
+          "artifact_type": "x86_assembly",
           "size_bytes": 8428,
+          "stage": "assembly_avx512",
           "sha256": "9533ace84b0bb6066a936d50c0e94c7ef086e174b1ecfe2ee8f2ddba331675a7",
-          "relative_path": "22.1.8/gemm_f32_restrict/O3_avx512.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "22.1.8/gemm_f32_restrict/O3_avx512.s"
         }
       ],
+      "semantic_summary": {
+        "fma_formation": "supported",
+        "accumulation_dtype": "f32",
+        "memory_space": "host_global",
+        "shape_contract": "M_N_K",
+        "dtype": "f32",
+        "aliasing_contract": "noalias",
+        "vectorization_width": "128bit_backend_retargeted",
+        "operation": "gemm"
+      },
       "status": "available",
-      "notes": "Automated CPU lowering diagnostic case"
+      "notes": "Automated CPU lowering baseline endpoint case"
     },
     {
       "schema_version": "1.0.0",
@@ -976,68 +1116,78 @@
       "lane": "cpu_native",
       "host": {
         "os": "Windows 11",
-        "windows_build": "26100",
-        "architecture": "x86_64"
+        "architecture": "x86_64",
+        "windows_build": "26100"
       },
       "toolchain": {
+        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-22.1.8\\bin\\clang.exe",
         "name": "LLVM",
         "llvm_config_version": "22.1.8",
-        "version": "22.1.8",
-        "compiler_path": "C:\\Users\\hamza\\tools\\llvm-22.1.8\\bin\\clang.exe"
+        "version": "22.1.8"
       },
       "target": {
         "cpu_or_gpu": "x86-64",
+        "triple": "x86_64-pc-windows-msvc",
         "features": [
           "avx2",
           "fma",
           "avx512"
-        ],
-        "triple": "x86_64-pc-windows-msvc"
+        ]
       },
       "input_kernel": {
         "path": "inputs/cpu/gemm_f32_tiled.c",
-        "sha256": "37f78cd7af21db6835027d86747f0a39f19083f29eae5b82e076a0aa8f865c8d",
-        "language": "C/C++"
+        "language": "C/C++",
+        "sha256": "37f78cd7af21db6835027d86747f0a39f19083f29eae5b82e076a0aa8f865c8d"
       },
       "artifacts": [
         {
-          "stage": "frontend_ir_O0",
+          "artifact_type": "llvm_ir",
           "size_bytes": 7884,
+          "stage": "frontend_ir_O0",
           "sha256": "5b36c58af24d94fe96d0f470550608c1781f83c9726509663e29d1977135b97c",
-          "relative_path": "22.1.8/gemm_f32_tiled/O0.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "22.1.8/gemm_f32_tiled/O0.ll"
         },
         {
-          "stage": "optimized_ir_O2",
+          "artifact_type": "llvm_ir",
           "size_bytes": 8217,
+          "stage": "optimized_ir_O2",
           "sha256": "8222de52ad5c3fc9c4066ac60a395a0087caee52e2b38d4e627a2e784148e1fc",
-          "relative_path": "22.1.8/gemm_f32_tiled/O2.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "22.1.8/gemm_f32_tiled/O2.ll"
         },
         {
-          "stage": "optimized_ir_O3",
+          "artifact_type": "llvm_ir",
           "size_bytes": 8178,
+          "stage": "optimized_ir_O3",
           "sha256": "128f78fb7013168823a0363e33d53ae9a6fb129e037b6863105dca5c3753406c",
-          "relative_path": "22.1.8/gemm_f32_tiled/O3.ll",
-          "artifact_type": "llvm_ir"
+          "relative_path": "22.1.8/gemm_f32_tiled/O3.ll"
         },
         {
-          "stage": "assembly_avx2",
+          "artifact_type": "x86_assembly",
           "size_bytes": 7856,
+          "stage": "assembly_avx2",
           "sha256": "a7c60267a66ead79bf3bab00ec8d9673baa2f3cc367532b8f19c43740f84edb9",
-          "relative_path": "22.1.8/gemm_f32_tiled/O3_avx2.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "22.1.8/gemm_f32_tiled/O3_avx2.s"
         },
         {
-          "stage": "assembly_avx512",
+          "artifact_type": "x86_assembly",
           "size_bytes": 7454,
+          "stage": "assembly_avx512",
           "sha256": "87b96d39afe35a5c5b6c850f5d7345f570066c64d0eca6eef30bbdab305dd57e",
-          "relative_path": "22.1.8/gemm_f32_tiled/O3_avx512.s",
-          "artifact_type": "x86_assembly"
+          "relative_path": "22.1.8/gemm_f32_tiled/O3_avx512.s"
         }
       ],
+      "semantic_summary": {
+        "fma_formation": "supported",
+        "accumulation_dtype": "f32",
+        "memory_space": "host_global",
+        "shape_contract": "M_N_K",
+        "dtype": "f32",
+        "aliasing_contract": "may_alias",
+        "vectorization_width": "128bit_backend_retargeted",
+        "operation": "gemm"
+      },
       "status": "available",
-      "notes": "Automated CPU lowering diagnostic case"
+      "notes": "Automated CPU lowering baseline endpoint case"
     }
   ]
 }
