@@ -40,6 +40,9 @@ struct Operation {
   std::vector<MatrixValue> operands;
   std::string target;
   std::string fallback;
+  std::int64_t static_m = 0;
+  std::int64_t static_n = 0;
+  std::int64_t static_k = 0;
 };
 
 struct Module {

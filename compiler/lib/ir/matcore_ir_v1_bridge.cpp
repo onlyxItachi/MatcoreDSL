@@ -37,7 +37,10 @@ std::vector<SemanticRequirement> canonicalRequirements() {
           SemanticRequirement::SynchronousExecution};
 }
 
-bool canonicalScalar(const ScalarExpr &actual, const ScalarExpr &expected) {
+bool canonicalScalarForV0(const ScalarExpr &actual, const ScalarExpr &expected) {
+  if (actual.kind == ScalarExpr::Kind::Static && actual.value > 0) {
+    return true;
+  }
   return actual == expected;
 }
 
@@ -53,10 +56,10 @@ bool canonicalTensorForV0(const TensorValue &value, ValueId expected_id,
       type.layout != Layout::RowMajorContiguous ||
       type.memory_space != MemorySpace::Host ||
       type.required_alignment_bytes != 4 ||
-      !canonicalScalar(type.shape[0], expected_rows) ||
-      !canonicalScalar(type.shape[1], expected_columns) ||
-      !canonicalScalar(type.strides[0], expected_columns) ||
-      !canonicalScalar(type.strides[1], ScalarExpr::staticValue(1))) {
+      !canonicalScalarForV0(type.shape[0], expected_rows) ||
+      !canonicalScalarForV0(type.shape[1], expected_columns) ||
+      !canonicalScalarForV0(type.strides[0], expected_columns) ||
+      !canonicalScalarForV0(type.strides[1], ScalarExpr::staticValue(1))) {
     error = std::string(context) +
             " cannot be represented losslessly by Matcore IR v0";
     return false;
@@ -81,9 +84,15 @@ bool fromV0(const ir::Module &source, Module &destination,
   upgraded.source_file = source.source_file;
   upgraded.producer = source.producer;
   for (const ir::Operation &operation : source.operations) {
-    const ScalarExpr m = ScalarExpr::dynamic("m");
-    const ScalarExpr k = ScalarExpr::dynamic("k");
-    const ScalarExpr n = ScalarExpr::dynamic("n");
+    const ScalarExpr m = operation.static_m > 0
+                             ? ScalarExpr::staticValue(static_cast<std::uint64_t>(operation.static_m))
+                             : ScalarExpr::dynamic("m");
+    const ScalarExpr k = operation.static_k > 0
+                             ? ScalarExpr::staticValue(static_cast<std::uint64_t>(operation.static_k))
+                             : ScalarExpr::dynamic("k");
+    const ScalarExpr n = operation.static_n > 0
+                             ? ScalarExpr::staticValue(static_cast<std::uint64_t>(operation.static_n))
+                             : ScalarExpr::dynamic("n");
 
     Operation converted;
     converted.site_id = operation.site_id;
@@ -168,6 +177,15 @@ bool projectToV0(const Module &source, ir::Module &destination,
         {"rhs", operation.operands[1].source_expression, "read"}};
     converted.target = "cpu";
     converted.fallback = "error";
+    if (operation.output.type.shape[0].kind == ScalarExpr::Kind::Static) {
+      converted.static_m = static_cast<std::int64_t>(operation.output.type.shape[0].value);
+    }
+    if (operation.output.type.shape[1].kind == ScalarExpr::Kind::Static) {
+      converted.static_n = static_cast<std::int64_t>(operation.output.type.shape[1].value);
+    }
+    if (operation.operands[0].type.shape[1].kind == ScalarExpr::Kind::Static) {
+      converted.static_k = static_cast<std::int64_t>(operation.operands[0].type.shape[1].value);
+    }
     projected.operations.push_back(std::move(converted));
   }
 

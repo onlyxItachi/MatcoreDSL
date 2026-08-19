@@ -743,6 +743,45 @@ bool simpleLvalue(const clang::Expr &expression, std::string &name) {
   return false;
 }
 
+bool extractStaticMatrixDims(const clang::Expr *expr, clang::ASTContext &context,
+                             int64_t &rows, int64_t &cols) {
+  if (expr == nullptr) return false;
+  const clang::Expr *current = expr->IgnoreParenImpCasts();
+  const auto *decl_ref = llvm::dyn_cast<clang::DeclRefExpr>(current);
+  if (decl_ref == nullptr) return false;
+  const auto *var = llvm::dyn_cast<clang::VarDecl>(decl_ref->getDecl());
+  if (var == nullptr || !var->hasInit()) return false;
+  const clang::Expr *init = var->getInit()->IgnoreParenImpCasts();
+  if (const auto *init_list = llvm::dyn_cast<clang::InitListExpr>(init)) {
+    if (init_list->getNumInits() >= 3) {
+      clang::Expr::EvalResult r_res, c_res;
+      if (init_list->getInit(1)->EvaluateAsInt(r_res, context) &&
+          init_list->getInit(2)->EvaluateAsInt(c_res, context)) {
+        if (r_res.Val.getInt().isStrictlyPositive() &&
+            c_res.Val.getInt().isStrictlyPositive()) {
+          rows = r_res.Val.getInt().getExtValue();
+          cols = c_res.Val.getInt().getExtValue();
+          return true;
+        }
+      }
+    }
+  } else if (const auto *construct = llvm::dyn_cast<clang::CXXConstructExpr>(init)) {
+    if (construct->getNumArgs() >= 3) {
+      clang::Expr::EvalResult r_res, c_res;
+      if (construct->getArg(1)->EvaluateAsInt(r_res, context) &&
+          construct->getArg(2)->EvaluateAsInt(c_res, context)) {
+        if (r_res.Val.getInt().isStrictlyPositive() &&
+            c_res.Val.getInt().isStrictlyPositive()) {
+          rows = r_res.Val.getInt().getExtValue();
+          cols = c_res.Val.getInt().getExtValue();
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 const clang::EnumConstantDecl *
 directEnumConstant(const clang::Expr &expression) {
   const clang::Expr *current = &expression;
@@ -1290,6 +1329,21 @@ private:
     };
     operation.target = target;
     operation.fallback = fallback;
+
+    int64_t out_r = 0, out_c = 0;
+    int64_t lhs_r = 0, lhs_c = 0;
+    int64_t rhs_r = 0, rhs_c = 0;
+    const bool out_static = extractStaticMatrixDims(
+        output_call ? output_call->getArg(0) : nullptr, context, out_r, out_c);
+    const bool lhs_static = extractStaticMatrixDims(call.getArg(1), context, lhs_r, lhs_c);
+    const bool rhs_static = extractStaticMatrixDims(call.getArg(2), context, rhs_r, rhs_c);
+    if (out_static && lhs_static && rhs_static &&
+        out_r == lhs_r && lhs_c == rhs_r && rhs_c == out_c) {
+      operation.static_m = out_r;
+      operation.static_n = out_c;
+      operation.static_k = lhs_c;
+    }
+
     state_.result.module.operations.push_back(std::move(operation));
   }
 

@@ -460,7 +460,12 @@ bool generate(const ir::Module &module, std::string_view original_source,
   std::vector<RuntimeDispatchBackendEntryV1> backend_entries;
   backend_entries.reserve(module.operations.size());
   for (const ir::Operation &operation : module.operations) {
-    backend_entries.push_back({operation.site_id});
+    backend_entries.push_back({
+        operation.site_id,
+        operation.static_m,
+        operation.static_n,
+        operation.static_k,
+    });
   }
   if (!generateRuntimeDispatchBackendV1(
           backend_entries, RuntimeDispatchBackendProducerV1::CaptureV0,
