@@ -47,4 +47,18 @@ if(BUILD_TESTING)
   add_test(NAME codegen.numerical_semantics_adversarial
     COMMAND matcore_numerical_semantics_adversarial_test
   )
+  add_executable(matcore_aliasing_and_alignment_policy_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/codegen/aliasing_and_alignment_policy_test.cpp"
+  )
+  target_compile_features(matcore_aliasing_and_alignment_policy_test PRIVATE cxx_std_20)
+  target_link_libraries(matcore_aliasing_and_alignment_policy_test
+    PRIVATE matcore_codegen_v0 matcore_runtime
+  )
+  target_include_directories(matcore_aliasing_and_alignment_policy_test
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+  )
+  mdslc_target_enable_warnings(matcore_aliasing_and_alignment_policy_test WERROR)
+  add_test(NAME codegen.aliasing_and_alignment_policy
+    COMMAND matcore_aliasing_and_alignment_policy_test
+  )
 endif()
