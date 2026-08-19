@@ -61,4 +61,23 @@ if(BUILD_TESTING)
   add_test(NAME codegen.aliasing_and_alignment_policy
     COMMAND matcore_aliasing_and_alignment_policy_test
   )
+  find_program(LLVM_OBJDUMP_EXECUTABLE
+    NAMES llvm-objdump llvm-objdump.exe llvm-objdump-21 llvm-objdump-21.1.8
+    HINTS "C:/Users/hamza/tools/llvm-21.1.8/bin"
+    ENV PATH
+  )
+  find_program(Python3_EXECUTABLE
+    NAMES python python3 py
+    ENV PATH
+  )
+  if(Python3_EXECUTABLE AND LLVM_OBJDUMP_EXECUTABLE)
+    add_test(NAME codegen.zero_runtime_call_and_spill_proof
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/codegen/run_zero_runtime_call_and_spill_proof_test.py"
+        --clangxx "${MDSLC_CLANGXX_EXECUTABLE}"
+        --objdump "${LLVM_OBJDUMP_EXECUTABLE}"
+        --include-dir "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+    )
+  endif()
 endif()
