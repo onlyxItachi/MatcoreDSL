@@ -705,6 +705,55 @@ void versioned_capability_and_topology_projection() {
          "authenticated AVX variants remain forceable when only AMX OS state is unknown");
 }
 
+void degenerate_gemm_geometry_classification_and_planning() {
+  const auto gevm_prob = problem(1, 1024, 64);
+  const auto gemv_prob = problem(1024, 1, 64);
+  const auto dot_prob = problem(1, 1, 1024);
+  const auto ger_prob = problem(64, 64, 1);
+  const auto tiny_prob = problem(8, 8, 8);
+  const auto ordinary_prob = problem(256, 256, 256);
+
+  expect(planner::classify_cpu_gemm_geometry_v1(gevm_prob) ==
+             planner::CpuGemmGeometryKindV1::gevm_vector_matrix,
+         "M=1, N>1 classifies as GEVM vector-matrix contraction");
+  expect(planner::classify_cpu_gemm_geometry_v1(gemv_prob) ==
+             planner::CpuGemmGeometryKindV1::gemv_matrix_vector,
+         "N=1, M>1 classifies as GEMV matrix-vector contraction");
+  expect(planner::classify_cpu_gemm_geometry_v1(dot_prob) ==
+             planner::CpuGemmGeometryKindV1::dot_inner_product,
+         "M=1, N=1 classifies as DOT inner product");
+  expect(planner::classify_cpu_gemm_geometry_v1(ger_prob) ==
+             planner::CpuGemmGeometryKindV1::ger_outer_product,
+         "K=1, M>1, N>1 classifies as GER outer product");
+  expect(planner::classify_cpu_gemm_geometry_v1(tiny_prob) ==
+             planner::CpuGemmGeometryKindV1::tiny_static_gemm,
+         "M,N,K<=16 classifies as tiny static GEMM");
+  expect(planner::classify_cpu_gemm_geometry_v1(ordinary_prob) ==
+             planner::CpuGemmGeometryKindV1::ordinary_gemm,
+         "M,N,K>=32 classifies as ordinary GEMM");
+
+  const auto gevm_plan = planner::plan_cpu_gemm_v3(
+      gevm_prob, avx2_capabilities(), topology(), policy(1), resources());
+  expect(gevm_plan.status == planner::CpuPlanStatusV1::selected &&
+             gevm_plan.selected_variant ==
+                 planner::CpuGemmVariantV3::compiler_vectorized,
+         "GEVM (M=1) automatically selects compiler-vectorized streaming path");
+
+  const auto gemv_plan = planner::plan_cpu_gemm_v3(
+      gemv_prob, avx2_capabilities(), topology(), policy(1), resources());
+  expect(gemv_plan.status == planner::CpuPlanStatusV1::selected &&
+             gemv_plan.selected_variant ==
+                 planner::CpuGemmVariantV3::compiler_vectorized,
+         "GEMV (N=1) automatically selects compiler-vectorized row dot reduction path");
+
+  const auto dot_plan = planner::plan_cpu_gemm_v3(
+      dot_prob, avx2_capabilities(), topology(), policy(1), resources());
+  expect(dot_plan.status == planner::CpuPlanStatusV1::selected &&
+             dot_plan.selected_variant ==
+                 planner::CpuGemmVariantV3::compiler_vectorized,
+         "DOT (M=1, N=1) automatically selects compiler-vectorized inner reduction");
+}
+
 }  // namespace
 
 int main() {
@@ -715,6 +764,7 @@ int main() {
   numa_evidence_and_cost();
   avx512_fail_closed_and_determinism();
   versioned_capability_and_topology_projection();
+  degenerate_gemm_geometry_classification_and_planning();
   if (failures != 0) {
     std::cerr << failures << " planner v3 checks failed\n";
     return 1;

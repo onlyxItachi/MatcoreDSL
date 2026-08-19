@@ -41,6 +41,51 @@ enum class CpuGemmVariantV3 : std::uint8_t {
   native_parallel_avx512_fma = 7,
 };
 
+enum class CpuGemmGeometryKindV1 : std::uint8_t {
+  ordinary_gemm = 0,
+  gevm_vector_matrix = 1,       // M == 1, N > 1 (Row broadcast accumulation)
+  gemv_matrix_vector = 2,       // N == 1, M > 1 (Horizontal row dot reduction)
+  dot_inner_product = 3,        // M == 1, N == 1 (Vector-vector dot reduction)
+  ger_outer_product = 4,        // K == 1, M > 1, N > 1 (Vector-vector rank-1 outer update)
+  tiny_static_gemm = 5,         // M, N, K <= 16 (Direct in-register computation)
+};
+
+constexpr CpuGemmGeometryKindV1 classify_cpu_gemm_geometry_v1(
+    const CpuGemmProblemV1 &problem) noexcept {
+  if (problem.m == 1 && problem.n == 1)
+    return CpuGemmGeometryKindV1::dot_inner_product;
+  if (problem.m == 1 && problem.n > 1)
+    return CpuGemmGeometryKindV1::gevm_vector_matrix;
+  if (problem.n == 1 && problem.m > 1)
+    return CpuGemmGeometryKindV1::gemv_matrix_vector;
+  if (problem.k == 1 && problem.m > 1 && problem.n > 1)
+    return CpuGemmGeometryKindV1::ger_outer_product;
+  if (problem.m > 0 && problem.n > 0 && problem.k > 0 &&
+      problem.m <= 16 && problem.n <= 16 && problem.k <= 16) {
+    return CpuGemmGeometryKindV1::tiny_static_gemm;
+  }
+  return CpuGemmGeometryKindV1::ordinary_gemm;
+}
+
+constexpr std::string_view geometry_name(
+    CpuGemmGeometryKindV1 geometry) noexcept {
+  switch (geometry) {
+    case CpuGemmGeometryKindV1::ordinary_gemm:
+      return "ordinary-gemm";
+    case CpuGemmGeometryKindV1::gevm_vector_matrix:
+      return "gevm-vector-matrix";
+    case CpuGemmGeometryKindV1::gemv_matrix_vector:
+      return "gemv-matrix-vector";
+    case CpuGemmGeometryKindV1::dot_inner_product:
+      return "dot-inner-product";
+    case CpuGemmGeometryKindV1::ger_outer_product:
+      return "ger-outer-product";
+    case CpuGemmGeometryKindV1::tiny_static_gemm:
+      return "tiny-static-gemm";
+  }
+  return "unknown";
+}
+
 enum class CpuGemmRequestV3 : std::uint8_t {
   automatic = 0,
   force_reference = 1,

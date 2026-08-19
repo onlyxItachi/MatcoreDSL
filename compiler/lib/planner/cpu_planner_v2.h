@@ -199,28 +199,38 @@ constexpr std::uint64_t estimated_cost(
                                   static_cast<std::uint64_t>(problem.k)),
       detail::saturating_multiply(static_cast<std::uint64_t>(problem.k),
                                   static_cast<std::uint64_t>(problem.n)));
+
+  const bool is_degenerate = (problem.m == 1 || problem.n == 1 || problem.k == 1);
+  const bool is_gevm = (problem.m == 1 && problem.n > 1);
+  const bool is_gemv = (problem.n == 1 && problem.m > 1);
+  const bool is_dot = (problem.m == 1 && problem.n == 1);
+
   switch (variant) {
     case CpuGemmVariantV2::reference:
       return detail::saturating_multiply(work, 16);
     case CpuGemmVariantV2::tiled:
+      if (is_degenerate) {
+        return detail::saturating_add(detail::saturating_multiply(work, 12), 32768);
+      }
       return detail::saturating_add(detail::saturating_multiply(work, 7),
                                     4096);
     case CpuGemmVariantV2::compiler_vectorized:
+      if (is_gevm || is_dot) {
+        return detail::saturating_add(detail::saturating_multiply(work, 2), 2048);
+      }
+      if (is_gemv) {
+        return detail::saturating_add(detail::saturating_multiply(work, 3), 4096);
+      }
       return detail::saturating_add(detail::saturating_multiply(work, 4),
                                     16384);
     case CpuGemmVariantV2::external_openblas:
-      // The v1 LP64 CBLAS adapter has a small fixed dispatch cost. Pinned
-      // validation-host sweeps showed the provider crossing the scalar/native
-      // candidates by 16^3 and on small high-aspect-ratio problems. Keeping a
-      // nonzero cost still lets the allocation-free reference win truly tiny
-      // calls; this is a deterministic static rule, not runtime autotuning.
-      // The validation provider's SGEMM path has a severe M=1 crossover on
-      // row-major matrices (the compiler-vectorized loop is substantially
-      // faster). Keep that measured case out of automatic OpenBLAS selection;
-      // forced provider requests remain legal and inspectable.
-      if (problem.m == 1) return std::numeric_limits<std::uint64_t>::max();
+      if (problem.m == 1 || problem.n == 1)
+        return std::numeric_limits<std::uint64_t>::max();
       return detail::saturating_add(work, 2000);
     case CpuGemmVariantV2::native_packed_avx2_fma:
+      if (is_degenerate) {
+        return std::numeric_limits<std::uint64_t>::max();
+      }
       return detail::saturating_add(
           detail::saturating_add(detail::saturating_multiply(work, 2),
                                  detail::saturating_multiply(packing, 6)),

@@ -406,6 +406,18 @@ if(BUILD_TESTING)
   mdslc_target_enable_debug_optimization(matcore_runtime_cpu_test)
   add_test(NAME runtime.cpu.gemm_v0 COMMAND matcore_runtime_cpu_test)
 
+  add_executable(matcore_tiny_static_specialization_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/tiny_static_specialization_test.cpp"
+  )
+  target_compile_features(matcore_tiny_static_specialization_test PRIVATE cxx_std_20)
+  target_link_libraries(matcore_tiny_static_specialization_test
+    PRIVATE MatcoreDSL::Runtime MatcoreDSL::CpuPlannerV1 MatcoreDSL::CpuPlannerV3
+  )
+  mdslc_target_enable_debug_optimization(matcore_tiny_static_specialization_test)
+  add_test(NAME runtime.cpu.tiny_static_specialization
+    COMMAND matcore_tiny_static_specialization_test
+  )
+
   if(NOT WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU" AND
      NOT CMAKE_CXX_FLAGS MATCHES "fsanitize" AND
      CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")

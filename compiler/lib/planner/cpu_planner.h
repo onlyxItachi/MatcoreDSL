@@ -409,6 +409,56 @@ inline void compiler_vectorized_gemm(
     const float *MATCORE_MDSLC_CPU_RESTRICT lhs,
     const float *MATCORE_MDSLC_CPU_RESTRICT rhs,
     float *MATCORE_MDSLC_CPU_RESTRICT out) noexcept {
+  // Degenerate Geometry 1: Dot Product (M == 1 && N == 1)
+  if (problem.m == 1 && problem.n == 1) {
+    float sum = 0.0F;
+#if defined(__clang__) && !MATCORE_MDSLC_CPU_INSTRUMENTED_BUILD
+#pragma clang loop vectorize(enable) vectorize_width(8) interleave(enable)
+#elif defined(__GNUC__) && !MATCORE_MDSLC_CPU_INSTRUMENTED_BUILD
+#pragma GCC ivdep
+#endif
+    for (std::int64_t p = 0; p < problem.k; ++p) {
+      sum += lhs[p] * rhs[p];
+    }
+    out[0] = sum;
+    return;
+  }
+
+  // Degenerate Geometry 2: Matrix-Vector (GEMV: N == 1, M > 1)
+  if (problem.n == 1) {
+    for (std::int64_t i = 0; i < problem.m; ++i) {
+      float sum = 0.0F;
+      const float *row_a = &lhs[i * problem.k];
+#if defined(__clang__) && !MATCORE_MDSLC_CPU_INSTRUMENTED_BUILD
+#pragma clang loop vectorize(enable) vectorize_width(8) interleave(enable)
+#elif defined(__GNUC__) && !MATCORE_MDSLC_CPU_INSTRUMENTED_BUILD
+#pragma GCC ivdep
+#endif
+      for (std::int64_t p = 0; p < problem.k; ++p) {
+        sum += row_a[p] * rhs[p];
+      }
+      out[i] = sum;
+    }
+    return;
+  }
+
+  // Degenerate Geometry 3: Rank-1 Outer Update (GER: K == 1, M > 1, N > 1)
+  if (problem.k == 1) {
+    for (std::int64_t i = 0; i < problem.m; ++i) {
+      const float a = lhs[i];
+#if defined(__clang__) && !MATCORE_MDSLC_CPU_INSTRUMENTED_BUILD
+#pragma clang loop vectorize(enable) vectorize_width(8) interleave(enable)
+#elif defined(__GNUC__) && !MATCORE_MDSLC_CPU_INSTRUMENTED_BUILD
+#pragma GCC ivdep
+#endif
+      for (std::int64_t j = 0; j < problem.n; ++j) {
+        out[i * problem.n + j] = a * rhs[j];
+      }
+    }
+    return;
+  }
+
+  // General & Vector-Matrix (GEVM: M == 1, N > 1 / Ordinary GEMM)
   for (std::int64_t i = 0; i < problem.m; ++i)
     for (std::int64_t j = 0; j < problem.n; ++j)
       out[i * problem.n + j] = 0.0F;

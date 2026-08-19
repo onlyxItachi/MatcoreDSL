@@ -35,6 +35,8 @@ def run(
         cwd=cwd,
         env=environment,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         check=False,
     )
@@ -722,6 +724,8 @@ def pipeline_suite(
         ],
         cwd=mutation_dir,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )

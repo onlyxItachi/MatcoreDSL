@@ -695,6 +695,10 @@ FileSnapshotV1 capture_file_snapshot_v1(const std::filesystem::path &path,
                                         std::string &error) {
   FileSnapshotV1 snapshot;
   error.clear();
+  if (path.empty()) {
+    error = "snapshot path cannot be empty";
+    return snapshot;
+  }
   std::error_code ec;
   snapshot.normalized_path = std::filesystem::absolute(path, ec);
   if (ec) {

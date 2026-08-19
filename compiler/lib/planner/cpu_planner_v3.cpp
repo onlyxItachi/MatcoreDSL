@@ -374,7 +374,8 @@ std::uint64_t avx512_single_cost(const CpuGemmProblemV1 &problem) noexcept {
 
 std::uint64_t external_cost(const CpuGemmProblemV1 &problem,
                             std::uint32_t threads) noexcept {
-  if (problem.m == 1) return std::numeric_limits<std::uint64_t>::max();
+  if (problem.m == 1 || problem.n == 1)
+    return std::numeric_limits<std::uint64_t>::max();
   return detail::saturating_add(
       divide_round_up(detail::operation_count(problem), threads), 2000);
 }
