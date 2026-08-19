@@ -97,8 +97,21 @@ if(BUILD_TESTING)
   target_include_directories(matcore_real_performance_crossover_bench
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
   )
-  mdslc_target_enable_warnings(matcore_real_performance_crossover_bench WERROR)
   add_test(NAME codegen.real_performance_crossover
     COMMAND matcore_real_performance_crossover_bench
+  )
+  add_executable(matcore_prepacked_b_hoisting_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/codegen/prepacked_b_hoisting_test.cpp"
+  )
+  target_compile_features(matcore_prepacked_b_hoisting_test PRIVATE cxx_std_20)
+  target_link_libraries(matcore_prepacked_b_hoisting_test
+    PRIVATE matcore_codegen_v0 matcore_runtime
+  )
+  target_include_directories(matcore_prepacked_b_hoisting_test
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+  )
+  mdslc_target_enable_warnings(matcore_prepacked_b_hoisting_test WERROR)
+  add_test(NAME codegen.prepacked_b_hoisting
+    COMMAND matcore_prepacked_b_hoisting_test
   )
 endif()
