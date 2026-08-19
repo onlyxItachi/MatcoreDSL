@@ -81,15 +81,9 @@ bool fromV0(const ir::Module &source, Module &destination,
   upgraded.source_file = source.source_file;
   upgraded.producer = source.producer;
   for (const ir::Operation &operation : source.operations) {
-    const ScalarExpr m = operation.static_m > 0
-                             ? ScalarExpr::staticValue(static_cast<std::uint64_t>(operation.static_m))
-                             : ScalarExpr::dynamic("m");
-    const ScalarExpr k = operation.static_k > 0
-                             ? ScalarExpr::staticValue(static_cast<std::uint64_t>(operation.static_k))
-                             : ScalarExpr::dynamic("k");
-    const ScalarExpr n = operation.static_n > 0
-                             ? ScalarExpr::staticValue(static_cast<std::uint64_t>(operation.static_n))
-                             : ScalarExpr::dynamic("n");
+    const ScalarExpr m = ScalarExpr::dynamic("m");
+    const ScalarExpr k = ScalarExpr::dynamic("k");
+    const ScalarExpr n = ScalarExpr::dynamic("n");
 
     Operation converted;
     converted.site_id = operation.site_id;
