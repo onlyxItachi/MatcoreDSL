@@ -37,10 +37,7 @@ std::vector<SemanticRequirement> canonicalRequirements() {
           SemanticRequirement::SynchronousExecution};
 }
 
-bool canonicalScalarForV0(const ScalarExpr &actual, const ScalarExpr &expected) {
-  if (actual.kind == ScalarExpr::Kind::Static && actual.value > 0) {
-    return true;
-  }
+bool canonicalScalar(const ScalarExpr &actual, const ScalarExpr &expected) {
   return actual == expected;
 }
 
@@ -56,10 +53,10 @@ bool canonicalTensorForV0(const TensorValue &value, ValueId expected_id,
       type.layout != Layout::RowMajorContiguous ||
       type.memory_space != MemorySpace::Host ||
       type.required_alignment_bytes != 4 ||
-      !canonicalScalarForV0(type.shape[0], expected_rows) ||
-      !canonicalScalarForV0(type.shape[1], expected_columns) ||
-      !canonicalScalarForV0(type.strides[0], expected_columns) ||
-      !canonicalScalarForV0(type.strides[1], ScalarExpr::staticValue(1))) {
+      !canonicalScalar(type.shape[0], expected_rows) ||
+      !canonicalScalar(type.shape[1], expected_columns) ||
+      !canonicalScalar(type.strides[0], expected_columns) ||
+      !canonicalScalar(type.strides[1], ScalarExpr::staticValue(1))) {
     error = std::string(context) +
             " cannot be represented losslessly by Matcore IR v0";
     return false;
