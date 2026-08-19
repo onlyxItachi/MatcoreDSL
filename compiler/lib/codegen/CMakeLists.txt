@@ -87,4 +87,18 @@ if(BUILD_TESTING)
         --include-dir "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
     )
   endif()
+  add_executable(matcore_real_performance_crossover_bench
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/codegen/real_performance_crossover_bench.cpp"
+  )
+  target_compile_features(matcore_real_performance_crossover_bench PRIVATE cxx_std_20)
+  target_link_libraries(matcore_real_performance_crossover_bench
+    PRIVATE matcore_codegen_v0 matcore_runtime
+  )
+  target_include_directories(matcore_real_performance_crossover_bench
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+  )
+  mdslc_target_enable_warnings(matcore_real_performance_crossover_bench WERROR)
+  add_test(NAME codegen.real_performance_crossover
+    COMMAND matcore_real_performance_crossover_bench
+  )
 endif()
