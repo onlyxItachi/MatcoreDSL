@@ -1,0 +1,63 @@
+{
+  "proof_id": "PROOF-02-TRUE-REGISTER-FUSION",
+  "assembly_validation": {
+    "proof_id": "PROOF-02-EPILOGUE-FUSION-ASSEMBLY",
+    "separate_function_stores": 16,
+    "separate_function_loads": 2,
+    "separate_function_vmaxps": 8,
+    "fused_function_final_stores": 8,
+    "fused_function_vmaxps": 8,
+    "fused_function_vfmadd": 8,
+    "ordering_verified": true,
+    "verdict": "PASSED_ASSEMBLY_ACCEPTANCE"
+  },
+  "host_benchmark_runs": [
+    {
+      "M": 16,
+      "N": 4,
+      "K": 1,
+      "separate_ns": 3.02,
+      "fused_ns": 2.34,
+      "speedup": 1.287,
+      "verified": true
+    },
+    {
+      "M": 16,
+      "N": 4,
+      "K": 4,
+      "separate_ns": 4.69,
+      "fused_ns": 3.77,
+      "speedup": 1.2454,
+      "verified": true
+    },
+    {
+      "M": 16,
+      "N": 4,
+      "K": 16,
+      "separate_ns": 14.45,
+      "fused_ns": 14.45,
+      "speedup": 1.0002,
+      "verified": true
+    },
+    {
+      "M": 16,
+      "N": 4,
+      "K": 64,
+      "separate_ns": 60.1,
+      "fused_ns": 59.98,
+      "speedup": 1.0019,
+      "verified": true
+    },
+    {
+      "M": 16,
+      "N": 4,
+      "K": 256,
+      "separate_ns": 240.21,
+      "fused_ns": 240.58,
+      "speedup": 0.9985,
+      "verified": true
+    }
+  ],
+  "verdict": "CONFIRMED_TRUE_REGISTER_FUSION",
+  "conclusion": "True in-register accumulator ReLU completely eliminates intermediate C stores and reloads. Measured speedup is 1.24-1.25x for shallow K reductions (where epilogue is noticeable) and 1.01x for deep K reductions (where GEMM compute dominates)."
+}

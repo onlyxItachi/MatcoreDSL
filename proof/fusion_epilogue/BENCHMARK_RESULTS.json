@@ -1,0 +1,37 @@
+[
+  {
+    "M": 16, "N": 4, "K": 1,
+    "separate_ns": 3.02,
+    "fused_ns": 2.34,
+    "speedup": 1.2870,
+    "verified": true
+  },
+  {
+    "M": 16, "N": 4, "K": 4,
+    "separate_ns": 4.69,
+    "fused_ns": 3.77,
+    "speedup": 1.2454,
+    "verified": true
+  },
+  {
+    "M": 16, "N": 4, "K": 16,
+    "separate_ns": 14.45,
+    "fused_ns": 14.45,
+    "speedup": 1.0002,
+    "verified": true
+  },
+  {
+    "M": 16, "N": 4, "K": 64,
+    "separate_ns": 60.10,
+    "fused_ns": 59.98,
+    "speedup": 1.0019,
+    "verified": true
+  },
+  {
+    "M": 16, "N": 4, "K": 256,
+    "separate_ns": 240.21,
+    "fused_ns": 240.58,
+    "speedup": 0.9985,
+    "verified": true
+  }
+]

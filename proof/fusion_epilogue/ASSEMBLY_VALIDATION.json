@@ -1,0 +1,11 @@
+{
+  "proof_id": "PROOF-02-EPILOGUE-FUSION-ASSEMBLY",
+  "separate_function_stores": 16,
+  "separate_function_loads": 2,
+  "separate_function_vmaxps": 8,
+  "fused_function_final_stores": 8,
+  "fused_function_vmaxps": 8,
+  "fused_function_vfmadd": 8,
+  "ordering_verified": true,
+  "verdict": "PASSED_ASSEMBLY_ACCEPTANCE"
+}
