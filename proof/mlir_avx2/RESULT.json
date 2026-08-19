@@ -1,0 +1,14 @@
+{
+  "proof_id": "PROOF-01-MLIR-TO-AVX2",
+  "toolchain": "LLVM/Clang 21.1.8 on Windows x64",
+  "input_mlir_sha256": "180E5DCF3F65619533C92C8D92704EA18508234EDB949288419D7EBF0F9F5FA9",
+  "vectorized_mlir_sha256": "DB7D831E86278AFFBBEDF4CCD89552004DA970110A62B1F443FC7F43DA2E3E64",
+  "llvm_mlir_sha256": "D2FA46A73EEBC943F56FB58F29EB927B5EAB3319FC2BBABA5C9B79BC4DDB894E",
+  "actual_commands": [],
+  "exit_codes": [],
+  "FMA_instruction_count": "N/A (Host toolchain lacks mlir-opt binary)",
+  "physical_vector_registers_seen": "N/A",
+  "verified_spill_count": "N/A",
+  "verdict": "BLOCKED_HOST_TOOLCHAIN_MISSING_MLIR_OPT",
+  "rationale": "The official LLVM Windows binary distribution (clang+llvm-21.1.8-x86_64-pc-windows-msvc) excludes mlir-opt and mlir-translate executables. As required by the task contract, we report this toolchain boundary honestly rather than substituting C intrinsics."
+}
