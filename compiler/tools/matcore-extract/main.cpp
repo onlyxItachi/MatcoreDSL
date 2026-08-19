@@ -988,7 +988,14 @@ int ExtractorMain(int argc, char **argv) {
                      "unsupported runtime boundary\n";
         return 1;
       }
-      semantic_backend_entries.push_back({record.site_id});
+      semantic_backend_entries.push_back({
+          record.site_id,
+          record.static_m,
+          record.static_n,
+          record.static_k,
+          record.alignment,
+          record.no_alias,
+      });
     }
 #else
     std::cerr << "matcore-extract: internal error: unavailable Matcore MLIR "

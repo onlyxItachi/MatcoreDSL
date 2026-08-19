@@ -47,6 +47,42 @@ int main() {
              std::string::npos,
          "semantic backend identifies its authenticated producer");
 
+  // Test static AOT specialization generation
+  RuntimeDispatchBackendEntryV1 static_entry{
+      .site_id = site,
+      .static_m = 16,
+      .static_n = 64,
+      .static_k = 32,
+      .alignment = 32,
+      .no_alias = true,
+  };
+  expect(generateRuntimeDispatchBackendV1(
+             {static_entry},
+             RuntimeDispatchBackendProducerV1::MatcoreMlirCpuV1, source,
+             error),
+         "Matcore MLIR static specialized backend generation succeeds");
+  expect(source.find("direct_static_microkernel_" + site) != std::string::npos,
+         "static specialized backend emits direct in-register microkernel");
+  expect(source.find("output->dims[0] == 16") != std::string::npos,
+         "static specialized backend includes shape guard check");
+  expect(source.find("matcore_runtime_gemm_f32_v0") != std::string::npos,
+         "static specialized backend retains runtime fallback path");
+
+  // Test degenerate M=1, N=1 dot product specialization
+  RuntimeDispatchBackendEntryV1 dot_entry{
+      .site_id = site,
+      .static_m = 1,
+      .static_n = 1,
+      .static_k = 128,
+  };
+  expect(generateRuntimeDispatchBackendV1(
+             {dot_entry},
+             RuntimeDispatchBackendProducerV1::MatcoreMlirCpuV1, source,
+             error),
+         "dot product static specialization succeeds");
+  expect(source.find("for (std::int64_t p = 0; p < 128; ++p)") != std::string::npos,
+         "dot product specialization generates 1D reduction loop");
+
   source = "sentinel";
   error = "stale";
   expect(!generateRuntimeDispatchBackendV1(
@@ -71,6 +107,6 @@ int main() {
               << " failure(s)\n";
     return 1;
   }
-  std::cout << "Runtime-dispatch backend tests: 11 checks, 0 failures\n";
+  std::cout << "Runtime-dispatch backend tests: 17 checks, 0 failures\n";
   return 0;
 }

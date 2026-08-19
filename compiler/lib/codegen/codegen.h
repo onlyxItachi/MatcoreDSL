@@ -22,6 +22,11 @@ struct Artifacts {
 // planner behind matcore_runtime_gemm_f32_v0.
 struct RuntimeDispatchBackendEntryV1 {
   std::string site_id;
+  std::int64_t static_m = 0;
+  std::int64_t static_n = 0;
+  std::int64_t static_k = 0;
+  std::uint32_t alignment = 4;
+  bool no_alias = true;
 };
 
 enum class RuntimeDispatchBackendProducerV1 {

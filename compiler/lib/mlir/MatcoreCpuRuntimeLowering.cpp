@@ -105,6 +105,15 @@ bool lowerExplicitGemmToCpuRuntimeDispatchV1(
     record.numerical_profile = numerical_profile.getValue().str();
     record.execution_intent = execution_intent.getValue().str();
     record.runtime_symbol = kCpuRuntimeDispatchSymbolV1;
+    auto lhs_type = mlir::dyn_cast<mlir::RankedTensorType>(gemm.getLhs().getType());
+    auto rhs_type = mlir::dyn_cast<mlir::RankedTensorType>(gemm.getRhs().getType());
+    auto out_type = mlir::dyn_cast<mlir::RankedTensorType>(gemm.getOutput().getType());
+    if (lhs_type && rhs_type && out_type &&
+        lhs_type.hasStaticShape() && rhs_type.hasStaticShape() && out_type.hasStaticShape()) {
+      record.static_m = out_type.getDimSize(0);
+      record.static_n = out_type.getDimSize(1);
+      record.static_k = lhs_type.getDimSize(1);
+    }
     record.required_guards = {
         "descriptor_v0", "alias_no_overlap", "required_alignment",
         "explicit_gemm_f32_v1_fp_environment"};

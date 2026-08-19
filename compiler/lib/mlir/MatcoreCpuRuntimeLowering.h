@@ -33,6 +33,11 @@ struct CpuRuntimeDispatchRecordV1 {
   std::uint64_t source_column = 0;
   std::uint64_t source_range_begin = 0;
   std::uint64_t source_range_end = 0;
+  std::int64_t static_m = 0;
+  std::int64_t static_n = 0;
+  std::int64_t static_k = 0;
+  std::uint32_t alignment = 4;
+  bool no_alias = true;
 };
 
 // Accepts only the exact explicit Matcore IR v1 bridge envelope. Recovered

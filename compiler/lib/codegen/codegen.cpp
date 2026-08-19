@@ -230,14 +230,92 @@ std::string generateBackendText(
             "#error \"MDSLC generated weak backends require Clang/GNU attributes\"\n"
             "#endif\n\n";
   for (const RuntimeDispatchBackendEntryV1 &entry : entries) {
+    if (producer == RuntimeDispatchBackendProducerV1::MatcoreMlirCpuV1 &&
+        entry.static_m > 0 && entry.static_n > 0 && entry.static_k > 0) {
+      output << "namespace {\n"
+             << "#if defined(__clang__) || defined(__GNUC__)\n"
+             << "#define MATCORE_STATIC_INLINE __attribute__((target(\"avx2,fma\"), noinline))\n"
+             << "#define MATCORE_RESTRICT __restrict__\n"
+             << "#elif defined(_MSC_VER)\n"
+             << "#define MATCORE_STATIC_INLINE __inline\n"
+             << "#define MATCORE_RESTRICT __restrict\n"
+             << "#else\n"
+             << "#define MATCORE_STATIC_INLINE inline\n"
+             << "#define MATCORE_RESTRICT\n"
+             << "#endif\n\n"
+             << "MATCORE_STATIC_INLINE void direct_static_microkernel_" << entry.site_id
+             << "(float * MATCORE_RESTRICT out, const float * MATCORE_RESTRICT lhs, const float * MATCORE_RESTRICT rhs) noexcept {\n";
+
+      if (entry.static_m == 1 && entry.static_n == 1) {
+        output << "  float sum = 0.0f;\n"
+               << "#if defined(__clang__)\n"
+               << "#pragma clang loop vectorize(enable) vectorize_width(8) interleave(enable)\n"
+               << "#endif\n"
+               << "  for (std::int64_t p = 0; p < " << entry.static_k << "; ++p) sum += lhs[p] * rhs[p];\n"
+               << "  out[0] = sum;\n";
+      } else if (entry.static_n == 1) {
+        output << "  for (std::int64_t i = 0; i < " << entry.static_m << "; ++i) {\n"
+               << "    float sum = 0.0f;\n"
+               << "    const float *row_lhs = &lhs[i * " << entry.static_k << "];\n"
+               << "#if defined(__clang__)\n"
+               << "#pragma clang loop vectorize(enable) vectorize_width(8) interleave(enable)\n"
+               << "#endif\n"
+               << "    for (std::int64_t p = 0; p < " << entry.static_k << "; ++p) sum += row_lhs[p] * rhs[p];\n"
+               << "    out[i] = sum;\n"
+               << "  }\n";
+      } else if (entry.static_k == 1) {
+        output << "  for (std::int64_t i = 0; i < " << entry.static_m << "; ++i) {\n"
+               << "    const float a = lhs[i];\n"
+               << "#if defined(__clang__)\n"
+               << "#pragma clang loop vectorize(enable) vectorize_width(8) interleave(enable)\n"
+               << "#endif\n"
+               << "    for (std::int64_t j = 0; j < " << entry.static_n << "; ++j) out[i * " << entry.static_n << " + j] = a * rhs[j];\n"
+               << "  }\n";
+      } else {
+        output << "  for (std::int64_t i = 0; i < " << entry.static_m << "; ++i)\n"
+               << "    for (std::int64_t j = 0; j < " << entry.static_n << "; ++j) out[i * " << entry.static_n << " + j] = 0.0f;\n"
+               << "  for (std::int64_t i = 0; i < " << entry.static_m << "; ++i) {\n"
+               << "    for (std::int64_t p = 0; p < " << entry.static_k << "; ++p) {\n"
+               << "      const float a = lhs[i * " << entry.static_k << " + p];\n"
+               << "#if defined(__clang__)\n"
+               << "#pragma clang loop vectorize(enable) vectorize_width(8) interleave(enable)\n"
+               << "#endif\n"
+               << "      for (std::int64_t j = 0; j < " << entry.static_n << "; ++j)\n"
+               << "        out[i * " << entry.static_n << " + j] += a * rhs[p * " << entry.static_n << " + j];\n"
+               << "    }\n"
+               << "  }\n";
+      }
+      output << "}\n"
+             << "#undef MATCORE_STATIC_INLINE\n"
+             << "#undef MATCORE_RESTRICT\n"
+             << "} // namespace\n\n";
+    }
+
     output << "extern \"C\" MATCORE_MDSLC_WEAK matcore_status_v0 "
            << "matcore_generated_backend_" << entry.site_id << "_v0"
            << "(const matcore_tensor_desc_v0 *output,\n"
               "    const matcore_tensor_desc_v0 *lhs,\n"
               "    const matcore_tensor_desc_v0 *rhs,\n"
-              "    const matcore_policy_v0 *policy) noexcept {\n"
-              "  return matcore_runtime_gemm_f32_v0(output, lhs, rhs, policy);\n"
-              "}\n";
+              "    const matcore_policy_v0 *policy) noexcept {\n";
+    if (producer == RuntimeDispatchBackendProducerV1::MatcoreMlirCpuV1 &&
+        entry.static_m > 0 && entry.static_n > 0 && entry.static_k > 0) {
+      output << "  if (output != nullptr && lhs != nullptr && rhs != nullptr &&\n"
+             << "      output->data != nullptr && lhs->data != nullptr && rhs->data != nullptr &&\n"
+             << "      output->dims[0] == " << entry.static_m << " && output->dims[1] == " << entry.static_n << " &&\n"
+             << "      lhs->dims[0] == " << entry.static_m << " && lhs->dims[1] == " << entry.static_k << " &&\n"
+             << "      rhs->dims[0] == " << entry.static_k << " && rhs->dims[1] == " << entry.static_n << " &&\n"
+             << "      output->strides[1] == 1 && lhs->strides[1] == 1 && rhs->strides[1] == 1) {\n"
+             << "    direct_static_microkernel_" << entry.site_id << "(\n"
+             << "        static_cast<float*>(output->data),\n"
+             << "        static_cast<const float*>(lhs->data),\n"
+             << "        static_cast<const float*>(rhs->data));\n"
+             << "    matcore_status_v0 status{};\n"
+             << "    status.code = MATCORE_STATUS_OK_V0;\n"
+             << "    return status;\n"
+             << "  }\n";
+    }
+    output << "  return matcore_runtime_gemm_f32_v0(output, lhs, rhs, policy);\n"
+           << "}\n";
   }
   output << "\n#undef MATCORE_MDSLC_WEAK\n";
   return output.str();
