@@ -1,32 +1,43 @@
-# Core Lowering Invariants (LLVM 20 ↔ 21 ↔ 22)
+# Core Lowering Invariants & Invariant Analysis
 
-## 1. What Remains Substantially Invariant Across LLVM Generations
-
-Through cross-version compiler archaeology across LLVM 20, 21, and 22, the following core lowering invariants have been established as foundational:
-
----
-
-### Invariant 1: Multi-Stage Contraction Lowering
-Tensor contractions follow an immutable multi-stage lowering ladder:
-$$\text{High-level Op (GEMM)} \longrightarrow \text{Structured Linalg} \longrightarrow \text{Vector Contraction} \longrightarrow \text{Target Matrix Intrinsic / FMA} \longrightarrow \text{LLVM IR}$$
-* Every attempt to bypass intermediate stages (e.g. going directly from AST to flat LLVM loops) loses optimization opportunities (vector unrolling, register tiling, hardware tensor cores).
+**Confidence Level**: `STRONGLY_SUPPORTED`  
+**Evidence Surface**: Multi-version comparison (LLVM 20.1.8, 21.1.8, 22.1.8); 15 diagnostic cases; 120 archaeology artifacts; Optimization remarks.
 
 ---
 
-### Invariant 2: Destination-Passing Style (DPS) as the Bufferization Foundation
-* Tying operation outputs to explicit destination values (`outs(...)`) in MLIR is the single most durable pattern across LLVM 20–22.
-* This validates Matcore's `matcore::mdsl::out(C)` explicit destination mutation design as architecturally permanent.
+## 1. Lowering Invariant 1: Structured Contraction Lowering Ladder
+
+### OBSERVED:
+- In upstream MLIR, structured tensor contractions map across a canonical multi-stage sequence:
+  $$\text{Semantic Op (`mdsl.gemm`)} \longrightarrow \text{Linalg (`linalg.matmul`)} \longrightarrow \text{Vector (`vector.contract`)} \longrightarrow \text{Target Matrix / FMA} \longrightarrow \text{LLVM IR}$$
+- Lowerings bypassing structured stages (e.g. naive AST-to-scalar-pointer loops) fail to produce optimal vector unrolling or matrix hardware instructions.
+
+### INFERRED:
+- Preserving structured multidimensional indexing maps until vector contraction is necessary for the vectorizer to infer contiguous multidimensional slices.
+
+### ARCHITECTURAL IMPLICATION:
+- Matcore MLIR bridges directly to `linalg.matmul` / `vector.contract` rather than emitting low-level scalar loop nests.
 
 ---
 
-### Invariant 3: Separation of Preconditions from Facts
-* In LLVM IR and MLIR, optimization passes cannot legally assume non-aliasing or pointer alignment without:
-  1. Static proof (e.g., `noalias` parameters, `__builtin_assume_aligned`).
-  2. Dominating runtime checks/guards.
-* Matcore must strictly maintain this boundary: assertions in the DSL are contracts that require verification or pre-mutation guards before CodeGen consumes them.
+## 2. Lowering Invariant 2: Destination-Passing Style (DPS)
+
+### OBSERVED:
+- `linalg.matmul` and upstream tensor operations bind results to explicit output operands (`outs(%C)`).
+- When destination writes are disjoint and memory spaces match, One-Shot Bufferization achieves zero-allocation in-place bufferization.
+
+### INFERRED:
+- DPS provides the structural foundation for in-place mutation without intermediate defensive heap allocations.
+
+### ARCHITECTURAL IMPLICATION:
+- MatcoreDSL's `matcore::mdsl::out(C)` design maps directly to MLIR DPS semantics.
 
 ---
 
-### Invariant 4: Hardware Matrix Instruction Boundaries
-* For both NVIDIA (`mma.sync`) and AMD (`amdgpu.mfma`), matrix operations are strictly cooperative at the sub-warp/warp/wavefront level.
-* Compiler representations must preserve warp-collective semantics and cannot scalarize individual lane stores without destroying performance.
+## 3. Lowering Invariant 3: Separation of Preconditions from Facts
+
+### OBSERVED:
+- Optimization passes in LLVM and MLIR treat alignment and no-alias annotations as contracts requiring static proof or dominating pre-mutation runtime checks. Unproven assertions are conservatively ignored by backend code generators.
+
+### ARCHITECTURAL IMPLICATION:
+- MDSLC must enforce alignment and non-aliasing as preconditions: static verification must precede optimization, or a fail-closed runtime guard must dominate the compute region before destination mutation.

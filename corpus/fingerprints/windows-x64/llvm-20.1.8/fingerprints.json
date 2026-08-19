@@ -198,5 +198,325 @@
     "relative_path": "20.1.8/gemm_f32_tiled/O3_avx512.s",
     "sha256": "f4c84f659d4b0b76ff17d8e2a2a7e5865a023d5686cb8e5509484e85e282fb7b",
     "size_bytes": 6279
+  },
+  {
+    "case_id": "archaeology_gemm_f32_epilogue_relu_llvm20.1.8",
+    "stage": "frontend_raw",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_epilogue_relu/archaeology/01_frontend_raw.ll",
+    "sha256": "885f0eef653c2d1a2f74ef1502fa4224e423beabe0515ee4fc2c8192e8709ad2",
+    "size_bytes": 5488
+  },
+  {
+    "case_id": "archaeology_gemm_f32_epilogue_relu_llvm20.1.8",
+    "stage": "sroa_normalized",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_epilogue_relu/archaeology/02_sroa_normalized.ll",
+    "sha256": "a5835e0a46ebfb6942a7c3d92995e23eabf134411d6bfae43b2c4611ec165ee1",
+    "size_bytes": 4192
+  },
+  {
+    "case_id": "archaeology_gemm_f32_epilogue_relu_llvm20.1.8",
+    "stage": "final_optimized",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_epilogue_relu/archaeology/03_final_optimized.ll",
+    "sha256": "650104da12428265011adf72fb5eaf95bd0f9076228bb26f70add56cd4e5a0aa",
+    "size_bytes": 6620
+  },
+  {
+    "case_id": "archaeology_gemm_f32_epilogue_relu_llvm20.1.8",
+    "stage": "vectorization_remarks",
+    "artifact_type": "diagnostics",
+    "relative_path": "20.1.8/gemm_f32_epilogue_relu/archaeology/vectorization_remarks.txt",
+    "sha256": "30bcc2f2488bd44c9ff7281817bdf931e329afdc47287d82e51e3efb613b59e6",
+    "size_bytes": 630
+  },
+  {
+    "case_id": "archaeology_gemm_f32_epilogue_relu_llvm20.1.8",
+    "stage": "target_aware_avx2_ir",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_epilogue_relu/archaeology/target_aware_avx2/O3_target_aware_avx2.ll",
+    "sha256": "b6788f9f8ea9571a7389fb1a78679d947a34c8f49c992df4aa0e3cc27ce64fc9",
+    "size_bytes": 6687
+  },
+  {
+    "case_id": "archaeology_gemm_f32_epilogue_relu_llvm20.1.8",
+    "stage": "target_aware_avx2_asm",
+    "artifact_type": "x86_assembly",
+    "relative_path": "20.1.8/gemm_f32_epilogue_relu/archaeology/target_aware_avx2/O3_target_aware_avx2.s",
+    "sha256": "a5498d335725d5e623c60cd47cb2c51c46f8bd2c840a5a6bcdffd638f3d5883f",
+    "size_bytes": 5293
+  },
+  {
+    "case_id": "archaeology_gemm_f32_epilogue_relu_llvm20.1.8",
+    "stage": "target_aware_avx512_ir",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_epilogue_relu/archaeology/target_aware_avx512/O3_target_aware_avx512.ll",
+    "sha256": "bce89ca83ff34f89ca1119b39b001e92e6b528b68cc450cc084315fa7e8007f0",
+    "size_bytes": 6731
+  },
+  {
+    "case_id": "archaeology_gemm_f32_epilogue_relu_llvm20.1.8",
+    "stage": "target_aware_avx512_asm",
+    "artifact_type": "x86_assembly",
+    "relative_path": "20.1.8/gemm_f32_epilogue_relu/archaeology/target_aware_avx512/O3_target_aware_avx512.s",
+    "sha256": "a5498d335725d5e623c60cd47cb2c51c46f8bd2c840a5a6bcdffd638f3d5883f",
+    "size_bytes": 5293
+  },
+  {
+    "case_id": "archaeology_gemm_f32_epilogue_sin_llvm20.1.8",
+    "stage": "frontend_raw",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_epilogue_sin/archaeology/01_frontend_raw.ll",
+    "sha256": "52ae6b3cdbaa2277d995efd4e845f1522977511dec985d313f8c0e83ecff7712",
+    "size_bytes": 5787
+  },
+  {
+    "case_id": "archaeology_gemm_f32_epilogue_sin_llvm20.1.8",
+    "stage": "sroa_normalized",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_epilogue_sin/archaeology/02_sroa_normalized.ll",
+    "sha256": "bd1447e81199a7b66d76ceb4fbbb889864328b6040e05bb7680dd11aedb437b1",
+    "size_bytes": 4432
+  },
+  {
+    "case_id": "archaeology_gemm_f32_epilogue_sin_llvm20.1.8",
+    "stage": "final_optimized",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_epilogue_sin/archaeology/03_final_optimized.ll",
+    "sha256": "8ddcac51e7b3a63045714be07b9a05a1b87b784851452b89e1492de8be70e6b1",
+    "size_bytes": 6967
+  },
+  {
+    "case_id": "archaeology_gemm_f32_epilogue_sin_llvm20.1.8",
+    "stage": "vectorization_remarks",
+    "artifact_type": "diagnostics",
+    "relative_path": "20.1.8/gemm_f32_epilogue_sin/archaeology/vectorization_remarks.txt",
+    "sha256": "7a39857640940930a9a85c396e365af1c61ed0dcb181874ae9860af33f46bdb1",
+    "size_bytes": 628
+  },
+  {
+    "case_id": "archaeology_gemm_f32_epilogue_sin_llvm20.1.8",
+    "stage": "target_aware_avx2_ir",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_epilogue_sin/archaeology/target_aware_avx2/O3_target_aware_avx2.ll",
+    "sha256": "8eecc04089bab552faade0e594547f2ac23d5a229e340ae1db9b5027d0428d8d",
+    "size_bytes": 7101
+  },
+  {
+    "case_id": "archaeology_gemm_f32_epilogue_sin_llvm20.1.8",
+    "stage": "target_aware_avx2_asm",
+    "artifact_type": "x86_assembly",
+    "relative_path": "20.1.8/gemm_f32_epilogue_sin/archaeology/target_aware_avx2/O3_target_aware_avx2.s",
+    "sha256": "5cfe29f62a79a57996bf214b7c9945abb5da5d448b913f7ac651d10c2b8bc0a6",
+    "size_bytes": 5814
+  },
+  {
+    "case_id": "archaeology_gemm_f32_epilogue_sin_llvm20.1.8",
+    "stage": "target_aware_avx512_ir",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_epilogue_sin/archaeology/target_aware_avx512/O3_target_aware_avx512.ll",
+    "sha256": "d021ea70c505e4fe37e026192a62191f2d56d7b7ba7cb3e8a776d0ec6f5113e8",
+    "size_bytes": 7189
+  },
+  {
+    "case_id": "archaeology_gemm_f32_epilogue_sin_llvm20.1.8",
+    "stage": "target_aware_avx512_asm",
+    "artifact_type": "x86_assembly",
+    "relative_path": "20.1.8/gemm_f32_epilogue_sin/archaeology/target_aware_avx512/O3_target_aware_avx512.s",
+    "sha256": "5cfe29f62a79a57996bf214b7c9945abb5da5d448b913f7ac651d10c2b8bc0a6",
+    "size_bytes": 5814
+  },
+  {
+    "case_id": "archaeology_gemm_f32_naive_llvm20.1.8",
+    "stage": "frontend_raw",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_naive/archaeology/01_frontend_raw.ll",
+    "sha256": "697a15a94d59498d6e3aa1c7168e972bca60b1dee4f50b2d2d8bdff882d8b315",
+    "size_bytes": 5658
+  },
+  {
+    "case_id": "archaeology_gemm_f32_naive_llvm20.1.8",
+    "stage": "sroa_normalized",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_naive/archaeology/02_sroa_normalized.ll",
+    "sha256": "e5f2078cf3b941993025c9045a2ea6c5a44bb4f0748a08644dc9c048767561b1",
+    "size_bytes": 3864
+  },
+  {
+    "case_id": "archaeology_gemm_f32_naive_llvm20.1.8",
+    "stage": "final_optimized",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_naive/archaeology/03_final_optimized.ll",
+    "sha256": "51f421dd6a17058a87ea22b6fb195fc64fc7160119310a5af81f70b793d55ec5",
+    "size_bytes": 8723
+  },
+  {
+    "case_id": "archaeology_gemm_f32_naive_llvm20.1.8",
+    "stage": "vectorization_remarks",
+    "artifact_type": "diagnostics",
+    "relative_path": "20.1.8/gemm_f32_naive/archaeology/vectorization_remarks.txt",
+    "sha256": "0e3521cfba7ec8a4494ae7ffbd99900ac46cbb12a4a2e1f2b324009461a45979",
+    "size_bytes": 843
+  },
+  {
+    "case_id": "archaeology_gemm_f32_naive_llvm20.1.8",
+    "stage": "target_aware_avx2_ir",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_naive/archaeology/target_aware_avx2/O3_target_aware_avx2.ll",
+    "sha256": "534744a62423b1fd863c8626772106923b1b5abddcc6c03fcc26f49705b348f5",
+    "size_bytes": 11003
+  },
+  {
+    "case_id": "archaeology_gemm_f32_naive_llvm20.1.8",
+    "stage": "target_aware_avx2_asm",
+    "artifact_type": "x86_assembly",
+    "relative_path": "20.1.8/gemm_f32_naive/archaeology/target_aware_avx2/O3_target_aware_avx2.s",
+    "sha256": "39a1084f4ee885e0aa0e0cbade189142dd3cb0e5a394e4d50fd43e798f40aca3",
+    "size_bytes": 8976
+  },
+  {
+    "case_id": "archaeology_gemm_f32_naive_llvm20.1.8",
+    "stage": "target_aware_avx512_ir",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_naive/archaeology/target_aware_avx512/O3_target_aware_avx512.ll",
+    "sha256": "c871dc8fd87568744981267f0dab9c3ba4f08baeb486e9b4306921aad54109d4",
+    "size_bytes": 11094
+  },
+  {
+    "case_id": "archaeology_gemm_f32_naive_llvm20.1.8",
+    "stage": "target_aware_avx512_asm",
+    "artifact_type": "x86_assembly",
+    "relative_path": "20.1.8/gemm_f32_naive/archaeology/target_aware_avx512/O3_target_aware_avx512.s",
+    "sha256": "d6a6187ff6185cecf5562786772dec6f5ce2e1f195a75dc4ac8e4396f2592d2c",
+    "size_bytes": 8342
+  },
+  {
+    "case_id": "archaeology_gemm_f32_restrict_llvm20.1.8",
+    "stage": "frontend_raw",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_restrict/archaeology/01_frontend_raw.ll",
+    "sha256": "cfb5851707d2508fcb2c715b9b486aaa0b7e8ade52a99b6dfe177d0494fdca8a",
+    "size_bytes": 6406
+  },
+  {
+    "case_id": "archaeology_gemm_f32_restrict_llvm20.1.8",
+    "stage": "sroa_normalized",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_restrict/archaeology/02_sroa_normalized.ll",
+    "sha256": "9e91480142b4d3d9fafa2f99ef65a156e9703c080b8c42319fcd419038ac2ddc",
+    "size_bytes": 4322
+  },
+  {
+    "case_id": "archaeology_gemm_f32_restrict_llvm20.1.8",
+    "stage": "final_optimized",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_restrict/archaeology/03_final_optimized.ll",
+    "sha256": "f9a3dbb30d210ae880275762c4d2b515dd255d9f47459c44604b62b287cb3a29",
+    "size_bytes": 9200
+  },
+  {
+    "case_id": "archaeology_gemm_f32_restrict_llvm20.1.8",
+    "stage": "vectorization_remarks",
+    "artifact_type": "diagnostics",
+    "relative_path": "20.1.8/gemm_f32_restrict/archaeology/vectorization_remarks.txt",
+    "sha256": "95e061249f725b275768a9080ba434c167d8404e2e531f4996e80b708652aeb3",
+    "size_bytes": 860
+  },
+  {
+    "case_id": "archaeology_gemm_f32_restrict_llvm20.1.8",
+    "stage": "target_aware_avx2_ir",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_restrict/archaeology/target_aware_avx2/O3_target_aware_avx2.ll",
+    "sha256": "c1dfb779f83a05d0c9ea4ee4aa02d0dd1ba9510161e70628dc4d706aa5002700",
+    "size_bytes": 11480
+  },
+  {
+    "case_id": "archaeology_gemm_f32_restrict_llvm20.1.8",
+    "stage": "target_aware_avx2_asm",
+    "artifact_type": "x86_assembly",
+    "relative_path": "20.1.8/gemm_f32_restrict/archaeology/target_aware_avx2/O3_target_aware_avx2.s",
+    "sha256": "0aaebc80b00e494fdd40adc1740e05cc26b948f46f6b572b1963fcd9c47851d3",
+    "size_bytes": 8991
+  },
+  {
+    "case_id": "archaeology_gemm_f32_restrict_llvm20.1.8",
+    "stage": "target_aware_avx512_ir",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_restrict/archaeology/target_aware_avx512/O3_target_aware_avx512.ll",
+    "sha256": "b157d49190bd0ee2f99157dee58d0d4ea0fc88972fefce6c23a8126b0aad76b6",
+    "size_bytes": 11571
+  },
+  {
+    "case_id": "archaeology_gemm_f32_restrict_llvm20.1.8",
+    "stage": "target_aware_avx512_asm",
+    "artifact_type": "x86_assembly",
+    "relative_path": "20.1.8/gemm_f32_restrict/archaeology/target_aware_avx512/O3_target_aware_avx512.s",
+    "sha256": "6418aebd63899e788862f8a92eb2245f924b794b8eb5749b4d5237ff5e537767",
+    "size_bytes": 8357
+  },
+  {
+    "case_id": "archaeology_gemm_f32_tiled_llvm20.1.8",
+    "stage": "frontend_raw",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_tiled/archaeology/01_frontend_raw.ll",
+    "sha256": "f163221abee6ccf054774e10007b35936d2f427b9477eae38f879328a3bce99b",
+    "size_bytes": 7017
+  },
+  {
+    "case_id": "archaeology_gemm_f32_tiled_llvm20.1.8",
+    "stage": "sroa_normalized",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_tiled/archaeology/02_sroa_normalized.ll",
+    "sha256": "cd6a4ae37e4aa867f14f81bae616662bfd36046d81419e334be1c29aa0701911",
+    "size_bytes": 5236
+  },
+  {
+    "case_id": "archaeology_gemm_f32_tiled_llvm20.1.8",
+    "stage": "final_optimized",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_tiled/archaeology/03_final_optimized.ll",
+    "sha256": "55589883afba973e57bb61383024e665b20d10b00932f6c715a9be2cf4538ca3",
+    "size_bytes": 7358
+  },
+  {
+    "case_id": "archaeology_gemm_f32_tiled_llvm20.1.8",
+    "stage": "vectorization_remarks",
+    "artifact_type": "diagnostics",
+    "relative_path": "20.1.8/gemm_f32_tiled/archaeology/vectorization_remarks.txt",
+    "sha256": "9c3cc54e4b41b92f7f19be48b535a01d2d642663f2a2a2e1a4852322ed02c163",
+    "size_bytes": 689
+  },
+  {
+    "case_id": "archaeology_gemm_f32_tiled_llvm20.1.8",
+    "stage": "target_aware_avx2_ir",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_tiled/archaeology/target_aware_avx2/O3_target_aware_avx2.ll",
+    "sha256": "be7f6f9b3a37dd708ad40d9ed28ba9547d4dcbeb5f51723cea11c5afc3c27c63",
+    "size_bytes": 7348
+  },
+  {
+    "case_id": "archaeology_gemm_f32_tiled_llvm20.1.8",
+    "stage": "target_aware_avx2_asm",
+    "artifact_type": "x86_assembly",
+    "relative_path": "20.1.8/gemm_f32_tiled/archaeology/target_aware_avx2/O3_target_aware_avx2.s",
+    "sha256": "4ba30871d6648fd5b962216437e977d15270c7abde02cf9379c34386ef3f4381",
+    "size_bytes": 6324
+  },
+  {
+    "case_id": "archaeology_gemm_f32_tiled_llvm20.1.8",
+    "stage": "target_aware_avx512_ir",
+    "artifact_type": "llvm_ir",
+    "relative_path": "20.1.8/gemm_f32_tiled/archaeology/target_aware_avx512/O3_target_aware_avx512.ll",
+    "sha256": "1a784a31a3e44b828606e1e5bea308f239a6dc4a4ad66ec3f553ff50ab5a111a",
+    "size_bytes": 5918
+  },
+  {
+    "case_id": "archaeology_gemm_f32_tiled_llvm20.1.8",
+    "stage": "target_aware_avx512_asm",
+    "artifact_type": "x86_assembly",
+    "relative_path": "20.1.8/gemm_f32_tiled/archaeology/target_aware_avx512/O3_target_aware_avx512.s",
+    "sha256": "1ced04831c357340800f75d89ac54052c554428f0613cc300e96ca9548e3b941",
+    "size_bytes": 5920
   }
 ]

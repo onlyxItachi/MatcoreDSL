@@ -1,29 +1,51 @@
 # CPU Native Lowering & Microkernel Findings
 
-## 1. CPU Lowering Archaeology (x86-64 Architecture)
-
-This document records code generation, loop vectorization, FMA contraction, and register allocation behavior observed when lowering canonical GEMM kernels through Clang/LLVM across optimization tiers (`-O0`, `-O2`, `-O3`, `-march=x86-64-v3`, `-march=x86-64-v4`).
+**Confidence Class**: `STRONGLY_SUPPORTED`  
+**Evidence Surface**: LLVM 20.1.8, 21.1.8, 22.1.8; 5 CPU diagnostic kernels; Optimization remarks; Target-aware AVX2/AVX-512 assembly.
 
 ---
 
-## 2. Key Code Generation Observations
+## 1. Loop Vectorization & Inner Reduction Behavior
 
-### A. Impact of Aliasing Annotations (`__restrict__` vs. Unannotated)
-* **Unannotated Naive GEMM ([`gemm_f32_naive.c`](../inputs/cpu/gemm_f32_naive.c))**:
-  * Clang/LLVM cannot prove at compile time that pointer $C$ does not overlap with pointers $A$ or $B$.
-  * *Resulting Code*: At `-O3`, LLVM emits a runtime pointer overlap check (branching to a scalar fallback loop if pointers alias, and executing a vectorized loop only if runtime addresses are disjoint).
-* **Restricted GEMM ([`gemm_f32_restrict.c`](../inputs/cpu/gemm_f32_restrict.c))**:
-  * The `__restrict__` contract proves disjoint memory spaces.
-  * *Resulting Code*: LLVM completely eliminates the runtime alias check prologue, unrolls the innermost $K$ reduction, and directly issues vector FMA chains.
+### OBSERVED:
+- In unannotated naive GEMM ([`gemm_f32_naive.c`](../inputs/cpu/gemm_f32_naive.c)) and restricted GEMM ([`gemm_f32_restrict.c`](../inputs/cpu/gemm_f32_restrict.c)), Clang's LoopVectorizer vectorizes the **outer parallel column loop $j$** (vectorization width 8, unroll factor 4 on AVX2; vectorization width 16 on AVX-512).
+- The **inner reduction loop $k$** is **not vectorized** across scalar accumulators. Compiler optimization remarks explicitly report:
+  `"cannot prove it is safe to reorder floating-point operations; allow reordering by specifying '#pragma clang loop vectorize(enable)' before the loop or by providing the compiler option '-ffast-math' [-Rpass-analysis=loop-vectorize]"`.
 
-### B. Impact of Alignment Preconditions (`__builtin_assume_aligned`)
-* **Without Alignment Proof**: LLVM conservatively emits unaligned vector move instructions (`vmovups`).
-* **With 32-Byte Alignment Proof**: LLVM emits aligned memory operations (`vmovaps`), which improves load/store execution port throughput and guarantees zero cache-line split penalties.
+### INFERRED:
+- Standard C/C++ IEEE 754 precision semantics require strict left-to-right floating-point addition order. Without explicit permission to reassociate operations in the reduction dimension, the compiler cannot legally transform scalar summation into a horizontal SIMD reduction vector.
 
-### C. Vector Instruction Selection (AVX2 vs. AVX-512)
-* **AVX2 / FMA (`-march=x86-64-v3`)**:
-  * Uses 256-bit `ymm` registers (8 x `float` per vector).
-  * Emits `vbroadcastss` for matrix $A$ scalar broadcasting and `vfmadd213ps` / `vfmadd231ps` for fused multiply-accumulate across `ymm` accumulators.
-* **AVX-512 (`-march=x86-64-v4`)**:
-  * Uses 512-bit `zmm` registers (16 x `float` per vector).
-  * Emits 512-bit FMA instructions (`vfmadd213ps %zmm`) and utilizes 32 architectural vector registers (ZMM0–ZMM31) to maintain larger active accumulation tiles in register space.
+### UNRESOLVED:
+- The extent to which loop interchange heuristics in upstream MLIR affine passes (e.g. converting $i, j, k \rightarrow i, k, j$) interact with C++ compiler vectorization across different optimization levels without explicit pragma directives.
+
+### ARCHITECTURAL IMPLICATION:
+- MatcoreDSL's explicit eDSL policy (`explicit-gemm-f32-v1`) must explicitly authorize reassociation within the contraction dimension at the semantic MLIR level (`mdsl.gemm`), freeing upstream MLIR passes to generate vector contractions without relying on global unsafe `-ffast-math` compiler flags.
+
+---
+
+## 2. Aliasing Annotations & Control Flow
+
+### OBSERVED:
+- In unannotated GEMM, Clang emits runtime pointer overlap checks (`subq`, `cmpq`, `jae`) branching to a scalar fallback loop if buffers overlap.
+- In `__restrict__` annotated GEMM, Clang eliminates the runtime alias check prologue entirely, executing the vectorized loop directly. Scalar loop peeling/remainder branches remain for loop bounds not divisible by the vector width.
+
+### INFERRED:
+- Alias-free contracts eliminate runtime verification overhead and simplify control flow graphs.
+
+### ARCHITECTURAL IMPLICATION:
+- In MatcoreDSL, `out(C)` establishes write-only destination semantics. When static proof guarantees non-aliasing, backend guards can be safely omitted; when unproven, dominating fail-closed guards must execute prior to destination mutation.
+
+---
+
+## 3. Target-Aware vs. Backend-Retargeted Instruction Selection
+
+### OBSERVED:
+- **Backend Retargeting Only** (`generic O3.ll -> llc -mattr=+avx2`): Produces 128-bit `XMM` instructions with VEX prefixes (`YMM = 0`, `ZMM = 0`). The vectorizer operates on generic 128-bit SSE defaults.
+- **Frontend Target-Aware Compilation** (`clang -O3 -mavx2 -mfma`): Emits true 256-bit `YMM` vector instructions (26 YMM registers in `gemm_f32_tiled`).
+- **Frontend Target-Aware AVX-512** (`clang -O3 -mavx512f -mavx512dq -mavx512vl`): Emits true 512-bit `ZMM` vector instructions (14 ZMM registers in `gemm_f32_tiled`).
+
+### INFERRED:
+- Vector width and register pressure heuristics are frozen during the middle-end LoopVectorizer pass. Target flags must be supplied at frontend optimization time.
+
+### ARCHITECTURAL IMPLICATION:
+- MDSLC's Clang driver and MLIR target pipeline must pass explicit target architecture and ISA feature flags (`-target-cpu`, `-target-feature`) at all optimization stages.
