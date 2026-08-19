@@ -1,0 +1,202 @@
+[
+  {
+    "case_id": "case_gemm_f32_epilogue_relu_llvm21.1.8",
+    "stage": "frontend_ir_O0",
+    "artifact_type": "llvm_ir",
+    "relative_path": "21.1.8/gemm_f32_epilogue_relu/O0.ll",
+    "sha256": "5ef835f5fdd3cab0f1904382451e2a058d51100c9b667547fed1a23de8891b67",
+    "size_bytes": 5962
+  },
+  {
+    "case_id": "case_gemm_f32_epilogue_relu_llvm21.1.8",
+    "stage": "optimized_ir_O2",
+    "artifact_type": "llvm_ir",
+    "relative_path": "21.1.8/gemm_f32_epilogue_relu/O2.ll",
+    "sha256": "b67ecf312368729bb31222fe38788e56c119b7dc3e37962fceeff1905dfbb2a7",
+    "size_bytes": 6742
+  },
+  {
+    "case_id": "case_gemm_f32_epilogue_relu_llvm21.1.8",
+    "stage": "optimized_ir_O3",
+    "artifact_type": "llvm_ir",
+    "relative_path": "21.1.8/gemm_f32_epilogue_relu/O3.ll",
+    "sha256": "99c49bdd140fe15b072ca95a4d5655aa5be6e98c657eefa8f99754fc35ef6081",
+    "size_bytes": 7097
+  },
+  {
+    "case_id": "case_gemm_f32_epilogue_relu_llvm21.1.8",
+    "stage": "assembly_avx2",
+    "artifact_type": "x86_assembly",
+    "relative_path": "21.1.8/gemm_f32_epilogue_relu/O3_avx2.s",
+    "sha256": "d89deed074ac7e35bf3945fe68728716546a14ad81f86a16a4ccbfc986992eff",
+    "size_bytes": 6726
+  },
+  {
+    "case_id": "case_gemm_f32_epilogue_relu_llvm21.1.8",
+    "stage": "assembly_avx512",
+    "artifact_type": "x86_assembly",
+    "relative_path": "21.1.8/gemm_f32_epilogue_relu/O3_avx512.s",
+    "sha256": "97951db2a52d8cd2af6f38ba78b9671d2efb7119a5f042e3f2147413c5a400d2",
+    "size_bytes": 6728
+  },
+  {
+    "case_id": "case_gemm_f32_epilogue_sin_llvm21.1.8",
+    "stage": "frontend_ir_O0",
+    "artifact_type": "llvm_ir",
+    "relative_path": "21.1.8/gemm_f32_epilogue_sin/O0.ll",
+    "sha256": "25d82b5912014851e2927eec4f3fdebb9a4a62dc3b84234fed4dced5fbcb0f5e",
+    "size_bytes": 6268
+  },
+  {
+    "case_id": "case_gemm_f32_epilogue_sin_llvm21.1.8",
+    "stage": "optimized_ir_O2",
+    "artifact_type": "llvm_ir",
+    "relative_path": "21.1.8/gemm_f32_epilogue_sin/O2.ll",
+    "sha256": "db06ac45ecca1332166c23eb725285e085d8874ba22611fa0b96ee06f6c157c4",
+    "size_bytes": 7170
+  },
+  {
+    "case_id": "case_gemm_f32_epilogue_sin_llvm21.1.8",
+    "stage": "optimized_ir_O3",
+    "artifact_type": "llvm_ir",
+    "relative_path": "21.1.8/gemm_f32_epilogue_sin/O3.ll",
+    "sha256": "3bd5b75599250d58118e7001d86e71b9da2649b4fbd6677439224641765d1fe5",
+    "size_bytes": 7525
+  },
+  {
+    "case_id": "case_gemm_f32_epilogue_sin_llvm21.1.8",
+    "stage": "assembly_avx2",
+    "artifact_type": "x86_assembly",
+    "relative_path": "21.1.8/gemm_f32_epilogue_sin/O3_avx2.s",
+    "sha256": "5a3b0df939a9eaabebf55c2afbca124c89e15a88c4250efe89e50559dcbc5ecf",
+    "size_bytes": 7243
+  },
+  {
+    "case_id": "case_gemm_f32_epilogue_sin_llvm21.1.8",
+    "stage": "assembly_avx512",
+    "artifact_type": "x86_assembly",
+    "relative_path": "21.1.8/gemm_f32_epilogue_sin/O3_avx512.s",
+    "sha256": "21d519421aad0eac924583a54e51ab5de45b68ccce1bce166fb24d113343d428",
+    "size_bytes": 7245
+  },
+  {
+    "case_id": "case_gemm_f32_naive_llvm21.1.8",
+    "stage": "frontend_ir_O0",
+    "artifact_type": "llvm_ir",
+    "relative_path": "21.1.8/gemm_f32_naive/O0.ll",
+    "sha256": "3d3820db7854ef526dd5d89307e8385e617d02766bd44ca24d4ce20947566e7a",
+    "size_bytes": 6110
+  },
+  {
+    "case_id": "case_gemm_f32_naive_llvm21.1.8",
+    "stage": "optimized_ir_O2",
+    "artifact_type": "llvm_ir",
+    "relative_path": "21.1.8/gemm_f32_naive/O2.ll",
+    "sha256": "522d482e2d5c4408d83253bfb495980da111e41824a4a4a76a8d73c7a6ffd887",
+    "size_bytes": 6344
+  },
+  {
+    "case_id": "case_gemm_f32_naive_llvm21.1.8",
+    "stage": "optimized_ir_O3",
+    "artifact_type": "llvm_ir",
+    "relative_path": "21.1.8/gemm_f32_naive/O3.ll",
+    "sha256": "d06766f4ad680c23b2d679af3eee945c81082efcf4bd8f56fbbaff42fc35698a",
+    "size_bytes": 9175
+  },
+  {
+    "case_id": "case_gemm_f32_naive_llvm21.1.8",
+    "stage": "assembly_avx2",
+    "artifact_type": "x86_assembly",
+    "relative_path": "21.1.8/gemm_f32_naive/O3_avx2.s",
+    "sha256": "26dd05f56b19557e1a2ba1367b27760bb54f1fd2d3f13f6cc9a0b992e430a2d3",
+    "size_bytes": 8665
+  },
+  {
+    "case_id": "case_gemm_f32_naive_llvm21.1.8",
+    "stage": "assembly_avx512",
+    "artifact_type": "x86_assembly",
+    "relative_path": "21.1.8/gemm_f32_naive/O3_avx512.s",
+    "sha256": "a0c21224da9baa4da5fa459c29fc4b6452b5fb04062e33a412d7ab4147e912af",
+    "size_bytes": 8395
+  },
+  {
+    "case_id": "case_gemm_f32_restrict_llvm21.1.8",
+    "stage": "frontend_ir_O0",
+    "artifact_type": "llvm_ir",
+    "relative_path": "21.1.8/gemm_f32_restrict/O0.ll",
+    "sha256": "990ce9993e569ff8933d652939f956f66276278d11b0172afc97ccceb3332ab7",
+    "size_bytes": 6861
+  },
+  {
+    "case_id": "case_gemm_f32_restrict_llvm21.1.8",
+    "stage": "optimized_ir_O2",
+    "artifact_type": "llvm_ir",
+    "relative_path": "21.1.8/gemm_f32_restrict/O2.ll",
+    "sha256": "a12c720790819b998a3dbbcc950dbfa15b6d258d3501e5f46e9145e0d6365d43",
+    "size_bytes": 6809
+  },
+  {
+    "case_id": "case_gemm_f32_restrict_llvm21.1.8",
+    "stage": "optimized_ir_O3",
+    "artifact_type": "llvm_ir",
+    "relative_path": "21.1.8/gemm_f32_restrict/O3.ll",
+    "sha256": "82b4ea4f54901ab23078ad95b34f6f152d82ed636df2cd44dd2ad8a1f4ba8812",
+    "size_bytes": 9640
+  },
+  {
+    "case_id": "case_gemm_f32_restrict_llvm21.1.8",
+    "stage": "assembly_avx2",
+    "artifact_type": "x86_assembly",
+    "relative_path": "21.1.8/gemm_f32_restrict/O3_avx2.s",
+    "sha256": "482c01cfab4f88b14285f389220b555ed4d76031b51c5a1ad85944c1235e5f64",
+    "size_bytes": 8683
+  },
+  {
+    "case_id": "case_gemm_f32_restrict_llvm21.1.8",
+    "stage": "assembly_avx512",
+    "artifact_type": "x86_assembly",
+    "relative_path": "21.1.8/gemm_f32_restrict/O3_avx512.s",
+    "sha256": "d79362e01d0cb570bb083fe4d6434ab640414c45a4a7d9a572798934b83aaf58",
+    "size_bytes": 8413
+  },
+  {
+    "case_id": "case_gemm_f32_tiled_llvm21.1.8",
+    "stage": "frontend_ir_O0",
+    "artifact_type": "llvm_ir",
+    "relative_path": "21.1.8/gemm_f32_tiled/O0.ll",
+    "sha256": "1449bfeb8377de704456d8d04c23a089cc2c3ec3295758d2240ebd95f7c1c88e",
+    "size_bytes": 7471
+  },
+  {
+    "case_id": "case_gemm_f32_tiled_llvm21.1.8",
+    "stage": "optimized_ir_O2",
+    "artifact_type": "llvm_ir",
+    "relative_path": "21.1.8/gemm_f32_tiled/O2.ll",
+    "sha256": "75107ddcc74da0e71a0d48d87440b2ea96efb76e50665f0d4a6d4383778cf47c",
+    "size_bytes": 7849
+  },
+  {
+    "case_id": "case_gemm_f32_tiled_llvm21.1.8",
+    "stage": "optimized_ir_O3",
+    "artifact_type": "llvm_ir",
+    "relative_path": "21.1.8/gemm_f32_tiled/O3.ll",
+    "sha256": "699b94031ffabda667f4ae287b7c06e5ef55cbb4124ffd7f6c13c00201abeaa2",
+    "size_bytes": 7811
+  },
+  {
+    "case_id": "case_gemm_f32_tiled_llvm21.1.8",
+    "stage": "assembly_avx2",
+    "artifact_type": "x86_assembly",
+    "relative_path": "21.1.8/gemm_f32_tiled/O3_avx2.s",
+    "sha256": "d7771c51594f853c4a0c6a079ea64ee75a373a24ed7756e40a3c3b332b906502",
+    "size_bytes": 7785
+  },
+  {
+    "case_id": "case_gemm_f32_tiled_llvm21.1.8",
+    "stage": "assembly_avx512",
+    "artifact_type": "x86_assembly",
+    "relative_path": "21.1.8/gemm_f32_tiled/O3_avx512.s",
+    "sha256": "29df1e046a7abf539935a580d7bf78cc5f1c8022cd27a31496c88aa1341ecde4",
+    "size_bytes": 7383
+  }
+]
