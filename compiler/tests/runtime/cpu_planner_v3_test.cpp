@@ -754,6 +754,64 @@ void degenerate_gemm_geometry_classification_and_planning() {
          "DOT (M=1, N=1) automatically selects compiler-vectorized inner reduction");
 }
 
+void decision_function_f_evaluation() {
+  // 1. Static tiny shape (e.g. 8x8x8 static) -> direct in-register unroll
+  planner::CpuDecisionQueryF q_tiny{};
+  q_tiny.problem = problem(8, 8, 8);
+  q_tiny.is_static_shape = true;
+  const auto r_tiny = planner::evaluate_cpu_decision_function_f(q_tiny);
+  expect(r_tiny.strategy == planner::CpuDecisionStrategyF::direct_in_register_unroll,
+         "Static tiny shape (8x8x8) evaluates to direct_in_register_unroll");
+  expect(r_tiny.effective_threads == 1, "Tiny in-register unroll uses 1 thread");
+
+  // 2. Fused epilogue (e.g. ReLU) -> fused vector.contract
+  planner::CpuDecisionQueryF q_fused{};
+  q_fused.problem = problem(64, 64, 64);
+  q_fused.has_fused_epilogue = true;
+  const auto r_fused = planner::evaluate_cpu_decision_function_f(q_fused);
+  expect(r_fused.strategy == planner::CpuDecisionStrategyF::fused_vector_contract,
+         "Fused epilogue evaluates to fused_vector_contract");
+
+  // 3. Level-2 GEMV with thread saturation knee test (16 requested -> capped at 8)
+  planner::CpuDecisionQueryF q_gemv{};
+  q_gemv.problem = problem(1024, 1, 64);
+  q_gemv.requested_threads = 16;
+  const auto r_gemv = planner::evaluate_cpu_decision_function_f(q_gemv);
+  expect(r_gemv.strategy == planner::CpuDecisionStrategyF::parallel_multicore_streaming,
+         "GEMV evaluates to parallel_multicore_streaming");
+  expect(r_gemv.effective_threads == 8,
+         "GEMV thread count is capped at memory bus saturation knee (8T)");
+  expect(r_gemv.thread_capped_at_bus_knee,
+         "thread_capped_at_bus_knee flag set to true when requested > 8");
+
+  // 4. Level-2 GEVM
+  planner::CpuDecisionQueryF q_gevm{};
+  q_gevm.problem = problem(1, 1024, 64);
+  q_gevm.requested_threads = 4;
+  const auto r_gevm = planner::evaluate_cpu_decision_function_f(q_gevm);
+  expect(r_gevm.strategy == planner::CpuDecisionStrategyF::parallel_multicore_streaming,
+         "GEVM evaluates to parallel_multicore_streaming");
+  expect(r_gevm.effective_threads == 4 && !r_gevm.thread_capped_at_bus_knee,
+         "GEVM with 4 threads is within bus capacity");
+
+  // 5. Large GEMM (e.g. 128x128x128) -> authenticated CBLAS 5-loop
+  planner::CpuDecisionQueryF q_large{};
+  q_large.problem = problem(128, 128, 128);
+  q_large.requested_threads = 8;
+  const auto r_large = planner::evaluate_cpu_decision_function_f(q_large);
+  expect(r_large.strategy == planner::CpuDecisionStrategyF::authenticated_cblas_5loop,
+         "Large GEMM evaluates to authenticated_cblas_5loop");
+  expect(r_large.effective_threads == 8,
+         "Large GEMM retains requested threads for 5-loop parallel execution");
+
+  // 6. Degenerate DOT inner product
+  planner::CpuDecisionQueryF q_dot{};
+  q_dot.problem = problem(1, 1, 1024);
+  const auto r_dot = planner::evaluate_cpu_decision_function_f(q_dot);
+  expect(r_dot.strategy == planner::CpuDecisionStrategyF::llvm_direct_vector_reduction,
+         "DOT evaluates to llvm_direct_vector_reduction");
+}
+
 }  // namespace
 
 int main() {
@@ -765,6 +823,7 @@ int main() {
   avx512_fail_closed_and_determinism();
   versioned_capability_and_topology_projection();
   degenerate_gemm_geometry_classification_and_planning();
+  decision_function_f_evaluation();
   if (failures != 0) {
     std::cerr << failures << " planner v3 checks failed\n";
     return 1;

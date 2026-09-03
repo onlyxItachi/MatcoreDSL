@@ -23,6 +23,8 @@ Testing/
 /memory/
 /.corpus-work/
 /raw-corpus/
+*chat_history*.md
+
 
 .venv_gladiator/
 .venv/

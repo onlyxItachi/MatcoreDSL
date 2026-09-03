@@ -86,6 +86,87 @@ constexpr std::string_view geometry_name(
   return "unknown";
 }
 
+// Decision Function F: Formal execution strategy selector derived from the
+// Windows Lowering Corpus campaign (mdslc-cpu-decision-function-F.md).
+enum class CpuDecisionStrategyF : std::uint8_t {
+  direct_in_register_unroll = 0,    // Tiny/static M,N,K <= 16: direct unrolled vector FMA (0 dispatch overhead)
+  fused_vector_contract = 1,        // Fused epilogue (e.g. ReLU/Bias): vector.contract with in-register store
+  authenticated_cblas_5loop = 2,    // Large GEMM N >= 64: 5-loop cache packing OpenBLAS/BLIS
+  parallel_multicore_streaming = 3, // Level-2 GEMV/GEVM: multi-core broadcast/reduction capped at memory bus knee (<= 8T)
+  llvm_direct_vector_reduction = 4, // Degenerate DOT / GER: direct vector reduction with reassociation
+};
+
+constexpr std::string_view strategy_name_f(CpuDecisionStrategyF strategy) noexcept {
+  switch (strategy) {
+    case CpuDecisionStrategyF::direct_in_register_unroll:
+      return "direct-in-register-unroll";
+    case CpuDecisionStrategyF::fused_vector_contract:
+      return "fused-vector-contract";
+    case CpuDecisionStrategyF::authenticated_cblas_5loop:
+      return "authenticated-cblas-5loop";
+    case CpuDecisionStrategyF::parallel_multicore_streaming:
+      return "parallel-multicore-streaming";
+    case CpuDecisionStrategyF::llvm_direct_vector_reduction:
+      return "llvm-direct-vector-reduction";
+  }
+  return "unknown";
+}
+
+struct CpuDecisionQueryF {
+  CpuGemmProblemV1 problem{};
+  bool is_static_shape = false;
+  bool has_fused_epilogue = false;
+  bool allow_reassociation = false;
+  std::uint32_t requested_threads = 1;
+};
+
+struct CpuDecisionResultF {
+  CpuDecisionStrategyF strategy = CpuDecisionStrategyF::llvm_direct_vector_reduction;
+  std::uint32_t effective_threads = 1;
+  bool thread_capped_at_bus_knee = false;
+  std::string_view rationale;
+};
+
+constexpr CpuDecisionResultF evaluate_cpu_decision_function_f(
+    const CpuDecisionQueryF &query) noexcept {
+  // 1. Is Shape Small & Compile-Time Known? (e.g., M,N,K <= 16 Static)
+  if (query.is_static_shape &&
+      query.problem.m > 0 && query.problem.m <= 16 &&
+      query.problem.n > 0 && query.problem.n <= 16 &&
+      query.problem.k > 0 && query.problem.k <= 16) {
+    return {CpuDecisionStrategyF::direct_in_register_unroll, 1, false,
+            "Small compile-time known shape (<= 16) selected for direct in-register unroll bypassing dispatch"};
+  }
+
+  // 2. Is Epilogue Fused (e.g. ReLU/Bias)?
+  if (query.has_fused_epilogue) {
+    return {CpuDecisionStrategyF::fused_vector_contract, 1, false,
+            "Fused epilogue detected: lowering to MLIR vector.contract with in-register activation"};
+  }
+
+  // 3. Is Operation Level 2 (GEMV / GEVM)?
+  const auto geom = classify_cpu_gemm_geometry_v1(query.problem);
+  if (geom == CpuGemmGeometryKindV1::gemv_matrix_vector ||
+      geom == CpuGemmGeometryKindV1::gevm_vector_matrix) {
+    std::uint32_t capped = query.requested_threads;
+    if (capped > 8) capped = 8;
+    if (capped < 1) capped = 1;
+    bool is_capped = query.requested_threads > 8;
+    return {CpuDecisionStrategyF::parallel_multicore_streaming, capped, is_capped,
+            "Level-2 matrix-vector geometry: parallel broadcast streaming capped at memory bus saturation knee (<= 8T)"};
+  }
+
+  // 4. Is Operation Large GEMM (N >= 64, M >= 32)?
+  if (query.problem.n >= 64 && query.problem.m >= 32) {
+    return {CpuDecisionStrategyF::authenticated_cblas_5loop, query.requested_threads, false,
+            "Large GEMM footprint (N >= 64, M >= 32): dispatching to 5-loop cache-packed CBLAS/native kernel"};
+  }
+
+  // 5. Default: Direct Vector Reduction
+  return {CpuDecisionStrategyF::llvm_direct_vector_reduction, 1, false,
+          "Ordinary/degenerate geometry: direct vector reduction with scalar/vector accumulation"};
+}
+
 enum class CpuGemmRequestV3 : std::uint8_t {
   automatic = 0,
   force_reference = 1,

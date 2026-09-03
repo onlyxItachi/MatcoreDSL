@@ -20,8 +20,8 @@ module {
     %c1 = arith.constant 1 : index
     %c64 = arith.constant 64 : index
     %acc_res = scf.for %k = %c0 to %c64 step %c1 iter_args(%acc = %acc_init) -> (vector<16x4xf32>) {
-      %a = vector.transfer_read %A[%c0, %k], %f0 {in_bounds = [true]} : memref<16x64xf32>, vector<16x1xf32>
-      %b = vector.transfer_read %B[%k, %c0], %f0 {in_bounds = [true]} : memref<64x4xf32>, vector<1x4xf32>
+      %a = vector.transfer_read %A[%c0, %k], %f0 {in_bounds = [true, true]} : memref<16x64xf32>, vector<16x1xf32>
+      %b = vector.transfer_read %B[%k, %c0], %f0 {in_bounds = [true, true]} : memref<64x4xf32>, vector<1x4xf32>
       %acc_next = vector.contract #contraction_trait %a, %b, %acc : vector<16x1xf32>, vector<1x4xf32> into vector<16x4xf32>
       scf.yield %acc_next : vector<16x4xf32>
     }
