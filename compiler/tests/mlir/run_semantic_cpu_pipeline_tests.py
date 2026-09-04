@@ -26,6 +26,14 @@ class Checks:
             raise Failure(message)
 
 
+def contains_mdsl_gemm_operation(module_text: str) -> bool:
+    return re.search(
+        r'^\s*(?:%[-\w.$]+\s*=\s*)?(?:mdsl\.gemm\b|"mdsl\.gemm"\s*\()',
+        module_text,
+        re.MULTILINE,
+    ) is not None
+
+
 def run(argv: list[str], cwd: Path, timeout: int = 120) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -53,8 +61,10 @@ def extractor_command(
     repository: Path,
     source: Path,
     outputs: dict[str, Path],
+    *,
+    emit_structured: bool = True,
 ) -> list[str]:
-    return [
+    command = [
         str(extractor),
         "--frontend=native",
         "--semantic-pipeline=matcore-mlir",
@@ -73,12 +83,21 @@ def extractor_command(
         str(outputs["stubs"]),
         "--backend-out",
         str(outputs["backend"]),
-        "--",
-        str(clangxx),
-        "-std=c++20",
-        f"-I{repository / 'compiler/include'}",
-        str(source),
     ]
+    if emit_structured:
+        command.extend(
+            ["--structured-ir-out", str(outputs["structured"])]
+        )
+    command.extend(
+        [
+            "--",
+            str(clangxx),
+            "-std=c++20",
+            f"-I{repository / 'compiler/include'}",
+            str(source),
+        ]
+    )
+    return command
 
 
 def main() -> int:
@@ -200,6 +219,7 @@ def main() -> int:
         outputs = {
             "ir": temporary / "direct.matcore.json",
             "semantic": temporary / "direct.semantic.mlir",
+            "structured": temporary / "direct.structured.mlir",
             "host": temporary / "direct.host.cpp",
             "sites": temporary / "direct.sites.h",
             "stubs": temporary / "direct.stubs.cpp",
@@ -217,12 +237,156 @@ def main() -> int:
         checks.require(document.get("version") == 1, "semantic extraction did not retain Matcore IR v1")
         checks.require(document.get("producer") == "clang-libtooling-v1", "semantic extraction lost native provenance")
         checks.require(len(document.get("operations", [])) == 1, "semantic extraction operation count changed")
+        captured_operation = document["operations"][0]
+        captured_site = captured_operation["site_id"]
+        captured_source = captured_operation["source"]
 
         semantic_text = outputs["semantic"].read_text(encoding="utf-8")
         checks.require('mdsl.bridge_schema = "matcore-mlir-semantic-v1"' in semantic_text, "missing semantic bridge schema")
         checks.require('mdsl.execution_intent = "generic"' in semantic_text, "missing generic execution intent")
         checks.require(semantic_text.count("mdsl.gemm") == 1, "semantic module does not contain exactly one GEMM")
         checks.require("mdsl.map" not in semantic_text, "explicit GEMM bridge invented composition")
+
+        structured_text = outputs["structured"].read_text(encoding="utf-8")
+        checks.require(
+            'mdsl.structured_handoff_schema = "matcore-structured-gemm-handoff-v1"'
+            in structured_text,
+            "structured handoff lacks its versioned schema",
+        )
+        checks.require(
+            "mdsl.structured_handoff_version = 1 : i32" in structured_text,
+            "structured handoff lacks its schema version",
+        )
+        checks.require(
+            "mdsl.analysis_only = true" in structured_text
+            and 'mdsl.execution_authority = "inspection_only"'
+            in structured_text,
+            "structured handoff acquired execution authority",
+        )
+        checks.require(
+            'mdsl.producer = "matcore-structured-gemm-handoff-v1"'
+            in structured_text
+            and 'mdsl.source_producer = "clang-libtooling-v1"'
+            in structured_text
+            and 'mdsl.source_bridge_schema = "matcore-mlir-semantic-v1"'
+            in structured_text,
+            "structured handoff conflates capture, semantic bridge, and stage provenance",
+        )
+        structured_identity = re.search(
+            r"func\.func @__matcore_structured_(mc_[0-9a-f]{32})",
+            structured_text,
+        )
+        checks.require(
+            structured_identity is not None
+            and structured_identity.group(1) == captured_site
+            and f"func.func @__matcore_semantic_{captured_site}" in semantic_text
+            and f'mdsl.site_id = "{structured_identity.group(1)}"'
+            in structured_text
+            and (
+                'mdsl.source_semantic_symbol = "__matcore_semantic_'
+                f'{structured_identity.group(1)}"'
+            )
+            in structured_text
+            and "mdsl.capture_ordinal = 0 : i64" in structured_text,
+            "structured handoff lost or changed site identity and capture order",
+        )
+        checks.require(
+            f'mdsl.source_file = "{captured_source["file"]}"'
+            in structured_text
+            and (
+                f'mdsl.translation_unit = "'
+                f'{document["translation_unit"]["identity"]}"'
+            )
+            in structured_text
+            and (
+                f'loc("{captured_source["file"]}":'
+                f'{captured_source["line"]}:{captured_source["column"]})'
+            )
+            in structured_text
+            and f'line = {captured_source["line"]} : i64' in structured_text
+            and f'column = {captured_source["column"]} : i64'
+            in structured_text
+            and f'offset = {captured_source["byte_offset"]} : i64'
+            in structured_text,
+            "structured handoff differs from captured source provenance",
+        )
+        checks.require(
+            "mdsl.semantic_contract = {" in structured_text,
+            "structured handoff lost the self-contained semantic contract",
+        )
+        for contract_field in (
+            "accumulation_type = f32",
+            "aliasing = [",
+            'effects = {read_write = [], reads = ["lhs", "rhs"], writes = ["output"]}',
+            "lhs_semantics = {",
+            "numerical = {",
+            "origin = {",
+            "output_semantics = {",
+            "policy = {",
+            "provenance = {",
+            "rhs_semantics = {",
+            "semantic_requirements = [",
+            'site_id = "mc_',
+            'synchronization = "synchronous"',
+        ):
+            checks.require(
+                contract_field in structured_text,
+                f"structured handoff lost semantic-contract field: {contract_field}",
+            )
+        for tensor_contract in (
+            'lhs_semantics = {alignment_bytes = 4 : i64, alignment_contract = "required_precondition", layout = "row_major_contiguous", memory_space = "host", mutability = "read", role = "lhs", shape = [{kind = "dynamic", symbol = "m"}, {kind = "dynamic", symbol = "k"}]',
+            'rhs_semantics = {alignment_bytes = 4 : i64, alignment_contract = "required_precondition", layout = "row_major_contiguous", memory_space = "host", mutability = "read", role = "rhs", shape = [{kind = "dynamic", symbol = "k"}, {kind = "dynamic", symbol = "n"}]',
+            'output_semantics = {alignment_bytes = 4 : i64, alignment_contract = "required_precondition", layout = "row_major_contiguous", memory_space = "host", mutability = "write", role = "output", shape = [{kind = "dynamic", symbol = "m"}, {kind = "dynamic", symbol = "n"}]',
+        ):
+            checks.require(
+                tensor_contract in structured_text,
+                "structured handoff lost an exact shape/layout/alignment contract",
+            )
+        for numerical_contract in (
+            'profile = "explicit-gemm-f32-v1"',
+            'reassociation = "within_k_reduction"',
+            'reduction_order = "implementation_defined_within_k"',
+            'signed_zero = "relaxed"',
+            'subnormals = "ieee_gradual_ftz_daz_forbidden"',
+            "approximate_math = false",
+        ):
+            checks.require(
+                numerical_contract in structured_text,
+                f"structured handoff lost numerical contract: {numerical_contract}",
+            )
+        checks.require(
+            structured_text.count('contract = "required_precondition"') == 5
+            and structured_text.count('relation = "no_alias"') == 2,
+            "structured handoff weakened alignment or no-alias preconditions",
+        )
+        fill_position = structured_text.find("linalg.fill ")
+        matmul_position = structured_text.find("linalg.matmul ")
+        checks.require(
+            fill_position >= 0
+            and matmul_position > fill_position
+            and structured_text.count("linalg.fill ") == 1
+            and structured_text.count("linalg.matmul ") == 1,
+            "structured handoff is not the exact fill-then-matmul sequence",
+        )
+        checks.require(
+            'mdsl.structured_role = "destination_overwrite_zero_fill"'
+            in structured_text
+            and 'destination = "original_output_full_zero_fill"'
+            in structured_text
+            and "outs(%arg2 : tensor<?x?xf32>)" in structured_text
+            and "outs(%0 : tensor<?x?xf32>)" in structured_text
+            and "return %1 : tensor<?x?xf32>" in structured_text,
+            "structured handoff lost overwrite-output or SSA destination semantics",
+        )
+        checks.require(
+            'source_operation = "mdsl.gemm"' in structured_text
+            and not contains_mdsl_gemm_operation(structured_text),
+            "structured handoff retained an mdsl.gemm operation instead of a provenance fact",
+        )
+        checks.require(
+            "fastmath" not in structured_text,
+            "structured handoff silently introduced fast-math flags",
+        )
         backend_text = outputs["backend"].read_text(encoding="utf-8")
         checks.require("Producer: Matcore MLIR CPU runtime-dispatch lowering v1" in backend_text, "backend lacks semantic lowering provenance")
         checks.require("matcore_runtime_gemm_f32_v0" in backend_text, "backend bypassed the stable runtime boundary")
@@ -233,8 +397,34 @@ def main() -> int:
         for label, path in outputs.items():
             checks.require(path.read_bytes() == before[label], f"{label} output is not byte deterministic")
 
+        outputs["structured"].unlink()
+        without_structured = run(
+            extractor_command(
+                extractor,
+                clangxx,
+                repository,
+                source,
+                outputs,
+                emit_structured=False,
+            ),
+            repository,
+        )
+        require_ok(checks, without_structured, "semantic extraction without structured handoff")
+        checks.require(
+            not outputs["structured"].exists(),
+            "extractor emitted a structured artifact without an explicit request",
+        )
+        for label, path in outputs.items():
+            if label == "structured":
+                continue
+            checks.require(
+                path.read_bytes() == before[label],
+                f"requesting the structured handoff changed the {label} artifact",
+            )
+
         two_ir = temporary / "two.matcore.json"
         two_semantic = temporary / "two.semantic.mlir"
+        two_structured = temporary / "two.structured.mlir"
         two_command = [
             str(extractor),
             "--frontend=native",
@@ -246,6 +436,8 @@ def main() -> int:
             str(two_ir),
             "--semantic-ir-out",
             str(two_semantic),
+            "--structured-ir-out",
+            str(two_structured),
             "--",
             str(clangxx),
             "-std=c++20",
@@ -254,10 +446,33 @@ def main() -> int:
         ]
         two = run(two_command, repository)
         require_ok(checks, two, "two-site semantic extraction")
+        two_document = json.loads(two_ir.read_text(encoding="utf-8"))
+        captured_site_ids = [
+            operation["site_id"] for operation in two_document["operations"]
+        ]
         two_text = two_semantic.read_text(encoding="utf-8")
-        checks.require(two_text.count("func.func @__matcore_semantic_mc_") == 2, "two capture sites were not independent semantic roots")
-        site_ids = re.findall(r'mdsl.site_id = "(mc_[0-9a-f]{32})"', two_text)
-        checks.require(len(site_ids) == 2 and len(set(site_ids)) == 2, "two semantic sites collided")
+        site_ids = re.findall(
+            r"func\.func @__matcore_semantic_(mc_[0-9a-f]{32})", two_text
+        )
+        checks.require(
+            site_ids == captured_site_ids and len(set(site_ids)) == 2,
+            "two semantic roots differ from captured site identity/order",
+        )
+        two_structured_text = two_structured.read_text(encoding="utf-8")
+        structured_site_ids = re.findall(
+            r"func\.func @__matcore_structured_(mc_[0-9a-f]{32})",
+            two_structured_text,
+        )
+        checks.require(
+            structured_site_ids == captured_site_ids,
+            "two structured roots differ from captured site identity/order",
+        )
+        checks.require(
+            two_structured_text.count("linalg.fill ") == 2
+            and two_structured_text.count("linalg.matmul ") == 2
+            and not contains_mdsl_gemm_operation(two_structured_text),
+            "two-site structured handoff changed its per-site operation shape",
+        )
 
         negative_cases = [
             (
@@ -303,6 +518,40 @@ def main() -> int:
                 ],
                 "analysis-only",
                 temporary / "recovery-ir.json",
+            ),
+            (
+                "structured-with-capture-v0",
+                [
+                    str(extractor),
+                    "--frontend=native",
+                    "--semantic-pipeline=capture-v0",
+                    "--ir-version=1",
+                    "--input",
+                    str(source),
+                    "--ir-out",
+                    str(temporary / "capture-structured.json"),
+                    "--structured-ir-out",
+                    str(temporary / "capture-structured.mlir"),
+                ],
+                "--structured-ir-out requires --semantic-pipeline=matcore-mlir",
+                temporary / "capture-structured.mlir",
+            ),
+            (
+                "structured-output-alias",
+                [
+                    str(extractor),
+                    "--frontend=native",
+                    "--semantic-pipeline=matcore-mlir",
+                    "--ir-version=1",
+                    "--input",
+                    str(source),
+                    "--ir-out",
+                    str(temporary / "shared-structured-output"),
+                    "--structured-ir-out",
+                    str(temporary / "shared-structured-output"),
+                ],
+                "--structured-ir-out and --ir-out must refer to distinct output files",
+                temporary / "shared-structured-output",
             ),
         ]
         for label, command, diagnostic, forbidden in negative_cases:

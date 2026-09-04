@@ -54,6 +54,35 @@ target_link_libraries(
 )
 mdslc_target_enable_warnings(matcore_mlir_semantics)
 
+# The first structured projection is intentionally a separate internal layer:
+# semantic WHAT remains independent of Linalg/Arith transformation machinery.
+add_library(
+  matcore_mlir_structured_handoff
+  STATIC
+    MatcoreStructuredGemmHandoff.cpp
+)
+target_compile_features(matcore_mlir_structured_handoff PUBLIC cxx_std_20)
+target_include_directories(
+  matcore_mlir_structured_handoff
+  PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
+)
+target_include_directories(
+  matcore_mlir_structured_handoff
+  SYSTEM PRIVATE
+    "${LLVM_INCLUDE_DIRS}"
+    "${MLIR_INCLUDE_DIRS}"
+)
+target_link_libraries(
+  matcore_mlir_structured_handoff
+  PUBLIC
+    matcore_mlir_semantics
+  PRIVATE
+    MLIRArithDialect
+    MLIRLinalgDialect
+)
+mdslc_target_enable_warnings(matcore_mlir_structured_handoff)
+
 if(MDSLC_ENABLE_NATIVE_FRONTEND AND NOT WIN32)
   # Recovery analysis is kept in a separate internal library so the general
   # semantic dialect and explicit-v1 bridge never depend on Clang frontend
@@ -131,6 +160,30 @@ if(BUILD_TESTING)
   )
   mdslc_target_enable_warnings(matcore_mlir_map_domain_tests)
   add_test(NAME mlir.semantic.map-domain COMMAND matcore_mlir_map_domain_tests)
+
+  add_executable(
+    matcore_mlir_structured_gemm_handoff_tests
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/mlir/matcore_structured_gemm_handoff_test.cpp"
+  )
+  target_link_libraries(
+    matcore_mlir_structured_gemm_handoff_tests
+    PRIVATE
+      matcore_mlir_structured_handoff
+      MLIRParser
+  )
+  target_include_directories(
+    matcore_mlir_structured_gemm_handoff_tests
+    SYSTEM PRIVATE "${LLVM_INCLUDE_DIRS}" "${MLIR_INCLUDE_DIRS}"
+  )
+  target_compile_definitions(
+    matcore_mlir_structured_gemm_handoff_tests
+    PRIVATE
+      MDSLC_MLIR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/mlir"
+      MDSLC_IR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/ir"
+  )
+  mdslc_target_enable_warnings(matcore_mlir_structured_gemm_handoff_tests)
+  add_test(NAME mlir.structured.gemm-handoff-v1
+    COMMAND matcore_mlir_structured_gemm_handoff_tests)
 
   add_executable(
     matcore_mlir_cpu_runtime_lowering_tests

@@ -1,3 +1,4 @@
+#include "MatcoreStructuredGemmHandoff.h"
 #include "MatcoreV1Bridge.h"
 #include "matcore_ir_v1.h"
 
@@ -17,6 +18,7 @@ struct Options {
   std::filesystem::path output;
   std::string numerical_profile;
   std::string execution_intent;
+  std::string emit_stage = "semantic";
   bool output_to_stdout = true;
 };
 
@@ -24,7 +26,8 @@ void printUsage(std::ostream &stream) {
   stream << "usage: matcore-mlir --input <capture.v1.json> "
             "--numerical-profile explicit-gemm-f32-v1 "
             "--execution-intent generic "
-            "[--output <semantic.mlir>]\n";
+            "[--emit-stage semantic|structured-gemm-v1] "
+            "[--output <inspection.mlir>]\n";
 }
 
 bool parseOptions(int argc, char **argv, Options &options,
@@ -61,6 +64,9 @@ bool parseOptions(int argc, char **argv, Options &options,
     } else if (argument == "--execution-intent") {
       if (!takeValue(argument, options.execution_intent))
         return false;
+    } else if (argument == "--emit-stage") {
+      if (!takeValue(argument, options.emit_stage))
+        return false;
     } else {
       error = "unknown argument: " + std::string(argument);
       return false;
@@ -86,6 +92,11 @@ bool parseOptions(int argc, char **argv, Options &options,
   if (options.execution_intent != "generic") {
     error = "unsupported execution intent for the v1 bridge: " +
             options.execution_intent;
+    return false;
+  }
+  if (options.emit_stage != "semantic" &&
+      options.emit_stage != "structured-gemm-v1") {
+    error = "unsupported inspection stage: " + options.emit_stage;
     return false;
   }
   if (!options.output_to_stdout) {
@@ -171,8 +182,20 @@ int main(int argc, char **argv) {
     std::cerr << "matcore-mlir: error: " << result.error << '\n';
     return 1;
   }
+  mlir::ModuleOp output_module = *result.module;
+  matcore::mdslc::mlir_bridge::StructuredGemmHandoffResultV1 structured;
+  if (options.emit_stage == "structured-gemm-v1") {
+    structured =
+        matcore::mdslc::mlir_bridge::deriveStructuredGemmHandoffV1(
+            *result.module);
+    if (!structured) {
+      std::cerr << "matcore-mlir: error: " << structured.error << '\n';
+      return 1;
+    }
+    output_module = *structured.module;
+  }
   const std::string output =
-      matcore::mdslc::mlir_bridge::serializeDeterministicMlir(*result.module);
+      matcore::mdslc::mlir_bridge::serializeDeterministicMlir(output_module);
   if (options.output_to_stdout) {
     std::cout << output;
     return std::cout ? 0 : 1;

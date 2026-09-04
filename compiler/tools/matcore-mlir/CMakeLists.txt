@@ -1,5 +1,5 @@
 add_executable(matcore-mlir main.cpp)
-target_link_libraries(matcore-mlir PRIVATE matcore_mlir_semantics)
+target_link_libraries(matcore-mlir PRIVATE matcore_mlir_structured_handoff)
 mdslc_target_enable_warnings(matcore-mlir WERROR)
 
 if(BUILD_TESTING)
