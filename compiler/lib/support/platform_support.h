@@ -188,6 +188,16 @@ bool clang_cl_option_consumes_next_v1(std::string_view argument) noexcept;
 bool clang_cl_option_is_link_context_v1(std::string_view argument) noexcept;
 bool compiler_consumed_value_is_safe_v1(std::string_view value) noexcept;
 
+// Extracts the single token immediately following Clang's stable
+// "clang version" marker. Exact toolchain admission must compare this token,
+// never search the full diagnostic output for a version substring.
+std::optional<std::string_view> clang_version_token_v1(
+    std::string_view output) noexcept;
+bool clang_version_matches_exact_v1(std::string_view output,
+                                    std::string_view expected) noexcept;
+bool trimmed_output_matches_exact_v1(std::string_view output,
+                                     std::string_view expected) noexcept;
+
 // Classifies untrusted compiler arguments that can write undeclared files,
 // change artifact/language mode, load code/configuration, or hide more
 // arguments. Callers may consume their own explicit output/dependency options

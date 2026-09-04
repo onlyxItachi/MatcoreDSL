@@ -214,8 +214,19 @@ void usage(std::ostream &output) {
       << "usage: matcore-extract --input FILE.mdsl --ir-out FILE.json [options] "
          "-- [clang-driver-placeholder] COMPILE_ARGS\n"
       << "\n"
+#if MDSLC_EXPERIMENTAL_TOOLCHAIN_ACTIVE
+      << "Toolchain: experimental compatibility-only "
+      << MDSLC_TOOLCHAIN_VERSION
+      << "; canonical product support remains 21.1.8\n"
+      << "\n"
+#endif
       << "Frontend selection:\n"
-      << "  --frontend=native             supported Clang LibTooling frontend "
+      << "  --frontend=native             "
+#if MDSLC_EXPERIMENTAL_TOOLCHAIN_ACTIVE
+         "experimental compatibility-only Clang LibTooling frontend "
+#else
+         "supported Clang LibTooling frontend "
+#endif
          "(default)\n"
       << "  --frontend=ast-json-bootstrap compatibility/differential frontend\n"
       << "\n"
@@ -329,9 +340,9 @@ discoverConfiguredCompiler(std::string_view requested_compiler,
   request.environment = support::compiler_environment_sanitization_v1();
   const support::ProcessResultV1 result = support::run_process_v1(request);
   if (!result.launched || !result.error.empty() || result.exit_code != 0 ||
-      (result.stdout_text + result.stderr_text)
-              .find("clang version " MDSLC_TOOLCHAIN_VERSION) ==
-          std::string::npos) {
+      !support::clang_version_matches_exact_v1(
+          result.stdout_text + "\n" + result.stderr_text,
+          MDSLC_TOOLCHAIN_VERSION)) {
     std::cerr << "matcore-extract: compiler must be the coherent Clang "
               << MDSLC_TOOLCHAIN_VERSION << " driver: "
               << compiler << '\n';
@@ -553,8 +564,20 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
       std::exit(0);
     } else if (argument == "--frontend-info") {
       std::cout << "default: native\n";
+#if MDSLC_EXPERIMENTAL_TOOLCHAIN_ACTIVE
+      std::cout << "toolchain: experimental compatibility-only "
+                << MDSLC_TOOLCHAIN_VERSION
+                << "; canonical product support remains 21.1.8\n";
+#else
+      std::cout << "toolchain: canonical product "
+                << MDSLC_TOOLCHAIN_VERSION << "\n";
+#endif
 #if MDSLC_HAS_NATIVE_FRONTEND
-      std::cout << "native [built]: clang-libtooling-v1; in-process Clang "
+      std::cout << "native [built"
+#if MDSLC_EXPERIMENTAL_TOOLCHAIN_ACTIVE
+                << ", experimental compatibility-only"
+#endif
+                << "]: clang-libtooling-v1; runtime-verified in-process Clang "
                 << MDSLC_TOOLCHAIN_VERSION
                 << " PPCallbacks, parse/Sema, ASTMatcher, canonical declaration "
                    "and AnnotateAttr authentication, SourceManager ranges\n";
@@ -880,6 +903,49 @@ int ExtractorMain(int argc, char **argv) {
               << '\n';
     return 2;
   }
+#if MDSLC_HAS_NATIVE_FRONTEND
+  const std::string linked_clang_version =
+      matcore::mdslc::frontend::nativeClangRuntimeVersionV1();
+  if (!support::clang_version_matches_exact_v1(linked_clang_version,
+                                               MDSLC_TOOLCHAIN_VERSION)) {
+    std::cerr << "matcore-extract: loaded in-process Clang runtime is not the "
+                 "configured exact "
+              << MDSLC_TOOLCHAIN_VERSION << " tuple: "
+              << linked_clang_version << '\n';
+    return 2;
+  }
+#if MDSLC_EXPERIMENTAL_TOOLCHAIN_ACTIVE && !defined(_WIN32)
+  std::string loaded_runtime_error;
+  const std::optional<std::string> loaded_runtime =
+      matcore::mdslc::frontend::nativeClangRuntimeLibraryPathV1(
+          loaded_runtime_error);
+  const std::optional<std::filesystem::path> expected_runtime = pathFromUtf8(
+      MDSLC_EXPECTED_CLANG_CPP_RUNTIME, "configured clang-cpp runtime");
+  const std::optional<std::filesystem::path> loaded_runtime_path =
+      loaded_runtime ? pathFromUtf8(*loaded_runtime, "loaded clang-cpp runtime")
+                     : std::nullopt;
+  if (!loaded_runtime || !expected_runtime || !loaded_runtime_path ||
+      !loaded_runtime_error.empty()) {
+    std::cerr << "matcore-extract: cannot authenticate the loaded experimental "
+                 "clang-cpp runtime: "
+              << (loaded_runtime_error.empty() ? "path is unavailable"
+                                               : loaded_runtime_error)
+              << '\n';
+    return 2;
+  }
+  std::string identity_error;
+  if (!support::paths_refer_to_same_location_v1(
+          *loaded_runtime_path, *expected_runtime, identity_error) ||
+      !identity_error.empty()) {
+    std::cerr << "matcore-extract: loaded experimental clang-cpp runtime "
+              << *loaded_runtime_path << " does not match the configured "
+              << MDSLC_TOOLCHAIN_VERSION << " runtime " << *expected_runtime;
+    if (!identity_error.empty()) std::cerr << ": " << identity_error;
+    std::cerr << '\n';
+    return 2;
+  }
+#endif
+#endif
   const std::optional<CommandLine> command = parseCommandLine(argc, argv);
   if (!command) {
     usage(std::cerr);

@@ -266,6 +266,37 @@ bool compiler_consumed_value_is_safe_v1(std::string_view value) noexcept {
   return !value.starts_with('@') && !contains_nul(value);
 }
 
+std::optional<std::string_view> clang_version_token_v1(
+    std::string_view output) noexcept {
+  constexpr std::string_view marker = "clang version ";
+  const std::size_t marker_offset = output.find(marker);
+  if (marker_offset == std::string_view::npos) return std::nullopt;
+  const std::size_t token_begin = marker_offset + marker.size();
+  const std::size_t token_end = output.find_first_of(" \t\r\n(", token_begin);
+  const std::string_view token = output.substr(
+      token_begin,
+      token_end == std::string_view::npos ? std::string_view::npos
+                                          : token_end - token_begin);
+  if (token.empty()) return std::nullopt;
+  return token;
+}
+
+bool clang_version_matches_exact_v1(std::string_view output,
+                                    std::string_view expected) noexcept {
+  const std::optional<std::string_view> token = clang_version_token_v1(output);
+  return token && *token == expected;
+}
+
+bool trimmed_output_matches_exact_v1(std::string_view output,
+                                     std::string_view expected) noexcept {
+  const auto ascii_space = [](char value) {
+    return value == ' ' || value == '\t' || value == '\r' || value == '\n';
+  };
+  while (!output.empty() && ascii_space(output.front())) output.remove_prefix(1);
+  while (!output.empty() && ascii_space(output.back())) output.remove_suffix(1);
+  return output == expected;
+}
+
 CompilerArgumentRiskV1 classify_untrusted_compiler_argument_v1(
     std::string_view argument, bool clang_cl) noexcept {
   if (argument.starts_with('@')) {

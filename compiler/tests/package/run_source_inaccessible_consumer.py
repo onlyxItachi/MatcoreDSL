@@ -339,6 +339,63 @@ def require_install(prefix: Path, matcore_mlir_available: bool) -> None:
         raise TestFailure(f"relocated installed package is incomplete: {missing}")
 
 
+def authenticate_loaded_clang_runtime(
+    extractor: Path, expected_runtime: Path, expected_version: str
+) -> None:
+    ldd = shutil.which("ldd")
+    if ldd is None:
+        raise TestFailure(
+            "experimental package proof requires ldd to resolve clang-cpp"
+        )
+    dependencies = run([ldd, str(extractor)], capture=True).stdout
+    resolved: list[Path] = []
+    for line in dependencies.splitlines():
+        dependency, separator, resolution = line.partition("=>")
+        if not dependency.strip().startswith("libclang-cpp.so"):
+            continue
+        resolved_spelling = resolution.rsplit(" (", maxsplit=1)[0].strip()
+        if separator == "" or resolved_spelling == "not found":
+            raise TestFailure(
+                "installed extractor has an unresolved clang-cpp dependency:\n"
+                f"{dependencies}"
+            )
+        resolved.append(Path(resolved_spelling))
+    if len(resolved) != 1:
+        raise TestFailure(
+            "installed extractor must resolve exactly one clang-cpp runtime; "
+            f"found {resolved}:\n{dependencies}"
+        )
+    try:
+        expected_identity = expected_runtime.resolve(strict=True)
+        resolved_identity = resolved[0].resolve(strict=True)
+    except OSError as error:
+        raise TestFailure(
+            f"cannot resolve the authenticated clang-cpp runtime: {error}"
+        ) from error
+    if not os.path.samefile(expected_identity, resolved_identity):
+        raise TestFailure(
+            "installed extractor resolved an unauthenticated clang-cpp "
+            f"runtime: expected {expected_identity}, got {resolved_identity}"
+        )
+
+    frontend_info = run(
+        [str(extractor), "--frontend-info"], capture=True
+    ).stdout
+    expected_status = (
+        f"toolchain: experimental compatibility-only {expected_version}; "
+        "canonical product support remains 21.1.8"
+    )
+    if (
+        expected_status not in frontend_info
+        or f"runtime-verified in-process Clang {expected_version}"
+        not in frontend_info
+    ):
+        raise TestFailure(
+            "installed extractor did not expose its experimental-only, "
+            f"runtime-verified status:\n{frontend_info}"
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cmake", required=True)
@@ -365,6 +422,7 @@ def main() -> int:
         required=True,
     )
     parser.add_argument("--experimental-toolchain-version", default="")
+    parser.add_argument("--expected-clang-runtime", default="")
     arguments = parser.parse_args()
 
     matcore_mlir_available = arguments.matcore_mlir_available == "ON"
@@ -386,6 +444,25 @@ def main() -> int:
     c_compiler = absolute_tool(arguments.c_compiler, "C compiler")
     cxx_compiler = absolute_tool(arguments.cxx_compiler, "C++ compiler")
     clangxx = absolute_tool(arguments.clangxx, "Clang C++ driver")
+    expected_clang_runtime: Path | None = None
+    if arguments.experimental_toolchain_version:
+        if arguments.experimental_toolchain_version != "22.1.8":
+            raise TestFailure(
+                "source-inaccessible test admits only experimental 22.1.8"
+            )
+        if not arguments.expected_clang_runtime:
+            raise TestFailure(
+                "experimental package proof requires the authenticated "
+                "clang-cpp runtime path"
+            )
+        expected_clang_runtime = absolute_tool(
+            arguments.expected_clang_runtime,
+            "authenticated clang-cpp runtime",
+        )
+    elif arguments.expected_clang_runtime:
+        raise TestFailure(
+            "a clang-cpp runtime path is valid only for the experimental lane"
+        )
     test_root, _ = prepare_test_root(
         arguments.test_root,
         arguments.expected_build_root,
@@ -512,6 +589,12 @@ def main() -> int:
     relocated_prefix.parent.mkdir(parents=True)
     shutil.move(staging_prefix, relocated_prefix)
     require_install(relocated_prefix, matcore_mlir_available)
+    if expected_clang_runtime is not None:
+        authenticate_loaded_clang_runtime(
+            relocated_prefix / "bin" / "matcore-extract",
+            expected_clang_runtime,
+            arguments.experimental_toolchain_version,
+        )
 
     installed_forbidden_paths = [
         repository,

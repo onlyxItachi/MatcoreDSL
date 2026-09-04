@@ -298,6 +298,30 @@ void test_compiler_argument_policy() {
          "compiler child environment removes hidden driver/linker inputs");
 }
 
+void test_exact_toolchain_versions() {
+  expect(support::clang_version_token_v1("clang version 22.1.8") ==
+             std::optional<std::string_view>("22.1.8"),
+         "plain Clang output yields one exact version token");
+  expect(support::clang_version_matches_exact_v1(
+             "Ubuntu clang version 22.1.8 (vendor build)\nTarget: x86_64",
+             "22.1.8"),
+         "vendor-prefixed Clang output admits an exact version token");
+  expect(!support::clang_version_matches_exact_v1("clang version 22.1.80",
+                                                  "22.1.8") &&
+             !support::clang_version_matches_exact_v1(
+                 "clang version 122.1.8", "22.1.8") &&
+             !support::clang_version_matches_exact_v1(
+                 "clang version 22.1.8-rc1", "22.1.8"),
+         "suffix, prefix, and prerelease near-version forgeries are rejected");
+  expect(support::trimmed_output_matches_exact_v1("  22.1.8\r\n",
+                                                  "22.1.8") &&
+             !support::trimmed_output_matches_exact_v1("22.1.80\n",
+                                                       "22.1.8") &&
+             !support::trimmed_output_matches_exact_v1("122.1.8\n",
+                                                       "22.1.8"),
+         "plain tool version output is trimmed and compared exactly");
+}
+
 void test_prospective_path_identity(const std::filesystem::path &directory) {
   std::string error;
   const auto first = directory / "Prospective-Output.lib";
@@ -671,7 +695,8 @@ int support_test_main(int argc, char **argv) {
            "temporary directory exists while owned");
     test_unicode_boundaries();
     test_windows_quoting();
-    test_compiler_argument_policy();
+  test_compiler_argument_policy();
+  test_exact_toolchain_versions();
     test_prospective_path_identity(removed_path);
     test_response_files(removed_path);
     test_argument_files(removed_path);
