@@ -11,6 +11,8 @@ Date: 2026-09-05
   `c36b6fc91da16412c3e007c3c420566365df4ecc`
 - Independent-review hardening commit:
   `472e695f061fa9577279b5c159aef1b4b7086419`
+- Exact-head provenance-binding hardening commit:
+  `e0c48b35a468d36d6ade96d5c2e0d2a3717618a6`
 - Branch: `mdslc/contraction-foundation-v1`
 - Corpus and re-entry identity: inherited unchanged from
   `docs/mdslc/CORPUS_REENTRY_RECONCILIATION_V1.md`
@@ -68,13 +70,22 @@ and non-results are recorded in
   runtime lowering API.
 - The fingerprint domain is
   `matcore-structured-semantic-fingerprint-v1`; length-delimited canonical
-  fields make it stable across MLIR contexts. A semantic contract mutation
-  changes the digest. The digest is substitution detection, not a source-byte
-  signature or execution authority.
+  fields make it stable across MLIR contexts. Every ordered entry-block
+  argument location is included, so either one-sided location drift or a
+  semantic contract mutation changes the digest. The generic paired verifier
+  also compares source/structured argument locations directly. The digest is
+  substitution detection, not a source-byte signature or execution authority.
 - Generic certificate verification runs upstream MLIR verification before
   interpreting source/structured envelopes. Raw diagnostic fingerprint calls
-  reject core-invalid carriers, non-member function handles, same-context
-  mixed modules, semantic/structured hybrids, and non-exact source contracts.
+  reject core-invalid source and structured carriers, non-member function
+  handles, same-context mixed modules, semantic/structured hybrids, and
+  non-exact source contracts.
+- The generic certificate does not invent an argument-location policy. The
+  exact current semantic bridge and structured GEMM verifier separately require
+  all three entry arguments to retain the authenticated function/source
+  location. They reject source-only, structured-only, and matching two-sided
+  location forgeries even when the latter has equal non-authoritative raw
+  fingerprints.
 - Standard visible vocabulary is GEMM, GEMV, DOT, GER, and batched GEMM. The
   legacy private `GEVM` spelling remains evidence-only documentation debt;
   future user-facing orientation should use GEMV plus an explicit transpose or
@@ -127,11 +138,29 @@ the package fixture still expected `c36b6fc`, and `matcore-bench` recorded that
 it had been built while the pre-commit tree was dirty. The final clean-head
 reconfigure/rebuild result is recorded below.
 
-At the clean branch head containing this report, CMake was re-run to refresh
-the exact checkout identity, the Release tree was rebuilt, and the complete
-CTest surface passed `65/65`, `0` failed. The final direct focused binaries
-again reported `277/0` contraction checks and `274/0` structured-GEMM checks;
-`git diff --check` passed.
+At prior documentation checkpoint
+`20980deb30acd400ac1c3d1d9e16f3688283386f`, CMake was re-run to refresh the
+exact checkout identity, the Release tree was rebuilt, and the complete CTest
+surface passed `65/65`, `0` failed. The direct focused binaries reported
+`277/0` contraction checks and `274/0` structured-GEMM checks; `git diff
+--check` passed.
+
+Exact-head re-review hardening at
+`e0c48b35a468d36d6ade96d5c2e0d2a3717618a6` added ordered entry-argument
+locations to the generic fingerprint, direct argument-location pairing, the
+current GEMM-specific source/structured location invariants, and direct
+core-invalid structured-fingerprint rejection. Validation after a clean-head
+CMake refresh produced:
+
+| Validation | Exact result |
+| --- | --- |
+| Complete Release build | completed; 11 affected targets rebuilt |
+| Full CTest | `65/65` passed, `0` failed, 93.94 s |
+| Focused CTest regex | `2/2` passed, `0` failed |
+| `matcore_mlir_contraction_model_tests` | `277` checks, `0` failures |
+| `matcore_mlir_structured_gemm_handoff_tests` | `359` checks, `0` failures |
+| Structured GEMM golden SHA-256 | unchanged: `632d2fec0eb972a54f0cc0714e2e1811f92d39e8fce8417efe6110927965143d` |
+| `git diff --check` | passed |
 
 The full CTest surface includes native/bootstrap frontend, semantic IR/MLIR,
 structured handoff, CPU dispatch/runtime/planner, C ABI, installed consumer,
