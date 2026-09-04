@@ -868,6 +868,52 @@ void testCertificateArgumentLocationBinding(const v1::Module &capture) {
     check(generic_pair(),
           "restoring same-forgery locations must restore exact pairing");
   }
+
+  auto source_return = findOne<mlir::func::ReturnOp>(*semantic.module);
+  check(static_cast<bool>(source_return),
+        "coordinated source-location forgery fixture must contain a return");
+  if (!source_return)
+    return;
+  const mlir::Location original_function = source_function.getLoc();
+  const mlir::Location original_return = source_return.getLoc();
+  llvm::SmallVector<mlir::Location, 3> original_arguments;
+  for (mlir::BlockArgument argument :
+       source_function.getBody().front().getArguments())
+    original_arguments.push_back(argument.getLoc());
+  const mlir::Location coordinated_forgery = mlir::FileLineColLoc::get(
+      &context, "forged-semantic-function.mdsl", 99, 7);
+  source_function->setLoc(coordinated_forgery);
+  source_return->setLoc(coordinated_forgery);
+  for (mlir::BlockArgument argument :
+       source_function.getBody().front().getArguments())
+    argument.setLoc(coordinated_forgery);
+  check(mlir::succeeded(mlir::verify(*semantic.module)),
+        "coordinated function/argument/return relocation must remain generic "
+        "MLIR-valid");
+  const std::string relocated_fingerprint =
+      bridge::computeSourceSemanticFingerprintV1(
+          *semantic.module, source_function, source_gemm->getAttrDictionary(),
+          "mdsl.gemm", error);
+  check(!relocated_fingerprint.empty() &&
+            relocated_fingerprint != baseline_source,
+        "coordinated semantic relocation must change the generic fingerprint");
+  check(!bridge::verifyMatcoreV1BridgeModule(*semantic.module, error),
+        "semantic authority must reject relocation away from mdsl.gemm "
+        "provenance");
+  checkContains(error, "mdsl.gemm source location",
+                "coordinated semantic relocation rejection must name its "
+                "authenticated anchor");
+  check(!bridge::verifyStructuredGemmHandoffMatchesV1(
+             *semantic.module, *structured.module, error),
+        "GEMM pairing must reject coordinated semantic relocation");
+  source_function->setLoc(original_function);
+  source_return->setLoc(original_return);
+  for (auto [argument, location] :
+       llvm::zip_equal(source_function.getBody().front().getArguments(),
+                       original_arguments))
+    argument.setLoc(location);
+  check(generic_pair(),
+        "restoring coordinated semantic locations must restore exact pairing");
 }
 
 void testGenericCertificateVerificationHardening(const v1::Module &capture) {

@@ -379,6 +379,12 @@ bool verifyMatcoreV1BridgeModule(mlir::ModuleOp module, std::string &error) {
       error = "Matcore semantic site must return the destination-tied GEMM SSA result";
       return false;
     }
+    if (function.getLoc() != gemm.getLoc() ||
+        return_op.getLoc() != gemm.getLoc()) {
+      error = "Matcore semantic function and return locations must retain the "
+              "authenticated mdsl.gemm source location";
+      return false;
+    }
     const auto origin_kind =
         gemm.getOrigin().getAs<mlir::StringAttr>("kind");
     const auto provenance_kind =
