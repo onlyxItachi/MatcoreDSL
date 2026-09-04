@@ -13,6 +13,8 @@ Status date: 2026-09-04
   #17 / milestone #6 are closed. No GitHub Release exists for the tag.
 - Compiler-archaeology re-entry disposition:
   [CORPUS_REENTRY_RECONCILIATION_V1.md](CORPUS_REENTRY_RECONCILIATION_V1.md)
+- Corpus-informed structured GEMM handoff checkpoint:
+  [STRUCTURED_GEMM_HANDOFF_V1.md](STRUCTURED_GEMM_HANDOFF_V1.md)
 - Milestone 6 pull request: `#14`, merged normally
 - Milestone 6 umbrella issue / GitHub milestone: `#13` / `#4`, closed
 - Milestone 6 immutable tag: `mdslc-cpu-performance-audit-v1`
@@ -268,6 +270,32 @@ milestone #6 are closed. No GitHub Release is claimed, and this checkpoint does
 not freeze the public API, ABI, or backend contract or establish native-BLAS
 parity. The bounded product contract is in
 [CPU_BETA_V1.md](CPU_BETA_V1.md).
+
+## Corpus-informed structured GEMM handoff
+
+The first connected `mdsl.gemm` to structured MLIR seam is implemented on
+`mdslc/structured-gemm-inspection-v1` at focused code commit
+`d696cd9e2f06bb7580eff22fae6cd42ce4ab78da`. It accepts only the exact verified
+explicit Matcore IR v1 semantic bridge envelope and derives a separate
+analysis-only tensor/DPS module with positive-zero `linalg.fill` followed by
+`linalg.matmul`. The complete source semantic contract, provenance, shapes,
+layouts, effects, destination meaning, numerical policy, and source identity
+remain mechanically verified; the existing CPU lowerer continues to consume
+the untouched semantic module and rejects the structured artifact.
+
+Focused Release validation passed 220 structured adversarial checks, 13 CLI
+cases, 132 native semantic/structured/CPU integration checks, and all three
+owned CTest entries. Independent code and test review found no remaining
+correctness or execution-authority blocker. A clean committed full regression,
+package/source-inaccessible consumer gate, supported Debug scope, and
+MLIR-disabled compatibility scope remain pending at this document revision.
+
+This is not bufferization, generated execution, vector or machine lowering,
+performance evidence, a public interface commitment, or authority to execute
+serialized MLIR. Issue #15 remains partial and open under its original Native
+BLAS Parity criteria. The exact schema, guarantees, evidence, and next boundary
+are recorded in
+[STRUCTURED_GEMM_HANDOFF_V1.md](STRUCTURED_GEMM_HANDOFF_V1.md).
 
 ## Milestone 7 native BLAS parity
 

@@ -320,6 +320,30 @@ Installed packages report `MatcoreDSL_MATCORE_MLIR_AVAILABLE` and
 fail during configuration. The detailed supported/unsupported claim and
 remaining acceptance matrix are frozen in [CPU_BETA_V1.md](CPU_BETA_V1.md).
 
+## Corpus-informed post-beta boundary
+
+The first connected structured handoff is implemented on
+`mdslc/structured-gemm-inspection-v1`: exact verified explicit `mdsl.gemm`
+semantics project into a separate analysis-only tensor/DPS form with explicit
+overwrite initialization and `linalg.matmul`. Matcore owns admission, retained
+semantic/provenance contracts, and fail-closed verification; MLIR owns the
+canonical structured operations. The current runtime/provider route remains
+the only executable route. See
+[STRUCTURED_GEMM_HANDOFF_V1.md](STRUCTURED_GEMM_HANDOFF_V1.md).
+
+After its clean regression/package checkpoint, the next admissible milestone
+is limited to inspection-only bufferization legality and destination-storage
+identity. Matcore must account for every retained fact and verify the
+postconditions; MLIR should own One-Shot Bufferize and standard buffer
+transformations; LLVM/backends still own machine lowering; external libraries
+remain authenticated provider candidates. Entry requires exact MLIR 21.1.8
+interface evidence and connected static/dynamic traces. Completion requires a
+deterministic verified buffer artifact, allocation/copy accounting, proof that
+the result denotes the original output storage and never reads initial C, and
+unchanged runtime/provider behavior. It must stop before vector/LLVM lowering,
+generated execution, fusion, planner/provider policy, native-BLAS work, or
+GPU/NPU work.
+
 ## Dependency graph
 
 ```text
