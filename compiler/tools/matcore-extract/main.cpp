@@ -220,7 +220,8 @@ void usage(std::ostream &output) {
       << "  --frontend=ast-json-bootstrap compatibility/differential frontend\n"
       << "\n"
       << "Frontend options:\n"
-      << "  --clang PATH          exact coherent Clang 21.1.8 executable\n"
+      << "  --clang PATH          exact coherent Clang "
+      << MDSLC_TOOLCHAIN_VERSION << " executable\n"
       << "  --ast-byte-limit N    maximum captured AST JSON bytes\n"
       << "  --verbose             print the exact Clang command\n"
       << "  --rewrite-out FILE    rewritten host C++ (requires all outputs)\n"
@@ -247,7 +248,8 @@ void usage(std::ostream &output) {
       << "\n"
       << "A bare clang++ token after -- is a command-shape placeholder; the "
          "configured\n"
-      << "Clang 21 executable remains in use. Pass --clang PATH to override it "
+      << "Clang " << MDSLC_TOOLCHAIN_VERSION
+      << " executable remains in use. Pass --clang PATH to override it "
          "explicitly.\n";
 }
 
@@ -328,9 +330,10 @@ discoverConfiguredCompiler(std::string_view requested_compiler,
   const support::ProcessResultV1 result = support::run_process_v1(request);
   if (!result.launched || !result.error.empty() || result.exit_code != 0 ||
       (result.stdout_text + result.stderr_text)
-              .find("clang version 21.1.8") == std::string::npos) {
+              .find("clang version " MDSLC_TOOLCHAIN_VERSION) ==
+          std::string::npos) {
     std::cerr << "matcore-extract: compiler must be the coherent Clang "
-                 "21.1.8 driver: "
+              << MDSLC_TOOLCHAIN_VERSION << " driver: "
               << compiler << '\n';
     return std::nullopt;
   }
@@ -346,8 +349,8 @@ discoverConfiguredCompiler(std::string_view requested_compiler,
       support::run_process_v1(resource_request);
   if (!resource_result.launched || !resource_result.error.empty() ||
       resource_result.exit_code != 0) {
-    std::cerr << "matcore-extract: cannot query the Clang 21.1.8 resource "
-                 "directory\n";
+    std::cerr << "matcore-extract: cannot query the Clang "
+              << MDSLC_TOOLCHAIN_VERSION << " resource directory\n";
     return std::nullopt;
   }
   std::string resource_text = resource_result.stdout_text;
@@ -377,7 +380,8 @@ discoverConfiguredCompiler(std::string_view requested_compiler,
       (relative_error || relative_resource.empty() ||
        relative_resource.is_absolute() || *relative_resource.begin() == "..")) {
     std::cerr << "matcore-extract: Clang resource directory is outside the "
-                 "selected 21.1.8 toolchain prefix\n";
+                 "selected "
+              << MDSLC_TOOLCHAIN_VERSION << " toolchain prefix\n";
     return std::nullopt;
   }
   return ConfiguredCompiler{compiler, resource_directory};
@@ -550,8 +554,9 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
     } else if (argument == "--frontend-info") {
       std::cout << "default: native\n";
 #if MDSLC_HAS_NATIVE_FRONTEND
-      std::cout << "native [built]: clang-libtooling-v1; in-process Clang 21 "
-                   "PPCallbacks, parse/Sema, ASTMatcher, canonical declaration "
+      std::cout << "native [built]: clang-libtooling-v1; in-process Clang "
+                << MDSLC_TOOLCHAIN_VERSION
+                << " PPCallbacks, parse/Sema, ASTMatcher, canonical declaration "
                    "and AnnotateAttr authentication, SourceManager ranges\n";
 #else
       std::cout << "native [not built]\n";
@@ -630,7 +635,8 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
 #if !MDSLC_HAS_MATCORE_MLIR
     std::cerr << "matcore-extract: Matcore MLIR support was not built; "
                  "reconfigure with MDSLC_ENABLE_MATCORE_MLIR=ON and a coherent "
-                 "MLIR 21.1.8 package\n";
+                 "MLIR "
+              << MDSLC_TOOLCHAIN_VERSION << " package\n";
     return std::nullopt;
 #endif
   } else {
@@ -767,8 +773,9 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
       !pathsReferToSameLocation(*selected_compiler,
                                 configured_compiler->invocation_path)) {
     std::cerr << "matcore-extract: native frontend is linked to the configured "
-                 "Clang 21.1.8 tuple and cannot honor a different --clang "
-                 "executable: "
+                 "Clang "
+              << MDSLC_TOOLCHAIN_VERSION
+              << " tuple and cannot honor a different --clang executable: "
               << command.frontend.clang_path << '\n';
     return std::nullopt;
   }

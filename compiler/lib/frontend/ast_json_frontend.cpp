@@ -36,6 +36,20 @@ enum class DeclarationRole {
   untrusted_out,
 };
 
+int declarationRoleRank(DeclarationRole role) {
+  switch (role) {
+  case DeclarationRole::gemm:
+  case DeclarationRole::out:
+    return 2;
+  case DeclarationRole::untrusted_gemm:
+  case DeclarationRole::untrusted_out:
+    return 1;
+  case DeclarationRole::none:
+    return 0;
+  }
+  return 0;
+}
+
 struct AstLocation {
   std::string file;
   std::uint64_t offset = 0;
@@ -330,7 +344,16 @@ void collectDeclarations(const JsonValue &node,
     }
     declaration.role = classifyDeclaration(declaration, trusted_headers);
     if (!declaration.id.empty()) {
-      result[declaration.id] = std::move(declaration);
+      const auto existing = result.find(declaration.id);
+      // Clang 22 may repeat a referenced FunctionDecl below a using
+      // declaration while walking the AST JSON.  That abbreviated duplicate
+      // is nested in the importing namespace and must not erase the original
+      // authenticated declaration identity.
+      if (existing == result.end() ||
+          declarationRoleRank(declaration.role) >
+              declarationRoleRank(existing->second.role)) {
+        result.insert_or_assign(declaration.id, std::move(declaration));
+      }
     }
   }
 

@@ -37,6 +37,7 @@ def command(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--extractor", type=Path, required=True)
+    parser.add_argument("--expected-toolchain-version", default="21.1.8")
     arguments = parser.parse_args()
     extractor = arguments.extractor.resolve()
     repository = Path(__file__).resolve().parents[3]
@@ -153,7 +154,8 @@ def main() -> int:
         )
         if (
             wrong_compiler.returncode == 0
-            or "coherent Clang 21.1.8" not in wrong_compiler.stderr
+            or f"coherent Clang {arguments.expected_toolchain_version}"
+            not in wrong_compiler.stderr
         ):
             failures.append("native mode did not reject a mismatched --clang executable")
 
@@ -177,7 +179,8 @@ def main() -> int:
         )
         if (
             wrong_placeholder.returncode == 0
-            or "coherent Clang 21.1.8" not in wrong_placeholder.stderr
+            or f"coherent Clang {arguments.expected_toolchain_version}"
+            not in wrong_placeholder.stderr
         ):
             failures.append(
                 "native mode did not reject a mismatched compiler placeholder"

@@ -26,6 +26,7 @@
 #include <clang/Lex/Preprocessor.h>
 #include <clang/Tooling/CompilationDatabase.h>
 #include <clang/Tooling/Tooling.h>
+#include <llvm/Config/llvm-config.h>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/raw_ostream.h>
 
@@ -700,6 +701,15 @@ bool hasCanonicalMdslQualifier(const clang::DeclRefExpr &reference) {
       llvm::isa<clang::UsingShadowDecl>(reference.getFoundDecl())) {
     return false;
   }
+#if LLVM_VERSION_MAJOR >= 22
+  const clang::NestedNameSpecifier qualifier = reference.getQualifier();
+  if (qualifier.getKind() != clang::NestedNameSpecifier::Kind::Namespace)
+    return false;
+  const clang::NamespaceBaseDecl *namespace_base =
+      qualifier.getAsNamespaceAndPrefix().Namespace;
+  const clang::NamespaceDecl *resolved =
+      namespace_base == nullptr ? nullptr : namespace_base->getNamespace();
+#else
   const clang::NestedNameSpecifier *qualifier = reference.getQualifier();
   const clang::NamespaceDecl *resolved = nullptr;
   if (qualifier->getKind() == clang::NestedNameSpecifier::Namespace) {
@@ -709,6 +719,7 @@ bool hasCanonicalMdslQualifier(const clang::DeclRefExpr &reference) {
     const clang::NamespaceAliasDecl *alias = qualifier->getAsNamespaceAlias();
     resolved = alias == nullptr ? nullptr : alias->getNamespace();
   }
+#endif
   return resolved != nullptr &&
          resolved->getCanonicalDecl()->getQualifiedNameAsString() ==
              "matcore::mdsl";
@@ -1462,7 +1473,7 @@ public:
       return false;
     }
     if (options.verbose) {
-      std::cerr << "matcore-extract native Clang 21 arguments:";
+      std::cerr << "matcore-extract native Clang arguments:";
       for (const std::string &argument : tool_arguments) {
         std::cerr << ' ' << shellQuoted(argument);
       }

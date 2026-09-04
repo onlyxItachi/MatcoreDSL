@@ -109,6 +109,26 @@ option(
 )
 mark_as_advanced(MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE)
 
+# Product and release builds remain pinned to the audited 21.1.8 tuple.  This
+# internal-only escape hatch exists so a compatibility branch can measure one
+# explicitly named coherent upstream tuple without weakening the default.
+set(MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION "" CACHE STRING
+  "Exact non-product LLVM/Clang/MLIR version used for a portability experiment")
+mark_as_advanced(MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION)
+set(MDSLC_REQUIRED_TOOLCHAIN_VERSION "21.1.8")
+if(NOT MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION STREQUAL "")
+  if(NOT MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION STREQUAL "22.1.8")
+    message(FATAL_ERROR
+      "MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION admits only the reviewed "
+      "22.1.8 portability experiment")
+  endif()
+  set(MDSLC_REQUIRED_TOOLCHAIN_VERSION
+    "${MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION}")
+  message(WARNING
+    "MDSLC experimental toolchain ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} is "
+    "compatibility evidence only; canonical product support remains 21.1.8")
+endif()
+
 if(MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE AND NOT BUILD_TESTING)
   message(FATAL_ERROR
     "MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE is allowed only with BUILD_TESTING=ON")
@@ -118,19 +138,30 @@ if(NOT MDSLC_ENABLE_NATIVE_FRONTEND AND NOT MDSLC_ENABLE_BOOTSTRAP_FRONTEND)
   message(FATAL_ERROR "At least one MDSLC frontend must be enabled")
 endif()
 
+function(mdslc_target_match_llvm_rtti target)
+  if(DEFINED LLVM_ENABLE_RTTI AND NOT LLVM_ENABLE_RTTI)
+    if(MSVC)
+      target_compile_options(${target} PRIVATE /GR-)
+    else()
+      target_compile_options(${target} PRIVATE -fno-rtti)
+    endif()
+  endif()
+endfunction()
+
 if(MDSLC_ENABLE_MATCORE_MLIR)
   if(NOT DEFINED MLIR_DIR OR MLIR_DIR STREQUAL "")
     message(FATAL_ERROR
       "MDSLC_ENABLE_MATCORE_MLIR requires an explicit MLIR_DIR for the "
-      "audited LLVM/Clang/MLIR 21.1.8 tuple")
+      "selected coherent LLVM/Clang/MLIR tuple")
   endif()
-  find_package(LLVM 21.1.8 EXACT CONFIG REQUIRED)
-  find_package(Clang 21.1.8 EXACT CONFIG REQUIRED)
-  find_package(MLIR 21.1.8 EXACT CONFIG REQUIRED)
-  if(NOT LLVM_PACKAGE_VERSION VERSION_EQUAL "21.1.8" OR
-     NOT MLIR_VERSION VERSION_EQUAL "21.1.8")
+  find_package(LLVM ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} EXACT CONFIG REQUIRED)
+  find_package(Clang ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} EXACT CONFIG REQUIRED)
+  find_package(MLIR ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} EXACT CONFIG REQUIRED)
+  if(NOT LLVM_PACKAGE_VERSION VERSION_EQUAL MDSLC_REQUIRED_TOOLCHAIN_VERSION OR
+     NOT MLIR_VERSION VERSION_EQUAL MDSLC_REQUIRED_TOOLCHAIN_VERSION)
     message(FATAL_ERROR
-      "Matcore MLIR requires exact LLVM/Clang/MLIR 21.1.8 packages; found "
+      "Matcore MLIR requires exact coherent LLVM/Clang/MLIR "
+      "${MDSLC_REQUIRED_TOOLCHAIN_VERSION} packages; found "
       "LLVM ${LLVM_PACKAGE_VERSION} and MLIR ${MLIR_VERSION}")
   endif()
   foreach(MDSLC_REQUIRED_MLIR_TARGET IN ITEMS
@@ -144,7 +175,7 @@ if(MDSLC_ENABLE_MATCORE_MLIR)
       MLIRSideEffectInterfaces)
     if(NOT TARGET ${MDSLC_REQUIRED_MLIR_TARGET})
       message(FATAL_ERROR
-        "MLIR 21.1.8 package is missing required component target "
+        "MLIR ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} package is missing required component target "
         "${MDSLC_REQUIRED_MLIR_TARGET}")
     endif()
   endforeach()
@@ -156,11 +187,12 @@ if(MDSLC_ENABLE_MATCORE_MLIR)
 endif()
 
 if(MDSLC_ENABLE_NATIVE_FRONTEND)
-  find_package(LLVM 21.1.8 EXACT CONFIG REQUIRED)
-  find_package(Clang 21.1.8 EXACT CONFIG REQUIRED)
-  if(NOT LLVM_PACKAGE_VERSION VERSION_EQUAL "21.1.8")
+  find_package(LLVM ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} EXACT CONFIG REQUIRED)
+  find_package(Clang ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} EXACT CONFIG REQUIRED)
+  if(NOT LLVM_PACKAGE_VERSION VERSION_EQUAL MDSLC_REQUIRED_TOOLCHAIN_VERSION)
     message(FATAL_ERROR
-      "MDSLC native frontend requires the audited LLVM/Clang 21.1.8 tuple; "
+      "MDSLC native frontend requires the selected coherent LLVM/Clang "
+      "${MDSLC_REQUIRED_TOOLCHAIN_VERSION} tuple; "
       "found LLVM ${LLVM_PACKAGE_VERSION}")
   endif()
   if(WIN32 AND TARGET LLVMDebugInfoPDB)
@@ -305,6 +337,8 @@ if(NOT EXISTS "${MDSLC_CLANGXX_EXECUTABLE}")
   message(FATAL_ERROR "Configured clang++ driver does not exist: ${MDSLC_CLANGXX_EXECUTABLE}")
 endif()
 if(MDSLC_ENABLE_NATIVE_FRONTEND)
+  string(REPLACE "." "\\." MDSLC_REQUIRED_TOOLCHAIN_VERSION_REGEX
+    "${MDSLC_REQUIRED_TOOLCHAIN_VERSION}")
   execute_process(
     COMMAND "${MDSLC_CLANGXX_EXECUTABLE}" --version
     RESULT_VARIABLE MDSLC_CLANGXX_VERSION_STATUS
@@ -313,9 +347,11 @@ if(MDSLC_ENABLE_NATIVE_FRONTEND)
     OUTPUT_STRIP_TRAILING_WHITESPACE
   )
   if(NOT MDSLC_CLANGXX_VERSION_STATUS EQUAL 0 OR
-     NOT MDSLC_CLANGXX_VERSION_OUTPUT MATCHES "clang version 21\\.1\\.8")
+     NOT MDSLC_CLANGXX_VERSION_OUTPUT MATCHES
+       "clang version ${MDSLC_REQUIRED_TOOLCHAIN_VERSION_REGEX}")
     message(FATAL_ERROR
-      "Native frontend requires a Clang 21.1.8 driver coherent with the linked "
+      "Native frontend requires a Clang ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} "
+      "driver coherent with the linked "
       "LLVM/Clang packages; ${MDSLC_CLANGXX_EXECUTABLE} reported: "
       "${MDSLC_CLANGXX_VERSION_OUTPUT}${MDSLC_CLANGXX_VERSION_ERROR}")
   endif()
@@ -466,6 +502,7 @@ if(BUILD_TESTING)
           "${Python3_EXECUTABLE}"
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/run_native_frontend_tests.py"
           --extractor "$<TARGET_FILE:matcore-extract>"
+          --expected-toolchain-version "${MDSLC_REQUIRED_TOOLCHAIN_VERSION}"
       )
       set_tests_properties(
         frontend.native.focused
@@ -478,6 +515,7 @@ if(BUILD_TESTING)
           "${Python3_EXECUTABLE}"
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/run_frontend_tests.py"
           --extractor "$<TARGET_FILE:matcore-extract>"
+          --clang "${MDSLC_CLANGXX_EXECUTABLE}"
       )
       set_tests_properties(
         frontend.native.primary
