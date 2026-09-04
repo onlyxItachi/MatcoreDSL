@@ -7,6 +7,10 @@ Date: 2026-09-05
 - Canonical base: `327530d287e41c4115365598e76b17e149a1c45a`
 - Implementation commit:
   `6bd3fcc3b3d50af584f73c4897b392d79b83f987`
+- Initial durable record:
+  `c36b6fc91da16412c3e007c3c420566365df4ecc`
+- Independent-review hardening commit:
+  `472e695f061fa9577279b5c159aef1b4b7086419`
 - Branch: `mdslc/contraction-foundation-v1`
 - Corpus and re-entry identity: inherited unchanged from
   `docs/mdslc/CORPUS_REENTRY_RECONCILIATION_V1.md`
@@ -42,14 +46,22 @@ and non-results are recorded in
 ## Mechanical invariants and falsification
 
 - Decoding a topology attribute regenerates the selected standard operation's
-  canonical model and requires exact equality; artifact-supplied arbitrary
-  affine maps are not accepted as canonical.
+  canonical model and requires exact equality; encoding also verifies that
+  model and its MLIR context before producing an attribute. Artifact-supplied
+  arbitrary affine maps cannot enter through either direction.
 - GER is an outer/rank-1 update with two parallel loops and no reduction. Its
-  representative Linalg body adds the product to the prior destination value;
+  representative Linalg body is checked as exact no-fast-math
+  `mul(x,y)` -> `add(old C,mul)` -> `yield(add)` dataflow with no fill;
   neither a reduction classification nor GEMM-overwrite semantics validates.
 - A rank-two GEMM with a unit M, N, or K extent remains `mdsl.gemm`; geometry
-  does not silently change operation identity to GEMV or DOT. Authoritative
-  Matcore IR v1 continues to reject zero static extents.
+  does not silently change operation identity to GEMV or DOT. Independent unit
+  and zero tests cover M, N, and K. Authoritative Matcore IR v1 continues to
+  reject zero static extents and specifies dynamic symbols as positive runtime
+  values; dynamic MLIR types do not grant concrete-zero authority.
+- MLIR 21.1.8 named-op fixtures mechanically match GEMV-N, explicitly
+  operand-reordered GEMV-T, DOT, GEMM TN/NT, and aligned-batch NN/TN/NT
+  topology. This proves maps/ranks/iterators only. TT remains model-only because
+  the inspected version has no one named TT carrier.
 - GEMV, DOT, GER, and batched-GEMM fixtures prove only that upstream Linalg can
   carry their maps/ranks/iterator structure. Every such model-only fixture is
   rejected by the authenticated structured-GEMM source API and by the CPU
@@ -59,6 +71,10 @@ and non-results are recorded in
   fields make it stable across MLIR contexts. A semantic contract mutation
   changes the digest. The digest is substitution detection, not a source-byte
   signature or execution authority.
+- Generic certificate verification runs upstream MLIR verification before
+  interpreting source/structured envelopes. Raw diagnostic fingerprint calls
+  reject core-invalid carriers, non-member function handles, same-context
+  mixed modules, semantic/structured hybrids, and non-exact source contracts.
 - Standard visible vocabulary is GEMM, GEMV, DOT, GER, and batched GEMM. The
   legacy private `GEVM` spelling remains evidence-only documentation debt;
   future user-facing orientation should use GEMV plus an explicit transpose or
@@ -66,8 +82,9 @@ and non-results are recorded in
   introduced.
 
 Adversarial tests reject rank, map, iterator, orientation, topology-class,
-attribute-version, contract, provenance, destination, numerical, alias,
-authority, and cross-operation substitutions.
+attribute-version/context, malformed MLIR, module/function identity, contract,
+provenance, destination, numerical, alias, authority, and cross-operation
+substitutions.
 
 ## Validation
 
@@ -92,6 +109,29 @@ Results at implementation commit `6bd3fcc3b3d50af584f73c4897b392d79b83f987`:
 | `matcore_mlir_contraction_model_tests` | `164` checks, `0` failures |
 | `matcore_mlir_structured_gemm_handoff_tests` | `237` checks, `0` failures |
 | `git diff --check` | passed |
+
+Focused hardening results at
+`472e695f061fa9577279b5c159aef1b4b7086419`:
+
+| Validation | Exact result |
+| --- | --- |
+| Incremental Release build | completed; only pre-existing generated-ODS unused-parameter warnings |
+| Focused CTest regex | `2/2` passed, `0` failed |
+| `matcore_mlir_contraction_model_tests` | `277` checks, `0` failures |
+| `matcore_mlir_structured_gemm_handoff_tests` | `274` checks, `0` failures |
+| Structured GEMM golden SHA-256 | unchanged: `632d2fec0eb972a54f0cc0714e2e1811f92d39e8fce8417efe6110927965143d` |
+
+The first full CTest attempt after that commit reported `60/65` passing. All
+five failures were stale configure/build provenance rather than test behavior:
+the package fixture still expected `c36b6fc`, and `matcore-bench` recorded that
+it had been built while the pre-commit tree was dirty. The final clean-head
+reconfigure/rebuild result is recorded below.
+
+At the clean branch head containing this report, CMake was re-run to refresh
+the exact checkout identity, the Release tree was rebuilt, and the complete
+CTest surface passed `65/65`, `0` failed. The final direct focused binaries
+again reported `277/0` contraction checks and `274/0` structured-GEMM checks;
+`git diff --check` passed.
 
 The full CTest surface includes native/bootstrap frontend, semantic IR/MLIR,
 structured handoff, CPU dispatch/runtime/planner, C ABI, installed consumer,
