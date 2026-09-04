@@ -364,6 +364,7 @@ def main() -> int:
         choices=("capture-v0", "matcore-mlir"),
         required=True,
     )
+    parser.add_argument("--experimental-toolchain-version", default="")
     arguments = parser.parse_args()
 
     matcore_mlir_available = arguments.matcore_mlir_available == "ON"
@@ -452,6 +453,11 @@ def main() -> int:
     ]
     if matcore_mlir_available:
         configure.append(f"-DMLIR_DIR={Path(arguments.mlir_dir).resolve()}")
+    if arguments.experimental_toolchain_version:
+        configure.append(
+            "-DMDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION="
+            f"{arguments.experimental_toolchain_version}"
+        )
 
     def alternate_producer_configure(
         alternate_build: Path,

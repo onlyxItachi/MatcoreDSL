@@ -824,6 +824,8 @@ if(BUILD_TESTING)
           --clang-dir "${Clang_DIR}"
           --matcore-mlir-available "${MDSLC_MATCORE_MLIR_AVAILABLE}"
           --default-semantic-pipeline "${MDSLC_DEFAULT_SEMANTIC_PIPELINE}"
+          --experimental-toolchain-version
+            "${MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION}"
           ${MDSLC_SOURCE_INACCESSIBLE_MLIR_ARGUMENTS}
       )
       set_tests_properties(
