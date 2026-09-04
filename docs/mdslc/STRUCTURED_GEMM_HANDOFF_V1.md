@@ -1,11 +1,12 @@
 # MDSLC structured GEMM inspection handoff v1
 
-Date: 2026-09-04
+Date: 2026-09-05
 
 Status: implementation checkpoint on `mdslc/structured-gemm-inspection-v1`.
-Focused Release validation and independent implementation/test review have
-passed. The clean committed regression and package checkpoint remains pending.
-This document never grants execution or performance authority.
+Clean Release, Debug, MLIR-disabled compatibility, package, focused semantic,
+and independent implementation/test review have passed. Hosted validation is
+left to the draft pull request. This document never grants execution or
+performance authority.
 
 ## Repository and evidence identity
 
@@ -308,16 +309,44 @@ correctness or execution-authority blocker. The evaluator is a test-local
 interpreter of the exact checked structured operations; it is not generated
 MLIR execution and does not prove bufferization.
 
-The following clean-head checkpoint evidence remains pending at this document
-revision:
+Clean committed validation was run at
+`3243e06d6277d8e882df7748a2b5620c51478576`; that commit contains the focused
+implementation plus the initial evidence record:
 
-- the full registered 64-test Release regression, including installed and
-  source-inaccessible consumers and provenance-sensitive benchmark contracts;
-- a supported Debug build/test scope;
-- an MLIR-disabled/default-capture compatibility build/test scope.
+```text
+Release, Matcore MLIR ON, default matcore-mlir, OpenBLAS OFF
+  PASS: full build
+  PASS: 64/64 CTests, 0 failed, 185.26 seconds
 
-No OpenBLAS-enabled, Windows, sanitizer, physical accelerator, or performance
-run is claimed by this checkpoint unless added below after it is actually run.
+Debug, Matcore MLIR ON, default matcore-mlir, OpenBLAS OFF
+  PASS: 132/132 build steps
+  PASS: 3/3 owned CTests, 27.00 seconds
+  PASS: 64/64 CTests, 0 failed, 160.86 seconds
+
+Release compatibility, Matcore MLIR OFF, default capture-v0, OpenBLAS OFF
+  PASS: 106/106 build steps
+  PASS: 58/58 CTests, 0 failed, 155.84 seconds
+  PASS: explicit MLIR-unavailable contract, 12 checks, 0 failures
+```
+
+The Release and Debug suites include frontend/capture, Matcore IR and MLIR,
+explicit-GEMM CPU execution, recovered/composed firewalls, runtime/planner,
+strict C17 ABI, installed consumer, source-inaccessible/relocated package,
+benchmark provenance contracts, and CLI surfaces. The compatibility suite
+proves the source default remains `capture-v0`, no `matcore-mlir` binary is
+built, and explicit semantic-pipeline requests fail without publishing an
+artifact.
+
+An additional install-tree scan found only `matcore/mdsl.h` and
+`matcore/runtime_c.h` under installed public headers and no structured internal
+header/target or concrete MLIR component dependency in public headers/CMake
+exports. `matcore-extract` and `matcore-mlir` have a system LLVM 21 runpath and
+no extracted-MLIR-prefix runpath or shared `libMLIR` dependency.
+
+No OpenBLAS-enabled, Windows, sanitizer, physical accelerator, generated-MLIR
+execution, or performance run is claimed by this checkpoint. The compatible
+OpenBLAS-off runtime/provider behavior is covered, but Native BLAS Parity is
+not.
 
 ## Unresolved evidence
 

@@ -1,6 +1,6 @@
 # MDSLC status
 
-Status date: 2026-09-04
+Status date: 2026-09-05
 
 - PR #18 base `origin/main` and merged Milestone 7 bounded disposition:
   `e5069758ad04bdb459de2026cad8498b47fda707`
@@ -285,10 +285,14 @@ the untouched semantic module and rejects the structured artifact.
 
 Focused Release validation passed 220 structured adversarial checks, 13 CLI
 cases, 132 native semantic/structured/CPU integration checks, and all three
-owned CTest entries. Independent code and test review found no remaining
-correctness or execution-authority blocker. A clean committed full regression,
-package/source-inaccessible consumer gate, supported Debug scope, and
-MLIR-disabled compatibility scope remain pending at this document revision.
+owned CTest entries. At clean committed checkpoint
+`3243e06d6277d8e882df7748a2b5620c51478576`, the MLIR-enabled Release and Debug
+profiles each passed 64/64 CTests, while the MLIR-disabled/default-`capture-v0`
+Release compatibility profile passed 58/58. Installed, relocated, and
+source-inaccessible consumers passed; an explicit install scan found no
+structured header/target or concrete MLIR component dependency in the public
+package. Independent code and test review found no remaining correctness or
+execution-authority blocker.
 
 This is not bufferization, generated execution, vector or machine lowering,
 performance evidence, a public interface commitment, or authority to execute

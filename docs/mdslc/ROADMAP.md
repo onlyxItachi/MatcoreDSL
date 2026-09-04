@@ -1,6 +1,6 @@
 # MDSLC roadmap
 
-Status date: 2026-09-04
+Status date: 2026-09-05
 
 The roadmap is gate-driven and additive to the existing Python/JIT lineage.
 The primary direction is now a compositional semantic compiler and CPU-first
@@ -331,13 +331,15 @@ canonical structured operations. The current runtime/provider route remains
 the only executable route. See
 [STRUCTURED_GEMM_HANDOFF_V1.md](STRUCTURED_GEMM_HANDOFF_V1.md).
 
-After its clean regression/package checkpoint, the next admissible milestone
-is limited to inspection-only bufferization legality and destination-storage
-identity. Matcore must account for every retained fact and verify the
-postconditions; MLIR should own One-Shot Bufferize and standard buffer
-transformations; LLVM/backends still own machine lowering; external libraries
-remain authenticated provider candidates. Entry requires exact MLIR 21.1.8
-interface evidence and connected static/dynamic traces. Completion requires a
+Its clean regression/package checkpoint is complete: MLIR-enabled Release and
+Debug passed 64/64 CTests each, and the MLIR-disabled/default-`capture-v0`
+Release profile passed 58/58. The next admissible milestone is limited to
+inspection-only bufferization legality and destination-storage identity.
+Matcore must account for every retained fact and verify the postconditions;
+MLIR should own One-Shot Bufferize and standard buffer transformations;
+LLVM/backends still own machine lowering; external libraries remain
+authenticated provider candidates. Entry requires exact MLIR 21.1.8 interface
+evidence and connected static/dynamic traces. Completion requires a
 deterministic verified buffer artifact, allocation/copy accounting, proof that
 the result denotes the original output storage and never reads initial C, and
 unchanged runtime/provider behavior. It must stop before vector/LLVM lowering,
