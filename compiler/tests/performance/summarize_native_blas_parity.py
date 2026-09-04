@@ -59,6 +59,11 @@ PARALLEL_NATIVE_VARIANTS = {
 NATIVE_VARIANTS = SERIAL_NATIVE_VARIANTS | PARALLEL_NATIVE_VARIANTS
 OPENBLAS = "cpu.external.openblas.f32.v1"
 AUTO = "auto"
+PROVIDER_METADATA_PLACEHOLDERS = {
+    "unknown",
+    "unavailable",
+    "uninspected",
+}
 PLANNER_V3_VARIANTS = (
     "cpu.reference.f32.v1",
     "cpu.tiled.f32.v1",
@@ -976,6 +981,21 @@ def authenticate_report(
             result.get("planner_mode") == "forced"
             and result.get("selected_variant") == variant,
             "forced raw variant was silently substituted",
+        )
+    if result.get("selected_variant") == OPENBLAS:
+        provider_version = environment.get("provider_version")
+        provider_config = environment.get("provider_config")
+        require(
+            environment.get("provider_name") == "OpenBLAS"
+            and isinstance(provider_version, str)
+            and bool(provider_version.strip())
+            and provider_version == provider_version.strip()
+            and provider_version.casefold() not in PROVIDER_METADATA_PLACEHOLDERS
+            and isinstance(provider_config, str)
+            and bool(provider_config.strip())
+            and provider_config == provider_config.strip()
+            and provider_config.casefold() not in PROVIDER_METADATA_PLACEHOLDERS,
+            "selected OpenBLAS result lacks required provider metadata",
         )
     require(
         result.get("complete_implementation_comparison") is True,
