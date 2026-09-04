@@ -4,7 +4,7 @@
 
 - Canonical campaign base: `327530d287e41c4115365598e76b17e149a1c45a`.
 - Compatibility implementation validated below:
-  `a30bf0c0427875e08352d850898f0eb84f99f484`.
+  `831774146a1e6552d3dd88cbdf5d8ed681daeebe`.
 - Branch: `mdslc/mlir-upstream-portability-v1`.
 - Product truth remains the exact LLVM/Clang/MLIR `21.1.8` tuple. The new
   `MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION=22.1.8` switch is an advanced,
@@ -36,6 +36,7 @@ under `/home/hamza-usta/.local/toolchains/llvm-22.1.8-linux-x64`.
 | `LLVM-22.1.8-Linux-X64.tar.xz` (1,938,859,476 bytes) | `df0e1ecf16caf3489a272a5eea4eec9b0d82878f6477fa309504f918a0006384` |
 | `bin/clang++` | `31a40dc31f3c15a47aa119aa148f339bf363d8f61202ddbdacbd3f24b71ba113` |
 | `bin/mlir-opt` | `45092a31bf61175e2917ce59e12e71f8e287a73bb6bb241142b362f2c1e03850` |
+| `lib/libclang-cpp.so.22.1` | `a99d309f3cadea7fd7203ebec873bc165fc0c9ee0694ba4015c9902a5debf3a3` |
 | `lib/cmake/llvm/LLVMConfig.cmake` | `e512d42bc2ee2527f63c3121f460b478615249413171215552a4606554c3f47f` |
 | `lib/cmake/mlir/MLIRConfig.cmake` | `dcb08a02af7b2194b3bc61c910b3c2711d00aa3b010cd50d64bd9802181d7efd` |
 
@@ -69,6 +70,25 @@ The archive reports commit
    `21.1.8` and rejects MLIR 22.
 6. No Matcore semantic, structured-GEMM, CPU-runtime, installed-ABI, or
    benchmark-contract change was required by MLIR 22.1.8.
+7. The first installed-package result was not a valid exact-22 proof. CMake
+   stripped the build-tree RUNPATH from `matcore-extract`, so the relocated
+   executable resolved Ubuntu's `libclang-cpp.so.22.1` (`22.1.6`, SHA-256
+   `99517c8b484193fe15d66e25ae3b30fa0929727577a90cc375d9d4c469621225`)
+   while reporting the compile-time `22.1.8` macro. The compatibility lane now
+   gives only the installed extractor an absolute `INSTALL_RPATH` derived from
+   the admitted imported `clang-cpp` target. It copies no LLVM artifact.
+8. Extractor startup checks the version returned by the loaded Clang library.
+   The non-Windows experimental lane also enumerates the loaded
+   `libclang-cpp.so` and requires its filesystem identity to equal the
+   configure-selected imported target. The source-inaccessible package test
+   independently checks the dynamic loader's resolved path before deleting
+   the producer source/build trees.
+9. Configure-time driver admission, extractor driver discovery, `mdslc++`
+   driver discovery, and the optional Windows `llvm-config` coherence check
+   now compare parsed version tokens exactly. Prefix, suffix, and prerelease
+   near matches are rejected. `--help` and `--frontend-info` expose the
+   experimental compatibility-only status rather than presenting it as
+   product support.
 
 ## Architectural implication
 
@@ -83,27 +103,50 @@ This evidence supports keeping a bounded compatibility switch. It does **not**
 support declaring 22.1.8 a product-supported tuple, removing the 21.1.8 pin,
 or promising cross-version serialized-IR compatibility.
 
+On non-Windows exact-22 experiments, the installed extractor now has an
+explicit external dependency on the configure-selected toolchain directory.
+Relocating MatcoreDSL does not relocate, copy, or redistribute LLVM. Removing
+or moving that external toolchain makes the extractor fail to load; overriding
+it with another Clang DSO makes startup fail its version or identity check.
+This is an experimental evidence constraint, not an installed consumer or
+release promise.
+
 ## Validation
 
-At clean implementation commit `a30bf0c0427875e08352d850898f0eb84f99f484`:
+At clean implementation commit `831774146a1e6552d3dd88cbdf5d8ed681daeebe`:
 
 - LLVM/Clang/MLIR 22.1.8, Release, MLIR on, native plus bootstrap frontends,
-  OpenBLAS off: build passed; CTest `64/64` passed in `121.15 s`.
+  default `capture-v0`, OpenBLAS off: build passed; CTest `65/65` passed in
+  `80.95 s`. The final source-inaccessible test performed a fresh clean clone,
+  build, install, relocation, dynamic-dependency identity check, producer-tree
+  removal, and consumer build/run.
 - Audited LLVM/Clang/MLIR 21.1.8, Release, MLIR on, native plus bootstrap
-  frontends, OpenBLAS 0.3.32 on: build `132/132` passed; CTest `64/64`
-  passed in `207.22 s`.
+  frontends, default `matcore-mlir`, OpenBLAS 0.3.32 required: build passed;
+  CTest `65/65` passed in `105.68 s`, including its own clean
+  source-inaccessible rebuild.
 - The exact-22 matrix includes native/frontend adversarial tests, exact
   structured-GEMM verification, explicit GEMM CPU execution, runtime/planner,
   installed consumer and source-inaccessible relocation, C ABI, package,
   benchmark provenance, and parity-harness contract tests.
 - A configuration using the mixed distro 22 packages was rejected before
   compilation because LLVM `22.1.6` did not satisfy exact `22.1.8`.
+- Configure-time suffix `22.1.80` and prefix `122.1.8` driver forgeries were
+  rejected. The same cases are permanent CMake, C++, and extractor tests.
+- A relocated installed extractor resolved the official
+  `/home/hamza-usta/.local/toolchains/llvm-22.1.8-linux-x64/lib/libclang-cpp.so.22.1`
+  through its experimental-only RUNPATH. An `LD_LIBRARY_PATH` override to the
+  distro `22.1.6` DSO failed exact runtime-version authentication with exit 2;
+  an override to a copied official `22.1.8` DSO failed filesystem-identity
+  authentication with exit 2.
 - `git diff --check` and Python bytecode compilation of the changed harnesses
   passed.
 
 ## Unresolved evidence
 
 - No Windows 22.1.8 distribution/build was tested.
+- The external exact-22 toolchain path is intentionally absolute and must
+  remain present for an installed experimental extractor. Toolchain relocation
+  and redistribution are not established.
 - No 22.1.8 Debug or sanitizer matrix was run.
 - OpenBLAS-enabled behavior was covered on product 21.1.8, not on the 22.1.8
   compatibility build.
@@ -117,7 +160,9 @@ At clean implementation commit `a30bf0c0427875e08352d850898f0eb84f99f484`:
 
 ## Disposition
 
-The compatibility implementation is a candidate for canonical integration
-after independent review and hosted 21.1.8 checks. Keep 21.1.8 as product
-truth. Use 22.1.8 only as an explicitly selected, exact compatibility lane
-until a separate migration decision establishes broader platform evidence.
+The hardened compatibility implementation is a candidate for canonical
+integration after independent review and hosted checks of its new head. The
+previous hosted head was green, but these loader-binding corrections are only
+locally validated at this checkpoint. Keep 21.1.8 as product truth. Use 22.1.8
+only as an explicitly selected, exact compatibility lane until a separate
+migration decision establishes broader platform evidence.
