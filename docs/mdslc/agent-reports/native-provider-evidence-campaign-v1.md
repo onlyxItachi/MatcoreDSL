@@ -12,9 +12,10 @@ This lane started from canonical `main` and `origin/main` at
 
 The primary evidence-audit implementation checkpoint is
 `9f5b5dba53b80579be7228010bf832b5ce29b8b4`; claim-boundary wording first landed
-at `9c6d4647d8bca3590429a00d72d3498833118855`, and independent adversarial output
-safety hardening is captured at
-`58d947fc0954aa6604d792ac2f934065f42ffc12`. No production planner, runtime,
+at `9c6d4647d8bca3590429a00d72d3498833118855`; atomic output safety was hardened
+at `58d947fc0954aa6604d792ac2f934065f42ffc12`; and independent-review closure for
+ambiguous provider identity and bounded output failures is captured at
+`7ff052ce8ddf458c87e555266a4798e0f6b3be0e`. No production planner, runtime,
 kernel, public API, public ABI, threshold, or provider-selection policy changed.
 The candidate is published for review as draft PR #23; it was not merged by
 this lane.
@@ -160,15 +161,18 @@ alias and overwrite one of those protected inputs through its staging file.
 
 Both the live runner and the independent summarizer now reject a raw result
 that selected OpenBLAS unless it carries `provider_name=OpenBLAS` and non-empty,
-non-placeholder provider version and configuration strings. This closes a
-narrow gap between benchmark schema intent and Python evidence authentication;
-it does not claim cryptographic identity for the loaded provider library.
+trimmed, case-normalized non-placeholder provider version and configuration
+strings. This closes a narrow gap between benchmark schema intent and Python
+evidence authentication; it does not claim cryptographic identity for the
+loaded provider library.
 
 Adversarial tests prove rejection of selective case omission, unfinished state
 with stale raw bytes, raw digest tampering, missing provider identity, a valid
 pair from the wrong expected source checkpoint, one-sided evidence, direct
-output collision, and staging-file collision. The positive fixture is a
-synthetic contract fixture only and is not performance evidence.
+output collision, staging-file collision, uppercase/whitespace placeholder
+identity, and a directory selected as JSON output. Output-write failures return
+the documented tool/safety status without a traceback. The positive fixture is
+a synthetic contract fixture only and is not performance evidence.
 
 ## Current gap matrix
 
@@ -191,9 +195,10 @@ auditor supplies any missing performance evidence.
 
 ## Validation
 
-The following checks passed at the implementation checkpoint; the direct
-auditor contract, Python byte compilation, Ruff, and `git diff --check` were
-repeated after the `58d947f` output-safety hardening:
+The following checks passed at the implementation checkpoint; the runner,
+summarizer, and auditor contracts, Python byte compilation, Ruff, and
+`git diff --check` were repeated after the `7ff052c` independent-review
+hardening:
 
 - Python byte compilation for runner, summarizer, auditor, and their three
   contract tests;
