@@ -782,6 +782,21 @@ def authenticate_report(
         or result.get("selected_variant") != case.variant
     ):
         raise ValueError("forced variant was silently substituted")
+    if result.get("selected_variant") == OPENBLAS:
+        provider_version = environment.get("provider_version")
+        provider_config = environment.get("provider_config")
+        if (
+            environment.get("provider_name") != "OpenBLAS"
+            or not isinstance(provider_version, str)
+            or not provider_version
+            or provider_version in {"unknown", "unavailable", "uninspected"}
+            or not isinstance(provider_config, str)
+            or not provider_config
+            or provider_config in {"unknown", "unavailable", "uninspected"}
+        ):
+            raise ValueError(
+                "selected OpenBLAS result lacks authenticated provider metadata"
+            )
     if not result.get("complete_implementation_comparison"):
         raise ValueError("parity result is not a complete implementation call")
     if (

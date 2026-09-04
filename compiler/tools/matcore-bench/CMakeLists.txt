@@ -185,6 +185,17 @@ if(BUILD_TESTING)
           --summarizer
             "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/performance/summarize_native_blas_parity.py"
       )
+
+      add_test(
+        NAME benchmark.cpu.native_blas_parity_evidence_audit_contract
+        COMMAND
+          "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/performance/audit_native_blas_parity_evidence_tests.py"
+          --auditor
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/performance/audit_native_blas_parity_evidence.py"
+          --summarizer
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/performance/summarize_native_blas_parity.py"
+      )
     endif()
   endif()
 endif()

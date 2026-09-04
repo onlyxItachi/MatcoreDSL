@@ -808,6 +808,40 @@ def main() -> int:
         assert not (output / "summary.json").exists()
         first_raw.write_bytes(pristine_raw)
 
+        provider_record = next(
+            record
+            for record in forward_manifest["cases"]
+            if record["variant"] == summary.OPENBLAS
+            and record["state"] == "passed"
+        )
+        provider_raw = forward.parent / provider_record["raw_file"]
+        pristine_provider_raw = provider_raw.read_bytes()
+        missing_provider_identity = json.loads(
+            pristine_provider_raw.decode("utf-8")
+        )
+        missing_provider_identity["environment"]["provider_config"] = ""
+        provider_raw.write_text(
+            json.dumps(missing_provider_identity, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        provider_record["sha256"] = sha256(provider_raw)
+        forward.write_text(
+            json.dumps(forward_manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        rejected_provider_identity = execute_summary(
+            summarizer_path, forward, reverse, output, expected=2
+        )
+        assert "provider metadata" in rejected_provider_identity.stderr
+        assert not (output / "summary.md").exists()
+        assert not (output / "summary.json").exists()
+        provider_raw.write_bytes(pristine_provider_raw)
+        provider_record["sha256"] = sha256(provider_raw)
+        forward.write_text(
+            json.dumps(forward_manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
         asserted_provenance = json.loads(pristine_raw.decode("utf-8"))
         asserted_provenance["environment"]["source_provenance_origin"] = (
             "explicit-override"

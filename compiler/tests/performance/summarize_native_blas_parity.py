@@ -977,6 +977,19 @@ def authenticate_report(
             and result.get("selected_variant") == variant,
             "forced raw variant was silently substituted",
         )
+    if result.get("selected_variant") == OPENBLAS:
+        provider_version = environment.get("provider_version")
+        provider_config = environment.get("provider_config")
+        require(
+            environment.get("provider_name") == "OpenBLAS"
+            and isinstance(provider_version, str)
+            and bool(provider_version)
+            and provider_version not in {"unknown", "unavailable", "uninspected"}
+            and isinstance(provider_config, str)
+            and bool(provider_config)
+            and provider_config not in {"unknown", "unavailable", "uninspected"},
+            "selected OpenBLAS result lacks authenticated provider metadata",
+        )
     require(
         result.get("complete_implementation_comparison") is True,
         "raw result is not a complete implementation call",
