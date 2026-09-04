@@ -1,6 +1,8 @@
 #include "MatcoreCpuRuntimeLowering.h"
+#include "MatcoreContractionModel.h"
 #include "MatcoreOps.h"
 #include "MatcoreStructuredGemmHandoff.h"
+#include "MatcoreStructuredHandoffCertificate.h"
 #include "MatcoreV1Bridge.h"
 #include "matcore_ir_v1.h"
 
@@ -527,6 +529,130 @@ void testStaticNonSquareHandoff(v1::Module capture) {
         "2x3 by 3x4 sentinel GEMM must preserve logical M/K/N indexing");
 }
 
+void testUnitExtentIdentityAndZeroExtentAdmission(v1::Module capture) {
+  check(capture.operations.size() == 1,
+        "unit-extent fixture must contain exactly one GEMM");
+  if (capture.operations.size() != 1)
+    return;
+  makeStatic(capture.operations[0].operands[0], 1, 1);
+  makeStatic(capture.operations[0].operands[1], 1, 1);
+  makeStatic(capture.operations[0].output, 1, 1);
+  std::string error;
+  check(v1::verify(capture, error),
+        "rank-two 1x1 GEMM must remain a valid GEMM capture");
+  if (!v1::verify(capture, error))
+    return;
+
+  mlir::MLIRContext context;
+  auto semantic = buildSemantic(capture, context);
+  check(static_cast<bool>(semantic),
+        "rank-two 1x1 GEMM must bridge as mdsl.gemm");
+  if (!semantic)
+    return;
+  auto structured = bridge::deriveStructuredGemmHandoffV1(*semantic.module);
+  check(static_cast<bool>(structured),
+        "rank-two 1x1 GEMM must derive through the GEMM handoff");
+  if (!structured)
+    return;
+  auto function = structuredFunction(*structured.module);
+  auto handoff = function->getAttrOfType<mlir::DictionaryAttr>(
+      "mdsl.structured_handoff");
+  auto source_operation =
+      handoff ? handoff.getAs<mlir::StringAttr>("source_operation")
+              : mlir::StringAttr{};
+  check(source_operation && source_operation.getValue() == "mdsl.gemm",
+        "unit dimensions must not relabel GEMM as GEMV or DOT");
+  const auto unit_lhs = mlir::dyn_cast<mlir::RankedTensorType>(
+      function.getArgument(0).getType());
+  const auto unit_rhs = mlir::dyn_cast<mlir::RankedTensorType>(
+      function.getArgument(1).getType());
+  const auto unit_output = mlir::dyn_cast<mlir::RankedTensorType>(
+      function.getArgument(2).getType());
+  check(unit_lhs && unit_rhs && unit_output && unit_lhs.getRank() == 2 &&
+            unit_rhs.getRank() == 2 && unit_output.getRank() == 2,
+        "unit dimensions must preserve rank-two GEMM geometry");
+
+  auto topology = bridge::buildCanonicalContractionTopologyV1(
+      context, bridge::StandardLinearAlgebraOperationV1::Gemm);
+  check(topology && topology.topology.operand_ranks ==
+                        llvm::ArrayRef<unsigned>({2, 2, 2}),
+        "extent-neutral topology must still require GEMM operand ranks");
+
+  v1::Module zero_extent = capture;
+  makeStatic(zero_extent.operations[0].operands[0], 0, 1);
+  makeStatic(zero_extent.operations[0].output, 0, 1);
+  check(!v1::verify(zero_extent, error),
+        "zero M remains rejected by the authoritative Matcore IR v1 source "
+        "contract");
+}
+
+void testReusableCertificateFingerprint(const v1::Module &capture) {
+  mlir::MLIRContext context;
+  auto semantic = buildSemantic(capture, context);
+  check(static_cast<bool>(semantic),
+        "certificate fingerprint fixture must bridge");
+  if (!semantic)
+    return;
+  auto structured = bridge::deriveStructuredGemmHandoffV1(*semantic.module);
+  check(static_cast<bool>(structured),
+        "certificate fingerprint fixture must derive");
+  if (!structured)
+    return;
+  auto source_function = findOne<mlir::func::FuncOp>(*semantic.module);
+  auto source_gemm = findOne<dialect::GemmOp>(*semantic.module);
+  auto structured_function = structuredFunction(*structured.module);
+  check(source_function && source_gemm && structured_function,
+        "certificate fingerprint fixture must contain paired sites");
+  if (!source_function || !source_gemm || !structured_function)
+    return;
+  std::string error;
+  const std::string source_fingerprint =
+      bridge::computeSourceSemanticFingerprintV1(
+          *semantic.module, source_function, source_gemm->getAttrDictionary(),
+          "mdsl.gemm", error);
+  const std::string structured_fingerprint =
+      bridge::computeStructuredSemanticFingerprintV1(
+          *structured.module, structured_function, "mdsl.gemm", error);
+  check(source_fingerprint.size() == 71 &&
+            source_fingerprint.starts_with("sha256:") &&
+            source_fingerprint == structured_fingerprint,
+        "generic certificate fingerprint must bind the exact source and "
+        "structured semantic identities");
+
+  const std::string structured_text =
+      bridge::serializeDeterministicMlir(*structured.module);
+  mlir::MLIRContext parse_context;
+  bridge::registerStructuredGemmHandoffDialectsV1(parse_context);
+  mlir::ParserConfig parser_config(&parse_context,
+                                   /*verifyAfterParse=*/true);
+  auto reparsed = mlir::parseSourceString<mlir::ModuleOp>(structured_text,
+                                                          parser_config);
+  check(static_cast<bool>(reparsed),
+        "fingerprint cross-context fixture must reparse");
+  if (reparsed) {
+    const std::string cross_context_fingerprint =
+        bridge::computeStructuredSemanticFingerprintV1(
+            *reparsed, structuredFunction(*reparsed), "mdsl.gemm", error);
+    check(cross_context_fingerprint == source_fingerprint,
+          "versioned semantic fingerprint must be canonical across MLIR "
+          "contexts");
+  }
+
+  mlir::Builder builder(&context);
+  auto changed_contract = semanticContract(structured_function);
+  auto changed_policy = changed_contract.getAs<mlir::DictionaryAttr>("policy");
+  changed_policy = withField(builder, changed_policy, "target",
+                             builder.getStringAttr("generic"));
+  replaceContract(structured_function, builder, "policy", changed_policy);
+  const std::string changed_fingerprint =
+      bridge::computeStructuredSemanticFingerprintV1(
+          *structured.module, structured_function, "mdsl.gemm", error);
+  check(!changed_fingerprint.empty() &&
+            changed_fingerprint != source_fingerprint,
+        "semantic fingerprint must change when an opaque operation contract "
+        "changes");
+}
+
 void testStandaloneVsSourceMatch(const v1::Module &capture) {
   mlir::MLIRContext context;
   auto semantic = buildSemantic(capture, context);
@@ -964,6 +1090,8 @@ int main() {
 
   testDynamicHandoff(capture);
   testStaticNonSquareHandoff(capture);
+  testUnitExtentIdentityAndZeroExtentAdmission(capture);
+  testReusableCertificateFingerprint(capture);
   testStandaloneVsSourceMatch(capture);
   testContractAndDataflowMutations(capture);
   testUnsupportedSourceFirewalls(capture);
