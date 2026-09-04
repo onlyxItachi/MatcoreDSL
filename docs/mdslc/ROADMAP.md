@@ -1,6 +1,6 @@
 # MDSLC roadmap
 
-Status date: 2026-08-11
+Status date: 2026-09-04
 
 The roadmap is gate-driven and additive to the existing Python/JIT lineage.
 The primary direction is now a compositional semantic compiler and CPU-first
@@ -150,10 +150,10 @@ Status: implemented and independently accepted for the internal
 composition-v1 optimizer/inspection boundary. It does not authorize map/sine
 CPU lowering or a public map API.
 
-Implement `mdsl.map`, `mdsl.sin`, `mdsl.yield`/`mdsl.return` as required, with
-`all`, slice, indices, and predicate/mask domain concepts. Prove canonical
-GEMM-to-SIN(all) and one partial-domain case. Use SSA/use-def order and explicit
-effects rather than unnecessary total program order.
+Implement `mdsl.map`, `mdsl.sin`, `mdsl.yield`, and upstream `func.return` as
+required, with `all`, slice, indices, and predicate/mask domain concepts. Prove
+canonical GEMM-to-SIN(all) and one partial-domain case. Use SSA/use-def order
+and explicit effects rather than unnecessary total program order.
 
 Gate: domain bounds/shape, untouched-element, mutation, numerical, alias,
 effect, and reordering negative tests plus deterministic textual goldens. The
@@ -184,8 +184,8 @@ and are rejected by the executable CPU lowerer.
 
 Status: implemented and independently accepted for the focused Linux
 authenticated explicit-F32-GEMM runtime-dispatch path. Full CPU-beta
-configuration and hosted evidence are now passed under Milestone H; normal
-integration and publication steps remain.
+configuration, hosted evidence, normal integration, and post-merge validation
+are complete under Milestone H. No GitHub Release is claimed.
 
 Route authenticated capture through verified Matcore MLIR into legal CPU
 planning/lowering, reusing the current runtime and implementation registry.
@@ -252,15 +252,17 @@ policy remain open for the separate freeze milestone.
 
 ### H — CPU Beta
 
-Status: active. A--G have their required bounded dispositions. The full local
-integration matrix passed at immutable code candidate `6796fd8`, superseding
-the historical `69d099e` matrix after later product hardening. The later
+Status: complete for the bounded CPU-beta checkpoint. A--G have their required
+bounded dispositions. The full local integration matrix passed at immutable
+code candidate `6796fd8`, superseding the historical `69d099e` matrix after
+later product hardening. The later
 `f8e38ea` and `1d084a1` commits are focused CI/test and Windows FP-profile
 fixes, not documentation-only commits; they passed the hosted gates at
 product/test head `1d084a175772f286b04eb1802e2c4d8272533ede`. The independent
-review gate passed with no unresolved high or medium finding. Normal merge,
-post-merge checks, the `mdslc-cpu-beta-v1` tag, Issue #17 / GitHub milestone #6
-closure, and publication remain pending.
+review gate passed with no unresolved high or medium finding. PR #18 merged
+normally as `6708b48a5647698469a9af191941bd4755adab7b`; post-merge checks passed,
+the annotated `mdslc-cpu-beta-v1` checkpoint tag peels to that commit, and Issue
+#17 / GitHub milestone #6 are closed. No GitHub Release exists for the tag.
 
 The intended initial claim is valid C++ `.mdsl`, preserved ordinary C++,
 explicit F32 rank-2 GEMM, verified capture and semantic IR, deterministic legal
@@ -338,11 +340,10 @@ F disposition, not a manufactured parity pass. H does not depend on GPU work.
   performance evidence, and adversarial review use isolated sibling worktrees
   and non-overlapping files.
 - Milestone 7 remains tracked separately by Issue #15 and milestone #5.
-- Bounded contract resolution and the CPU-beta candidate are integrated on
-  `mdslc/semantic-compiler-foundation-v1`; PR #18 has passed its hosted gates,
-  while publication still requires its normal merge, green post-merge checks,
-  the immutable `mdslc-cpu-beta-v1` tag, and Issue #17 / GitHub milestone #6
-  closure.
+- Bounded contract resolution and the CPU-beta candidate were integrated from
+  `mdslc/semantic-compiler-foundation-v1` through PR #18. The merge,
+  post-merge checks, annotated `mdslc-cpu-beta-v1` checkpoint tag, and Issue
+  #17 / GitHub milestone #6 closure are complete. No GitHub Release is claimed.
 - Integration uses focused commits and normal merges. No rebase, history
   rewrite, tag movement, or deletion of legacy/user work is part of this plan.
 

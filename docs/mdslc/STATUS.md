@@ -1,16 +1,18 @@
 # MDSLC status
 
-Status date: 2026-08-11
+Status date: 2026-09-04
 
 - PR #18 base `origin/main` and merged Milestone 7 bounded disposition:
   `e5069758ad04bdb459de2026cad8498b47fda707`
 - Strategic semantic-foundation branch:
   `mdslc/semantic-compiler-foundation-v1`
 - CPU-beta pull request / umbrella issue / GitHub milestone: `#18` / `#17` /
-  `#6`; hosted validation passed at product/test head
-  `1d084a175772f286b04eb1802e2c4d8272533ede`, while normal merge, post-merge
-  checks, the `mdslc-cpu-beta-v1` tag, tracker closure, and publication remain
-  pending
+  `#6`; PR #18 merged normally as
+  `6708b48a5647698469a9af191941bd4755adab7b`, post-merge checks passed, the
+  annotated `mdslc-cpu-beta-v1` checkpoint tag peels to that commit, and Issue
+  #17 / milestone #6 are closed. No GitHub Release exists for the tag.
+- Compiler-archaeology re-entry disposition:
+  [CORPUS_REENTRY_RECONCILIATION_V1.md](CORPUS_REENTRY_RECONCILIATION_V1.md)
 - Milestone 6 pull request: `#14`, merged normally
 - Milestone 6 umbrella issue / GitHub milestone: `#13` / `#4`, closed
 - Milestone 6 immutable tag: `mdslc-cpu-performance-audit-v1`
@@ -39,9 +41,9 @@ Status date: 2026-08-11
 
 ## Strategic semantic-compiler pivot
 
-**The primary next objective is a compositional Matcore semantic compiler and
-CPU-first beta. It is not a parity-only continuation and it does not begin a
-public API/ABI/backend-contract freeze.**
+**The accepted CPU-beta foundation is a compositional Matcore semantic
+compiler with a bounded CPU execution route. Its completion is not a native
+parity claim and does not begin a public API/ABI/backend-contract freeze.**
 
 The existing Matcore IR v1 remains the deterministic typed capture and
 provenance DTO. The accepted next optimizer representation is a Matcore MLIR
@@ -166,8 +168,9 @@ registered supported gate, including provenance-sensitive tests.
 
 **Milestone C is implemented and independently accepted for the internal
 composition-v1 optimizer boundary.** `mdsl.map`, `mdsl.sin`, `mdsl.yield`,
-`mdsl.return`, and the closed `all`, slice, indices, and predicate domain forms
-have deterministic verified semantics and source-backed provenance checks.
+upstream `func.return`, and the closed `all`, slice, indices, and predicate
+domain forms have deterministic verified semantics and source-backed
+provenance checks.
 This is an inspection/optimizer model only: the v1 CPU lowerer rejects every
 map/domain pipeline, and no public map operation or map/sine execution route is
 claimed.
@@ -190,9 +193,11 @@ library-dispatch lowering, not Linalg/Vector loop generation. The fresh local
 Release, Debug, sanitizer, installed-package, relocation,
 source-inaccessible, and ABI matrix passed at `6796fd8`. Hosted Linux/Windows,
 sanitizer, legacy, and hygiene validation subsequently passed on PR #18 at
-`1d084a175772f286b04eb1802e2c4d8272533ede`. Normal merge, post-merge checks,
-tag, tracker closure, and publication remain Milestone H work. The independent
-review gate passed with no unresolved high- or medium-severity finding.
+`1d084a175772f286b04eb1802e2c4d8272533ede`. PR #18 then merged normally as
+`6708b48a5647698469a9af191941bd4755adab7b`; its post-merge checks passed, the
+annotated checkpoint tag was created, and the tracker closed. The independent
+review gate passed with no unresolved high- or medium-severity finding. No
+GitHub Release is claimed.
 
 **Milestone F has an accepted bounded technical-limit disposition.** The
 unchanged Milestone 7 performance contract still lacks a complete authenticated
@@ -209,7 +214,8 @@ report iteration, execution intent, forced-variant policy, and support-duration
 decisions remain inputs to the later public freeze. This acceptance does not
 freeze any API, ABI, or backend contract.
 
-**Milestone H is active.** The compatibility source-tree configuration remains
+**Milestone H is complete for the bounded CPU-beta checkpoint.** The
+compatibility source-tree configuration remains
 `MDSLC_ENABLE_MATCORE_MLIR=OFF` with default semantic pipeline `capture-v0`.
 The Linux CPU-beta profile deliberately enables exact MLIR 21.1.8 support and
 sets the configured default to `matcore-mlir`. Installed packages publish
@@ -255,11 +261,13 @@ Exact hosted evidence on PR #18 is:
   [31522958916](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522958916)
   both completed with full success.
 
-Local, independent-review, and hosted gates are passed. Milestone H remains
-active only for the normal PR #18 merge, green post-merge checks on `main`, the
-immutable `mdslc-cpu-beta-v1` tag, Issue #17 / GitHub milestone #6 closure, and
-publication. No CPU beta release is claimed yet. The bounded product contract
-is in [CPU_BETA_V1.md](CPU_BETA_V1.md).
+Local, independent-review, hosted, normal-merge, and post-merge gates passed.
+PR #18 merged as `6708b48a5647698469a9af191941bd4755adab7b`; the annotated
+`mdslc-cpu-beta-v1` checkpoint tag peels to that commit, and Issue #17 / GitHub
+milestone #6 are closed. No GitHub Release is claimed, and this checkpoint does
+not freeze the public API, ABI, or backend contract or establish native-BLAS
+parity. The bounded product contract is in
+[CPU_BETA_V1.md](CPU_BETA_V1.md).
 
 ## Milestone 7 native BLAS parity
 
