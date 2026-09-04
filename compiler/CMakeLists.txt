@@ -135,7 +135,9 @@ if(MDSLC_ENABLE_MATCORE_MLIR)
   endif()
   foreach(MDSLC_REQUIRED_MLIR_TARGET IN ITEMS
       MLIRIR
+      MLIRArithDialect
       MLIRFuncDialect
+      MLIRLinalgDialect
       MLIRParser
       MLIRTransforms
       MLIRDestinationStyleOpInterface

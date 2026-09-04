@@ -1,6 +1,6 @@
 # MDSLC status
 
-Status date: 2026-09-04
+Status date: 2026-09-05
 
 - PR #18 base `origin/main` and merged Milestone 7 bounded disposition:
   `e5069758ad04bdb459de2026cad8498b47fda707`
@@ -13,6 +13,8 @@ Status date: 2026-09-04
   #17 / milestone #6 are closed. No GitHub Release exists for the tag.
 - Compiler-archaeology re-entry disposition:
   [CORPUS_REENTRY_RECONCILIATION_V1.md](CORPUS_REENTRY_RECONCILIATION_V1.md)
+- Corpus-informed structured GEMM handoff checkpoint:
+  [STRUCTURED_GEMM_HANDOFF_V1.md](STRUCTURED_GEMM_HANDOFF_V1.md)
 - Milestone 6 pull request: `#14`, merged normally
 - Milestone 6 umbrella issue / GitHub milestone: `#13` / `#4`, closed
 - Milestone 6 immutable tag: `mdslc-cpu-performance-audit-v1`
@@ -268,6 +270,36 @@ milestone #6 are closed. No GitHub Release is claimed, and this checkpoint does
 not freeze the public API, ABI, or backend contract or establish native-BLAS
 parity. The bounded product contract is in
 [CPU_BETA_V1.md](CPU_BETA_V1.md).
+
+## Corpus-informed structured GEMM handoff
+
+The first connected `mdsl.gemm` to structured MLIR seam is implemented on
+`mdslc/structured-gemm-inspection-v1` at focused code commit
+`d696cd9e2f06bb7580eff22fae6cd42ce4ab78da`. It accepts only the exact verified
+explicit Matcore IR v1 semantic bridge envelope and derives a separate
+analysis-only tensor/DPS module with positive-zero `linalg.fill` followed by
+`linalg.matmul`. The complete source semantic contract, provenance, shapes,
+layouts, effects, destination meaning, numerical policy, and source identity
+remain mechanically verified; the existing CPU lowerer continues to consume
+the untouched semantic module and rejects the structured artifact.
+
+Focused Release validation passed 220 structured adversarial checks, 13 CLI
+cases, 132 native semantic/structured/CPU integration checks, and all three
+owned CTest entries. At clean committed checkpoint
+`3243e06d6277d8e882df7748a2b5620c51478576`, the MLIR-enabled Release and Debug
+profiles each passed 64/64 CTests, while the MLIR-disabled/default-`capture-v0`
+Release compatibility profile passed 58/58. Installed, relocated, and
+source-inaccessible consumers passed; an explicit install scan found no
+structured header/target or concrete MLIR component dependency in the public
+package. Independent code and test review found no remaining correctness or
+execution-authority blocker.
+
+This is not bufferization, generated execution, vector or machine lowering,
+performance evidence, a public interface commitment, or authority to execute
+serialized MLIR. Issue #15 remains partial and open under its original Native
+BLAS Parity criteria. The exact schema, guarantees, evidence, and next boundary
+are recorded in
+[STRUCTURED_GEMM_HANDOFF_V1.md](STRUCTURED_GEMM_HANDOFF_V1.md).
 
 ## Milestone 7 native BLAS parity
 

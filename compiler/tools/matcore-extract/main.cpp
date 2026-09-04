@@ -3,6 +3,7 @@
 #include "../../lib/ir/matcore_ir_v1.h"
 #if MDSLC_HAS_MATCORE_MLIR
 #include "../../lib/mlir/MatcoreCpuRuntimeLowering.h"
+#include "../../lib/mlir/MatcoreStructuredGemmHandoff.h"
 #include "../../lib/mlir/MatcoreV1Bridge.h"
 #endif
 #include "platform_support.h"
@@ -49,6 +50,7 @@ struct CommandLine {
   std::string stubs_output;
   std::string backend_output;
   std::string semantic_ir_output;
+  std::string structured_ir_output;
   std::string verify_ir;
   std::string compiler_arguments_file;
   std::string recovered_gemm_report;
@@ -159,6 +161,7 @@ bool validateOutputPaths(const CommandLine &command) {
       {"--stubs-out", command.stubs_output},
       {"--backend-out", command.backend_output},
       {"--semantic-ir-out", command.semantic_ir_output},
+      {"--structured-ir-out", command.structured_ir_output},
       {"--inspect-recovered-gemm", command.recovered_gemm_report},
   };
   std::vector<std::pair<std::string_view, std::filesystem::path>> validated;
@@ -230,6 +233,9 @@ void usage(std::ostream &output) {
       << "  --semantic-ir-out FILE\n"
          "                         write verified Matcore MLIR inspection "
          "text\n"
+      << "  --structured-ir-out FILE\n"
+         "                         write verified analysis-only structured "
+         "GEMM MLIR\n"
       << "  --ir-version N        emit Matcore IR 0 (default) or typed IR 1\n"
       << "  --verify-ir FILE      verify serialized Matcore IR v0/v1 and exit\n"
       << "  --frontend-info       describe the built frontend modes\n"
@@ -461,6 +467,11 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
                      "--semantic-ir-out")) {
         return std::nullopt;
       }
+    } else if (argument == "--structured-ir-out") {
+      if (!takeValue(argc, argv, index, command.structured_ir_output,
+                     "--structured-ir-out")) {
+        return std::nullopt;
+      }
     } else if (argument == "--semantic-pipeline") {
       std::string value;
       if (!takeValue(argc, argv, index, value, "--semantic-pipeline") ||
@@ -557,7 +568,8 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
 #endif
 #if MDSLC_HAS_MATCORE_MLIR
       std::cout << "semantic-pipeline matcore-mlir [built]: verified Matcore "
-                   "IR v1 bridge and CPU runtime-dispatch lowering\n";
+                   "IR v1 bridge, analysis-only structured GEMM handoff, and "
+                   "CPU runtime-dispatch lowering\n";
 #else
       std::cout << "semantic-pipeline matcore-mlir [not built]\n";
 #endif
@@ -574,6 +586,7 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
         !command.rewrite_output.empty() || !command.sites_output.empty() ||
         !command.stubs_output.empty() || !command.backend_output.empty() ||
         !command.semantic_ir_output.empty() ||
+        !command.structured_ir_output.empty() ||
         !command.recovered_gemm_report.empty() ||
         !command.compiler_arguments_file.empty() ||
         !command.frontend.compiler_arguments.empty() ||
@@ -620,10 +633,17 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
                  "MLIR 21.1.8 package\n";
     return std::nullopt;
 #endif
-  } else if (!command.semantic_ir_output.empty()) {
-    std::cerr << "matcore-extract: --semantic-ir-out requires "
-                 "--semantic-pipeline=matcore-mlir\n";
-    return std::nullopt;
+  } else {
+    if (!command.semantic_ir_output.empty()) {
+      std::cerr << "matcore-extract: --semantic-ir-out requires "
+                   "--semantic-pipeline=matcore-mlir\n";
+      return std::nullopt;
+    }
+    if (!command.structured_ir_output.empty()) {
+      std::cerr << "matcore-extract: --structured-ir-out requires "
+                   "--semantic-pipeline=matcore-mlir\n";
+      return std::nullopt;
+    }
   }
   if (!command.compiler_arguments_file.empty()) {
     if (!command.frontend.compiler_arguments.empty()) {
@@ -730,6 +750,8 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
         &command.stubs_output, &command.backend_output};
     if (!command.semantic_ir_output.empty())
       generated_paths.push_back(&command.semantic_ir_output);
+    if (!command.structured_ir_output.empty())
+      generated_paths.push_back(&command.structured_ir_output);
     for (const std::string *path : generated_paths) {
       if (*path == "-") {
         std::cerr << "matcore-extract: generated artifact mode requires file "
@@ -949,6 +971,7 @@ int ExtractorMain(int argc, char **argv) {
   }
 
   std::string semantic_ir;
+  std::string structured_ir;
   std::vector<matcore::mdslc::codegen::RuntimeDispatchBackendEntryV1>
       semantic_backend_entries;
   if (command->semantic_pipeline == SemanticPipeline::MatcoreMlirCpuV1) {
@@ -964,6 +987,20 @@ int ExtractorMain(int argc, char **argv) {
                 << ": error: Matcore MLIR semantic bridge failed: "
                 << semantic.error << '\n';
       return 1;
+    }
+    if (!command->structured_ir_output.empty()) {
+      auto structured =
+          matcore::mdslc::mlir_bridge::deriveStructuredGemmHandoffV1(
+              *semantic.module);
+      if (!structured) {
+        std::cerr << command->frontend.input_path
+                  << ": error: structured GEMM handoff failed: "
+                  << structured.error << '\n';
+        return 1;
+      }
+      structured_ir =
+          matcore::mdslc::mlir_bridge::serializeDeterministicMlir(
+              *structured.module);
     }
     std::vector<
         matcore::mdslc::mlir_lowering::CpuRuntimeDispatchRecordV1>
@@ -1011,6 +1048,10 @@ int ExtractorMain(int argc, char **argv) {
         !writeAtomically(command->semantic_ir_output, semantic_ir)) {
       return 1;
     }
+    if (!command->structured_ir_output.empty() &&
+        !writeAtomically(command->structured_ir_output, structured_ir)) {
+      return 1;
+    }
     return writeAtomically(command->ir_output, json) ? 0 : 1;
   }
 
@@ -1053,6 +1094,9 @@ int ExtractorMain(int argc, char **argv) {
   };
   if (!command->semantic_ir_output.empty()) {
     outputs.emplace_back(command->semantic_ir_output, semantic_ir);
+  }
+  if (!command->structured_ir_output.empty()) {
+    outputs.emplace_back(command->structured_ir_output, structured_ir);
   }
   for (const auto &[path, contents] : outputs) {
     if (!writeAtomically(path, contents)) {
