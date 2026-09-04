@@ -35,7 +35,10 @@ Stable control-plane identities are:
 The committed `corpus/` control plane has 116 files: 11 inputs, 3 recipes, 3
 environment descriptors, 4 schemas, 2 manifests, 3 fingerprint ledgers, 68
 findings, 2 gold files, 19 scripts, and its README. The separate committed
-`proof/` plane has 41 files and is not indexed by either manifest.
+`proof/` plane has 41 files and is not indexed by either manifest. Its MLIR
+proof result records an assembly digest matching a CRLF reconstruction rather
+than the committed LF-normalized blob; no assembly line-ending identity is
+pinned.
 
 ## Coverage actually inspected
 
@@ -48,10 +51,19 @@ and assembly. The declared target triple is `x86_64-pc-windows-msvc`.
 
 All five committed CPU input hashes match both manifests. All 195 manifest
 artifact tuples match the three exported fingerprint ledgers, 65 per LLVM
-version. All committed JSON and all five nonempty JSONL files parse; two other
-JSONL files are zero-byte placeholders. The three environment descriptors and
-all 30 embedded cases validate against the supplied applicable Draft 2020
-schemas.
+version. All committed `.json` files and four of five nonempty JSONL files parse
+as strict JSON. `campaign_benchmark_results.jsonl` has six records containing
+the non-standard bare token `inf`; two other JSONL files are zero-byte
+files. The three environment descriptors and all 30 embedded cases
+validate against the supplied applicable Draft 2020 schemas.
+
+That schema result came from an independent full Draft 2020-12 validator over
+each descriptor and embedded case, not from the bundled validator's success
+banner. `corpus/scripts/windows/validate-schemas.py` does not open either
+manifest and does not validate array items; with the external data plane absent
+it checks only the three environment descriptors. The synopsis in
+`verify-corpus.ps1` therefore overstates the schema coverage it delegates to
+that script.
 
 This establishes internal control-plane consistency, not independent artifact
 authentication. The external data plane declared as
@@ -66,7 +78,9 @@ manifest schema.
 The committed MLIR, CUDA, HIP, NVVM-oriented, and ROCDL-oriented inputs and
 analysis were inspected as control-plane material. They are not manifest cases
 and provide neither a fingerprinted connected lowering trace nor physical GPU
-execution evidence. No GPU claim follows from this corpus.
+execution evidence. The main corpus generator's synopsis advertises NVPTX and
+AMDGPU output, but its implementation iterates only the CPU inputs and emits
+x86 artifacts. No GPU claim follows from this corpus.
 
 ## Evidence findings
 
@@ -74,13 +88,13 @@ The classifications below preserve the corpus evidence boundary.
 
 | Class | Finding | Reconciliation and falsification boundary |
 | --- | --- | --- |
-| OBSERVED | Current `main` already retains operation, type, shape, stride, layout, memory, mutability, effect, alias, numerical-policy, destination, and provenance contracts through Matcore IR v1 and verified `mdsl.gemm`. | Classified `ALREADY CORRECTLY REPRESENTED`. Existing bridge/verifier negative tests would falsify this if a represented field could be silently lost or accepted malformed. |
+| OBSERVED | The authenticated explicit-call pipeline retains operation, type, shape, stride, layout, memory, mutability, effect, alias, destination, and provenance contracts. Matcore IR v1 carries its representable capture semantics; the mandatory reviewed bridge context supplies the more detailed numerical profile, and verified `mdsl.gemm` carries the combined contract. | Classified `ALREADY CORRECTLY REPRESENTED`. Existing bridge/verifier negative tests would falsify this if a represented field could be silently lost or accepted malformed. |
 | OBSERVED | Alias and alignment declarations are required preconditions, not proven facts; the runtime establishes overlap, actual alignment, descriptor, capability, and floating-point environment legality before output mutation. | Classified `ALREADY CORRECTLY REPRESENTED`. Overlap, misalignment, unsupported-capability, and FP-environment rejection tests are the falsifiers. |
 | OBSERVED | Recovered ordinary-C++ GEMM remains sealed, provenance-bound, analysis-only, and rejected by executable lowering. `map`/`sin` composition is also inspection-only. | Classified `ALREADY CORRECTLY REPRESENTED`. Any recovered or composed module reaching runtime execution would falsify it. |
 | OBSERVED | `proof/mlir_avx2/run.ps1` lowers `01_input.mlir` to one artifact, but separately translates a hand-authored `03_llvm.mlir`; `02_vectorized.mlir` is not consumed. | Classified `INSUFFICIENT EVIDENCE`. Removing or corrupting `02_vectorized.mlir` without changing the result demonstrates the disconnected chain. |
 | OBSERVED | The structured proof's direct `linalg.matmul outs(%C)` reads and accumulates initial C, while Matcore explicit GEMM overwrites a write-only destination. Its hand-authored LLVM stage instead starts at zero and also maps row-major vector lanes incorrectly. | Classified `REJECT / CONTRADICTED` as a lowering template. Nonzero-C, zero-input and basis-matrix execution are the required falsifiers for any replacement. |
 | OBSERVED | The committed AVX2 assembly contains a narrow spill-free packed-FMA pattern, but it is not derived by a connected, correctness-executed Matcore-to-assembly pipeline. | The machine pattern is only local feasibility evidence. It is not an executable compiler or performance claim. |
-| OBSERVED | The large CPU campaigns do not authenticate source/toolchain/environment/run identity, do not supply same-checkpoint OpenBLAS parity, and contain correctness/threading defects. | Classified `INSUFFICIENT EVIDENCE` for planner policy, packing thresholds, scaling, or Issue #15 closure. A complete authenticated forward/reverse envelope is the falsifier. |
+| OBSERVED | The CPU campaign evidence does not authenticate source/toolchain/environment/run identity, does not supply same-checkpoint OpenBLAS parity, and contains strict-JSON, correctness-oracle coverage, and requested-thread fidelity defects. | Classified `INSUFFICIENT EVIDENCE` for planner policy, packing thresholds, scaling, or Issue #15 closure. A complete authenticated forward/reverse envelope is the falsifier. |
 | OBSERVED | The research branch's static-AOT path bypasses accepted descriptor, overlap, alignment, ISA/OS-state, numerical-policy, and FP-environment gates; its static dimensions do not round-trip coherently through the versioned capture boundary. | Classified `REJECT / CONTRADICTED`; none of those product commits are adopted. Canonical pre-mutation negatives would falsify their legality. |
 | INFERRED | A structured tensor/DPS inspection stage can preserve compositional opportunity longer than immediate library dispatch, if overwrite initialization and every semantic contract are retained or consumed legally. | Classified `SHOULD INFORM NEXT MILESTONE`, not a proven implementation. A connected exact-MLIR-21 trace plus semantic negative tests is required before execution work. |
 | ARCHITECTURAL IMPLICATION | Matcore should own semantic intent and legality; upstream MLIR should own canonical structured transformation machinery; LLVM/backends should own instruction selection, register allocation, and machine scheduling; authenticated libraries should remain provider candidates. | This agrees with current WHAT/HOW/MACHINE boundaries. Fixed tiles, register caps, packing policy, fusion, provider thresholds, and target routes remain evidence-dependent rather than universal rules. |
@@ -90,6 +104,7 @@ The classifications below preserve the corpus evidence boundary.
 The implementation review followed the actual frontend, bridge, verifier,
 lowerer, planner, and runtime seams in `compiler/lib/frontend/native_frontend.cpp`,
 `compiler/lib/ir/matcore_ir_v1_bridge.cpp`,
+`compiler/lib/mlir/MatcoreV1Bridge.h`,
 `compiler/lib/mlir/MatcoreOps.cpp`,
 `compiler/lib/mlir/MatcoreCpuRuntimeLowering.cpp`,
 `compiler/lib/planner/cpu_planner_v3.cpp`,
@@ -99,14 +114,15 @@ lowerer, planner, and runtime seams in `compiler/lib/frontend/native_frontend.cp
 | Layer | Current state against corpus evidence | Disposition |
 | --- | --- | --- |
 | Native frontend | Authenticates explicit calls and preserves ordinary C++; recognition is not permission. | ALREADY CORRECTLY REPRESENTED |
-| Matcore IR v1 | Typed capture/provenance DTO retains the facts the corpus identifies as vulnerable to early loss; v1-to-v0 fails closed on unsupported loss. | ALREADY CORRECTLY REPRESENTED |
-| Matcore MLIR/verifier | Owns semantic WHAT: destination overwrite, effects, alias/alignment requirements, numerical policy, shapes/layouts, and provenance. | ALREADY CORRECTLY REPRESENTED |
+| Matcore IR v1 | Typed capture/provenance DTO retains its v1-representable facts; v1-to-v0 fails closed on unsupported loss. The detailed fixed numerical profile is deliberately supplied at the mandatory bridge context rather than claimed as a complete v1 field set. | ALREADY CORRECTLY REPRESENTED |
+| Matcore MLIR/verifier | Combines verified v1 capture with the reviewed bridge context and owns semantic WHAT: destination overwrite, effects, alias/alignment requirements, numerical policy, shapes/layouts, and provenance. | ALREADY CORRECTLY REPRESENTED |
 | Structured transform boundary | No connected `mdsl.gemm` to Linalg/Tensor inspection route exists on canonical main. | SHOULD INFORM NEXT MILESTONE |
-| CPU lowering | Only authenticated explicit GEMM reaches the stable runtime-dispatch boundary; recovered and composed forms fail closed. | ALREADY CORRECTLY REPRESENTED |
+| CPU lowering | The canonical internal driver sends authenticated explicit GEMM to the stable runtime-dispatch lowering; recovered and composed forms fail closed. The lowerer itself does not reauthenticate a source snapshot. | ALREADY CORRECTLY REPRESENTED |
 | Planner/runtime | Legality is established before packing or mutation; planning remains deterministic and evidence-bounded. | ALREADY CORRECTLY REPRESENTED |
 | External providers | OpenBLAS is an explicit authenticated candidate, not a parity claim or silent fallback. | ALREADY CORRECTLY REPRESENTED |
+| Packed-B storage | Caller-owned storage, lifetime, source identity, shape, packing parameters, and provenance are explicit and validated. | ALREADY CORRECTLY REPRESENTED |
 | Vector/machine lowering | Canonical vector lowering, instruction selection, register allocation, and target scheduling are not Matcore semantic responsibilities. | SHOULD REMAIN UPSTREAM RESPONSIBILITY |
-| Fusion, tiles, register caps, packing lifetime/policy, hybrid thresholds | Corpus observations are incomplete, host-specific, or disconnected from a verified Matcore route. | INSUFFICIENT EVIDENCE |
+| Fusion, tiles, register caps, packing hoisting/reuse scheduling, activation thresholds, provider crossover | Corpus observations are incomplete, host-specific, or disconnected from a verified Matcore route. | INSUFFICIENT EVIDENCE |
 | GPU/NPU targets | Inputs and analysis exist, but no manifested connected artifacts or physical execution exist. | REJECT / OUT OF SCOPE |
 
 Two future seams were noted but do not require a current fix. If multiple
@@ -127,7 +143,7 @@ Only documentation changes survived independent adversarial review:
    closed, while making no GitHub Release or freeze claim.
 3. Correct three references to the nonexistent `mdsl.return`; the implemented
    function terminator is upstream `func.return`, while `mdsl.yield` terminates
-   Matcore regions.
+   `mdsl.map` regions.
 
 No source, schema, generated artifact, compiler route, planner rule, runtime
 behavior, provider selection, public interface, or ABI changed.
@@ -175,12 +191,14 @@ compiled source tree is unchanged.
 
 The smallest coherent next milestone is an opt-in, internal, inspection-only
 verified conversion of authenticated explicit `mdsl.gemm` into structured
-tensor/DPS MLIR. Matcore must preserve or verifier-authenticate destination
-overwrite identity, shapes/layouts, effects, alias/alignment requirements,
-numerical permissions, target policy, and provenance before erasing the
-semantic operation. The structured form must explicitly initialize the output
-to zero, for example with `linalg.fill`, before `linalg.matmul`; direct
-accumulation into initial C is incorrect.
+tensor/DPS MLIR. Before erasing the semantic operation, Matcore must encode or
+verifier-authenticate destination overwrite identity, shapes/layouts, effects,
+numerical permissions, target policy, and provenance, or reject conversion.
+Alias and alignment requirements must remain explicit preconditions and must
+not become upstream optimizer facts without static proof or a dominating guard
+in a later executable phase. The structured form must explicitly initialize
+the output to zero, for example with `linalg.fill`, before `linalg.matmul`;
+direct accumulation into initial C is incorrect.
 
 MLIR should own canonical tensor/Linalg construction and verification. This
 milestone must stop before bufferization, vector lowering, LLVM lowering,
