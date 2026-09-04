@@ -11,11 +11,13 @@ This lane started from canonical `main` and `origin/main` at
 `e5069758ad04bdb459de2026cad8498b47fda707` is an ancestor of that checkpoint.
 
 The primary evidence-audit implementation checkpoint is
-`9f5b5dba53b80579be7228010bf832b5ce29b8b4`; the final code-only checkpoint,
-including claim-boundary wording, is
-`9c6d4647d8bca3590429a00d72d3498833118855`. No production planner, runtime,
+`9f5b5dba53b80579be7228010bf832b5ce29b8b4`; claim-boundary wording first landed
+at `9c6d4647d8bca3590429a00d72d3498833118855`, and independent adversarial output
+safety hardening is captured at
+`58d947fc0954aa6604d792ac2f934065f42ffc12`. No production planner, runtime,
 kernel, public API, public ABI, threshold, or provider-selection policy changed.
-No branch was pushed or merged by this lane.
+The candidate is published for review as draft PR #23; it was not merged by
+this lane.
 
 Live GitHub Issue #15, **MDSLC Milestone 7 — Native BLAS Parity**, remained open
 at inspection time. Its 2026-07-26 owner disposition still says that the
@@ -189,7 +191,9 @@ auditor supplies any missing performance evidence.
 
 ## Validation
 
-The following checks passed at the implementation checkpoint:
+The following checks passed at the implementation checkpoint; the direct
+auditor contract, Python byte compilation, Ruff, and `git diff --check` were
+repeated after the `58d947f` output-safety hardening:
 
 - Python byte compilation for runner, summarizer, auditor, and their three
   contract tests;
