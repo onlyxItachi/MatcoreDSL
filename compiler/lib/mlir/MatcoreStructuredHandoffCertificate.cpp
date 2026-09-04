@@ -269,6 +269,10 @@ bool verifyStructuredHandoffSourceEnvelopeV1(mlir::ModuleOp source,
     error = "semantic source module is null";
     return false;
   }
+  if (mlir::failed(mlir::verify(source))) {
+    error = "semantic source envelope failed upstream MLIR verification";
+    return false;
+  }
   if (!requireExactNames(source->getAttrDictionary(), kSemanticModuleFields,
                          "semantic source module", error) ||
       !requireString(source, "mdsl.bridge_schema", kSemanticBridgeSchema,
@@ -364,6 +368,13 @@ bool attachStructuredHandoffSiteCertificateV1(
       error = "structured handoff site certificate input is incomplete";
     return false;
   }
+  if (!source_function->getParentOfType<mlir::ModuleOp>() ||
+      structured_function.getContext() != builder.getContext() ||
+      source_function.getContext() != builder.getContext()) {
+    error = "structured handoff source must be attached and both functions "
+            "must use the builder's MLIR context";
+    return false;
+  }
   const auto source_site =
       source_function->getAttrOfType<mlir::StringAttr>("mdsl.site_id");
   if (!source_site || source_site.getValue() != site_id ||
@@ -433,8 +444,17 @@ bool verifyStructuredHandoffSiteCertificateV1(
   verified = {};
   if (!verifyProfile(profile, error))
     return false;
-  if (!function ||
-      !requireExactNames(function->getDiscardableAttrDictionary(),
+  if (!function) {
+    error = "structured handoff function is null";
+    return false;
+  }
+  if (!function->getParentOfType<mlir::ModuleOp>() ||
+      mlir::failed(mlir::verify(function))) {
+    error = "structured handoff function must be attached and pass upstream "
+            "MLIR verification";
+    return false;
+  }
+  if (!requireExactNames(function->getDiscardableAttrDictionary(),
                          kStructuredFunctionFields,
                          "structured handoff function", error))
     return false;
@@ -519,6 +539,13 @@ bool verifyStructuredHandoffCertificateMatchesSourceV1(
     auto source_function = mlir::cast<mlir::func::FuncOp>(*source_iterator);
     auto structured_function =
         mlir::cast<mlir::func::FuncOp>(*structured_iterator);
+    if (source_function->getParentOp() != semantic_module.getOperation() ||
+        structured_function->getParentOp() !=
+            structured_module.getOperation()) {
+      error = "paired structured handoff functions must be direct members of "
+              "their supplied modules";
+      return false;
+    }
     mlir::DictionaryAttr source_contract =
         contract_selector(source_function, error);
     if (!source_contract)
@@ -572,6 +599,13 @@ std::string computeSourceSemanticFingerprintV1(
     error = "source semantic fingerprint input is null";
     return {};
   }
+  if (source_function->getParentOp() != semantic_module.getOperation()) {
+    error = "source semantic fingerprint function is not a direct member of "
+            "the supplied module";
+    return {};
+  }
+  if (!verifyStructuredHandoffSourceEnvelopeV1(semantic_module, error))
+    return {};
   constexpr llvm::StringLiteral names[] = {
       "mdsl.capture_schema",     "mdsl.capture_version",
       "mdsl.execution_intent",   "mdsl.numerical_profile",
@@ -593,6 +627,12 @@ std::string computeSourceSemanticFingerprintV1(
     error = "semantic fingerprint source operation identity does not match";
     return {};
   }
+  if (source_function.getBody().front().front().getAttrDictionary() !=
+      semantic_contract) {
+    error = "semantic fingerprint contract is not the exact source operation "
+            "contract";
+    return {};
+  }
   return computeSemanticFingerprint(
       fields, source_operation, source_function.getName(), site,
       source_function.getFunctionType(), source_function.getLoc(),
@@ -608,6 +648,21 @@ std::string computeStructuredSemanticFingerprintV1(
     error = "structured semantic fingerprint input is null";
     return {};
   }
+  if (structured_function->getParentOp() !=
+      structured_module.getOperation()) {
+    error = "structured semantic fingerprint function is not a direct member "
+            "of the supplied module";
+    return {};
+  }
+  if (mlir::failed(mlir::verify(structured_module))) {
+    error = "structured semantic fingerprint module failed upstream MLIR "
+            "verification";
+    return {};
+  }
+  if (!requireExactNames(structured_function->getDiscardableAttrDictionary(),
+                         kStructuredFunctionFields,
+                         "structured semantic fingerprint function", error))
+    return {};
   constexpr std::pair<llvm::StringLiteral, llvm::StringLiteral> names[] = {
       {"mdsl.capture_schema", "mdsl.capture_schema"},
       {"mdsl.capture_version", "mdsl.capture_version"},

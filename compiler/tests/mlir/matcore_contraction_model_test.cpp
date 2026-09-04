@@ -97,13 +97,17 @@ void checkTopology(
 
   mlir::Builder builder(&context);
   mlir::DictionaryAttr encoded =
-      bridge::encodeContractionTopologyV1(builder, result.topology);
+      bridge::encodeContractionTopologyV1(builder, result.topology, error);
+  check(static_cast<bool>(encoded),
+        std::string(description) + " canonical topology must encode");
+  if (!encoded)
+    return;
   auto decoded = bridge::decodeContractionTopologyV1(encoded, context);
   check(static_cast<bool>(decoded),
         std::string(description) + " exact encoding must round-trip");
   if (decoded) {
-    check(bridge::encodeContractionTopologyV1(builder, decoded.topology) ==
-              encoded,
+    check(bridge::encodeContractionTopologyV1(builder, decoded.topology,
+                                              error) == encoded,
           std::string(description) + " encoding must be deterministic");
     check(bridge::verifyStructuredIndexingAgainstContractionTopologyV1(
               decoded.topology, result.topology.indexing_maps,
@@ -201,6 +205,22 @@ void testStandardFamily() {
                 Orientation::Normal, TopologyClass::ReductionContraction,
                 batch_loops, batch_iterators, batch_ranks, batch_nn_maps,
                 reduction_k, "batched GEMM NN");
+  const std::string batch_tn_maps[] = {
+      "(d0, d1, d2, d3) -> (d0, d3, d1)",
+      "(d0, d1, d2, d3) -> (d0, d3, d2)",
+      "(d0, d1, d2, d3) -> (d0, d1, d2)"};
+  checkTopology(context, Operation::BatchedGemm, Orientation::Transpose,
+                Orientation::Normal, TopologyClass::ReductionContraction,
+                batch_loops, batch_iterators, batch_ranks, batch_tn_maps,
+                reduction_k, "batched GEMM TN");
+  const std::string batch_nt_maps[] = {
+      "(d0, d1, d2, d3) -> (d0, d1, d3)",
+      "(d0, d1, d2, d3) -> (d0, d2, d3)",
+      "(d0, d1, d2, d3) -> (d0, d1, d2)"};
+  checkTopology(context, Operation::BatchedGemm, Orientation::Normal,
+                Orientation::Transpose, TopologyClass::ReductionContraction,
+                batch_loops, batch_iterators, batch_ranks, batch_nt_maps,
+                reduction_k, "batched GEMM NT");
   const std::string batch_tt_maps[] = {
       "(d0, d1, d2, d3) -> (d0, d3, d1)",
       "(d0, d1, d2, d3) -> (d0, d2, d3)",
@@ -286,7 +306,19 @@ void testAdversarialTopologyMutations() {
 
   mlir::Builder builder(&context);
   mlir::DictionaryAttr encoded =
-      bridge::encodeContractionTopologyV1(builder, canonical.topology);
+      bridge::encodeContractionTopologyV1(builder, canonical.topology, error);
+  check(static_cast<bool>(encoded),
+        "canonical adversarial fixture must encode before mutation");
+  if (!encoded)
+    return;
+
+  check(!bridge::encodeContractionTopologyV1(builder, changed_map, error),
+        "encoder must fail closed on a noncanonical topology");
+  mlir::MLIRContext other_context;
+  mlir::Builder other_builder(&other_context);
+  check(!bridge::encodeContractionTopologyV1(other_builder,
+                                             canonical.topology, error),
+        "encoder must reject topology maps from another MLIR context");
   auto forged_class = withField(
       builder, encoded, "classification",
       builder.getStringAttr("outer_product_update"));
@@ -349,16 +381,32 @@ void verifyGenericCarrier(llvm::StringRef text, Operation operation,
         std::string(description) +
             " must map exactly onto upstream Linalg topology");
   if (operation == Operation::Ger) {
-    mlir::arith::AddFOp add;
     bool has_fill = false;
-    generic.getRegion().walk([&](mlir::arith::AddFOp operation) {
-      add = operation;
-    });
     module->walk([&](mlir::linalg::FillOp) { has_fill = true; });
     mlir::Block &block = generic.getRegion().front();
-    check(add && (add.getLhs() == block.getArgument(2) ||
-                  add.getRhs() == block.getArgument(2)),
-          "GER model fixture must add the outer product to the prior output");
+    check(std::distance(block.begin(), block.end()) == 3,
+          "GER model fixture must contain exactly multiply, add, and yield");
+    auto iterator = block.begin();
+    auto multiply = iterator == block.end()
+                        ? mlir::arith::MulFOp{}
+                        : mlir::dyn_cast<mlir::arith::MulFOp>(*iterator++);
+    auto add = iterator == block.end()
+                   ? mlir::arith::AddFOp{}
+                   : mlir::dyn_cast<mlir::arith::AddFOp>(*iterator++);
+    auto yield = iterator == block.end()
+                     ? mlir::linalg::YieldOp{}
+                     : mlir::dyn_cast<mlir::linalg::YieldOp>(*iterator++);
+    check(multiply && multiply.getLhs() == block.getArgument(0) &&
+              multiply.getRhs() == block.getArgument(1) &&
+              multiply.getFastmath() == mlir::arith::FastMathFlags::none,
+          "GER model fixture must compute exact no-fast-math mul(x, y)");
+    check(add && multiply && add.getLhs() == block.getArgument(2) &&
+              add.getRhs() == multiply.getResult() &&
+              add.getFastmath() == mlir::arith::FastMathFlags::none,
+          "GER model fixture must compute exact no-fast-math add(old C, mul)");
+    check(yield && add && yield->getNumOperands() == 1 &&
+              yield->getOperand(0) == add.getResult(),
+          "GER model fixture must yield exactly the accumulating add result");
     check(generic->getParentOfType<mlir::func::FuncOp>() && !has_fill,
           "GER model fixture must not inherit GEMM overwrite initialization");
   }
@@ -378,6 +426,89 @@ void verifyGenericCarrier(llvm::StringRef text, Operation operation,
             records.empty(),
         std::string(description) +
             " model-only Linalg must not gain CPU execution authority");
+}
+
+void verifyNamedCarrier(llvm::StringRef text, llvm::StringRef expected_name,
+                        Operation operation, Orientation lhs_orientation,
+                        Orientation rhs_orientation,
+                        bool reorder_vecmat_operands,
+                        std::string_view description) {
+  mlir::MLIRContext context;
+  context.getOrLoadDialect<mlir::arith::ArithDialect>();
+  context.getOrLoadDialect<mlir::func::FuncDialect>();
+  context.getOrLoadDialect<mlir::linalg::LinalgDialect>();
+  mlir::ParserConfig parser_config(&context, /*verifyAfterParse=*/true);
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(text, parser_config);
+  check(static_cast<bool>(module),
+        std::string(description) + " upstream named Linalg op must verify");
+  if (!module)
+    return;
+
+  mlir::linalg::LinalgOp carrier;
+  module->walk([&](mlir::linalg::LinalgOp candidate) {
+    if (candidate->getName().getStringRef() == expected_name)
+      carrier = candidate;
+  });
+  check(static_cast<bool>(carrier),
+        std::string(description) + " must contain " + expected_name.str());
+  if (!carrier)
+    return;
+
+  llvm::SmallVector<mlir::AffineMap, 3> maps =
+      carrier.getIndexingMapsArray();
+  llvm::SmallVector<unsigned, 3> ranks;
+  auto append_rank = [&](mlir::Value value) {
+    auto type = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
+    check(static_cast<bool>(type),
+          std::string(description) + " operands must be ranked tensors");
+    if (type)
+      ranks.push_back(type.getRank());
+  };
+  for (mlir::Value input : carrier.getDpsInputs())
+    append_rank(input);
+  for (mlir::Value output : carrier.getDpsInits())
+    append_rank(output);
+
+  if (reorder_vecmat_operands) {
+    check(expected_name == "linalg.vecmat" && maps.size() == 3 &&
+              ranks == llvm::ArrayRef<unsigned>({1, 2, 1}),
+          "GEMV-T adapter must recognize upstream vecmat's explicit "
+          "vector,matrix,output operand order");
+    if (maps.size() != 3 || ranks.size() != 3)
+      return;
+    maps = {maps[1], maps[0], maps[2]};
+    ranks = {ranks[1], ranks[0], ranks[2]};
+  }
+
+  auto topology = bridge::buildCanonicalContractionTopologyV1(
+      context, operation, lhs_orientation, rhs_orientation);
+  check(static_cast<bool>(topology),
+        std::string(description) + " model must construct");
+  if (!topology)
+    return;
+  std::string error;
+  check(bridge::verifyStructuredIndexingAgainstContractionTopologyV1(
+            topology.topology, maps, carrier.getIteratorTypesArray(), ranks,
+            error),
+        std::string(description) +
+            " named op must carry the exact canonical topology");
+
+  mlir::ScopedDiagnosticHandler silence(
+      &context, [](mlir::Diagnostic &) { return mlir::success(); });
+  auto rejected = bridge::deriveStructuredGemmHandoffV1(*module);
+  check(!rejected,
+        std::string(description) +
+            " named model carrier must not enter authenticated source "
+            "handoff");
+  std::vector<matcore::mdslc::mlir_lowering::CpuRuntimeDispatchRecordV1>
+      records(1);
+  std::string lowering_error;
+  check(!matcore::mdslc::mlir_lowering::
+            lowerExplicitGemmToCpuRuntimeDispatchV1(*module, records,
+                                                    lowering_error) &&
+            records.empty(),
+        std::string(description) +
+            " named model carrier must not gain CPU execution authority");
 }
 
 void testUpstreamGenericCarriers() {
@@ -439,6 +570,97 @@ void testUpstreamGenericCarriers() {
       "batched GEMM");
 }
 
+void testUpstreamNamedCarriers() {
+  verifyNamedCarrier(
+      R"mlir(module {
+  func.func @gemv_n(%a: tensor<2x3xf32>, %x: tensor<3xf32>, %y: tensor<2xf32>) -> tensor<2xf32> {
+    %0 = linalg.matvec ins(%a, %x : tensor<2x3xf32>, tensor<3xf32>) outs(%y : tensor<2xf32>) -> tensor<2xf32>
+    return %0 : tensor<2xf32>
+  }
+})mlir",
+      "linalg.matvec", Operation::Gemv, Orientation::Normal,
+      Orientation::Normal, /*reorder_vecmat_operands=*/false,
+      "GEMV-N named carrier");
+
+  verifyNamedCarrier(
+      R"mlir(module {
+  func.func @gemv_t(%x: tensor<3xf32>, %a: tensor<3x2xf32>, %y: tensor<2xf32>) -> tensor<2xf32> {
+    %0 = linalg.vecmat ins(%x, %a : tensor<3xf32>, tensor<3x2xf32>) outs(%y : tensor<2xf32>) -> tensor<2xf32>
+    return %0 : tensor<2xf32>
+  }
+})mlir",
+      "linalg.vecmat", Operation::Gemv, Orientation::Transpose,
+      Orientation::Normal, /*reorder_vecmat_operands=*/true,
+      "GEMV-T named carrier");
+
+  verifyNamedCarrier(
+      R"mlir(module {
+  func.func @dot(%x: tensor<3xf32>, %y: tensor<3xf32>, %z: tensor<f32>) -> tensor<f32> {
+    %0 = linalg.dot ins(%x, %y : tensor<3xf32>, tensor<3xf32>) outs(%z : tensor<f32>) -> tensor<f32>
+    return %0 : tensor<f32>
+  }
+})mlir",
+      "linalg.dot", Operation::Dot, Orientation::Normal, Orientation::Normal,
+      /*reorder_vecmat_operands=*/false, "DOT named carrier");
+
+  verifyNamedCarrier(
+      R"mlir(module {
+  func.func @gemm_tn(%a: tensor<3x2xf32>, %b: tensor<3x4xf32>, %c: tensor<2x4xf32>) -> tensor<2x4xf32> {
+    %0 = linalg.matmul_transpose_a ins(%a, %b : tensor<3x2xf32>, tensor<3x4xf32>) outs(%c : tensor<2x4xf32>) -> tensor<2x4xf32>
+    return %0 : tensor<2x4xf32>
+  }
+})mlir",
+      "linalg.matmul_transpose_a", Operation::Gemm, Orientation::Transpose,
+      Orientation::Normal, /*reorder_vecmat_operands=*/false,
+      "GEMM-TN named carrier");
+
+  verifyNamedCarrier(
+      R"mlir(module {
+  func.func @gemm_nt(%a: tensor<2x3xf32>, %b: tensor<4x3xf32>, %c: tensor<2x4xf32>) -> tensor<2x4xf32> {
+    %0 = linalg.matmul_transpose_b ins(%a, %b : tensor<2x3xf32>, tensor<4x3xf32>) outs(%c : tensor<2x4xf32>) -> tensor<2x4xf32>
+    return %0 : tensor<2x4xf32>
+  }
+})mlir",
+      "linalg.matmul_transpose_b", Operation::Gemm, Orientation::Normal,
+      Orientation::Transpose, /*reorder_vecmat_operands=*/false,
+      "GEMM-NT named carrier");
+
+  verifyNamedCarrier(
+      R"mlir(module {
+  func.func @batch_nn(%a: tensor<5x2x3xf32>, %b: tensor<5x3x4xf32>, %c: tensor<5x2x4xf32>) -> tensor<5x2x4xf32> {
+    %0 = linalg.batch_matmul ins(%a, %b : tensor<5x2x3xf32>, tensor<5x3x4xf32>) outs(%c : tensor<5x2x4xf32>) -> tensor<5x2x4xf32>
+    return %0 : tensor<5x2x4xf32>
+  }
+})mlir",
+      "linalg.batch_matmul", Operation::BatchedGemm, Orientation::Normal,
+      Orientation::Normal, /*reorder_vecmat_operands=*/false,
+      "batched GEMM-NN named carrier");
+
+  verifyNamedCarrier(
+      R"mlir(module {
+  func.func @batch_tn(%a: tensor<5x3x2xf32>, %b: tensor<5x3x4xf32>, %c: tensor<5x2x4xf32>) -> tensor<5x2x4xf32> {
+    %0 = linalg.batch_matmul_transpose_a ins(%a, %b : tensor<5x3x2xf32>, tensor<5x3x4xf32>) outs(%c : tensor<5x2x4xf32>) -> tensor<5x2x4xf32>
+    return %0 : tensor<5x2x4xf32>
+  }
+})mlir",
+      "linalg.batch_matmul_transpose_a", Operation::BatchedGemm,
+      Orientation::Transpose, Orientation::Normal,
+      /*reorder_vecmat_operands=*/false,
+      "batched GEMM-TN named carrier");
+
+  verifyNamedCarrier(
+      R"mlir(module {
+  func.func @batch_nt(%a: tensor<5x2x3xf32>, %b: tensor<5x4x3xf32>, %c: tensor<5x2x4xf32>) -> tensor<5x2x4xf32> {
+    %0 = linalg.batch_matmul_transpose_b ins(%a, %b : tensor<5x2x3xf32>, tensor<5x4x3xf32>) outs(%c : tensor<5x2x4xf32>) -> tensor<5x2x4xf32>
+    return %0 : tensor<5x2x4xf32>
+  }
+})mlir",
+      "linalg.batch_matmul_transpose_b", Operation::BatchedGemm,
+      Orientation::Normal, Orientation::Transpose,
+      /*reorder_vecmat_operands=*/false,
+      "batched GEMM-NT named carrier");
+}
+
 } // namespace
 
 int main() {
@@ -446,6 +668,7 @@ int main() {
   testIdentityAndUnsupportedCollapses();
   testAdversarialTopologyMutations();
   testUpstreamGenericCarriers();
+  testUpstreamNamedCarriers();
   if (failures != 0) {
     std::cerr << "Contraction topology adversarial tests: " << failures
               << " of " << checks << " checks failed\n";

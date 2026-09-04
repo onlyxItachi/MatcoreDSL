@@ -86,10 +86,12 @@ bool verifyCanonicalContractionTopologyV1(
     const ContractionTopologyV1 &topology, std::string &error);
 
 // Exact internal attribute encoding used by proof-carrying structured stages.
-// Decode always reconstructs and compares with the canonical model rather than
-// accepting arbitrary affine maps supplied by an artifact.
+// Encoding and decoding both fail closed unless the supplied topology is the
+// canonical model in the builder/context. Decode reconstructs and compares
+// with that model rather than accepting arbitrary artifact-supplied maps.
 mlir::DictionaryAttr encodeContractionTopologyV1(
-    mlir::Builder &builder, const ContractionTopologyV1 &topology);
+    mlir::Builder &builder, const ContractionTopologyV1 &topology,
+    std::string &error);
 ContractionTopologyResultV1 decodeContractionTopologyV1(
     mlir::DictionaryAttr attribute, mlir::MLIRContext &context);
 

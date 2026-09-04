@@ -277,7 +277,16 @@ bool verifyCanonicalContractionTopologyV1(
 }
 
 mlir::DictionaryAttr encodeContractionTopologyV1(
-    mlir::Builder &builder, const ContractionTopologyV1 &topology) {
+    mlir::Builder &builder, const ContractionTopologyV1 &topology,
+    std::string &error) {
+  error.clear();
+  if (!verifyCanonicalContractionTopologyV1(topology, error))
+    return {};
+  if (topology.indexing_maps.front().getContext() != builder.getContext()) {
+    error = "contraction topology cannot be encoded in a different MLIR "
+            "context";
+    return {};
+  }
   llvm::SmallVector<mlir::Attribute> loops;
   llvm::SmallVector<mlir::Attribute> iterators;
   llvm::SmallVector<mlir::Attribute> maps;
@@ -357,7 +366,15 @@ ContractionTopologyResultV1 decodeContractionTopologyV1(
     return result;
   }
   mlir::Builder builder(&context);
-  if (attribute != encodeContractionTopologyV1(builder, canonical.topology)) {
+  std::string encode_error;
+  mlir::DictionaryAttr canonical_attribute =
+      encodeContractionTopologyV1(builder, canonical.topology, encode_error);
+  if (!canonical_attribute) {
+    result.error = "failed to encode canonical contraction topology: " +
+                   encode_error;
+    return result;
+  }
+  if (attribute != canonical_attribute) {
     result.error = "encoded contraction topology differs from its canonical "
                    "standard-operation model";
     return result;
