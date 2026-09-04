@@ -1,12 +1,12 @@
-# MDSLC CPU beta v1 candidate contract
+# MDSLC CPU beta v1 checkpoint contract
 
-Date: 2026-08-11
+Checkpoint date: 2026-08-11. Status reviewed: 2026-09-04.
 
-Status: **the immutable local Milestone H matrix, independent-review gate, and
-hosted PR #18 validation have passed. The hosted product/test head is
-`1d084a175772f286b04eb1802e2c4d8272533ede`; normal merge, post-merge checks,
-the `mdslc-cpu-beta-v1` tag, Issue #17 / GitHub milestone #6 closure, and
-publication remain pending.**
+Status: **the bounded CPU beta was accepted, merged through PR #18 as
+`6708b48a5647698469a9af191941bd4755adab7b`, post-merge validated, and marked
+by the annotated `mdslc-cpu-beta-v1` checkpoint tag. Issue #17 and GitHub
+milestone #6 are closed. No GitHub Release, public API/ABI/backend-contract
+freeze, or native-BLAS parity is claimed.**
 
 This document fixes the claim and validation boundary for the first CPU beta.
 It does not freeze the public API, ABI, backend contract, operation set, or
@@ -14,7 +14,7 @@ long-term support policy. It does not authorize a GPU or NPU backend.
 
 ## Supported product claim
 
-The candidate is a standalone valid-C++ compiler/runtime product for explicit
+The checkpoint is a standalone valid-C++ compiler/runtime product for explicit
 F32 rank-two, row-major, contiguous, synchronous host GEMM:
 
 ```text
@@ -194,12 +194,12 @@ Exact hosted evidence for `1d084a175772f286b04eb1802e2c4d8272533ede` is:
 | `repository-hygiene` | [run 31522956052](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522956052), 1/1 job passed | [run 31522958913](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522958913), 1/1 job passed |
 | `mdslc-windows` | [run 31522956094](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522956094), Release 44/44, Debug 31/31, clang-cl ASan 1/1, install/consumer/artifact/ZIP passed | [run 31522958916](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/31522958916), Release 44/44, Debug 31/31, clang-cl ASan 1/1, install/consumer/artifact/ZIP passed |
 
-These runs close the hosted Linux, Windows compatibility, sanitizer, package,
-legacy, and hygiene validation gate. They do not make the beta shipped or
-merged. A normal PR #18 merge, green post-merge checks on `main`, creation of
-the immutable `mdslc-cpu-beta-v1` tag, Issue #17 / GitHub milestone #6 closure,
-and any publication are still pending. Windows remains a compatibility profile
-and does not gain a Matcore-MLIR semantic-execution claim.
+These runs closed the pre-merge hosted Linux, Windows compatibility, sanitizer,
+package, legacy, and hygiene validation gate. PR #18 subsequently merged as
+`6708b48a5647698469a9af191941bd4755adab7b`; post-merge checks passed, the
+annotated `mdslc-cpu-beta-v1` checkpoint tag was created, and Issue #17 / GitHub
+milestone #6 closed. No GitHub Release exists for the tag. Windows remains a
+compatibility profile and does not gain a Matcore-MLIR semantic-execution claim.
 
 ## Explicitly unsupported claims
 
@@ -214,6 +214,6 @@ The CPU beta does not claim:
 - a final public API, ABI, backend-contract, or support-policy freeze; or
 - CUDA, HIP, Metal, Vulkan, NPU, heterogeneous placement, or any GPU work.
 
-After the normal merge and beta-tag integration gates close, a separate
+The bounded merge and checkpoint-tag integration gates are closed. A separate
 explicitly authorized milestone may evaluate the public API/ABI/backend
-contract freeze. That freeze must not begin automatically.
+contract freeze. That freeze does not begin automatically.

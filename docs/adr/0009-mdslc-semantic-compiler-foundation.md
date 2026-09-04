@@ -115,7 +115,7 @@ under a Matcore-owned C++ namespace. Initial operations are deliberately small:
 
 - `mdsl.gemm`;
 - `mdsl.map` with a single-element region;
-- `mdsl.yield` and `mdsl.return` where structurally required;
+- `mdsl.yield` and upstream `func.return` where structurally required;
 - only the scalar elementwise operations required by the first canonical map
   proof, initially `mdsl.sin`.
 
