@@ -475,6 +475,97 @@ reconstructSemanticWitness(mlir::ModuleOp structured_module,
 
 } // namespace
 
+const StructuredHandoffCertificateProfileV1 &
+structuredGemmHandoffCertificateProfileV1() {
+  return gemmCertificateProfile();
+}
+
+bool verifyRetainedStructuredGemmContractV1(
+    mlir::ModuleOp carrier_module, mlir::func::FuncOp carrier_function,
+    mlir::FunctionType source_structured_function_type, std::string &error) {
+  error.clear();
+  if (!carrier_module || !carrier_function ||
+      carrier_function->getParentOp() != carrier_module.getOperation() ||
+      !source_structured_function_type) {
+    error = "retained structured GEMM contract input is incomplete";
+    return false;
+  }
+  const auto site = carrier_function->getAttrOfType<mlir::StringAttr>(
+      "mdsl.site_id");
+  const auto contract = carrier_function->getAttrOfType<mlir::DictionaryAttr>(
+      "mdsl.semantic_contract");
+  const auto source_file =
+      carrier_module->getAttrOfType<mlir::StringAttr>("mdsl.source_file");
+  const auto module_numerical = carrier_module->getAttrOfType<mlir::StringAttr>(
+      "mdsl.numerical_profile");
+  if (!site || !contract || !source_file || !module_numerical ||
+      !requireExactNames(contract, kGemmContractFields,
+                         "retained structured GEMM semantic contract", error) ||
+      !verifyGemmContractStorageTypes(contract, error)) {
+    if (error.empty())
+      error = "retained structured GEMM contract identity is incomplete";
+    return false;
+  }
+  const auto contract_site = contract.getAs<mlir::StringAttr>("site_id");
+  const auto numerical = contract.getAs<mlir::DictionaryAttr>("numerical");
+  const auto provenance = contract.getAs<mlir::DictionaryAttr>("provenance");
+  const auto contract_numerical =
+      numerical ? numerical.getAs<mlir::StringAttr>("profile")
+                : mlir::StringAttr{};
+  const auto contract_file =
+      provenance ? provenance.getAs<mlir::StringAttr>("file")
+                 : mlir::StringAttr{};
+  if (!contract_site || contract_site != site || !contract_numerical ||
+      contract_numerical != module_numerical || !contract_file ||
+      contract_file != source_file) {
+    error = "retained structured GEMM contract differs from module/site "
+            "provenance";
+    return false;
+  }
+  if (source_structured_function_type.getNumInputs() != 3 ||
+      source_structured_function_type.getNumResults() != 1 ||
+      source_structured_function_type.getInput(2) !=
+          source_structured_function_type.getResult(0)) {
+    error = "retained structured GEMM source type must have lhs, rhs, output, "
+            "and destination-tied result";
+    return false;
+  }
+
+  mlir::MLIRContext *context = carrier_module.getContext();
+  mlir::OpBuilder builder(context);
+  mlir::OwningOpRef<mlir::ModuleOp> witness =
+      mlir::ModuleOp::create(carrier_module.getLoc());
+  auto function = mlir::func::FuncOp::create(
+      carrier_function.getLoc(), "__matcore_retained_gemm_contract_witness",
+      source_structured_function_type);
+  witness->push_back(function);
+  mlir::Block *entry = function.addEntryBlock();
+  if (entry->getNumArguments() != carrier_function.getNumArguments()) {
+    error = "retained structured GEMM source type/argument count differs";
+    return false;
+  }
+  for (auto [witness_argument, carrier_argument] :
+       llvm::zip(entry->getArguments(), carrier_function.getArguments()))
+    witness_argument.setLoc(carrier_argument.getLoc());
+  builder.setInsertionPointToStart(entry);
+  mlir::OperationState state(carrier_function.getLoc(),
+                             mlir_dialect::GemmOp::getOperationName());
+  state.addOperands(entry->getArguments());
+  state.addTypes(source_structured_function_type.getResults());
+  state.addAttributes(contract.getValue());
+  mlir::Operation *gemm = builder.create(state);
+  mlir::func::ReturnOp::create(builder, carrier_function.getLoc(),
+                               gemm->getResult(0));
+  mlir::ScopedDiagnosticHandler silence(
+      context, [](mlir::Diagnostic &) { return mlir::success(); });
+  if (mlir::failed(mlir::verify(*witness))) {
+    error = "retained structured GEMM contract/type does not satisfy the "
+            "authoritative mdsl.gemm verifier";
+    return false;
+  }
+  return true;
+}
+
 void registerStructuredGemmHandoffDialectsV1(mlir::MLIRContext &context) {
   registerMatcoreSemanticDialects(context);
   context.getOrLoadDialect<mlir::arith::ArithDialect>();

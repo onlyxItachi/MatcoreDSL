@@ -1,6 +1,7 @@
 #ifndef MATCORE_MDSLC_MLIR_STRUCTURED_GEMM_HANDOFF_H
 #define MATCORE_MDSLC_MLIR_STRUCTURED_GEMM_HANDOFF_H
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
@@ -9,6 +10,8 @@
 #include <string>
 
 namespace matcore::mdslc::mlir_bridge {
+
+struct StructuredHandoffCertificateProfileV1;
 
 inline constexpr std::uint32_t kStructuredGemmHandoffVersionV1 = 1;
 inline constexpr char kStructuredGemmHandoffSchemaV1[] =
@@ -26,6 +29,11 @@ struct StructuredGemmHandoffResultV1 {
 // Registers the exact upstream dialects used by the structured inspection
 // handoff. This does not register a lowering pipeline.
 void registerStructuredGemmHandoffDialectsV1(mlir::MLIRContext &context);
+
+// Internal profile shared by certified transformations derived from the
+// structured GEMM handoff. This is not a public compiler/runtime contract.
+const StructuredHandoffCertificateProfileV1 &
+structuredGemmHandoffCertificateProfileV1();
 
 // Derives a new structured-only module from the exact explicit Matcore IR v1
 // semantic bridge envelope. The input is never mutated. Every source
@@ -52,6 +60,14 @@ bool verifyStructuredGemmHandoffV1(mlir::ModuleOp structured_module,
 bool verifyStructuredGemmHandoffMatchesV1(mlir::ModuleOp semantic_module,
                                           mlir::ModuleOp structured_module,
                                           std::string &error);
+
+// Revalidates the exact retained mdsl.gemm contract against its original
+// tensor function type for a certified downstream carrier. Source pairing is
+// handled by MatcoreStructuredHandoffCertificate; this helper owns only GEMM
+// semantic-contract interpretation.
+bool verifyRetainedStructuredGemmContractV1(
+    mlir::ModuleOp carrier_module, mlir::func::FuncOp carrier_function,
+    mlir::FunctionType source_structured_function_type, std::string &error);
 
 } // namespace matcore::mdslc::mlir_bridge
 

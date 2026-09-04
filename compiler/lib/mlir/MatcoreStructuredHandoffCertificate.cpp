@@ -57,6 +57,15 @@ constexpr llvm::StringLiteral kStructuredFunctionFields[] = {
 constexpr llvm::StringLiteral kSemanticFunctionFields[] = {
     "mdsl.capture_ordinal", "mdsl.site_id"};
 
+constexpr llvm::StringLiteral kDerivedSourceFunctionType =
+    "mdsl.source_structured_function_type";
+constexpr llvm::StringLiteral kDerivedSourceSiteFingerprint =
+    "mdsl.source_structured_fingerprint";
+constexpr llvm::StringLiteral kDerivedSourceSiteCount =
+    "mdsl.source_structured_site_count";
+constexpr llvm::StringLiteral kDerivedSourceProducer =
+    "mdsl.source_structured_producer";
+
 bool verifyProfile(const StructuredHandoffCertificateProfileV1 &profile,
                    std::string &error) {
   if (profile.schema.empty() || profile.producer.empty() ||
@@ -165,13 +174,11 @@ bool verifyHandoffAttribute(
   return true;
 }
 
-bool verifyStructuredModuleFields(
+bool verifyStructuredModuleIdentityFields(
     mlir::ModuleOp module,
     const StructuredHandoffCertificateProfileV1 &profile,
+    llvm::StringRef artifact_producer_field, llvm::StringRef context,
     std::string &error) {
-  if (!requireExactNames(module->getAttrDictionary(), kStructuredModuleFields,
-                         "structured handoff module", error))
-    return false;
   const auto analysis_only =
       module->getAttrOfType<mlir::BoolAttr>("mdsl.analysis_only");
   const auto source_producer =
@@ -188,29 +195,38 @@ bool verifyStructuredModuleFields(
       !source_file || !source_file.getValue().ends_with(".mdsl") ||
       !translation_unit || translation_unit.getValue().empty() ||
       !numerical_profile || numerical_profile.getValue().empty()) {
-    error = "structured handoff module capture identity is invalid";
+    error = context.str() + " capture identity is invalid";
     return false;
   }
   return requireString(module, "mdsl.capture_schema", "matcore-ir-v1",
-                       "structured handoff module", error) &&
+                       context, error) &&
          requireI32(module, "mdsl.capture_version", ir::v1::kMatcoreIrVersion,
-                    "structured handoff module", error) &&
+                    context, error) &&
          requireString(module, "mdsl.execution_intent", "generic",
-                       "structured handoff module", error) &&
-         requireString(module, "mdsl.producer", profile.producer,
-                       "structured handoff module", error) &&
+                       context, error) &&
+         requireString(module, artifact_producer_field, profile.producer,
+                       context, error) &&
          requireString(module, "mdsl.execution_authority", profile.authority,
-                       "structured handoff module", error) &&
+                       context, error) &&
          requireString(module, "mdsl.source_bridge_schema",
-                       kSemanticBridgeSchema, "structured handoff module",
-                       error) &&
+                       kSemanticBridgeSchema, context, error) &&
          requireString(module, "mdsl.structured_handoff_schema", profile.schema,
-                       "structured handoff module", error) &&
+                       context, error) &&
          requireI32(module, "mdsl.structured_handoff_version", profile.version,
-                    "structured handoff module", error) &&
+                    context, error) &&
          requireI32(module, "mdsl.source_semantic_version",
-                    kMatcoreSemanticModuleVersion,
-                    "structured handoff module", error);
+                    kMatcoreSemanticModuleVersion, context, error);
+}
+
+bool verifyStructuredModuleFields(
+    mlir::ModuleOp module,
+    const StructuredHandoffCertificateProfileV1 &profile,
+    std::string &error) {
+  if (!requireExactNames(module->getAttrDictionary(), kStructuredModuleFields,
+                         "structured handoff module", error))
+    return false;
+  return verifyStructuredModuleIdentityFields(
+      module, profile, "mdsl.producer", "structured handoff module", error);
 }
 
 void appendFingerprintField(std::string &bytes, llvm::StringRef name,
@@ -234,23 +250,22 @@ std::string hashFingerprintBytes(llvm::StringRef bytes) {
 std::string computeSemanticFingerprint(
     llvm::ArrayRef<std::pair<llvm::StringRef, mlir::Attribute>> module_fields,
     llvm::StringRef source_operation, llvm::StringRef source_symbol,
-    mlir::StringAttr site, mlir::func::FuncOp carrier_function,
+    mlir::StringAttr site, mlir::FunctionType function_type,
+    mlir::func::FuncOp location_carrier,
     mlir::DictionaryAttr contract, std::string &error) {
   if (source_operation.empty() || source_symbol.empty() || !site ||
-      !carrier_function || !contract) {
+      !function_type || !location_carrier || !contract) {
     error = "semantic fingerprint input is incomplete";
     return {};
   }
-  if (!llvm::hasSingleElement(carrier_function.getBody())) {
-    error = "semantic fingerprint requires one entry block";
+  if (!llvm::hasSingleElement(location_carrier.getBody()) ||
+      location_carrier.getBody().front().getNumArguments() !=
+          function_type.getNumInputs()) {
+    error = "semantic fingerprint entry arguments do not match the retained "
+            "function type";
     return {};
   }
-  mlir::Block &entry = carrier_function.getBody().front();
-  if (entry.getNumArguments() != carrier_function.getNumArguments()) {
-    error = "semantic fingerprint entry arguments do not match the function "
-            "type";
-    return {};
-  }
+  mlir::Block &entry = location_carrier.getBody().front();
   std::string bytes = "matcore-structured-semantic-fingerprint-v1\n";
   for (const auto &[name, value] : module_fields) {
     if (!value) {
@@ -264,9 +279,9 @@ std::string computeSemanticFingerprint(
   appendFingerprintField(bytes, "source_symbol", source_symbol);
   appendFingerprintField(bytes, "site_id", site.getValue());
   appendFingerprintField(bytes, "function_type",
-                         textualIdentity(carrier_function.getFunctionType()));
+                         textualIdentity(function_type));
   appendFingerprintField(bytes, "location",
-                         textualIdentity(carrier_function.getLoc()));
+                         textualIdentity(location_carrier.getLoc()));
   appendFingerprintField(bytes, "entry_argument_count",
                          std::to_string(entry.getNumArguments()));
   for (auto [index, argument] : llvm::enumerate(entry.getArguments())) {
@@ -304,6 +319,147 @@ bool verifyExactEntryArgumentLocations(mlir::func::FuncOp source,
     }
   }
   return true;
+}
+
+bool verifyStructuredHandoffSiteCertificateImpl(
+    mlir::func::FuncOp function, std::size_t expected_ordinal,
+    const StructuredHandoffCertificateProfileV1 &profile,
+    bool require_exact_attributes, VerifiedStructuredHandoffSiteV1 &verified,
+    std::string &error) {
+  error.clear();
+  verified = {};
+  if (!verifyProfile(profile, error))
+    return false;
+  if (!function) {
+    error = "structured handoff function is null";
+    return false;
+  }
+  if (!function->getParentOfType<mlir::ModuleOp>() ||
+      mlir::failed(mlir::verify(function))) {
+    error = "structured handoff function must be attached and pass upstream "
+            "MLIR verification";
+    return false;
+  }
+  if (require_exact_attributes) {
+    if (!requireExactNames(function->getDiscardableAttrDictionary(),
+                           kStructuredFunctionFields,
+                           "structured handoff function", error))
+      return false;
+  } else {
+    for (llvm::StringRef name : kStructuredFunctionFields) {
+      if (!function->hasAttr(name)) {
+        error = "derived structured handoff function is missing common field '" +
+                name.str() + "'";
+        return false;
+      }
+    }
+  }
+  if (function.getArgAttrsAttr() || function.getResAttrsAttr() ||
+      function.getNoInline() || function.getSymVisibilityAttr()) {
+    error = "structured handoff functions may not carry argument/result "
+            "optimizer attributes, no_inline, or explicit visibility";
+    return false;
+  }
+  const auto site = function->getAttrOfType<mlir::StringAttr>("mdsl.site_id");
+  const auto ordinal =
+      function->getAttrOfType<mlir::IntegerAttr>("mdsl.capture_ordinal");
+  const auto source_symbol = function->getAttrOfType<mlir::StringAttr>(
+      "mdsl.source_semantic_symbol");
+  const auto contract = function->getAttrOfType<mlir::DictionaryAttr>(
+      "mdsl.semantic_contract");
+  const auto handoff = function->getAttrOfType<mlir::DictionaryAttr>(
+      "mdsl.structured_handoff");
+  if (!site || site.getValue().empty() || !ordinal ||
+      !ordinal.getType().isSignlessInteger(64) ||
+      ordinal.getInt() != static_cast<std::int64_t>(expected_ordinal) ||
+      !source_symbol || !contract || contract.empty() || !handoff ||
+      !function.isPublic()) {
+    error = "structured handoff function identity is incomplete or unordered";
+    return false;
+  }
+  const std::string expected_name =
+      (llvm::Twine(profile.structured_function_prefix) + site.getValue()).str();
+  const std::string expected_source =
+      (llvm::Twine(profile.semantic_function_prefix) + site.getValue()).str();
+  if (function.getName() != expected_name ||
+      source_symbol.getValue() != expected_source) {
+    error = "structured function/source symbols must match the exact semantic "
+            "site identity";
+    return false;
+  }
+  if (!verifyHandoffAttribute(handoff, profile, error))
+    return false;
+  verified.function = function;
+  verified.site_id = site;
+  verified.source_semantic_symbol = source_symbol;
+  verified.semantic_contract = contract;
+  return true;
+}
+
+bool isCanonicalFingerprint(mlir::StringAttr fingerprint) {
+  if (!fingerprint || fingerprint.getValue().size() != 71 ||
+      !fingerprint.getValue().starts_with("sha256:"))
+    return false;
+  return llvm::all_of(fingerprint.getValue().drop_front(7),
+                      [](char value) { return llvm::isHexDigit(value); });
+}
+
+std::string orderedStructuredSiteFingerprint(
+    const StructuredHandoffCertificateProfileV1 &profile,
+    llvm::ArrayRef<std::string> site_fingerprints) {
+  std::string bytes = "matcore-derived-structured-site-set-v1\n";
+  appendFingerprintField(bytes, "schema", profile.schema);
+  appendFingerprintField(bytes, "producer", profile.producer);
+  appendFingerprintField(bytes, "authority", profile.authority);
+  appendFingerprintField(bytes, "source_operation", profile.source_operation);
+  appendFingerprintField(bytes, "destination", profile.destination_rule);
+  appendFingerprintField(bytes, "version", std::to_string(profile.version));
+  appendFingerprintField(bytes, "site_count",
+                         std::to_string(site_fingerprints.size()));
+  for (auto [index, fingerprint] : llvm::enumerate(site_fingerprints))
+    appendFingerprintField(bytes,
+                           (llvm::Twine("site_") + llvm::Twine(index)).str(),
+                           fingerprint);
+  return hashFingerprintBytes(bytes);
+}
+
+llvm::SmallVector<std::pair<llvm::StringRef, mlir::Attribute>, 10>
+structuredSemanticModuleFields(mlir::ModuleOp module) {
+  constexpr std::pair<llvm::StringLiteral, llvm::StringLiteral> names[] = {
+      {"mdsl.capture_schema", "mdsl.capture_schema"},
+      {"mdsl.capture_version", "mdsl.capture_version"},
+      {"mdsl.execution_intent", "mdsl.execution_intent"},
+      {"mdsl.numerical_profile", "mdsl.numerical_profile"},
+      {"mdsl.producer", "mdsl.source_producer"},
+      {"mdsl.bridge_schema", "mdsl.source_bridge_schema"},
+      {"mdsl.source_file", "mdsl.source_file"},
+      {"mdsl.semantic_version", "mdsl.source_semantic_version"},
+      {"mdsl.translation_unit", "mdsl.translation_unit"},
+  };
+  llvm::SmallVector<std::pair<llvm::StringRef, mlir::Attribute>, 10> fields;
+  for (auto [canonical_name, structured_name] : names)
+    fields.emplace_back(canonical_name, module->getAttr(structured_name));
+  return fields;
+}
+
+std::string computeRetainedStructuredSemanticFingerprint(
+    mlir::ModuleOp derived_module, mlir::func::FuncOp derived_function,
+    mlir::FunctionType source_function_type,
+    const StructuredHandoffCertificateProfileV1 &profile,
+    std::string &error) {
+  auto fields = structuredSemanticModuleFields(derived_module);
+  fields.emplace_back("mdsl.capture_ordinal",
+                      derived_function->getAttr("mdsl.capture_ordinal"));
+  const auto source_symbol = derived_function->getAttrOfType<mlir::StringAttr>(
+      "mdsl.source_semantic_symbol");
+  const auto site =
+      derived_function->getAttrOfType<mlir::StringAttr>("mdsl.site_id");
+  const auto contract = derived_function->getAttrOfType<mlir::DictionaryAttr>(
+      "mdsl.semantic_contract");
+  return computeSemanticFingerprint(
+      fields, profile.source_operation,
+      source_symbol ? source_symbol.getValue() : llvm::StringRef{}, site,
+      source_function_type, derived_function, contract, error);
 }
 
 } // namespace
@@ -486,64 +642,9 @@ bool verifyStructuredHandoffSiteCertificateV1(
     mlir::func::FuncOp function, std::size_t expected_ordinal,
     const StructuredHandoffCertificateProfileV1 &profile,
     VerifiedStructuredHandoffSiteV1 &verified, std::string &error) {
-  error.clear();
-  verified = {};
-  if (!verifyProfile(profile, error))
-    return false;
-  if (!function) {
-    error = "structured handoff function is null";
-    return false;
-  }
-  if (!function->getParentOfType<mlir::ModuleOp>() ||
-      mlir::failed(mlir::verify(function))) {
-    error = "structured handoff function must be attached and pass upstream "
-            "MLIR verification";
-    return false;
-  }
-  if (!requireExactNames(function->getDiscardableAttrDictionary(),
-                         kStructuredFunctionFields,
-                         "structured handoff function", error))
-    return false;
-  if (function.getArgAttrsAttr() || function.getResAttrsAttr() ||
-      function.getNoInline() || function.getSymVisibilityAttr()) {
-    error = "structured handoff functions may not carry argument/result "
-            "optimizer attributes, no_inline, or explicit visibility";
-    return false;
-  }
-  const auto site = function->getAttrOfType<mlir::StringAttr>("mdsl.site_id");
-  const auto ordinal =
-      function->getAttrOfType<mlir::IntegerAttr>("mdsl.capture_ordinal");
-  const auto source_symbol = function->getAttrOfType<mlir::StringAttr>(
-      "mdsl.source_semantic_symbol");
-  const auto contract = function->getAttrOfType<mlir::DictionaryAttr>(
-      "mdsl.semantic_contract");
-  const auto handoff = function->getAttrOfType<mlir::DictionaryAttr>(
-      "mdsl.structured_handoff");
-  if (!site || site.getValue().empty() || !ordinal ||
-      !ordinal.getType().isSignlessInteger(64) ||
-      ordinal.getInt() != static_cast<std::int64_t>(expected_ordinal) ||
-      !source_symbol || !contract || contract.empty() || !handoff ||
-      !function.isPublic()) {
-    error = "structured handoff function identity is incomplete or unordered";
-    return false;
-  }
-  const std::string expected_name =
-      (llvm::Twine(profile.structured_function_prefix) + site.getValue()).str();
-  const std::string expected_source =
-      (llvm::Twine(profile.semantic_function_prefix) + site.getValue()).str();
-  if (function.getName() != expected_name ||
-      source_symbol.getValue() != expected_source) {
-    error = "structured function/source symbols must match the exact semantic "
-            "site identity";
-    return false;
-  }
-  if (!verifyHandoffAttribute(handoff, profile, error))
-    return false;
-  verified.function = function;
-  verified.site_id = site;
-  verified.source_semantic_symbol = source_symbol;
-  verified.semantic_contract = contract;
-  return true;
+  return verifyStructuredHandoffSiteCertificateImpl(
+      function, expected_ordinal, profile, /*require_exact_attributes=*/true,
+      verified, error);
 }
 
 bool verifyStructuredHandoffCertificateMatchesSourceV1(
@@ -639,6 +740,300 @@ bool verifyStructuredHandoffCertificateMatchesSourceV1(
   return true;
 }
 
+bool attachDerivedStructuredHandoffSourceIdentityV1(
+    mlir::ModuleOp structured_source, mlir::ModuleOp derived_module,
+    const StructuredHandoffCertificateProfileV1 &profile,
+    mlir::Builder &builder, std::string &error) {
+  error.clear();
+  if (!verifyStructuredHandoffCertificateEnvelopeV1(structured_source, profile,
+                                                    error))
+    return false;
+  if (!derived_module ||
+      derived_module.getContext() != structured_source.getContext() ||
+      builder.getContext() != structured_source.getContext() ||
+      mlir::failed(mlir::verify(derived_module))) {
+    error = "derived structured identity attachment requires valid same-context "
+            "modules and builder";
+    return false;
+  }
+  if (derived_module->getAttrDictionary() !=
+      structured_source->getAttrDictionary()) {
+    error = "derived structured identity must be attached before source module "
+            "certificate fields are changed";
+    return false;
+  }
+
+  auto source_iterator = structured_source.getBody()->begin();
+  auto derived_iterator = derived_module.getBody()->begin();
+  llvm::SmallVector<std::string> source_fingerprints;
+  for (std::size_t ordinal = 0;
+       source_iterator != structured_source.getBody()->end() &&
+       derived_iterator != derived_module.getBody()->end();
+       ++source_iterator, ++derived_iterator, ++ordinal) {
+    auto source_function = mlir::dyn_cast<mlir::func::FuncOp>(*source_iterator);
+    auto derived_function =
+        mlir::dyn_cast<mlir::func::FuncOp>(*derived_iterator);
+    if (!source_function || !derived_function) {
+      error = "derived structured identity permits only direct func.func sites";
+      return false;
+    }
+    VerifiedStructuredHandoffSiteV1 source_site;
+    VerifiedStructuredHandoffSiteV1 derived_site;
+    if (!verifyStructuredHandoffSiteCertificateV1(
+            source_function, ordinal, profile, source_site, error) ||
+        !verifyStructuredHandoffSiteCertificateV1(
+            derived_function, ordinal, profile, derived_site, error))
+      return false;
+    if (source_function.getName() != derived_function.getName() ||
+        textualIdentity(source_function.getLoc()) !=
+            textualIdentity(derived_function.getLoc()) ||
+        textualIdentity(source_site.source_semantic_symbol) !=
+            textualIdentity(derived_site.source_semantic_symbol) ||
+        textualIdentity(source_site.semantic_contract) !=
+            textualIdentity(derived_site.semantic_contract) ||
+        source_function.getNumArguments() !=
+            derived_function.getNumArguments() ||
+        source_function.getNumResults() != derived_function.getNumResults()) {
+      error = "derived function changed source-structured identity before "
+              "certificate attachment";
+      return false;
+    }
+    for (auto [source_argument, derived_argument] :
+         llvm::zip(source_function.getArguments(),
+                   derived_function.getArguments())) {
+      if (textualIdentity(source_argument.getLoc()) !=
+          textualIdentity(derived_argument.getLoc())) {
+        error = "derived function changed a source block-argument location";
+        return false;
+      }
+    }
+    std::string fingerprint = computeStructuredSemanticFingerprintV1(
+        structured_source, source_function, profile.source_operation, error);
+    if (fingerprint.empty())
+      return false;
+    derived_function->setAttr(
+        kDerivedSourceFunctionType,
+        mlir::TypeAttr::get(source_function.getFunctionType()));
+    derived_function->setAttr(kDerivedSourceSiteFingerprint,
+                              builder.getStringAttr(fingerprint));
+    source_fingerprints.push_back(std::move(fingerprint));
+  }
+  if (source_iterator != structured_source.getBody()->end() ||
+      derived_iterator != derived_module.getBody()->end() ||
+      source_fingerprints.empty()) {
+    error = "derived structured identity changed the number of source sites";
+    return false;
+  }
+  derived_module->setAttr(kDerivedSourceProducer,
+                          structured_source->getAttr("mdsl.producer"));
+  derived_module->setAttr(
+      kDerivedSourceSiteCount,
+      builder.getI64IntegerAttr(
+          static_cast<std::int64_t>(source_fingerprints.size())));
+  derived_module->setAttr(
+      kDerivedSourceSiteFingerprint,
+      builder.getStringAttr(
+          orderedStructuredSiteFingerprint(profile, source_fingerprints)));
+  return true;
+}
+
+bool verifyDerivedStructuredHandoffSourceIdentityV1(
+    mlir::ModuleOp derived_module, mlir::func::FuncOp derived_function,
+    std::size_t expected_ordinal,
+    const StructuredHandoffCertificateProfileV1 &profile,
+    VerifiedDerivedStructuredHandoffSiteV1 &verified, std::string &error) {
+  error.clear();
+  verified = {};
+  if (!derived_module || !derived_function ||
+      derived_function->getParentOp() != derived_module.getOperation()) {
+    error = "derived structured source identity requires a direct module site";
+    return false;
+  }
+  VerifiedStructuredHandoffSiteV1 common;
+  if (!verifyStructuredHandoffSiteCertificateImpl(
+          derived_function, expected_ordinal, profile,
+          /*require_exact_attributes=*/false, common, error))
+    return false;
+  const auto source_type_attribute =
+      derived_function->getAttrOfType<mlir::TypeAttr>(
+          kDerivedSourceFunctionType);
+  const auto source_function_type =
+      source_type_attribute
+          ? mlir::dyn_cast<mlir::FunctionType>(source_type_attribute.getValue())
+          : mlir::FunctionType{};
+  const auto source_fingerprint =
+      derived_function->getAttrOfType<mlir::StringAttr>(
+          kDerivedSourceSiteFingerprint);
+  if (!source_function_type ||
+      source_function_type.getNumInputs() != derived_function.getNumArguments() ||
+      source_function_type.getNumResults() != derived_function.getNumResults() ||
+      !isCanonicalFingerprint(source_fingerprint)) {
+    error = "derived structured source type/fingerprint identity is incomplete";
+    return false;
+  }
+  std::string recomputed = computeRetainedStructuredSemanticFingerprint(
+      derived_module, derived_function, source_function_type, profile, error);
+  if (recomputed.empty() || recomputed != source_fingerprint.getValue()) {
+    if (error.empty())
+      error = "derived structured source fingerprint is not self-consistent";
+    return false;
+  }
+  verified.structured_identity = common;
+  verified.source_structured_function_type = source_function_type;
+  verified.source_structured_fingerprint = source_fingerprint;
+  return true;
+}
+
+bool verifyDerivedStructuredHandoffSourceEnvelopeV1(
+    mlir::ModuleOp derived_module,
+    const StructuredHandoffCertificateProfileV1 &profile,
+    std::string &error) {
+  error.clear();
+  if (!verifyProfile(profile, error))
+    return false;
+  if (!derived_module || mlir::failed(mlir::verify(derived_module))) {
+    error = "derived structured source envelope failed upstream MLIR "
+            "verification";
+    return false;
+  }
+  if (!verifyStructuredModuleIdentityFields(
+          derived_module, profile, kDerivedSourceProducer,
+          "derived structured source envelope", error))
+    return false;
+  const auto encoded_count =
+      derived_module->getAttrOfType<mlir::IntegerAttr>(
+          kDerivedSourceSiteCount);
+  const auto encoded_fingerprint =
+      derived_module->getAttrOfType<mlir::StringAttr>(
+          kDerivedSourceSiteFingerprint);
+  if (!encoded_count || !encoded_count.getType().isSignlessInteger(64) ||
+      encoded_count.getInt() <= 0 ||
+      !isCanonicalFingerprint(encoded_fingerprint)) {
+    error = "derived structured source site-set identity is incomplete";
+    return false;
+  }
+
+  llvm::SmallVector<std::string> site_fingerprints;
+  std::size_t ordinal = 0;
+  for (mlir::Operation &operation : derived_module.getBody()->getOperations()) {
+    auto function = mlir::dyn_cast<mlir::func::FuncOp>(operation);
+    if (!function) {
+      error = "derived structured source envelope permits only func.func sites";
+      return false;
+    }
+    VerifiedDerivedStructuredHandoffSiteV1 site;
+    if (!verifyDerivedStructuredHandoffSourceIdentityV1(
+            derived_module, function, ordinal, profile, site, error))
+      return false;
+    site_fingerprints.push_back(
+        site.source_structured_fingerprint.getValue().str());
+    ++ordinal;
+  }
+  if (ordinal != static_cast<std::size_t>(encoded_count.getInt())) {
+    error = "derived structured source site count does not match its envelope";
+    return false;
+  }
+  if (orderedStructuredSiteFingerprint(profile, site_fingerprints) !=
+      encoded_fingerprint.getValue()) {
+    error = "derived structured source ordered site-set fingerprint differs";
+    return false;
+  }
+  return true;
+}
+
+bool verifyDerivedStructuredHandoffMatchesSourceV1(
+    mlir::ModuleOp structured_source, mlir::ModuleOp derived_module,
+    const StructuredHandoffCertificateProfileV1 &profile,
+    std::string &error) {
+  error.clear();
+  if (!verifyStructuredHandoffCertificateEnvelopeV1(structured_source, profile,
+                                                    error) ||
+      !verifyDerivedStructuredHandoffSourceEnvelopeV1(derived_module, profile,
+                                                      error))
+    return false;
+  for (llvm::StringRef name : kStructuredModuleFields) {
+    mlir::Attribute source_attribute = structured_source->getAttr(name);
+    mlir::Attribute derived_attribute =
+        name == "mdsl.producer"
+            ? derived_module->getAttr(kDerivedSourceProducer)
+            : derived_module->getAttr(name);
+    if (textualIdentity(source_attribute) !=
+        textualIdentity(derived_attribute)) {
+      error = "derived structured handoff module metadata differs from source "
+              "field '" +
+              name.str() + "'";
+      return false;
+    }
+  }
+
+  auto source_iterator = structured_source.getBody()->begin();
+  auto derived_iterator = derived_module.getBody()->begin();
+  llvm::SmallVector<std::string> source_fingerprints;
+  for (std::size_t ordinal = 0;
+       source_iterator != structured_source.getBody()->end() &&
+       derived_iterator != derived_module.getBody()->end();
+       ++source_iterator, ++derived_iterator, ++ordinal) {
+    auto source_function = mlir::dyn_cast<mlir::func::FuncOp>(*source_iterator);
+    auto derived_function =
+        mlir::dyn_cast<mlir::func::FuncOp>(*derived_iterator);
+    if (!source_function || !derived_function) {
+      error = "paired derived structured handoff permits only func.func sites";
+      return false;
+    }
+    VerifiedStructuredHandoffSiteV1 source_site;
+    VerifiedDerivedStructuredHandoffSiteV1 derived_site;
+    if (!verifyStructuredHandoffSiteCertificateV1(
+            source_function, ordinal, profile, source_site, error) ||
+        !verifyDerivedStructuredHandoffSourceIdentityV1(
+            derived_module, derived_function, ordinal, profile, derived_site,
+            error))
+      return false;
+    std::string source_fingerprint = computeStructuredSemanticFingerprintV1(
+        structured_source, source_function, profile.source_operation, error);
+    if (source_fingerprint.empty())
+      return false;
+    if (source_fingerprint !=
+            derived_site.source_structured_fingerprint.getValue() ||
+        textualIdentity(source_function.getFunctionType()) !=
+            textualIdentity(
+                derived_site.source_structured_function_type) ||
+        textualIdentity(source_function.getLoc()) !=
+            textualIdentity(derived_function.getLoc()) ||
+        source_function.getNumArguments() !=
+            derived_function.getNumArguments()) {
+      error = "derived structured site is not paired with the supplied source";
+      return false;
+    }
+    for (auto [source_argument, derived_argument] :
+         llvm::zip(source_function.getArguments(),
+                   derived_function.getArguments())) {
+      if (textualIdentity(source_argument.getLoc()) !=
+          textualIdentity(derived_argument.getLoc())) {
+        error = "derived structured site block-argument location differs from "
+                "the supplied source";
+        return false;
+      }
+    }
+    source_fingerprints.push_back(std::move(source_fingerprint));
+  }
+  if (source_iterator != structured_source.getBody()->end() ||
+      derived_iterator != derived_module.getBody()->end()) {
+    error = "derived structured handoff changed the number of source sites";
+    return false;
+  }
+  const auto aggregate =
+      derived_module->getAttrOfType<mlir::StringAttr>(
+          kDerivedSourceSiteFingerprint);
+  if (!aggregate || aggregate.getValue() !=
+                        orderedStructuredSiteFingerprint(profile,
+                                                         source_fingerprints)) {
+    error = "derived structured handoff site-set fingerprint differs from its "
+            "supplied source";
+    return false;
+  }
+  return true;
+}
+
 std::string computeSourceSemanticFingerprintV1(
     mlir::ModuleOp semantic_module, mlir::func::FuncOp source_function,
     mlir::DictionaryAttr semantic_contract, llvm::StringRef source_operation,
@@ -684,7 +1079,8 @@ std::string computeSourceSemanticFingerprintV1(
   }
   return computeSemanticFingerprint(
       fields, source_operation, source_function.getName(), site,
-      source_function, semantic_contract, error);
+      source_function.getFunctionType(), source_function,
+      semantic_contract, error);
 }
 
 std::string computeStructuredSemanticFingerprintV1(
@@ -748,7 +1144,8 @@ std::string computeStructuredSemanticFingerprintV1(
   return computeSemanticFingerprint(
       fields, source_operation,
       source_symbol ? source_symbol.getValue() : llvm::StringRef{}, site,
-      structured_function, contract, error);
+      structured_function.getFunctionType(), structured_function,
+      contract, error);
 }
 
 } // namespace matcore::mdslc::mlir_bridge
