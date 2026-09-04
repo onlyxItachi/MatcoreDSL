@@ -59,6 +59,11 @@ PARALLEL_NATIVE_VARIANTS = {
 NATIVE_VARIANTS = SERIAL_NATIVE_VARIANTS | PARALLEL_NATIVE_VARIANTS
 OPENBLAS = "cpu.external.openblas.f32.v1"
 AUTO = "auto"
+PROVIDER_METADATA_PLACEHOLDERS = {
+    "unknown",
+    "unavailable",
+    "uninspected",
+}
 PLANNER_V3_VARIANTS = (
     "cpu.reference.f32.v1",
     "cpu.tiled.f32.v1",
@@ -983,11 +988,13 @@ def authenticate_report(
         require(
             environment.get("provider_name") == "OpenBLAS"
             and isinstance(provider_version, str)
-            and bool(provider_version)
-            and provider_version not in {"unknown", "unavailable", "uninspected"}
+            and bool(provider_version.strip())
+            and provider_version == provider_version.strip()
+            and provider_version.casefold() not in PROVIDER_METADATA_PLACEHOLDERS
             and isinstance(provider_config, str)
-            and bool(provider_config)
-            and provider_config not in {"unknown", "unavailable", "uninspected"},
+            and bool(provider_config.strip())
+            and provider_config == provider_config.strip()
+            and provider_config.casefold() not in PROVIDER_METADATA_PLACEHOLDERS,
             "selected OpenBLAS result lacks required provider metadata",
         )
     require(

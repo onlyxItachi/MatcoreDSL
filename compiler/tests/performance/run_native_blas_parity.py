@@ -38,6 +38,11 @@ PARALLEL_AVX2 = "cpu.native-parallel.avx2-fma.f32.v1"
 PARALLEL_AVX512 = "cpu.native-parallel.avx512-fma.f32.v1"
 OPENBLAS = "cpu.external.openblas.f32.v1"
 AUTO = "auto"
+PROVIDER_METADATA_PLACEHOLDERS = {
+    "unknown",
+    "unavailable",
+    "uninspected",
+}
 
 SERIAL_PARITY_VARIANTS = (PACKED_AVX2, PACKED_AVX512, OPENBLAS)
 PARALLEL_PARITY_VARIANTS = (PARALLEL_AVX2, PARALLEL_AVX512, OPENBLAS)
@@ -788,11 +793,13 @@ def authenticate_report(
         if (
             environment.get("provider_name") != "OpenBLAS"
             or not isinstance(provider_version, str)
-            or not provider_version
-            or provider_version in {"unknown", "unavailable", "uninspected"}
+            or not provider_version.strip()
+            or provider_version != provider_version.strip()
+            or provider_version.casefold() in PROVIDER_METADATA_PLACEHOLDERS
             or not isinstance(provider_config, str)
-            or not provider_config
-            or provider_config in {"unknown", "unavailable", "uninspected"}
+            or not provider_config.strip()
+            or provider_config != provider_config.strip()
+            or provider_config.casefold() in PROVIDER_METADATA_PLACEHOLDERS
         ):
             raise ValueError(
                 "selected OpenBLAS result lacks required provider metadata"

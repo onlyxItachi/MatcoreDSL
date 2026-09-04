@@ -244,9 +244,8 @@ def main() -> int:
         missing_provider_identity = json.loads(
             pristine_provider_raw.decode("utf-8")
         )
-        missing_provider_identity["environment"]["provider_version"] = (
-            "uninspected"
-        )
+        missing_provider_identity["environment"]["provider_version"] = "UNKNOWN"
+        missing_provider_identity["environment"]["provider_config"] = "   "
         provider_raw.write_text(
             json.dumps(missing_provider_identity, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -363,6 +362,23 @@ def main() -> int:
             staged_collision_output.read_text(encoding="utf-8")
         )
         assert staged_report["overall_status"] == "ready-for-bounded-summary"
+
+        # Output failures use the documented tool/safety status without a
+        # traceback and do not remove or replace the selected directory.
+        output_directory = root / "directory-is-not-json"
+        output_directory.mkdir()
+        invalid_output = execute_audit(
+            auditor,
+            forward,
+            reverse,
+            source_commit,
+            physical_cores,
+            output_directory,
+            expected=2,
+        )
+        assert "audit failed:" in invalid_output.stderr
+        assert "Traceback" not in invalid_output.stderr
+        assert output_directory.is_dir()
 
     print("matcore native BLAS parity evidence audit contract PASS")
     return 0

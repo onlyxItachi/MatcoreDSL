@@ -794,21 +794,20 @@ def main() -> int:
             physical_cores=args.physical_cores,
             auditor_path=auditor_path,
         )
+        if output is None:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            atomic_write_json(output, report)
+            print(
+                "matcore native-BLAS parity evidence audit: "
+                f"status={report['overall_status']}; json={output}"
+            )
     except (OSError, RuntimeError) as error:
         print(
             f"matcore native-BLAS parity evidence audit failed: {error}",
             file=sys.stderr,
         )
         return 2
-
-    if output is None:
-        print(json.dumps(report, indent=2, sort_keys=True))
-    else:
-        atomic_write_json(output, report)
-        print(
-            "matcore native-BLAS parity evidence audit: "
-            f"status={report['overall_status']}; json={output}"
-        )
     return 0 if report["overall_status"] == "ready-for-bounded-summary" else 1
 
 
