@@ -93,14 +93,15 @@ This answers the canonicalization question in two parts:
    update and its model fixture adds the product to the prior output.
 
 Likewise, a rank-two GEMM with M, N, or K equal to one remains GEMM. Independent
-authenticated fixtures exercise unit M, unit N, and unit K with the other
-dimensions non-unit and prove each remains rank two and retains `mdsl.gemm`
-identity. Independent zero-M, zero-N, and zero-K fixtures are rejected by the
-authoritative Matcore IR v1 positive-extent rule. A dynamic symbol in IR v1 is
-also specified as a positive runtime value: the MLIR `?` records an unknown
-extent, not permission for a concrete zero. This structured/topology layer
-does not observe runtime values or consume that precondition. It therefore
-neither enables dynamic zero nor changes operation identity from extents.
+programmatically constructed, verifier-approved fixtures exercise unit M, unit
+N, and unit K with the other dimensions non-unit and prove each remains rank
+two and retains `mdsl.gemm` identity. They are not authenticated static-shape
+frontend facts. Independent zero-M, zero-N, and zero-K fixtures are rejected by
+the authoritative Matcore IR v1 positive-extent rule. A dynamic symbol in IR v1
+is also specified as a positive runtime value: the MLIR `?` records an unknown
+extent, not permission for a concrete zero. This structured/topology layer does
+not observe runtime values or consume that precondition. It therefore neither
+enables dynamic zero nor changes operation identity from extents.
 
 ### Reusable proof-carrying certificate
 
@@ -128,12 +129,23 @@ verification before any authority-bearing use.
 The fingerprint domain is
 `matcore-structured-semantic-fingerprint-v1`. Length-delimited canonical
 fields cover source module identity, capture ordinal, source operation,
-semantic symbol/site, function type, source location, and the complete opaque
-semantic contract. Cross-context print/parse tests produce the same digest;
-changing an operation contract changes it. This is substitution detection,
-not a source-byte signature, imported-artifact authentication, or execution
+semantic symbol/site, function type, function source location, every ordered
+entry-block argument location, and the complete opaque semantic contract.
+Cross-context print/parse tests produce the same digest; changing an argument
+location or operation contract changes it. This is substitution detection, not
+a source-byte signature, imported-artifact authentication, or execution
 capability. The digest is computed during paired verification and is not a new
 serialized/public contract field.
+
+The operation-neutral layer binds and compares whatever ordered argument
+locations its source and structured carriers contain; it does not invent a
+universal rule that every future operation's arguments must share its function
+location. The exact current `mdsl.gemm` bridge and structured handoff do have
+that invariant: each of their three entry arguments must retain the
+authenticated function/source location. Their operation-specific verifiers
+enforce it independently, so applying the same forged locations to both sides
+cannot create an authenticated pair even though the two non-authoritative raw
+fingerprints remain equal to each other.
 
 The existing structured GEMM implementation now uses this reusable
 certificate for construction, standalone envelope checking, exact contract
@@ -165,8 +177,11 @@ The focused tests reject:
 - DOT/GER vector transpose axes and a transpose on GEMV's vector operand;
 - encoding a noncanonical topology or encoding maps through a different MLIR
   context;
-- core-invalid semantic-source MLIR, cross-module function handles, and
-  semantic/structured hybrid fingerprint handles;
+- core-invalid semantic-source or structured MLIR, cross-module function
+  handles, and semantic/structured hybrid fingerprint handles;
+- one-sided entry-argument location drift through the generic digest and pair,
+  plus source-only, structured-only, and matching two-sided location forgery
+  through the exact operation-specific GEMM verifiers;
 - feeding any model-only `linalg.generic` GEMV, DOT, GER, or batched GEMM to
   the authenticated structured-source API or CPU runtime lowering;
 - altered module/site provenance, contract fields, destination behavior,

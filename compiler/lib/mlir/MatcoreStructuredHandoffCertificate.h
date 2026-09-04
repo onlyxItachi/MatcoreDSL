@@ -88,12 +88,13 @@ bool verifyStructuredHandoffCertificateMatchesSourceV1(
 
 // Low-level, internal diagnostic primitives for deterministic semantic
 // identity over source-module identity, capture order, source operation, site
-// identity, symbol, type, location, and exact semantic contract. Each helper
-// verifies generic MLIR and rejects a function that is not a direct member of
-// the supplied module. They do not authenticate operation-specific semantics;
-// authority-bearing callers must first use the operation-specific paired
-// verifier above. These detect accidental substitution and are neither a
-// source-byte signature nor an execution capability.
+// identity, symbol, type, function location, ordered entry-block argument
+// locations, and exact semantic contract. Each helper verifies generic MLIR and
+// rejects a function that is not a direct member of the supplied module. They
+// do not authenticate operation-specific semantics; authority-bearing callers
+// must first use the operation-specific paired verifier above. These detect
+// accidental substitution and are neither a source-byte signature nor an
+// execution capability.
 std::string computeSourceSemanticFingerprintV1(
     mlir::ModuleOp semantic_module, mlir::func::FuncOp source_function,
     mlir::DictionaryAttr semantic_contract, llvm::StringRef source_operation,

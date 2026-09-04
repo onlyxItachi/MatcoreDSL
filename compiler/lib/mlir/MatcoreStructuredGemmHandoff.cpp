@@ -283,6 +283,13 @@ bool verifyStructuredFunction(mlir::func::FuncOp function,
     return false;
   }
   mlir::Block &block = function.getBody().front();
+  for (mlir::BlockArgument argument : block.getArguments()) {
+    if (argument.getLoc() != function.getLoc()) {
+      error = "structured GEMM function arguments must retain the exact "
+              "authenticated source location";
+      return false;
+    }
+  }
   auto constant = mlir::dyn_cast<mlir::arith::ConstantOp>(block.front());
   auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(*std::next(block.begin()));
   auto matmul =

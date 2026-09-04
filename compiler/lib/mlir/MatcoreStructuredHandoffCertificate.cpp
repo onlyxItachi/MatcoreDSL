@@ -234,12 +234,21 @@ std::string hashFingerprintBytes(llvm::StringRef bytes) {
 std::string computeSemanticFingerprint(
     llvm::ArrayRef<std::pair<llvm::StringRef, mlir::Attribute>> module_fields,
     llvm::StringRef source_operation, llvm::StringRef source_symbol,
-    mlir::StringAttr site,
-    mlir::FunctionType function_type, mlir::Location location,
+    mlir::StringAttr site, mlir::func::FuncOp carrier_function,
     mlir::DictionaryAttr contract, std::string &error) {
   if (source_operation.empty() || source_symbol.empty() || !site ||
-      !function_type || !contract) {
+      !carrier_function || !contract) {
     error = "semantic fingerprint input is incomplete";
+    return {};
+  }
+  if (!llvm::hasSingleElement(carrier_function.getBody())) {
+    error = "semantic fingerprint requires one entry block";
+    return {};
+  }
+  mlir::Block &entry = carrier_function.getBody().front();
+  if (entry.getNumArguments() != carrier_function.getNumArguments()) {
+    error = "semantic fingerprint entry arguments do not match the function "
+            "type";
     return {};
   }
   std::string bytes = "matcore-structured-semantic-fingerprint-v1\n";
@@ -254,10 +263,47 @@ std::string computeSemanticFingerprint(
   appendFingerprintField(bytes, "source_operation", source_operation);
   appendFingerprintField(bytes, "source_symbol", source_symbol);
   appendFingerprintField(bytes, "site_id", site.getValue());
-  appendFingerprintField(bytes, "function_type", textualIdentity(function_type));
-  appendFingerprintField(bytes, "location", textualIdentity(location));
+  appendFingerprintField(bytes, "function_type",
+                         textualIdentity(carrier_function.getFunctionType()));
+  appendFingerprintField(bytes, "location",
+                         textualIdentity(carrier_function.getLoc()));
+  appendFingerprintField(bytes, "entry_argument_count",
+                         std::to_string(entry.getNumArguments()));
+  for (auto [index, argument] : llvm::enumerate(entry.getArguments())) {
+    const std::string field =
+        (llvm::Twine("entry_argument_location[") + llvm::Twine(index) + "]")
+            .str();
+    appendFingerprintField(bytes, field, textualIdentity(argument.getLoc()));
+  }
   appendFingerprintField(bytes, "semantic_contract", textualIdentity(contract));
   return hashFingerprintBytes(bytes);
+}
+
+bool verifyExactEntryArgumentLocations(mlir::func::FuncOp source,
+                                       mlir::func::FuncOp structured,
+                                       std::string &error) {
+  if (!llvm::hasSingleElement(source.getBody()) ||
+      !llvm::hasSingleElement(structured.getBody())) {
+    error = "paired semantic functions require one entry block";
+    return false;
+  }
+  mlir::Block &source_entry = source.getBody().front();
+  mlir::Block &structured_entry = structured.getBody().front();
+  if (source_entry.getNumArguments() != structured_entry.getNumArguments()) {
+    error = "structured entry-argument count differs from its semantic source";
+    return false;
+  }
+  for (auto [source_argument, structured_argument] :
+       llvm::zip_equal(source_entry.getArguments(),
+                       structured_entry.getArguments())) {
+    if (textualIdentity(source_argument.getLoc()) !=
+        textualIdentity(structured_argument.getLoc())) {
+      error = "structured entry-argument location differs from its semantic "
+              "source";
+      return false;
+    }
+  }
+  return true;
 }
 
 } // namespace
@@ -569,6 +615,9 @@ bool verifyStructuredHandoffCertificateMatchesSourceV1(
               "source";
       return false;
     }
+    if (!verifyExactEntryArgumentLocations(source_function,
+                                           structured_function, error))
+      return false;
     std::string source_fingerprint = computeSourceSemanticFingerprintV1(
         semantic_module, source_function, source_contract,
         profile.source_operation, error);
@@ -635,8 +684,7 @@ std::string computeSourceSemanticFingerprintV1(
   }
   return computeSemanticFingerprint(
       fields, source_operation, source_function.getName(), site,
-      source_function.getFunctionType(), source_function.getLoc(),
-      semantic_contract, error);
+      source_function, semantic_contract, error);
 }
 
 std::string computeStructuredSemanticFingerprintV1(
@@ -700,8 +748,7 @@ std::string computeStructuredSemanticFingerprintV1(
   return computeSemanticFingerprint(
       fields, source_operation,
       source_symbol ? source_symbol.getValue() : llvm::StringRef{}, site,
-      structured_function.getFunctionType(), structured_function.getLoc(),
-      contract, error);
+      structured_function, contract, error);
 }
 
 } // namespace matcore::mdslc::mlir_bridge

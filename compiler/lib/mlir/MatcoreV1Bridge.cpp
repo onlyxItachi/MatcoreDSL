@@ -361,6 +361,13 @@ bool verifyMatcoreV1BridgeModule(mlir::ModuleOp module, std::string &error) {
       return false;
     }
     mlir::Block &block = function.getBody().front();
+    for (mlir::BlockArgument argument : block.getArguments()) {
+      if (argument.getLoc() != function.getLoc()) {
+        error = "Matcore semantic function arguments must retain the exact "
+                "authenticated source location";
+        return false;
+      }
+    }
     auto gemm = mlir::dyn_cast<mlir_dialect::GemmOp>(block.front());
     auto return_op = mlir::dyn_cast<mlir::func::ReturnOp>(block.back());
     if (!gemm || !return_op || gemm.getSiteId() != site.getValue() ||
