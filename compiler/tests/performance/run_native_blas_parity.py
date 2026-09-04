@@ -795,7 +795,7 @@ def authenticate_report(
             or provider_config in {"unknown", "unavailable", "uninspected"}
         ):
             raise ValueError(
-                "selected OpenBLAS result lacks authenticated provider metadata"
+                "selected OpenBLAS result lacks required provider metadata"
             )
     if not result.get("complete_implementation_comparison"):
         raise ValueError("parity result is not a complete implementation call")

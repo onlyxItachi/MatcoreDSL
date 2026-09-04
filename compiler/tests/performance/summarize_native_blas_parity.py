@@ -988,7 +988,7 @@ def authenticate_report(
             and isinstance(provider_config, str)
             and bool(provider_config)
             and provider_config not in {"unknown", "unavailable", "uninspected"},
-            "selected OpenBLAS result lacks authenticated provider metadata",
+            "selected OpenBLAS result lacks required provider metadata",
         )
     require(
         result.get("complete_implementation_comparison") is True,
