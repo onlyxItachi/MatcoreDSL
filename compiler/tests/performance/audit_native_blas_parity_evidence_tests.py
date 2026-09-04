@@ -344,6 +344,26 @@ def main() -> int:
         assert "collides with an evidence or tool input" in collision.stderr
         assert forward.read_bytes() == sentinel
 
+        # Atomic output staging also cannot overwrite a protected input whose
+        # name aliases the old deterministic ``.<output>.tmp`` sibling.
+        staged_collision_manifest = forward.parent / ".staged-output.json.tmp"
+        staged_collision_manifest.write_bytes(sentinel)
+        staged_collision_output = forward.parent / "staged-output.json"
+        execute_audit(
+            auditor,
+            staged_collision_manifest,
+            reverse,
+            source_commit,
+            physical_cores,
+            staged_collision_output,
+            expected=0,
+        )
+        assert staged_collision_manifest.read_bytes() == sentinel
+        staged_report = json.loads(
+            staged_collision_output.read_text(encoding="utf-8")
+        )
+        assert staged_report["overall_status"] == "ready-for-bounded-summary"
+
     print("matcore native BLAS parity evidence audit contract PASS")
     return 0
 

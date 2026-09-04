@@ -150,7 +150,9 @@ explicitly requested campaign checkpoint. That status is named
 `ready-for-bounded-summary`; it is not a performance or parity verdict. Missing
 or incomplete evidence returns `1`. Tool or output-safety errors return `2`.
 Output collision checks prevent overwriting manifests, referenced raw files,
-the benchmark binary, runner, summarizer, or auditor.
+the benchmark binary, runner, summarizer, or auditor. Atomic JSON output uses
+an exclusively created randomized sibling, so a crafted output name cannot
+alias and overwrite one of those protected inputs through its staging file.
 
 ### Provider metadata rejection
 
@@ -162,9 +164,9 @@ it does not claim cryptographic identity for the loaded provider library.
 
 Adversarial tests prove rejection of selective case omission, unfinished state
 with stale raw bytes, raw digest tampering, missing provider identity, a valid
-pair from the wrong expected source checkpoint, one-sided evidence, and output
-collision. The positive fixture is a synthetic contract fixture only and is
-not performance evidence.
+pair from the wrong expected source checkpoint, one-sided evidence, direct
+output collision, and staging-file collision. The positive fixture is a
+synthetic contract fixture only and is not performance evidence.
 
 ## Current gap matrix
 
