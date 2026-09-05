@@ -35,7 +35,7 @@ void check(bool value, const std::string &message) {
     std::cerr << "FAIL: " << message << '\n';
   }
 }
-template <typename T> llvm::SmallVector<T> all(mlir::ModuleOp module) {
+template <typename T, typename Root> llvm::SmallVector<T> all(Root module) {
   llvm::SmallVector<T> result;
   module.walk([&](T op) { result.push_back(op); });
   return result;
@@ -339,6 +339,106 @@ void testGuardLedger(mlir::ModuleOp module,
   check(!bridge::verifyTwoGemmRegionMatchesNativeEvidenceV1(seal, *coordinated, error),
         "coordinated source/ledger edits still cannot replace immutable native evidence");
 }
+void testForwardedRoles(mlir::ModuleOp module,
+                        const frontend::AuthenticatedNativeFrontendEvidenceV1 &seal) {
+  // The original fixtures retain their positions; the new fixtures separately
+  // cover RHS-only forwarding and the pre-existing C*C lhs-priority case.
+  for (unsigned region : {2u, 3u}) {
+    const unsigned forwarded = region == 2 ? 1 : 0;
+    const unsigned imported = 1 - forwarded;
+    auto function = all<mlir::func::FuncOp>(module)[region];
+    auto commits = all<dialect::RegionCommitOp>(function);
+    auto guards = all<dialect::RegionGuardOp>(function);
+    auto reads = all<dialect::RegionReadOp>(function);
+    auto mm = all<mlir::linalg::MatmulOp>(function)[1];
+    check(reads.size() == 3 && reads[2].getStage() == 1 &&
+              reads[2].getRole() == (imported ? "rhs" : "lhs"),
+          "only the nonforwarded role gets a second-call memory snapshot");
+    check(mm.getInputs()[forwarded] == commits[0].getCommitted() &&
+              mm.getInputs()[imported] == reads[2].getValue(),
+          "carried value preserves its mathematical operand position");
+    check(reads[2].getChecked() == guards[1].getChecked() &&
+              guards[1].getOrder() == commits[0].getOrder(),
+          "possibly aliasing other input is read after the first observable commit");
+    check((reads[2].getDescriptor() == commits[0].getDescriptor()) == (region == 3),
+          "C*C retains its same-descriptor reload; RHS-only retains a distinct binding");
+    auto dims = all<mlir::tensor::DimOp>(function);
+    check(dims[2].getSource() == mm.getInputs()[0] && dims[2].getConstantIndex() == 0 &&
+              dims[3].getSource() == mm.getInputs()[1] && dims[3].getConstantIndex() == 1,
+          "output rows follow current lhs and columns current rhs, not producer geometry");
+    check(mlir::cast<mlir::RankedTensorType>(mm.getResult(0).getType()).getNumDynamicDims() == 2,
+          "source-connected mirror does not invent static shape facts");
+    reject(module, seal, [region](mlir::ModuleOp m) {
+      auto fn = all<mlir::func::FuncOp>(m)[region];
+      auto operation = all<mlir::linalg::MatmulOp>(fn)[1];
+      auto lhs = operation.getInputs()[0], rhs = operation.getInputs()[1];
+      operation->setOperand(0, rhs);
+      operation->setOperand(1, lhs);
+    }, "ordered GEMM operands cannot be swapped even with identical dynamic types", true);
+    reject(module, seal, [region, forwarded](mlir::ModuleOp m) {
+      auto fn = all<mlir::func::FuncOp>(m)[region];
+      all<mlir::linalg::MatmulOp>(fn)[1]->setOperand(
+          forwarded, all<dialect::RegionReadOp>(fn)[0].getValue());
+    }, "carried operand cannot become a same-shaped precommit input", true);
+    reject(module, seal, [region, imported](mlir::ModuleOp m) {
+      auto fn = all<mlir::func::FuncOp>(m)[region];
+      all<mlir::linalg::MatmulOp>(fn)[1]->setOperand(
+          imported, all<dialect::RegionCommitOp>(fn)[0].getCommitted());
+    }, "the other operand must use its own late read, not an unused read plus dual forwarding", true);
+    reject(module, seal, [region](mlir::ModuleOp m) {
+      auto fn = all<mlir::func::FuncOp>(m)[region];
+      auto read = all<dialect::RegionReadOp>(fn)[2];
+      read.getValue().replaceAllUsesWith(all<dialect::RegionCommitOp>(fn)[0].getCommitted());
+      read.erase();
+    }, "erasing the late read cannot silently introduce both-input SSA forwarding", true);
+    for (bool hoist : {false, true})
+      reject(module, seal, [region, hoist](mlir::ModuleOp m) {
+        auto fn = all<mlir::func::FuncOp>(m)[region];
+        auto read = all<dialect::RegionReadOp>(fn)[2];
+        read.getCheckedMutable().assign(all<dialect::RegionGuardOp>(fn)[0].getChecked());
+        if (hoist)
+          read->moveBefore(all<dialect::RegionCommitOp>(fn)[0]);
+      }, hoist ? "other-operand read cannot hoist across possibly aliasing output write"
+               : "late other-operand read cannot borrow the first call's guard", true);
+    reject(module, seal, [region, forwarded](mlir::ModuleOp m) {
+      auto read = all<dialect::RegionReadOp>(all<mlir::func::FuncOp>(m)[region])[2];
+      read.setRole(forwarded ? "rhs" : "lhs");
+    }, "editable read role cannot choose the carried operand", true);
+    reject(module, seal, [region](mlir::ModuleOp m) {
+      auto guards = all<dialect::RegionGuardOp>(all<mlir::func::FuncOp>(m)[region]);
+      auto guard = guards[1];
+      auto lhs = guard.getLhs(), rhs = guard.getRhs();
+      guard.getLhsMutable().assign(region == 3 ? guards[0].getLhs() : rhs);
+      guard.getRhsMutable().assign(lhs);
+    }, "source lhs/rhs guard bindings cannot change with carried input", true);
+    for (unsigned axis : {0u, 1u}) {
+      reject(module, seal, [region, axis](mlir::ModuleOp m) {
+        auto fn = all<mlir::func::FuncOp>(m)[region];
+        auto operation = all<mlir::linalg::MatmulOp>(fn)[1];
+        all<mlir::tensor::DimOp>(fn)[2 + axis].getSourceMutable().assign(operation.getInputs()[1 - axis]);
+      }, "output extent cannot use the wrong current operand", true);
+      reject(module, seal, [region, axis](mlir::ModuleOp m) {
+        auto query = all<mlir::tensor::DimOp>(all<mlir::func::FuncOp>(m)[region])[2 + axis];
+        mlir::OpBuilder b(query);
+        auto index = mlir::arith::ConstantOp::create(b, query.getLoc(), b.getIndexAttr(1 - axis));
+        query.getIndexMutable().assign(index.getResult());
+      }, "output extent cannot use the wrong axis of the correct operand", true);
+    }
+    reject(module, seal, [region, forwarded](mlir::ModuleOp m) {
+      auto fn = all<mlir::func::FuncOp>(m)[region];
+      mlir::Builder b(m.getContext());
+      auto contract = fn->getAttrOfType<mlir::DictionaryAttr>("mdsl.region");
+      auto sites = contract.getAs<mlir::ArrayAttr>("sites");
+      llvm::SmallVector<mlir::Attribute> updated(sites.begin(), sites.end());
+      auto site = mlir::cast<mlir::DictionaryAttr>(updated[1]);
+      auto type = mlir::cast<mlir::FunctionType>(site.getAs<mlir::TypeAttr>("tensor_type").getValue());
+      llvm::SmallVector<mlir::Type> inputs(type.getInputs());
+      inputs[forwarded] = mlir::RankedTensorType::get({2, 3}, b.getF32Type());
+      updated[1] = field(b, site, "tensor_type", mlir::TypeAttr::get(b.getFunctionType(inputs, type.getResults())));
+      fn->setAttr("mdsl.region", field(b, contract, "sites", b.getArrayAttr(updated)));
+    }, "carried input type cannot differ from the produced tensor version", true);
+  }
+}
 void testRegion(frontend::Result &source) {
   check(source.native_evidence && source.native_evidence->valid(), "native source issued sealed region evidence");
   if (!source.native_evidence)
@@ -350,9 +450,9 @@ void testRegion(frontend::Result &source) {
   if (!result)
     return;
   auto module = *result.module;
-  check(all<mlir::func::FuncOp>(module).size() == 2, "both real source regions admitted");
-  check(all<dialect::RegionCommitOp>(module).size() == 4, "two observable commits per region");
-  check(all<dialect::RegionReadOp>(module).size() == 6, "no initial destination-data import");
+  check(all<mlir::func::FuncOp>(module).size() == 4, "all four real source regions admitted");
+  check(all<dialect::RegionCommitOp>(module).size() == 8, "two observable commits per region");
+  check(all<dialect::RegionReadOp>(module).size() == 12, "no initial destination-data import");
   auto commits = all<dialect::RegionCommitOp>(module);
   auto matmuls = all<mlir::linalg::MatmulOp>(module);
   check(matmuls[1].getInputs()[0] == commits[0].getCommitted(), "second GEMM uses first post-commit tensor value");
@@ -362,6 +462,7 @@ void testRegion(frontend::Result &source) {
   std::string error;
   check(bridge::verifyTwoGemmRegionMatchesNativeEvidenceV1(seal, module, error), "initial source pairing: " + error);
   testGuardLedger(module, seal);
+  testForwardedRoles(module, seal);
   mlir::MLIRContext parsed_context;
   bridge::registerTwoGemmRegionDialectsV1(parsed_context);
   auto parsed = mlir::parseSourceString<mlir::ModuleOp>(
@@ -400,11 +501,11 @@ void testRegion(frontend::Result &source) {
     check(optimize(*optimized, generalize), "actual upstream transforms succeed");
     check(bridge::verifyTwoGemmRegionMatchesNativeEvidenceV1(seal, *optimized, error),
           "upstream transformed region remains paired: " + error);
-    check(all<dialect::RegionCommitOp>(*optimized).size() == 4,
+    check(all<dialect::RegionCommitOp>(*optimized).size() == 8,
           "DCE cannot erase observable commits or public roots");
     if (generalize)
       check(all<mlir::linalg::MatmulOp>(*optimized).empty() &&
-                all<mlir::linalg::GenericOp>(*optimized).size() == 8,
+                all<mlir::linalg::GenericOp>(*optimized).size() == 16,
             "named operations actually became generic Linalg");
   }
   reject(module, seal, [](mlir::ModuleOp m) {

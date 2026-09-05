@@ -48,6 +48,9 @@ in `context.md`.
   runtime predicates, unproven caller storage preconditions and retained
   dispatch/completion obligations. Neither serialized evidence nor a successful
   plan discharges runtime legality. See `docs/mdslc/REGION_GUARD_LEDGER_V1.md`.
+  The committed value may feed either second-call input without commuting
+  operands. Preserve the other input's late read, including the existing
+  `C*C` lhs-carry/rhs-read form. See `docs/mdslc/TWO_GEMM_RHS_V1.md`.
 - Preserve semantic information until the final optimization that can use it.
   Matcore semantic operations describe WHAT. Legality, planning, structured
   upstream dialects, scheduling, and library/generated-code selection describe

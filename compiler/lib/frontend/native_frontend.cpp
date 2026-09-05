@@ -1207,9 +1207,14 @@ private:
         }
         const auto &a = candidate.sites[0].bindings;
         const auto &b = candidate.sites[1].bindings;
-        if (a[0].descriptor_id.empty() || a[0].descriptor_id != b[1].descriptor_id)
+        // Dependence is an exact descriptor binding, not an operand spelling
+        // or a physical alias fact. Keep both-input matches (E = C * C) legal;
+        // the structured handoff preserves its existing lhs-first edge.
+        if (a[0].descriptor_id.empty() ||
+            (a[0].descriptor_id != b[1].descriptor_id &&
+             a[0].descriptor_id != b[2].descriptor_id))
           candidate.rejection_reasons.push_back(
-              "bounded region requires first output to be the second GEMM lhs descriptor");
+              "bounded region requires first output to be a second GEMM input descriptor (lhs or rhs)");
         if (!a[0].descriptor_id.empty() && a[0].descriptor_id == b[0].descriptor_id)
           candidate.rejection_reasons.push_back("the two outputs require distinct descriptor bindings (not a noalias proof)");
         for (const auto &site : candidate.sites)
