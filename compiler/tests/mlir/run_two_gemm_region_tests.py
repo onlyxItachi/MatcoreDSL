@@ -60,6 +60,58 @@ int main() {{
 """
 
 
+def rhs_program(kind: str) -> str:
+    """Discriminating old-route oracles, never execution of derived region IR."""
+    square = kind in ("noncommuting", "both_inputs")
+    aliased = kind == "late_alias"
+    failed = kind == "second_failure"
+    m, k, n, p = (2, 2, 2, 2) if square else (2, 3, 3, 3) if aliased else (2, 3, 4, 5)
+    lhs = "C" if kind == "both_inputs" else "D"
+    d_pointer = "c" if aliased else "d"
+    between = 'std::printf("rhs-observed:%g\\n", c[0]);' if kind == "observer" else ""
+    return PREFIX + f"""
+int main() {{
+  constexpr int M={m}, K={k}, N={n}, P={p};
+  float a[M*K], b[K*N], c[M*N], d[P*M], e[P*N];
+  for (int i=0; i<M*K; ++i) a[i] = float(i+1);
+  for (int i=0; i<K*N; ++i) b[i] = float(i+5);
+  for (int i=0; i<M*N; ++i) c[i] = -7.0f;
+  for (int i=0; i<P*M; ++i) d[i] = float(i+1);
+  for (int i=0; i<P*N; ++i) e[i] = -9.0f;
+  {"d[0]=1; d[1]=2; d[2]=0; d[3]=1;" if square else ""}
+  // An independent double oracle computes the first result, then models the
+  // second input's logical row-major view AFTER that write. In the alias case
+  // D and C denote the same six floats with different shapes (3x2 and 2x3).
+  double expected_c[M*N] = {{}};
+  double expected_e[P*N] = {{}};
+  for (int i=0; i<M; ++i)
+    for (int j=0; j<N; ++j)
+      for (int q=0; q<K; ++q)
+        expected_c[i*N+j] += double(a[i*K+q])*double(b[q*N+j]);
+  for (int i=0; i<P; ++i)
+    for (int j=0; j<N; ++j)
+      for (int q=0; q<M; ++q)
+        expected_e[i*N+j] += {"expected_c[i*M+q]" if aliased or kind == "both_inputs" else "double(d[i*M+q])"} * expected_c[q*N+j];
+  md::matrix_view A{{a,M,K}}, B{{b,K,N}}, C{{c,M,N}};
+  md::matrix_view D{{{d_pointer},P,{1 if failed else m}}}, E{{e,P,N}};
+  bool failed = false;
+  try {{
+    md::gemm(md::out(C), A, B);
+    {between}
+    md::gemm(md::out(E), {lhs}, C);
+  }} catch (const std::exception &) {{ failed = true; }}
+  std::printf("rhs-{kind}: C0=%g E0=%g failed=%d\\n", c[0], e[0], failed);
+  if (failed != {"true" if failed else "false"}) return 1;
+  for (int i=0; i<M*N; ++i)
+    if (double(c[i]) != expected_c[i]) return 2;
+  for (int i=0; i<P*N; ++i)
+    if (double(e[i]) != {"-9.0" if failed else "expected_e[i]"}) return 3;
+  {"if (expected_e[0] != 105 || expected_e[1] != 122 || expected_e[2] != 43 || expected_e[3] != 50) return 4;" if kind == "noncommuting" else ""}
+  return 0;
+}}
+"""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--extractor", type=Path, required=True)
@@ -149,6 +201,10 @@ def main() -> int:
             "descriptor_mutation": (source("descriptor_mutation", program(
                 between="C.data = replacement;", expected_e=20)), False),
         }
+        for kind in ("rectangular", "noncommuting", "late_alias", "second_failure",
+                     "both_inputs", "observer"):
+            name = "rhs_" + kind
+            cases[name] = (source(name, rhs_program(kind)), kind != "observer")
         for name, (path, admitted) in cases.items():
             artifact = temporary / f"{name}.mlir"
             result = run(command(path, artifact), temporary)
@@ -175,6 +231,9 @@ def main() -> int:
                 if name == "observer":
                     require("observed:6" in result.stdout,
                             "host observer must see the first GEMM output")
+                if name == "rhs_observer":
+                    require("rhs-observed:" in result.stdout,
+                            "RHS host observer still executes between the source calls")
                 checks += 2
 
         # Competing definitions remain valid C++, but cannot authenticate a
