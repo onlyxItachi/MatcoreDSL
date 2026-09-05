@@ -91,13 +91,18 @@ At integrated checkpoint `de204b5`, the full Release build succeeded.
 The MLIR lane read the execution log at `/tmp/mdslc-region-mlir-tests.log`;
 the independent reviewer separately ran the same 83 checks successfully.
 The integration owner also reported 28 native admission extractions and 62 CLI
-test steps, including 16 unchanged-route executable runs, passing. Those wider
-results and complete regression outcomes belong to the integration record.
+test steps, including 16 unchanged-route executable runs, passing. The complete
+Release CTest suite at `de204b5` passed **73/73 tests** in 201.33 seconds,
+verified from `/tmp/mdslc-region-release-ctest.log`.
 
 The final independent review requested fresh-context serialization/parse/source
 pairing, because the newly introduced descriptor/order type parser was not yet
 exercised. Commit `9ddd9e39cbf43eab95379a1d0c4988f1b6eb614a` adds that control;
-its execution result is pending the integration owner's serialized test rerun.
+at integrated checkpoint `f8f15eb3fad50af81e07e2deecb25b024975c572`, the same
+focused CTest passed **85/85 checks** in 0.04 seconds, including the fresh-context
+roundtrip and paired verification. The MLIR lane verified the actual log at
+`/tmp/mdslc-region-roundtrip-tests.log`. Production implementation is unchanged
+from the full-suite checkpoint; the subsequent change adds only these tests.
 
 ## Deliberately unresolved
 
