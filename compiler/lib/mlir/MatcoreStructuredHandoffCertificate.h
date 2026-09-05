@@ -37,6 +37,17 @@ struct VerifiedStructuredHandoffSiteV1 {
   mlir::DictionaryAttr semantic_contract;
 };
 
+// Common source-structured identity retained by a later, analysis-only
+// transformation whose function signature or body is no longer itself the
+// structured tensor form. The stored fingerprint is a deterministic
+// substitution detector, not a cryptographic authenticity or execution
+// capability claim.
+struct VerifiedDerivedStructuredHandoffSiteV1 {
+  VerifiedStructuredHandoffSiteV1 structured_identity;
+  mlir::FunctionType source_structured_function_type;
+  mlir::StringAttr source_structured_fingerprint;
+};
+
 using SemanticContractSelectorV1 = llvm::function_ref<mlir::DictionaryAttr(
     mlir::func::FuncOp source_function, std::string &error)>;
 
@@ -85,6 +96,40 @@ bool verifyStructuredHandoffCertificateMatchesSourceV1(
     mlir::ModuleOp semantic_module, mlir::ModuleOp structured_module,
     const StructuredHandoffCertificateProfileV1 &profile,
     SemanticContractSelectorV1 contract_selector, std::string &error);
+
+// Attaches the reusable identity chain from a structured-certificate envelope
+// to a later inspection-only derivation. The derived module/functions must be
+// direct clones of the source certificate fields when attached. This generic
+// helper does not authenticate the source operation body: the caller must run
+// its operation-specific source verifier before attachment and must separately
+// verify all operation-specific derived postconditions.
+// A module fingerprint binds the ordered complete site set. Per-site source
+// tensor function types are retained because later stages may change them.
+bool attachDerivedStructuredHandoffSourceIdentityV1(
+    mlir::ModuleOp structured_source, mlir::ModuleOp derived_module,
+    const StructuredHandoffCertificateProfileV1 &profile,
+    mlir::Builder &builder, std::string &error);
+
+bool verifyDerivedStructuredHandoffSourceIdentityV1(
+    mlir::ModuleOp derived_module, mlir::func::FuncOp derived_function,
+    std::size_t expected_ordinal,
+    const StructuredHandoffCertificateProfileV1 &profile,
+    VerifiedDerivedStructuredHandoffSiteV1 &verified, std::string &error);
+
+bool verifyDerivedStructuredHandoffSourceEnvelopeV1(
+    mlir::ModuleOp derived_module,
+    const StructuredHandoffCertificateProfileV1 &profile,
+    std::string &error);
+
+// This paired verifier is deliberately stronger than standalone derived
+// self-consistency: it recomputes identity from the supplied certificate
+// envelope and rejects reordered, dropped, duplicated, or substituted sites.
+// It compares identity only. Callers retain responsibility for authenticating
+// the operation-specific source and derived bodies.
+bool verifyDerivedStructuredHandoffMatchesSourceV1(
+    mlir::ModuleOp structured_source, mlir::ModuleOp derived_module,
+    const StructuredHandoffCertificateProfileV1 &profile,
+    std::string &error);
 
 // Low-level, internal diagnostic primitives for deterministic semantic
 // identity over source-module identity, capture order, source operation, site

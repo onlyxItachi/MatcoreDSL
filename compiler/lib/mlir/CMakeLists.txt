@@ -209,6 +209,24 @@ if(BUILD_TESTING)
     COMMAND matcore_mlir_structured_gemm_handoff_tests)
 
   add_executable(
+    matcore_mlir_derived_handoff_certificate_tests
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/mlir/matcore_derived_handoff_certificate_test.cpp"
+  )
+  target_link_libraries(
+    matcore_mlir_derived_handoff_certificate_tests
+    PRIVATE
+      matcore_mlir_structured_handoff
+  )
+  target_include_directories(
+    matcore_mlir_derived_handoff_certificate_tests
+    SYSTEM PRIVATE "${LLVM_INCLUDE_DIRS}" "${MLIR_INCLUDE_DIRS}"
+  )
+  mdslc_target_enable_warnings(matcore_mlir_derived_handoff_certificate_tests)
+  mdslc_target_match_llvm_rtti(matcore_mlir_derived_handoff_certificate_tests)
+  add_test(NAME mlir.structured.derived-certificate-v1
+    COMMAND matcore_mlir_derived_handoff_certificate_tests)
+
+  add_executable(
     matcore_mlir_cpu_runtime_lowering_tests
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/mlir/matcore_cpu_runtime_lowering_test.cpp"
   )
