@@ -135,8 +135,20 @@ and `build-ledger-asan`; exact test outputs are in their
 Detailed source/test evidence: [MLIR lane](agent-reports/guard-ledger-mlir-v1.md),
 [runtime and cross-lane review](agent-reports/region-guard-runtime-v1.md),
 [independent adversarial acceptance](agent-reports/region-guard-adversarial-v1.md).
-Hosted checks and the final merge will be authenticated before landing;
-`CURRENT_STATE.md` records the exact resulting engineering SHA/PR afterward.
+The candidate landed normally as
+`8a825350ae8e3f24e55bc8d050375a0b2c0da3dd`
+([PR #31](https://github.com/onlyxItachi/MatcoreDSL/pull/31)), from reviewed head
+`582b53d107aee4b9f79df05995eb558baaf5af7e`, after **19/19 hosted checks passed**.
+The merge parents are documentation checkpoint `c01e385...` and that candidate;
+reviewed and merged trees are identical (`cd7479dd4bf68226657b8994d795f6663fe66a42`).
+Hosted push/PR evidence: native runs
+[33971283743](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/33971283743)
+and [33971358570](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/33971358570),
+Windows runs [33971283741](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/33971283741)
+and [33971358578](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/33971358578).
+Legacy and hygiene checks also passed. The hosted Copilot quota notice is not
+review evidence; the independent source reviews above are the recorded reviews.
+`CURRENT_STATE.md` identifies this exact engineering merge.
 
 ## Remaining boundary
 
