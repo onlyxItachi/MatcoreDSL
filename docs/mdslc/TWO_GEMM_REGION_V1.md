@@ -172,8 +172,34 @@ this proof.
 
 ## Validation checkpoint
 
-Validation is recorded below once the candidate is tested. Agent findings and
-their narrower claims are under `agent-reports/two-gemm-region-*.md`.
+Product implementation checkpoint tested locally:
+`de204b5bc288fe90865284b30661aeffadd132d4`. The test-only follow-up
+`f8f15eb3fad50af81e07e2deecb25b024975c572` adds serialization round-trip in a
+fresh MLIR context and has identical production code. The subsequent commits
+record reviews and validation; reviewed pre-merge and normal-merge SHAs are
+preserved by Git history and the integration PR.
+
+| Validation | Exact observed result |
+| --- | --- |
+| Fresh Release build, Clang/LLVM/MLIR 21.1.8, native + bootstrap, MLIR + existing vector-readiness tests, OpenBLAS OFF | PASS, Ninja `--parallel 2` |
+| `frontend.native.two_gemm_region` | PASS: 28 real extraction cases; independently reproduced |
+| `mlir.semantic.two-gemm-region` | PASS: 83/83 at de204b5; 85/85 after fresh-context test-only follow-up, independently reproduced |
+| `integration.two_gemm_region` | PASS: 62 grouped test steps, 16 unchanged-route executable cases, both capture-v0 and Matcore MLIR CPU routes |
+| Full standalone Release CTest at de204b5 | PASS: 73/73, no skips, 201.33 seconds; includes ABI/runtime/planner, package/install/source isolation, frontend and prior structured/buffer/vector proofs |
+| Repository hygiene and `git diff --check` | PASS |
+| Expanded hosted ASan+UBSan selection inventory | Exactly 22 tests, including both new in-process tests; actual sanitizer execution is a separate CI gate |
+
+Hosted Debug, Release/OpenBLAS ON and OFF, no-MLIR, sanitizers, Windows and
+legacy/hygiene results belong to the exact-head integration PR checks. They
+must pass before normal merge; local Release success does not stand in for
+them. No local Windows, GPU/NPU, performance/parity or region-execution result
+is claimed. The two initial compile iterations corrected owning-module handles
+and the exact-21 constant builder API; the final build and tests above passed.
+
+Independent adversarial review and specialized lane reports are under
+`agent-reports/two-gemm-region-*.md`. The review distinguishes concrete bugs
+fixed during implementation from prudent scope restrictions and from unopened
+execution-authority boundaries.
 
 The corpus identity and limitations remain those in
 `CORPUS_REENTRY_RECONCILIATION_V1.md` and
@@ -188,3 +214,5 @@ predicate that is source-proved or still required at runtime, preserving both
 failure frontiers. Use existing runtime validation as the oracle. Do not
 implement fusion, generated execution or generic candidate selection as part
 of that next boundary. It is a recommendation, not work begun in this milestone.
+Raw-pointer range/shape validation is not proof of backing allocation capacity
+or lifetime; caller/source preconditions must remain explicit.
