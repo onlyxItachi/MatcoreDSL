@@ -223,6 +223,11 @@ int main(int argc, char **argv) {
     options.inspect_two_gemm_regions = false;
     extract("definition_normal", user_definition);
     options.inspect_two_gemm_regions = true;
+    const auto user_attribute = extract("attribute_after_calls", function(std::string(first) + second) +
+        "namespace matcore::mdsl { [[gnu::noinline]] void gemm(out_arg, const matrix_view &, "
+        "const matrix_view &, policy); }\n");
+    require(admitted(user_attribute) == 0 && reason(user_attribute, "user redeclaration attributes"),
+            "user redeclaration attributes acquired ordered region authority");
 
     write(temporary.path / "context.h", "inline constexpr int context_extent = 1;\n");
     const std::string dependent = std::string("#include \"context.h\"\n") +

@@ -1091,11 +1091,18 @@ private:
                                        clang::ASTContext &context) {
     const auto *canonical = call.getDirectCallee()->getCanonicalDecl();
     if (canonical->getDefinition() != nullptr) return false;
+    const auto &manager = context.getSourceManager();
     for (const auto *redeclaration : canonical->redecls()) {
-      if (declarationIsTrusted(*redeclaration, context.getSourceManager(), state_))
-        continue;
-      for (const auto *attribute : redeclaration->attrs())
-        if (!attribute->isInherited()) return false;
+      for (const auto *attribute : redeclaration->attrs()) {
+        if (attribute->isInherited()) continue;
+        // Attribute merging can attach a user attribute to an earlier Decl;
+        // authenticate its own source location, not just the owning Decl.
+        const auto location = attribute->getLocation();
+        if (location.isInvalid() || location.isMacroID() ||
+            !declarationIsTrusted(*redeclaration, manager, state_) ||
+            !isTrustedFile(manager.getFileEntryForID(manager.getFileID(location)), state_))
+          return false;
+      }
     }
     return true;
   }
