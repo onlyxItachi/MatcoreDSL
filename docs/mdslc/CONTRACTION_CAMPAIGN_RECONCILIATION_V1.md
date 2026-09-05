@@ -16,8 +16,8 @@ merge. No squash, rebase, force update, or branch deletion was used.
 | Proof point | Reviewed pre-merge head | Canonical merge |
 | --- | --- | --- |
 | CPU beta, PR #18 | `1d084a175772f286b04eb1802e2c4d8272533ede` | `6708b48a5647698469a9af191941bd4755adab7b` |
-| corpus re-entry, PR #19 | `d80911e` | `f2e501a5fbf474fa6d8d7ec67bec7c10dacc1030` |
-| structured GEMM, PR #21 | `4a7a8fc` | `327530d287e41c4115365598e76b17e149a1c45a` |
+| corpus re-entry, PR #19 | `d80911e388c3883ceedff935bc7be80b9b756c57` | `f2e501a5fbf474fa6d8d7ec67bec7c10dacc1030` |
+| structured GEMM, PR #21 | `4a7a8fc80c7a5489c22038f4ed4b80fd79d1069d` | `327530d287e41c4115365598e76b17e149a1c45a` |
 | contraction topology, PR #24 | `1b7bc9fa212894e330777c18c918c7c533d05c4b` | `5983c2c1bf067bed9e69d0172b0944b7a4c14c00` |
 | provider evidence auditor, PR #23 | `ae1852a13f446a935330ee4938dd2e02f8262bab` | `ec7a55a61c0ceb2ee4985211bbf887ccb3b1368e` |
 | exact-22 portability control, PR #22 | `370fa09ade1e886f4469f80037d7fe7df4c05a67` | `8ba5861affe3b70e375b6e18eae46530b556dde9` |
