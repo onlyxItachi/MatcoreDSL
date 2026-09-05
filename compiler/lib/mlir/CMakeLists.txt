@@ -119,13 +119,7 @@ target_link_libraries(
     MLIRTensorTransforms
 )
 mdslc_target_enable_warnings(matcore_mlir_bufferized_handoff)
-if(COMMAND mdslc_target_match_llvm_rtti)
-  mdslc_target_match_llvm_rtti(matcore_mlir_bufferized_handoff)
-elseif(DEFINED LLVM_ENABLE_RTTI AND NOT LLVM_ENABLE_RTTI)
-  message(FATAL_ERROR
-    "matcore_mlir_bufferized_handoff requires the project LLVM RTTI matching "
-    "helper when the selected package disables RTTI")
-endif()
+mdslc_target_match_llvm_rtti(matcore_mlir_bufferized_handoff)
 
 if(MDSLC_ENABLE_NATIVE_FRONTEND AND NOT WIN32)
   # Recovery analysis is kept in a separate internal library so the general
@@ -286,6 +280,7 @@ if(BUILD_TESTING)
       MDSLC_IR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/ir"
   )
   mdslc_target_enable_warnings(matcore_mlir_bufferized_gemm_handoff_tests)
+  mdslc_target_match_llvm_rtti(matcore_mlir_bufferized_gemm_handoff_tests)
   add_test(NAME mlir.bufferization.gemm-handoff-v1
     COMMAND matcore_mlir_bufferized_gemm_handoff_tests)
 
