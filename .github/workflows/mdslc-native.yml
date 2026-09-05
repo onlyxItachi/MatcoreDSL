@@ -31,24 +31,28 @@ jobs:
             openblas_require: "ON"
             mlir_label: Matcore MLIR enabled
             mlir_enable: "ON"
+            vector_readiness_enable: "OFF"
             default_semantic_pipeline: matcore-mlir
           - openblas_label: OpenBLAS required
             openblas_enable: "ON"
             openblas_require: "ON"
             mlir_label: Matcore MLIR disabled
             mlir_enable: "OFF"
+            vector_readiness_enable: "OFF"
             default_semantic_pipeline: capture-v0
           - openblas_label: OpenBLAS explicitly disabled
             openblas_enable: "OFF"
             openblas_require: "OFF"
             mlir_label: Matcore MLIR enabled
             mlir_enable: "ON"
+            vector_readiness_enable: "ON"
             default_semantic_pipeline: matcore-mlir
           - openblas_label: OpenBLAS explicitly disabled
             openblas_enable: "OFF"
             openblas_require: "OFF"
             mlir_label: Matcore MLIR disabled
             mlir_enable: "OFF"
+            vector_readiness_enable: "OFF"
             default_semantic_pipeline: capture-v0
 
     steps:
@@ -147,6 +151,7 @@ jobs:
         run: |
           mlir_options=(
             -DMDSLC_ENABLE_MATCORE_MLIR=${{ matrix.mlir_enable }}
+            -DMDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS=${{ matrix.vector_readiness_enable }}
           )
           if [[ "${{ matrix.mlir_enable }}" == "ON" ]]; then
             mlir_options+=(
@@ -209,7 +214,13 @@ jobs:
           fi
 
       - name: Test standalone MDSLC
-        run: ctest --test-dir build-mdslc --output-on-failure -j1
+        run: |
+          if [[ "${{ matrix.vector_readiness_enable }}" == "ON" ]]; then
+            ctest --test-dir build-mdslc --output-on-failure -j1 \
+              --no-tests=error \
+              -R '^mlir\.structured\.gemm-vector-readiness-v1$'
+          fi
+          ctest --test-dir build-mdslc --output-on-failure -j1
 
   clang-21-debug-mlir:
     name: Clang 21.1.8 Debug (Matcore MLIR enabled, OpenBLAS disabled)
