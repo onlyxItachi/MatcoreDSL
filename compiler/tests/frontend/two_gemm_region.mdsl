@@ -1,0 +1,12 @@
+#include <matcore/mdsl.h>
+
+namespace md = matcore::mdsl;
+
+// The descriptors are dynamic and all distinct bindings remain MAYalias in
+// physical storage. The first output is the second lhs, by declaration identity.
+void two_gemm_region(md::matrix_view &C, const md::matrix_view &A,
+                     const md::matrix_view &B, md::matrix_view &E,
+                     const md::matrix_view &D) {
+  md::gemm(md::out(C), A, B);
+  md::gemm(md::out(E), C, D);
+}
