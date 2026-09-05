@@ -193,6 +193,15 @@ The new library and test exist only when
 and requires `MDSLC_ENABLE_MATCORE_MLIR=ON`. Transform, Tensor, UB, and Vector
 MLIR targets are required only inside that opt-in branch.
 
+The later general portability control can select an evidence-only LLVM/MLIR
+22.1.8 tuple, but this certificate and golden encode only observed 21.1.8
+behavior. Combining vector readiness with a nonempty
+`MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION` therefore fails at configure time. This
+is a deliberate evidence boundary, not a claim that upstream 22 cannot support
+an equivalent seam. When the portability branch's per-target LLVM RTTI helper
+is present, the vector library inherits it; an RTTI-disabled LLVM package with
+no matching helper is rejected.
+
 No installed header, package target, CLI stage, frontend operation, planner,
 runtime, provider, or C ABI is changed. The vector module retains
 `mdsl.analysis_only = true` and `mdsl.execution_authority =
@@ -242,6 +251,8 @@ project's user-local MLIR 21.1.8 package. The following surfaces passed:
 - default-off target/test inventory: no vector-readiness target or test;
 - invalid option combination: configuration fails when vector readiness is ON
   and Matcore MLIR is OFF; and
+- portability boundary: configuration fails when vector readiness is combined
+  with the experimental 22.1.8 toolchain control;
 - staged install inspection: no vector-readiness header, library, package
   target, or tool was installed.
 

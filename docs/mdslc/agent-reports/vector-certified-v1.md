@@ -50,6 +50,11 @@ not a source branch adopted wholesale.
   runtime lowerer rejects it without producing a partial execution record.
 - No tile, vector width, target matrix shape, unroll factor, thread count,
   packing rule, or provider crossover is encoded.
+- The certificate/golden are explicitly restricted to exact MLIR 21.1.8.
+  Combining the vector option with the portability branch's experimental
+  toolchain selector fails closed. The vector library uses that branch's
+  per-target LLVM RTTI helper when available and rejects an RTTI-disabled LLVM
+  package if the helper is absent.
 
 The direct upstream dynamic control is important: the Transform interpreter
 reports success but leaves the dynamic fill/matmul payload unchanged and
@@ -91,6 +96,7 @@ package named by `AGENTS.md`.
 | Debug, experimental option ON, focused semantic chain | 3/3 passed |
 | Direct vector-readiness executable | 280 checks, 0 failures |
 | Option ON with Matcore MLIR OFF | configure rejected as required |
+| Option ON with experimental toolchain 22.1.8 | configure rejected as required |
 | Default-off target and test inventory | no vector target or test |
 | Staged install/API firewall | no vector artifact exported |
 | Diff whitespace check | passed |
