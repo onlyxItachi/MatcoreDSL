@@ -2,27 +2,33 @@
 
 Date: 2026-09-05
 
-Status: stacked candidate on `mdslc/bufferization-certified-integration-v1`.
-This is an
-inspection-only proof boundary. It does not authorize generated execution,
-claim a general zero-copy property, or change the existing CPU
-runtime/provider route.
+Status: integration candidate on `mdslc/bufferization-certified-v2`, validated
+at clean implementation checkpoint
+`3573ac7f8b7758279ad798dd72e6f3f7bc128061`. This is an inspection-only proof
+boundary. It does not authorize generated execution, claim a general
+zero-copy property, or change the existing CPU runtime/provider route.
 
 ## Checkpoints and evidence identity
 
-- Canonical campaign base:
-  `327530d287e41c4115365598e76b17e149a1c45a`
-- Reviewed contraction/certificate foundation head:
-  `1b7bc9fa212894e330777c18c918c7c533d05c4b`
-- Canonical contraction/certificate foundation merge:
-  `5983c2c1bf067bed9e69d0172b0944b7a4c14c00`
-- Fresh operation-neutral derived-identity commit:
-  `71764e47d3b89c3f3621fad90be4bf7dac979540`
-- Fresh certified bufferization implementation commit:
-  `ea3202ff144c5ec4b7ae6dcbc2cf77a5e2045365`
-- Current canonical main to be incorporated by a normal merge before final
-  validation (provider-evidence PR #23):
-  `ec7a55a61c0ceb2ee4985211bbf887ccb3b1368e`
+- Original campaign base:
+  `327530d287e41c4115365598e76b17e149a1c45a`.
+- Canonical contraction-foundation merge:
+  `5983c2c1bf067bed9e69d0172b0944b7a4c14c00` (reviewed pre-merge head
+  `1b7bc9fa212894e330777c18c918c7c533d05c4b`).
+- Canonical bounded-portability merge:
+  `8ba5861affe3b70e375b6e18eae46530b556dde9` (reviewed pre-merge head
+  `370fa09ade1e886f4469f80037d7fe7df4c05a67`).
+- Canonical reusable derived-identity merge:
+  `09c96b980020f53bf1d352f9ee6c28fb470540ea` (reviewed pre-merge head
+  `e38b51310a0e2534b1902acbe200136e382dfddf`).
+- Original buffer-specific implementation commit:
+  `ea3202ff144c5ec4b7ae6dcbc2cf77a5e2045365`; clean restack commit:
+  `665d3fe`.
+- Original shared-topology/RTTI hardening commit:
+  `0bd333818fdaeabfab3259660e39217e788853c3`; clean restack commit:
+  `12b5e63`.
+- Explicit dependency-target and final RTTI wiring commit: `ddc793a`.
+- Composition merge retaining canonical `09c96b9`: `3573ac7`.
 - Preserved historical original bufferization implementation:
   `12187a8023906a1c758800ed5d2e1346549155c0`
 - Preserved historical reconciled implementation:
@@ -30,12 +36,12 @@ runtime/provider route.
 - Preserved historical proof/report head:
   `1efa342737cc623bd7e7174c81552a604bada366`
 
-The survivor is cleanly stacked from canonical foundation merge `5983c2c` as
-the shared derived-identity seam `71764e4`, then buffer-specific implementation
-and tests `ea3202f`, then this durable record. The historical branch is retained
-unchanged as proof of the earlier reconciliation. Current canonical main
-`ec7a55a` is incorporated only after these focused commits by a normal merge;
-the provider-evidence paths do not alter the certified bufferization contract.
+The survivor consumes the canonical shared certificate from PR #25; it does
+not carry the superseded duplicate `71764e4`. Only the buffer implementation,
+its proof, focused ownership corrections, and this record were restacked.
+Merge `3573ac7` preserves the canonical PR #25 checkpoint as an explicit
+parent. Historical branches remain unchanged as evidence, not integration
+sources.
 
 The inspected compiler-archaeology corpus was the detached research tree at
 `8aab0e295eb41ca5d2e1bd52c47201b05de9636b`. Its manifests were:
@@ -57,6 +63,11 @@ Observed identities were:
 | `Passes.td` | SHA-256 `ccf1cc05e4831616222378e1f53d2ea29d80370e5e3bdb6cb7300a34cb3b7697` |
 
 No system package or toolchain was changed.
+
+The same branch was also checked against the explicitly selected official
+LLVM/Clang/MLIR 22.1.8 Linux x64 compatibility toolchain at
+`/home/hamza-usta/.local/toolchains/llvm-22.1.8-linux-x64`. This does not make
+22.1.8 a product-supported tuple; 21.1.8 remains product truth.
 
 ## Evidence reconciliation
 
@@ -124,6 +135,15 @@ The original `MatcoreBufferizedGemmHandoff` remains the buffer-specific layer.
 It owns the exact One-Shot options, identity-layout memref envelope,
 allocation/copy rejection, fill/matmul/return dataflow, and the
 `matcore-bufferized-gemm-handoff-v1` ledger.
+
+It no longer owns a second definition of GEMM indexing topology. After
+retaining the upstream `hasUserDefinedMaps` and signed-index-cast guards, it
+extracts the transformed maps, memref ranks, and iterator roles and delegates
+their semantic comparison to `buildCanonicalContractionTopologyV1(Gemm)` and
+`verifyStructuredIndexingAgainstContractionTopologyV1`. A generic-MLIR-valid
+but noncanonical map is an explicit negative control. The buffer target and
+its focused test also inherit the selected LLVM package's RTTI mode, and CMake
+names every required upstream bufferization target before construction.
 
 The reconciliation removes its parallel reconstructed-provenance path and
 extends `MatcoreStructuredHandoffCertificate` with reusable downstream-source
@@ -200,9 +220,9 @@ derived-envelope subset:
 9. The operation order is exactly constant, fill, matmul, return. No allocation,
    deallocation, copy, cast, tensor/buffer bridge, call, or unrelated operation
    can hide in the admitted function or its exact scalar regions.
-10. Matmul retains canonical `(m,k),(k,n),(m,n)` maps, parallel M/N plus
-    reduction K iterators, exact `mul` -> `add` -> `yield` scalar dataflow, and
-    no fast-math flags.
+10. Matmul retains the shared canonical GEMM `(m,k),(k,n),(m,n)` maps,
+    parallel M/N plus reduction K iterators, exact `mul` -> `add` -> `yield`
+    scalar dataflow, and no fast-math flags.
 11. The original semantic contract still passes the authoritative GEMM
     verifier; no buffer-specific redefinition substitutes for that check.
 12. Standalone certificate self-consistency and exact-source pairing are named
@@ -246,6 +266,8 @@ positive cases. Generic-MLIR-valid mutations reject:
 - non-default memory space or nonidentity memref layout;
 - wrong result identity, wrong fill target, missing fill, wrong contraction
   destination, or swapped inputs;
+- a generic-MLIR-valid but noncanonical contraction map, reordered maps, or a
+  buffer-local topology definition that diverges from the shared model;
 - function-location or block-argument-location drift;
 - same-shaped alternate source pairing;
 - reordered, dropped, duplicated, or cross-site-substituted functions;
@@ -257,26 +279,24 @@ this certificate.
 
 ## Exact validation
 
-At the patch-equivalent historical implementation commit
-`e47b2e70726a6253874143c0a7f5b5797b2e371e`, CMake was refreshed with Release,
-Clang/Clang++ 21, native and bootstrap frontends enabled, Matcore MLIR enabled,
-the exact MLIR 21.1.8 package, OpenBLAS disabled, and testing enabled.
+At clean composed implementation checkpoint
+`3573ac7f8b7758279ad798dd72e6f3f7bc128061`:
 
-| Validation | Exact result |
+| Configuration | Exact result |
 | --- | --- |
-| Complete incremental Release build after clean-head reconfigure | `114/114` steps completed; only pre-existing generated ODS unused-parameter warnings |
-| Full standalone CTest | `66/66` passed, `0` failed, 205.21 s |
-| Focused structured + bufferized CTest | `2/2` passed, `0` failed |
-| `matcore_mlir_bufferized_gemm_handoff_tests` | `274` checks, `0` failures |
-| `matcore_mlir_structured_gemm_handoff_tests` | `366` checks, `0` failures |
-| `matcore_mlir_contraction_model_tests` | `277` checks, `0` failures |
+| Product LLVM/Clang/MLIR 21.1.8, Release, native + bootstrap frontends, Matcore MLIR, default `matcore-mlir`, OpenBLAS 0.3.32 required | clean configure; build `142/142`; focused contraction + structured + derived certificate + bufferization `4/4`; full CTest `69/69`, `0` failed, 182.01 s |
+| Official LLVM/Clang/MLIR 22.1.8 Linux x64 compatibility lane, Release, native + bootstrap frontends, Matcore MLIR, default `capture-v0`, OpenBLAS off | clean configure; build `142/142`; focused `4/4`; full CTest `69/69`, `0` failed, 138.70 s |
+| `matcore_mlir_bufferized_gemm_handoff_tests` | `296` checks, `0` failures; includes shared-topology carrier and noncanonical-map negatives |
+| Inherited structured/certificate/contraction direct suites | `366/366`, `117/117`, and `277/277` |
 | `git diff --check` | passed |
 
 The full surface includes frontend, semantic IR/MLIR, structured handoff, CPU
 runtime/planner, C ABI, installed consumer, source-inaccessible package,
-benchmark-contract, and CLI tests. It does not constitute Debug, sanitizer,
-Windows, OpenBLAS-enabled, performance, parity, or generated-code execution
-validation.
+benchmark-contract, and CLI tests. Product 21.1.8 therefore covers the
+OpenBLAS-enabled path, while 22.1.8 is compatibility-only and OpenBLAS-off.
+These local runs do not constitute Debug, sanitizer, Windows-22, performance,
+parity, or generated-code execution validation. Exact final-head hosted checks
+remain an integration gate rather than an inferred result from these runs.
 
 ## Independent foundation review
 
@@ -309,14 +329,16 @@ now does.
 This checkpoint does not prove general zero-copy behavior, concrete runtime
 noalias/alignment/residency, ownership outside the function, a callable memref
 ABI, generated execution correctness, target lowering, vectorization,
-portability to another MLIR version, performance, Native BLAS parity, or
-provider policy. The authenticated CPU runtime/provider route remains the only
+portability beyond the exact verified 21.1.8 product and bounded Linux x64
+22.1.8 compatibility lanes, performance, Native BLAS parity, or provider
+policy. The authenticated CPU runtime/provider route remains the only
 executable GEMM path. Issue #15 is unchanged.
 
-The immediate integration action is to merge current canonical main into this
-already foundation-based survivor, independently review the combined diff, and
-keep it as a separate inspection-only checkpoint. A later callable-boundary
-milestone would first need explicit runtime descriptor-to-memref ABI ownership,
-dominating dynamic-shape/noalias/alignment/residency guards, and an
-execution-authority decision. This branch deliberately does not begin that
-work.
+The candidate is now composed with canonical main and requires independent
+exact-head review plus hosted checks before integration. The Transform/Vector
+readiness result is a sibling derivation from the same structured source, not a
+proven predecessor or successor of bufferization; a combined branch must not
+invent an ordering between them. A later callable-boundary milestone would
+first need explicit runtime descriptor-to-memref ABI ownership, dominating
+dynamic-shape/noalias/alignment/residency guards, and an execution-authority
+decision. This branch deliberately does not begin that work.
