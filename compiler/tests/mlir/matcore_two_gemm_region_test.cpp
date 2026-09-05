@@ -39,7 +39,7 @@ template <typename T> llvm::SmallVector<T> all(mlir::ModuleOp module) {
   module.walk([&](T op) { result.push_back(op); });
   return result;
 }
-bool capture(frontend::Result &result) {
+bool capture(frontend::Result &result, bool alternate_options = false) {
   frontend::Options options;
   auto path = std::filesystem::path(MDSLC_REGION_TEST_PUBLIC_HEADER)
                   .parent_path().parent_path().parent_path() /
@@ -51,6 +51,9 @@ bool capture(frontend::Result &result) {
   options.inspect_two_gemm_regions = true;
   auto include = std::filesystem::path(MDSLC_REGION_TEST_PUBLIC_HEADER).parent_path().parent_path();
   options.compiler_arguments = {"-std=c++20", "-O2", "-I" + include.string(), path.string()};
+  if (alternate_options)
+    options.compiler_arguments.insert(options.compiler_arguments.begin(),
+                                      "-DMATCORE_REGION_OPTIONS_CONTROL=1");
   auto native = frontend::createClangLibToolingFrontend();
   bool okay = native->extract(options, result);
   for (const auto &diagnostic : result.diagnostics)
@@ -60,14 +63,32 @@ bool capture(frontend::Result &result) {
 void reject(mlir::ModuleOp original,
             const frontend::AuthenticatedNativeFrontendEvidenceV1 &seal,
             const std::function<void(mlir::ModuleOp)> &mutate,
-            const std::string &message) {
+            const std::string &message, bool require_valid_ir = false) {
   mlir::OwningOpRef<mlir::ModuleOp> changed = original.clone();
   mutate(*changed);
   std::string error;
   mlir::ScopedDiagnosticHandler silence(changed->getContext(),
       [](mlir::Diagnostic &) { return mlir::success(); });
+  if (require_valid_ir)
+    check(mlir::succeeded(mlir::verify(*changed)), message + " is upstream-valid IR");
   check(!bridge::verifyTwoGemmRegionMatchesNativeEvidenceV1(seal, *changed, error), message);
   check(!error.empty(), message + " diagnostic");
+}
+mlir::DictionaryAttr field(mlir::Builder &builder, mlir::DictionaryAttr original,
+                           llvm::StringRef name, mlir::Attribute value) {
+  mlir::NamedAttrList attributes(original);
+  attributes.set(name, value);
+  return attributes.getDictionary(builder.getContext());
+}
+void changeFirstSite(mlir::ModuleOp module, llvm::StringRef key,
+                     mlir::Attribute value) {
+  mlir::Builder b(module.getContext());
+  auto function = all<mlir::func::FuncOp>(module).front();
+  auto region = function->getAttrOfType<mlir::DictionaryAttr>("mdsl.region");
+  auto sites = region.getAs<mlir::ArrayAttr>("sites");
+  llvm::SmallVector<mlir::Attribute> updated(sites.begin(), sites.end());
+  updated.front() = field(b, mlir::cast<mlir::DictionaryAttr>(updated.front()), key, value);
+  function->setAttr("mdsl.region", field(b, region, "sites", b.getArrayAttr(updated)));
 }
 bool optimize(mlir::ModuleOp module, bool generalize) {
   mlir::PassManager passes(module.getContext());
@@ -100,6 +121,15 @@ void testRegion(frontend::Result &source) {
   check(!mlir::isMemoryEffectFree(commits[1]), "unused last tensor still has observable write");
   std::string error;
   check(bridge::verifyTwoGemmRegionMatchesNativeEvidenceV1(seal, module, error), "initial source pairing: " + error);
+  frontend::Result alternate;
+  check(capture(alternate, true) && alternate.native_evidence,
+        "same source admits under a separately sealed compilation context");
+  if (alternate.native_evidence) {
+    check(source.region_capture_identity != alternate.region_capture_identity,
+          "compiler options participate in sealed capture identity");
+    check(!bridge::verifyTwoGemmRegionMatchesNativeEvidenceV1(*alternate.native_evidence, module, error),
+          "same arithmetic and source cannot pair with a different compilation seal");
+  }
 
   auto edited_source = source;
   edited_source.two_gemm_regions.clear();
@@ -176,6 +206,52 @@ void testRegion(frontend::Result &source) {
     auto multiply = mlir::cast<mlir::arith::MulFOp>(matmul.getRegion().front().front());
     multiply.setFastmath(mlir::arith::FastMathFlags::fast);
   }, "arbitrary fast-math cannot replace retained numerical profile");
+  for (bool change_iterator : {false, true})
+    reject(module, seal, [change_iterator](mlir::ModuleOp m) {
+      mlir::PassManager passes(m.getContext());
+      passes.addPass(mlir::createLinalgGeneralizeNamedOpsPass());
+      check(mlir::succeeded(passes.run(m)), "mutation starts from actual upstream generalization");
+      auto generic = all<mlir::linalg::GenericOp>(m)[1];
+      mlir::Builder b(m.getContext());
+      if (change_iterator) {
+        llvm::SmallVector<mlir::Attribute> iterators(
+            3, mlir::linalg::IteratorTypeAttr::get(m.getContext(), mlir::utils::IteratorType::parallel));
+        generic.setIteratorTypesAttr(b.getArrayAttr(iterators));
+      } else {
+        auto maps = generic.getIndexingMapsArray();
+        maps[0] = mlir::AffineMap::get(3, 0,
+            {b.getAffineDimExpr(2), b.getAffineDimExpr(0)}, m.getContext());
+        generic.setIndexingMapsAttr(b.getAffineMapArrayAttr(maps));
+      }
+    }, change_iterator ? "parallel iterator cannot replace GEMM reduction"
+                       : "transposed input map cannot replace source GEMM indexing", true);
+  reject(module, seal, [](mlir::ModuleOp m) {
+    mlir::Builder b(m.getContext());
+    auto tensor = mlir::RankedTensorType::get(
+        {mlir::ShapedType::kDynamic, mlir::ShapedType::kDynamic}, b.getF64Type());
+    auto type = b.getFunctionType({tensor, tensor, tensor}, {tensor});
+    changeFirstSite(m, "tensor_type", mlir::TypeAttr::get(type));
+  }, "declared dtype cannot differ from actual guarded computation", true);
+  for (bool numerical : {false, true}) {
+    mlir::OwningOpRef<mlir::ModuleOp> changed = module.clone();
+    mlir::Builder b(&context);
+    auto guard = all<dialect::RegionGuardOp>(*changed).front();
+    auto contract = guard.getSemanticContract();
+    if (numerical)
+      contract = field(b, contract, "numerical", field(b,
+          contract.getAs<mlir::DictionaryAttr>("numerical"), "approximate_math", b.getBoolAttr(true)));
+    else
+      contract = field(b, contract, "policy", field(b,
+          contract.getAs<mlir::DictionaryAttr>("policy"), "target", b.getStringAttr("cuda")));
+    guard.setSemanticContractAttr(contract);
+    changeFirstSite(*changed, "source_contract", contract);
+    check(mlir::succeeded(mlir::verify(*changed)), "coordinated contract mutation remains upstream-valid");
+    check(bridge::verifyTwoGemmRegionModuleV1(*changed, error),
+          "standalone self-consistency is deliberately not source authentication");
+    check(!bridge::verifyTwoGemmRegionMatchesNativeEvidenceV1(seal, *changed, error),
+          numerical ? "paired verification rejects changed numerical permissions"
+                    : "paired verification rejects changed target policy");
+  }
   reject(module, seal, [](mlir::ModuleOp m) {
     mlir::Builder b(m.getContext());
     m->setAttr("mdsl.capture_identity", b.getStringAttr("another-compilation"));
@@ -191,11 +267,11 @@ void testRegion(frontend::Result &source) {
         b.setInsertionPointToStart(&all<mlir::linalg::MatmulOp>(m).front().getRegion().front());
       else
         b.setInsertionPointToStart(&all<mlir::func::FuncOp>(m).front().getBody().front());
-      auto one = mlir::arith::ConstantIntOp::create(b, b.getUnknownLoc(), 1, 32);
-      auto zero = mlir::arith::ConstantIntOp::create(b, b.getUnknownLoc(), 0, 32);
+      auto one = mlir::arith::ConstantOp::create(b, b.getUnknownLoc(), b.getI32IntegerAttr(1));
+      auto zero = mlir::arith::ConstantOp::create(b, b.getUnknownLoc(), b.getI32IntegerAttr(0));
       mlir::arith::DivSIOp::create(b, b.getUnknownLoc(), one, zero);
     }, scalar_body ? "memory-free UB cannot hide inside scalar computation"
-                   : "memory-free UB is not a harmless incidental operation");
+                   : "memory-free UB is not a harmless incidental operation", true);
 
   std::vector<matcore::mdslc::mlir_lowering::CpuRuntimeDispatchRecordV1> records;
   check(!matcore::mdslc::mlir_lowering::lowerExplicitGemmToCpuRuntimeDispatchV1(module, records, error) && records.empty(),
@@ -204,8 +280,11 @@ void testRegion(frontend::Result &source) {
   (*forged)->removeAttr("mdsl.analysis_only");
   (*forged)->removeAttr("mdsl.execution_authority");
   (*forged)->setAttr("mdsl.producer", mlir::StringAttr::get(&context, "clang-libtooling-v1"));
+  (*forged)->setAttr("mdsl.capability", mlir::StringAttr::get(&context, "validated_cpu"));
+  (*forged)->setAttr("mdsl.retry_safe", mlir::BoolAttr::get(&context, true));
+  (*forged)->setAttr("mdsl.target", mlir::StringAttr::get(&context, "cpu"));
   check(!matcore::mdslc::mlir_lowering::lowerExplicitGemmToCpuRuntimeDispatchV1(*forged, records, error) && records.empty(),
-        "forged labels cannot make region executable");
+        "forged capability, retry and target labels cannot make region executable");
 }
 
 void testUpstreamStorageControls() {
@@ -256,7 +335,11 @@ void testUpstreamStorageControls() {
         "materialization copies into the required original output");
   std::string error;
   check(!bridge::verifyTwoGemmRegionModuleV1(*buffer_module, error),
-        "buffer-looking control is not a source-authenticated region or executable candidate");
+        "buffer-looking control is not a source-authenticated region");
+  std::vector<matcore::mdslc::mlir_lowering::CpuRuntimeDispatchRecordV1> records;
+  check(!matcore::mdslc::mlir_lowering::lowerExplicitGemmToCpuRuntimeDispatchV1(
+            *buffer_module, records, error) && records.empty(),
+        "actual CPU lowerer rejects buffer control with unresolved allocation ownership");
 }
 } // namespace
 int main() {
