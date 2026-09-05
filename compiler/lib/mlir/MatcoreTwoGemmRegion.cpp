@@ -262,12 +262,30 @@ bool dimension(mlir::Value size, mlir::Value value, unsigned index) {
   return op && stripCast(op.getSource()) == stripCast(value) &&
          op.getConstantIndex() == index;
 }
+bool safeIncidental(mlir::Operation &operation) {
+  if (mlir::isa<mlir::arith::ConstantOp>(operation))
+    return true;
+  if (auto cast = mlir::dyn_cast<mlir::tensor::CastOp>(operation))
+    return cast.getSource().getType() == cast.getDest().getType();
+  if (auto query = mlir::dyn_cast<mlir::tensor::DimOp>(operation)) {
+    auto type = mlir::dyn_cast<mlir::RankedTensorType>(query.getSource().getType());
+    auto index = query.getConstantIndex();
+    return type && index && *index >= 0 && *index < type.getRank();
+  }
+  return false;
+}
 bool canonicalScalar(mlir::linalg::LinalgOp operation, bool contraction) {
   auto &block = operation->getRegion(0).front();
-  for (auto &nested : block.without_terminator())
-    if (!mlir::isMemoryEffectFree(&nested) || !mlir::isSpeculatable(&nested) ||
-        nested.getNumRegions())
+  for (auto &nested : block.without_terminator()) {
+    bool supported = mlir::isa<mlir::arith::ConstantOp>(nested);
+    if (auto add = mlir::dyn_cast<mlir::arith::AddFOp>(nested))
+      supported = add.getFastmath() == mlir::arith::FastMathFlags::none;
+    if (auto multiply = mlir::dyn_cast<mlir::arith::MulFOp>(nested))
+      supported = multiply.getFastmath() == mlir::arith::FastMathFlags::none;
+    if (!supported || !mlir::isMemoryEffectFree(&nested) ||
+        !mlir::isSpeculatable(&nested) || nested.getNumRegions())
       return false;
+  }
   auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(block.getTerminator());
   if (!yield || yield.getNumOperands() != 1)
     return false;
@@ -321,6 +339,7 @@ bool computation(d::RegionCommitOp commit, mlir::Value lhs, mlir::Value rhs,
   auto empty = stripCast(fill.getDpsInitOperand(0)->get()).getDefiningOp<mlir::tensor::EmptyOp>();
   if (!empty || empty.getType() != commit.getValue().getType())
     return fail(error, "overwrite initialization may not read original destination data");
+  validated.insert(empty.getOperation());
   unsigned dynamic = 0;
   for (unsigned axis = 0; axis != 2; ++axis) {
     if (!empty.getType().isDynamicDim(axis))
@@ -380,8 +399,9 @@ bool verifyFunction(mlir::func::FuncOp function, std::string &error) {
       end = value;
       ++boundary;
     } else if (!mlir::isMemoryEffectFree(&op) ||
-               (!mlir::isa<mlir::linalg::LinalgOp>(&op) &&
-                (!mlir::isSpeculatable(&op) || op.getNumRegions()))) {
+               (!mlir::isa<mlir::linalg::LinalgOp, mlir::tensor::EmptyOp>(&op) &&
+                (!safeIncidental(op) || !mlir::isSpeculatable(&op) ||
+                 op.getNumRegions()))) {
       return fail(error, "region contains an unmodeled effect or unsafe speculative computation");
     }
   }
@@ -438,7 +458,7 @@ bool verifyFunction(mlir::func::FuncOp function, std::string &error) {
       return false;
   }
   for (auto &operation : function.getBody().front())
-    if (mlir::isa<mlir::linalg::LinalgOp>(&operation) &&
+    if (mlir::isa<mlir::linalg::LinalgOp, mlir::tensor::EmptyOp>(&operation) &&
         !validated_computations.contains(&operation))
       return fail(error, "region contains an unvalidated structured computation");
   return true;
