@@ -215,6 +215,12 @@ For the driver-only language proof, use the selected executable explicitly:
 
 ## Commits and agent handoff
 
+- After each successfully merged engineering boundary, update
+  `docs/mdslc/CURRENT_STATE.md`: at most about 20 architecture lines, the material
+  change, unsupported/unproven boundaries, exact canonical engineering merge
+  SHA/PR, and exactly one justified next boundary. Link detailed evidence;
+  do not duplicate it. A documentation-only follow-up records the engineering
+  merge, not a self-referential future documentation commit.
 - Keep commits focused, independently reviewable, and free of unrelated
   cleanup. Do not squash the implementation history during active development.
 - Each specialized agent owns non-overlapping files, records tests and failures
