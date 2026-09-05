@@ -558,13 +558,17 @@ tree run.
    capture bridge. Their separate multi-operation envelope is documented in
    `docs/mdslc/MATCORE_MLIR_COMPOSITION_V1.md`; reductions, contractions, and
    views remain unsupported.
-5. No Matcore-to-Linalg/LLVM/native lowering or runtime execution goes through
-   this MLIR path yet. The established CPU route remains separate and intact.
+5. Only explicit GEMM semantic MLIR-to-runtime-dispatch lowering is executable,
+   and it delegates to the established CPU runtime. Certified Linalg,
+   bufferized, and Vector derivations remain inspection-only; no generated
+   execution goes through them.
 6. The runtime does not yet enforce the complete rounding-mode, exception-mask,
    FTZ/DAZ, non-finite, and subnormal conformance required before Milestone E
    execution.
-7. Destination-style identity is not yet bufferized, and the public semantic
-   function names are not machine-emission-safe ABI names.
+7. The certified buffer seam proves SSA/function-boundary argument-2 identity
+   only for its exact admitted program and options. It does not prove physical
+   storage identity, a callable memref ABI, or general zero-copy behavior, and
+   the public semantic function names are not machine-emission-safe ABI names.
 8. Required preconditions are represented but no guard-producing pass exists
    yet.
 9. Tensor layout, strides, memory space, mutability, and operation-local

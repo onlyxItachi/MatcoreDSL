@@ -199,6 +199,21 @@ universal ordering.
 - weakening actual provider-thread authentication;
 - adopting the old research branch wholesale.
 
+### Preserved experimental checkpoints
+
+The rejected paths remain auditable rather than being deleted or rewritten:
+
+- buffer experiments `12187a8023906a1c758800ed5d2e1346549155c0`,
+  `e47b2e70726a6253874143c0a7f5b5797b2e371e`, and
+  `1efa342737cc623bd7e7174c81552a604bada366` were superseded by the clean PR
+  #26 restack because the survivor had to use the one canonical certificate,
+  one topology owner, exact RTTI/dependency wiring, and final paired verifier;
+- vector experiment `d16f83cbc29dbd20a59ebeae9e056fa3378962c2`
+  and pre-restack proof `fa3b422e7e7726e6d6fae090977c701b63cfbbf3`
+  remain evidence, not merge sources. The PR #27 survivor dropped its duplicate
+  certificate, inherited canonical buffer/certificate ancestry, and added the
+  nontrivial unit-K falsifier and exact hosted opt-in lane.
+
 ## 7. Validation record
 
 - PRs #24, #23, #22, #25, #26, and #27 each received independent exact-head
@@ -215,9 +230,9 @@ universal ordering.
   fail configuration.
 - Portability reviewed head: exact-21 and exact-22 full CTest 67/67 each, plus
   installed runtime-DSO identity adversaries.
-- Provider auditor: zero authenticatable parity manifests out of the declared
-  368-case-per-order envelope; a requested-two/actual-one thread control was
-  rejected. This is negative evidence, not a parity result.
+- Provider auditor: 0/368 authenticatable records in each declared order and no
+  authenticatable forward/reverse manifest pair; a requested-two/actual-one
+  thread control was rejected. This is negative evidence, not a parity result.
 
 The full suites include frontend, IR/MLIR, explicit GEMM CPU execution,
 runtime/planner, OpenBLAS-on/off, C ABI, install/consumer/source-inaccessible,
