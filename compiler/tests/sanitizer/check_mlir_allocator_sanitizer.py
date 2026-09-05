@@ -11,12 +11,9 @@ def main():
     parser.add_argument("--compatible", required=True)
     args = parser.parse_args()
     environment = os.environ.copy()
-    # Symbolization can try network debuginfo; diagnostics and poisoning remain
-    # enabled. Explicitly require manual poisoning for the negative control.
-    environment["ASAN_OPTIONS"] = (
-        environment.get("ASAN_OPTIONS", "")
-        + ":symbolize=0:allow_user_poisoning=1"
-    )
+    # Symbolization can try network debuginfo. Do not change poisoning or check
+    # policy; a caller that disables them must fail the negative controls.
+    environment["ASAN_OPTIONS"] = environment.get("ASAN_OPTIONS", "") + ":symbolize=0"
 
     def run(binary, *mode):
         result = subprocess.run(
