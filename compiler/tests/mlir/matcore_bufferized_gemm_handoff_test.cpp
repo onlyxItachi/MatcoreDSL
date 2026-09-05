@@ -1,4 +1,5 @@
 #include "MatcoreBufferizedGemmHandoff.h"
+#include "MatcoreContractionModel.h"
 #include "MatcoreStructuredGemmHandoff.h"
 #include "MatcoreV1Bridge.h"
 #include "matcore_ir_v1.h"
@@ -11,12 +12,14 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/STLExtras.h"
 
 #include <cstdint>
 #include <fstream>
@@ -303,6 +306,67 @@ void testDynamicBufferization(const v1::Module &capture) {
             lhs.getAs<mlir::StringAttr>("alignment_contract").getValue() ==
                 "required_precondition",
         "semantic contract must retain noalias and alignment requirements");
+}
+
+void testCanonicalTopologyOwnership(const v1::Module &capture) {
+  mlir::MLIRContext context;
+  auto structured = buildStructured(capture, context);
+  check(static_cast<bool>(structured),
+        "topology-ownership fixture must derive structured handoff");
+  if (!structured)
+    return;
+  auto bufferized =
+      bridge::deriveBufferizedGemmHandoffV1(*structured.module);
+  check(static_cast<bool>(bufferized),
+        "topology-ownership fixture must derive certified bufferization");
+  if (!bufferized)
+    return;
+  auto matmul = findOne<mlir::linalg::MatmulOp>(*bufferized.module);
+  check(static_cast<bool>(matmul),
+        "topology-ownership fixture must contain linalg.matmul");
+  if (!matmul)
+    return;
+
+  llvm::SmallVector<mlir::AffineMap, 3> maps;
+  for (mlir::Attribute attribute : matmul.getIndexingMaps()) {
+    const auto map = mlir::dyn_cast<mlir::AffineMapAttr>(attribute);
+    check(static_cast<bool>(map),
+          "bufferized contraction indexing carrier must be affine");
+    if (!map)
+      return;
+    maps.push_back(map.getValue());
+  }
+  llvm::SmallVector<unsigned, 3> ranks;
+  for (mlir::Value operand : matmul->getOperands()) {
+    const auto type = mlir::dyn_cast<mlir::MemRefType>(operand.getType());
+    check(static_cast<bool>(type),
+          "bufferized contraction topology carrier must use memrefs");
+    if (!type)
+      return;
+    ranks.push_back(type.getRank());
+  }
+  auto topology = bridge::buildCanonicalContractionTopologyV1(
+      context, bridge::StandardLinearAlgebraOperationV1::Gemm);
+  check(static_cast<bool>(topology),
+        "bufferized GEMM must obtain topology from the shared model");
+  if (!topology)
+    return;
+  std::string error;
+  check(bridge::verifyStructuredIndexingAgainstContractionTopologyV1(
+            topology.topology, maps, matmul.getIteratorTypesArray(), ranks,
+            error),
+        "bufferized indexing/rank/iterator carrier must match shared GEMM "
+        "topology");
+  if (maps.size() == 3) {
+    std::swap(maps[0], maps[1]);
+    error.clear();
+    check(!bridge::verifyStructuredIndexingAgainstContractionTopologyV1(
+               topology.topology, maps, matmul.getIteratorTypesArray(), ranks,
+               error),
+          "shared topology verifier must reject a buffer-local map reorder");
+    checkContains(error, "canonical standard-operation model",
+                  "shared topology rejection must identify canonical model");
+  }
 }
 
 void testStaticNonSquareBufferization(v1::Module capture) {
@@ -732,6 +796,22 @@ void testAdversarialMutations(const v1::Module &capture) {
   expectBufferizedRejected(
       capture,
       [](mlir::ModuleOp module, mlir::Builder &builder) {
+        auto matmul = findOne<mlir::linalg::MatmulOp>(module);
+        mlir::MLIRContext *context = module.getContext();
+        const mlir::AffineExpr m = mlir::getAffineDimExpr(0, context);
+        const mlir::AffineExpr n = mlir::getAffineDimExpr(1, context);
+        const mlir::AffineExpr k = mlir::getAffineDimExpr(2, context);
+        matmul.setIndexingMapsAttr(builder.getAffineMapArrayAttr(
+            {mlir::AffineMap::get(3, 0, {k, m}, context),
+             mlir::AffineMap::get(3, 0, {k, n}, context),
+             mlir::AffineMap::get(3, 0, {m, n}, context)}));
+      },
+      "bufferized verifier must reject indexing outside the shared canonical "
+      "GEMM topology");
+
+  expectBufferizedRejected(
+      capture,
+      [](mlir::ModuleOp module, mlir::Builder &builder) {
         auto function = oneFunction(module);
         llvm::SmallVector<mlir::Type> types;
         for (mlir::BlockArgument argument : function.getArguments()) {
@@ -922,6 +1002,7 @@ int main() {
         "bufferization suite requires one reviewed GEMM capture");
   if (capture.operations.size() == 1) {
     testDynamicBufferization(capture);
+    testCanonicalTopologyOwnership(capture);
     testStaticNonSquareBufferization(capture);
     testMixedStaticDynamicMultiSiteBufferization(capture);
     testCrossContextRoundTrip(capture);

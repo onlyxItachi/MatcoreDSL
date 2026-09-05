@@ -1,5 +1,6 @@
 #include "MatcoreBufferizedGemmHandoff.h"
 
+#include "MatcoreContractionModel.h"
 #include "MatcoreStructuredGemmHandoff.h"
 #include "MatcoreStructuredHandoffCertificate.h"
 
@@ -302,25 +303,42 @@ bool verifyDefaultMatmulMaps(mlir::linalg::MatmulOp matmul,
     return false;
   }
   const mlir::ArrayAttr actual = matmul.getIndexingMaps();
-  const llvm::SmallVector<mlir::AffineMap> expected =
-      mlir::linalg::MatmulOp::getDefaultIndexingMaps(matmul.getContext());
-  if (!actual || actual.size() != expected.size()) {
+  if (!actual || actual.size() != 3) {
     error = "bufferized GEMM requires canonical matmul indexing maps";
     return false;
   }
-  for (auto [attribute, map] : llvm::zip(actual, expected)) {
+  llvm::SmallVector<mlir::AffineMap, 3> actual_maps;
+  for (mlir::Attribute attribute : actual) {
     const auto encoded = mlir::dyn_cast<mlir::AffineMapAttr>(attribute);
-    if (!encoded || encoded.getValue() != map) {
-      error = "bufferized GEMM matmul indexing maps are not canonical";
+    if (!encoded) {
+      error = "bufferized GEMM matmul indexing maps must be affine maps";
       return false;
     }
+    actual_maps.push_back(encoded.getValue());
   }
-  const auto iterators = matmul.getIteratorTypesArray();
-  if (iterators.size() != 3 ||
-      iterators[0] != mlir::utils::IteratorType::parallel ||
-      iterators[1] != mlir::utils::IteratorType::parallel ||
-      iterators[2] != mlir::utils::IteratorType::reduction) {
-    error = "bufferized GEMM requires parallel M/N and reduction K";
+  llvm::SmallVector<unsigned, 3> operand_ranks;
+  for (mlir::Value value :
+       llvm::concat<mlir::Value>(matmul.getInputs(), matmul.getOutputs())) {
+    const auto type = mlir::dyn_cast<mlir::MemRefType>(value.getType());
+    if (!type) {
+      error = "bufferized GEMM matmul operands must remain ranked memrefs";
+      return false;
+    }
+    operand_ranks.push_back(type.getRank());
+  }
+  ContractionTopologyResultV1 topology = buildCanonicalContractionTopologyV1(
+      *matmul.getContext(), StandardLinearAlgebraOperationV1::Gemm);
+  if (!topology) {
+    error = "cannot construct the internal canonical GEMM topology: " +
+            topology.error;
+    return false;
+  }
+  if (!verifyStructuredIndexingAgainstContractionTopologyV1(
+          topology.topology, actual_maps, matmul.getIteratorTypesArray(),
+          operand_ranks, error)) {
+    error = "bufferized GEMM matmul does not realize canonical logical "
+            "(m,k),(k,n),(m,n) topology: " +
+            error;
     return false;
   }
   return true;
