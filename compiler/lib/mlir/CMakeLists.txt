@@ -18,6 +18,7 @@ add_library(
     MatcoreDialect.cpp
     MatcoreGemmSemanticBuilder.cpp
     MatcoreOps.cpp
+    MatcoreRegionBoundaryOps.cpp
     MatcoreV1Bridge.cpp
     MatcoreCpuRuntimeLowering.cpp
 )
@@ -161,6 +162,21 @@ if(MDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS)
 endif()
 
 if(MDSLC_ENABLE_NATIVE_FRONTEND AND NOT WIN32)
+  # This source-authenticated inspection boundary is not an execution consumer.
+  # Keep frontend evidence and structured machinery out of the core dialect.
+  add_library(matcore_mlir_two_gemm_region STATIC MatcoreTwoGemmRegion.cpp)
+  target_compile_features(matcore_mlir_two_gemm_region PUBLIC cxx_std_20)
+  target_include_directories(matcore_mlir_two_gemm_region PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>")
+  target_include_directories(matcore_mlir_two_gemm_region SYSTEM PRIVATE
+    "${LLVM_INCLUDE_DIRS}" "${MLIR_INCLUDE_DIRS}")
+  target_link_libraries(matcore_mlir_two_gemm_region
+    PUBLIC matcore_mlir_semantics matcore_frontend_native
+    PRIVATE matcore_mlir_structured_handoff MLIRArithDialect
+      MLIRLinalgDialect MLIRTensorDialect)
+  mdslc_target_enable_warnings(matcore_mlir_two_gemm_region)
+  mdslc_target_match_llvm_rtti(matcore_mlir_two_gemm_region)
+
   # Recovery analysis is kept in a separate internal library so the general
   # semantic dialect and explicit-v1 bridge never depend on Clang frontend
   # implementation details.
@@ -414,5 +430,21 @@ if(BUILD_TESTING)
     mdslc_target_enable_warnings(matcore_mlir_recovered_gemm_tests)
     add_test(NAME mlir.semantic.recovered-gemm
       COMMAND matcore_mlir_recovered_gemm_tests)
+
+    add_executable(matcore_mlir_two_gemm_region_tests
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/mlir/matcore_two_gemm_region_test.cpp")
+    target_link_libraries(matcore_mlir_two_gemm_region_tests PRIVATE
+      matcore_mlir_two_gemm_region matcore_mlir_bufferized_handoff
+      MLIRLinalgTransforms MLIRTransforms MLIRParser)
+    target_include_directories(matcore_mlir_two_gemm_region_tests SYSTEM PRIVATE
+      "${LLVM_INCLUDE_DIRS}" "${MLIR_INCLUDE_DIRS}")
+    target_compile_definitions(matcore_mlir_two_gemm_region_tests PRIVATE
+      MDSLC_REGION_TEST_CLANG="${MDSLC_CLANGXX_EXECUTABLE}"
+      MDSLC_REGION_TEST_RESOURCE_DIR="${MDSLC_RECOVERED_TEST_RESOURCE_DIR}"
+      MDSLC_REGION_TEST_PUBLIC_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/../../include/matcore/mdsl.h")
+    mdslc_target_enable_warnings(matcore_mlir_two_gemm_region_tests)
+    mdslc_target_match_llvm_rtti(matcore_mlir_two_gemm_region_tests)
+    add_test(NAME mlir.semantic.two-gemm-region
+      COMMAND matcore_mlir_two_gemm_region_tests)
   endif()
 endif()

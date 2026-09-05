@@ -564,6 +564,22 @@ if(BUILD_TESTING)
   )
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
+    if(MDSLC_ENABLE_NATIVE_FRONTEND)
+      set(MDSLC_REGION_TEST_AVAILABLE 0)
+      if(TARGET matcore_mlir_two_gemm_region)
+        set(MDSLC_REGION_TEST_AVAILABLE 1)
+      endif()
+      add_test(NAME integration.two_gemm_region
+        COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/mlir/run_two_gemm_region_tests.py"
+          --extractor "$<TARGET_FILE:matcore-extract>"
+          --driver "$<TARGET_FILE:mdslc_driver>"
+          --clangxx "${MDSLC_CLANGXX_EXECUTABLE}"
+          --repository-root "${CMAKE_CURRENT_SOURCE_DIR}/.."
+          --region-available "${MDSLC_REGION_TEST_AVAILABLE}")
+      set_tests_properties(integration.two_gemm_region PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.." TIMEOUT 300)
+    endif()
     if(MDSLC_ENABLE_NATIVE_FRONTEND AND MDSLC_ENABLE_BOOTSTRAP_FRONTEND)
       add_test(
         NAME frontend.native.focused
