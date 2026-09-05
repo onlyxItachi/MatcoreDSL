@@ -5,6 +5,8 @@ def Matcore_Dialect : Dialect {
   let cppNamespace = "::matcore::mdslc::mlir_dialect";
   let summary = "Matcore target-independent semantic operations";
   let extraClassDeclaration = [{
+    // Internal allocator-protocol boundary for the pinned prebuilt MLIR tuple.
+    void registerRegionTypes();
     ::mlir::Type parseType(::mlir::DialectAsmParser &parser) const override;
     void printType(::mlir::Type type,
                    ::mlir::DialectAsmPrinter &printer) const override;

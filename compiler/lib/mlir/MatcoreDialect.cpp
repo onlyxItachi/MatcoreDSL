@@ -10,7 +10,7 @@
 namespace matcore::mdslc::mlir_dialect {
 
 void MatcoreDialect::initialize() {
-  addTypes<RegionDescriptorType, RegionOrderType>();
+  registerRegionTypes();
   addOperations<
 #define GET_OP_LIST
 #include "MatcoreOps.cpp.inc"
