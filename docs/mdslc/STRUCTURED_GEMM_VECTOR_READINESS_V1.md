@@ -2,9 +2,11 @@
 
 Date: 2026-09-05
 
-Status: internal, opt-in, inspection-only implementation checkpoint. This is
-not an executable lowering route, a production vector schedule, a physical
-storage proof, a performance result, or a public API/interchange commitment.
+Status: canonical internal, opt-in, inspection-only proof checkpoint. Reviewed
+head `7b9501ec12fe99575cfabdd3e738d32f817370df` merged normally through PR #27
+as `8ac6c4189b6f79aadee150007b6d26894de02660`. This is not an executable
+lowering route, a production vector schedule, a physical storage proof, a
+performance result, or a public API/interchange commitment.
 
 ## Identity and dependency chain
 
@@ -15,7 +17,9 @@ contraction foundation, reusable derived-source certificate, and certified
 bufferization sibling. The vector implementation was restacked as commit
 `6f63e47`; restack hardening and hosted opt-in coverage are `2f9e687` and
 `8481482`. Merge commit `fa074df` gives this branch explicit ancestry from the
-canonical PR #26 checkpoint.
+canonical PR #26 checkpoint. The final documentation precision fix is
+`7b9501e`; that exact reviewed head passed all 19 hosted checks before normal
+integration through PR #27.
 
 The duplicated experimental certificate commit was dropped. Canonical PR #25
 merge `09c96b980020f53bf1d352f9ee6c28fb470540ea` is the single surviving shared
@@ -266,6 +270,10 @@ its OpenBLAS-disabled, Matcore-MLIR-enabled row. That row requires the exact
 vector test to be registered before running the complete suite. The other
 Release rows and existing Debug, sanitizer, and Windows configurations retain
 default-OFF coverage without renaming or adding hosted checks.
+
+Independent exact-head review was GO with no remaining findings. The reviewed
+head passed all 19 hosted checks, including the opt-in vector row and both
+Windows default-off runs.
 
 The exact-HEAD benchmark provenance was refreshed after each commit before a
 complete suite. No provenance or package gate was weakened or bypassed.
