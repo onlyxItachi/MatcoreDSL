@@ -203,21 +203,35 @@ universal ordering.
 
 The rejected paths remain auditable rather than being deleted or rewritten:
 
-- buffer experiments `12187a8023906a1c758800ed5d2e1346549155c0`,
-  `e47b2e70726a6253874143c0a7f5b5797b2e371e`, and
-  `1efa342737cc623bd7e7174c81552a604bada366` were superseded by the clean PR
-  #26 restack because the survivor had to use the one canonical certificate,
-  one topology owner, exact RTTI/dependency wiring, and final paired verifier;
-- vector experiment `d16f83cbc29dbd20a59ebeae9e056fa3378962c2`
-  and pre-restack proof `fa3b422e7e7726e6d6fae090977c701b63cfbbf3`
-  remain evidence, not merge sources. The PR #27 survivor dropped its duplicate
-  certificate, inherited canonical buffer/certificate ancestry, and added the
-  nontrivial unit-K falsifier and exact hosted opt-in lane.
+- branch `mdslc/bufferization-certified-v1` at
+  `1efa342737cc623bd7e7174c81552a604bada366` and branch
+  `mdslc/bufferization-certified-integration-v1` at
+  `0bd333818fdaeabfab3259660e39217e788853c3` remain evidence, not merge
+  sources. They were superseded by the clean PR #26 restack because the
+  survivor had to use the one canonical certificate, one topology owner,
+  exact RTTI/dependency wiring, and final paired verifier. Their internal
+  ancestors remain recorded in the bufferization agent report;
+- branch `mdslc/structured-transform-vector-v1` at
+  `d16f83cbc29dbd20a59ebeae9e056fa3378962c2` and branch
+  `mdslc/vector-certified-v1` at
+  `fa3b422e7e7726e6d6fae090977c701b63cfbbf3` remain evidence, not merge
+  sources. The PR #27 survivor dropped its duplicate certificate, inherited
+  canonical buffer/certificate ancestry, and added the nontrivial unit-K
+  falsifier and exact hosted opt-in lane.
 
 ## 7. Validation record
 
 - PRs #24, #23, #22, #25, #26, and #27 each received independent exact-head
   review and passed 19/19 hosted checks before normal merge.
+- Canonical implementation checkpoint `8ac6c418` then passed all four
+  post-merge workflows: legacy `ci` run
+  [33936983671](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/33936983671),
+  `mdslc-native` run
+  [33936983674](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/33936983674),
+  `mdslc-windows` run
+  [33936983532](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/33936983532),
+  and repository-hygiene run
+  [33936983649](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/33936983649).
 - Contraction topology: 277/277 direct checks.
 - Structured GEMM: 366/366 direct checks; its deterministic golden remained
   unchanged through the generalization.

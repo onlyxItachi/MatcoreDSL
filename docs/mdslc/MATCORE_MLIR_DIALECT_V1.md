@@ -556,15 +556,17 @@ tree run.
    enumerated but deliberately unsupported.
 4. `mdsl.map`, domains, and `mdsl.sin` are not part of the strict Milestone B
    capture bridge. Their separate multi-operation envelope is documented in
-   `docs/mdslc/MATCORE_MLIR_COMPOSITION_V1.md`; reductions, contractions, and
-   views remain unsupported.
+   `docs/mdslc/MATCORE_MLIR_COMPOSITION_V1.md`; general reductions, non-GEMM
+   contraction semantics, and views remain unsupported.
 5. Only explicit GEMM semantic MLIR-to-runtime-dispatch lowering is executable,
    and it delegates to the established CPU runtime. Certified Linalg,
    bufferized, and Vector derivations remain inspection-only; no generated
    execution goes through them.
-6. The runtime does not yet enforce the complete rounding-mode, exception-mask,
-   FTZ/DAZ, non-finite, and subnormal conformance required before Milestone E
-   execution.
+6. The runtime enforces the `explicit-gemm-f32-v1` control-state guard for the
+   authenticated CPU path, including its execution thread and active native
+   workers. This does not consume the recorded numerical permissions or
+   authorize generated structured/vector execution, and preservation of
+   incoming floating-point exception-status flags remains unspecified.
 7. The certified buffer seam proves SSA/function-boundary argument-2 identity
    only for its exact admitted program and options. It does not prove physical
    storage identity, a callable memref ABI, or general zero-copy behavior, and
