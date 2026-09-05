@@ -196,6 +196,11 @@ int main(int argc, char **argv) {
         "md::gemm(md::out(E), alias, D);\n"));
     require(admitted(reference_cast) == 0 && reason(reference_cast, "transparent local reference"),
             "reference cast admitted beyond the exact binding proof");
+    const auto static_reference = extract("static_reference", function(
+        std::string("static auto &alias = C;\n") + first +
+        "md::gemm(md::out(E), alias, D);\n"));
+    require(admitted(static_reference) == 0 && reason(static_reference, "transparent local reference"),
+            "a static reference was confused with the current invocation's parameter binding");
     const auto three = extract("three", std::string(prefix) + "void run(" + parameters +
         ", md::matrix_view &F) {\n" + first + second + "md::gemm(md::out(F), E, D);\n}\n");
     require(admitted(three) == 1 && three.two_gemm_regions.back().sites.size() == 1,

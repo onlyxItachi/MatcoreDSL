@@ -1040,7 +1040,8 @@ private:
           llvm::isa<clang::ParmVarDecl>(declaration)) return declaration;
       // Do not chase nonlocal references or initializer expressions with any
       // operation. Unsupported reference bindings remain an admission barrier.
-      if (!declaration->isLocalVarDecl() || !declaration->hasInit()) return nullptr;
+      if (!declaration->isLocalVarDecl() || !declaration->hasLocalStorage() ||
+          !declaration->hasInit()) return nullptr;
       const auto *reference = llvm::dyn_cast<clang::DeclRefExpr>(
           declaration->getInit()->IgnoreParens());
       if (reference == nullptr) return nullptr;
