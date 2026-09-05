@@ -170,9 +170,14 @@ if(MDSLC_ENABLE_MATCORE_MLIR)
   foreach(MDSLC_REQUIRED_MLIR_TARGET IN ITEMS
       MLIRIR
       MLIRArithDialect
+      MLIRBufferizationDialect
+      MLIRBufferizationTransforms
       MLIRFuncDialect
       MLIRLinalgDialect
+      MLIRLinalgTransforms
+      MLIRMemRefDialect
       MLIRParser
+      MLIRTensorTransforms
       MLIRTransforms
       MLIRDestinationStyleOpInterface
       MLIRSideEffectInterfaces)
