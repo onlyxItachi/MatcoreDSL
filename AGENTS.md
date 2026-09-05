@@ -56,9 +56,13 @@ in `context.md`.
   provenance or inherit the explicit eDSL numerical profile. Keep host C++
   control flow in Clang/source rewriting unless a later milestone explicitly
   proves a larger-region capture.
-- Clang is the C++ frontend and host compiler. MDSLC owns matrix semantics,
-  planning, legalization, scheduling, and target lowering. Do not claim that
-  Clang automatically lowers Matcore IR for every accelerator.
+- Clang is the C++ frontend and host compiler. MDSLC owns semantic admission,
+  legality, retained-fact consumption, target policy and planning decisions,
+  and orchestration. Upstream MLIR owns its canonical structured, tensor,
+  buffer, transform, and vector machinery. LLVM and target backends own
+  instruction selection, register allocation, target scheduling, and machine
+  lowering. Do not claim that Clang automatically lowers Matcore IR for every
+  accelerator.
 - The synchronous, row-major, rank-2 `f32` CPU runtime validates descriptors,
   discovers capabilities, and deterministically selects among the registered
   reference, 32x32x64 tiled, compiler-vectorized AVX2/FMA, optional OpenBLAS,
@@ -176,12 +180,15 @@ For the driver-only language proof, use the selected executable explicitly:
   the user's authorization and must stay within the task scope.
 - Do not mix compiler executables, headers, libraries, or CMake packages from
   different LLVM/Clang releases in one frontend binary.
-- The Matcore MLIR component, when deliberately enabled, must use MLIR
-  21.1.8 coherently with the selected LLVM/Clang 21.1.8 tuple. It is an
-  internal build dependency and must not leak absolute development-prefix
-  paths or MLIR targets into the installed consumer package. Do not link the
-  standalone compiler to the unrelated system MLIR 22 surface or couple it to
-  the legacy root project's MLIR 18 requirement.
+- The product, release, and default Matcore MLIR component must use MLIR
+  21.1.8 coherently with the selected LLVM/Clang 21.1.8 tuple. The advanced
+  internal compatibility selector may admit only the reviewed coherent
+  LLVM/Clang/MLIR 22.1.8 Linux x64 tuple; that path is compatibility evidence,
+  not product support or an installed consumer contract. Mixed distro-22 or
+  cross-version components remain forbidden. MLIR is an internal build
+  dependency and must not leak absolute development-prefix paths or MLIR
+  targets into the installed consumer package. Do not couple standalone MDSLC
+  to the legacy root project's MLIR 18 requirement.
 - Validate incrementally after every meaningful change. Before handoff, run the
   narrow tests, then the complete standalone suite, and repeat from a clean
   build directory when the milestone requires it.
