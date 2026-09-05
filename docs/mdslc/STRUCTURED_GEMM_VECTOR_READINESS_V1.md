@@ -9,16 +9,17 @@ storage proof, a performance result, or a public API/interchange commitment.
 ## Identity and dependency chain
 
 The canonical campaign base is
-`5983c2c1bf067bed9e69d0172b0944b7a4c14c00`, the merge checkpoint containing
-the corpus reconciliation, structured GEMM proof, and reusable contraction
-foundation. The vector-specific implementation commit is
-`4a6711654f02dc50c4d4fcc2ae5cbafd16f61b75`.
+`72f02d15e1a0d3a2dae2bab76ea0c1ee968e67de`, the normal merge checkpoint for
+PR #26. It contains the corpus reconciliation, structured GEMM proof, reusable
+contraction foundation, reusable derived-source certificate, and certified
+bufferization sibling. The vector implementation was restacked as commit
+`6f63e47`; restack hardening and hosted opt-in coverage are `2f9e687` and
+`8481482`. Merge commit `fa074df` gives this branch explicit ancestry from the
+canonical PR #26 checkpoint.
 
-This branch contains local commit `d29e1c3`, patch-equivalent to the shared
-derived-structured identity commit
-`d3d4189aedb7346f853e0d5bd8d845d892612fdc` prepared independently for draft
-PR #25. The vector change is intentionally separable so it can be restacked on
-the canonical merge of that shared dependency without changing its design.
+The duplicated experimental certificate commit was dropped. Canonical PR #25
+merge `09c96b980020f53bf1d352f9ee6c28fb470540ea` is the single surviving shared
+derived-structured identity implementation.
 
 The implementation uses the exact LLVM/MLIR 21.1.8 package selected by
 `AGENTS.md`. Corpus identity, limits, and responsibility boundaries remain
@@ -42,7 +43,8 @@ those recorded in `CORPUS_REENTRY_RECONCILIATION_V1.md`,
   and matmul remain and no Vector operation is created. Transform success is
   therefore not a readiness proof.
 - Positive static unit-M, unit-N, and unit-K rank-2 specimens retain GEMM
-  identity and produce the same vector topology.
+  identity and produce the same vector topology. Unit-K coverage includes the
+  nontrivial `M=2, K=1, N=4` geometry rather than only an all-unit case.
 - MLIR 21.1.8 retains source location on the zero vector, input reads, and
   return, while generated poison/index/contract/write glue has unknown
   location.
@@ -193,14 +195,13 @@ The new library and test exist only when
 and requires `MDSLC_ENABLE_MATCORE_MLIR=ON`. Transform, Tensor, UB, and Vector
 MLIR targets are required only inside that opt-in branch.
 
-The later general portability control can select an evidence-only LLVM/MLIR
+The general portability control can select an evidence-only LLVM/MLIR
 22.1.8 tuple, but this certificate and golden encode only observed 21.1.8
 behavior. Combining vector readiness with a nonempty
 `MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION` therefore fails at configure time. This
 is a deliberate evidence boundary, not a claim that upstream 22 cannot support
-an equivalent seam. When the portability branch's per-target LLVM RTTI helper
-is present, the vector library inherits it; an RTTI-disabled LLVM package with
-no matching helper is rejected.
+an equivalent seam. The vector library and its test directly inherit the
+selected LLVM package's RTTI mode through the canonical per-target helper.
 
 No installed header, package target, CLI stage, frontend operation, planner,
 runtime, provider, or C ABI is changed. The vector module retains
@@ -210,7 +211,7 @@ the only executable GEMM path.
 
 ## Mechanical falsification
 
-The focused suite currently performs 280 checks, including:
+The focused suite currently performs 285 checks, including:
 
 - non-square exact topology and deterministic golden output;
 - repeat derivation and cross-context parse/print verification;
@@ -221,7 +222,7 @@ The focused suite currently performs 280 checks, including:
   different static shape;
 - aggregate and per-site fingerprint forgery;
 - retained source-type/shape forgery;
-- unit-M, unit-N, unit-K, and all-unit rank-2 GEMM specimens;
+- unit-M, unit-N, nontrivial unit-K, and all-unit rank-2 GEMM specimens;
 - the direct dynamic Transform success/no-op control followed by fail-closed
   readiness rejection;
 - malformed structured source rejection;
@@ -240,14 +241,18 @@ upgrade strategy.
 
 ## Validation at this checkpoint
 
-The implementation was configured with Ubuntu Clang/Clang++ 21.1.8 and the
-project's user-local MLIR 21.1.8 package. The following surfaces passed:
+The final restack was configured against both reviewed coherent tuples. The
+following local surfaces passed:
 
-- opt-in Release: full build, then 66/66 CTest tests;
-- default-off Release: full build, then 65/65 CTest tests;
-- opt-in Debug: the contraction-model, structured-GEMM-handoff, and
-  vector-readiness tests, 3/3;
-- direct vector-readiness executable: 280/280 adversarial checks;
+- exact 21.1.8, Release, OpenBLAS required, bufferization and vector readiness
+  composed: full 146-step build, then 70/70 CTest tests in 191.51 seconds;
+- exact 21.1.8 focused contraction/structured/certificate/buffer/vector chain:
+  5/5;
+- direct vector-readiness executable: 285/285 adversarial checks;
+- exact 22.1.8 compatibility, Release, OpenBLAS disabled, vector readiness
+  default OFF: full 142-step build, then 69/69 CTest tests in 145.70 seconds;
+- exact 22.1.8 focused contraction/structured/certificate/buffer chain: 4/4,
+  with no vector-readiness target or test;
 - default-off target/test inventory: no vector-readiness target or test;
 - invalid option combination: configuration fails when vector readiness is ON
   and Matcore MLIR is OFF; and
@@ -256,16 +261,14 @@ project's user-local MLIR 21.1.8 package. The following surfaces passed:
 - staged install inspection: no vector-readiness header, library, package
   target, or tool was installed.
 
-The first full opt-in CTest invocation was intentionally informative: package
-source-inaccessibility rejected the checkout because documentation was still
-uncommitted, and the native-evidence runner then rejected a benchmark binary
-whose embedded source SHA preceded the documentation commit. A clean
-reconfigure and exact-HEAD benchmark rebuild closed both provenance gates; the
-reported 66/66 result is the clean rerun. No gate was weakened or bypassed.
+The existing four-row exact-21 Release workflow now enables the seam only in
+its OpenBLAS-disabled, Matcore-MLIR-enabled row. That row requires the exact
+vector test to be registered before running the complete suite. The other
+Release rows and existing Debug, sanitizer, and Windows configurations retain
+default-OFF coverage without renaming or adding hosted checks.
 
-LLVM 21's `clang-format` executable was not installed in the environment. The
-new C++ files were formatted with the available LLVM 22.1.8 formatter, then
-compiled with Clang 21.1.8 and checked with `git diff --check`.
+The exact-HEAD benchmark provenance was refreshed after each commit before a
+complete suite. No provenance or package gate was weakened or bypassed.
 
 ## Ownership and next boundary
 

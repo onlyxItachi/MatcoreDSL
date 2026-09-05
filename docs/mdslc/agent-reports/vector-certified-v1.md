@@ -2,12 +2,13 @@
 
 Date: 2026-09-05
 
-Branch: `mdslc/vector-certified-v1`
+Branch: `mdslc/vector-readiness-certified-v2`
 
-Canonical base: `5983c2c1bf067bed9e69d0172b0944b7a4c14c00`
+Canonical base: `72f02d15e1a0d3a2dae2bab76ea0c1ee968e67de`
 
-Vector-specific implementation:
-`4a6711654f02dc50c4d4fcc2ae5cbafd16f61b75`
+Restacked vector implementation: `6f63e47`
+
+Restack hardening and hosted opt-in coverage: `2f9e687`, `8481482`
 
 ## Scope and dependency
 
@@ -17,13 +18,10 @@ mechanically checked Vector representation. It changes no frontend operation,
 installed API, ABI, driver stage, runtime, planner, provider, or execution
 authority.
 
-The branch also carries local dependency commit
-`d29e1c347a45ba42e8bc413ee4e9fb4b9deb4fed`. Its stable patch ID
-`31cb57f814faac7d520aef0375f139dc6fe19d2b` exactly matches shared
-derived-source identity commit
-`d3d4189aedb7346f853e0d5bd8d845d892612fdc` from draft PR #25. The
-vector-specific commit must be restacked on that dependency's canonical merge
-before integration; this branch is not a merge candidate as stacked locally.
+Canonical PR #25 merge `09c96b980020f53bf1d352f9ee6c28fb470540ea`
+provides the single shared derived-source identity implementation. The old
+patch-equivalent local duplicate was dropped. Merge commit `fa074df` gives the
+candidate explicit ancestry from canonical PR #26.
 
 The earlier experimental worktree
 `MatcoreDSL-wt-structured-transform-vector-v1` remained clean and unchanged at
@@ -53,8 +51,7 @@ not a source branch adopted wholesale.
 - The certificate/golden are explicitly restricted to exact MLIR 21.1.8.
   Combining the vector option with the portability branch's experimental
   toolchain selector fails closed. The vector library uses that branch's
-  per-target LLVM RTTI helper when available and rejects an RTTI-disabled LLVM
-  package if the helper is absent.
+  canonical per-target LLVM RTTI helper, as does the focused test target.
 
 The direct upstream dynamic control is important: the Transform interpreter
 reports success but leaves the dynamic fill/matmul payload unchanged and
@@ -64,7 +61,7 @@ does not satisfy the vector postcondition.
 
 ## Falsification coverage
 
-The focused executable performs 280 checks. Its negative cases include
+The focused executable performs 285 checks. Its negative cases include
 malformed structured input; source mutation; source substitution; multi-site
 reorder/drop; aggregate and per-site fingerprint forgery; retained source type
 and shape drift; module/function/block-argument/generated-operation location
@@ -74,8 +71,9 @@ partial or masked transfer; result bypass; unauthorized attributes; authority
 changes; and runtime-lowering attempts.
 
 Positive controls cover a non-square golden, cross-context round trips,
-two-site ordered pairing, unit M/N/K and all-unit rank-2 GEMM specimens, and the
-observed dynamic upstream no-op before fail-closed admission.
+two-site ordered pairing, unit M/N/K and all-unit rank-2 GEMM specimens
+(including nontrivial `M=2, K=1, N=4`), and the observed dynamic upstream no-op
+before fail-closed admission.
 
 The static fixtures are programmatically constructed verifier specimens, not
 authenticated current-frontend static captures. The dynamic test parses the
@@ -84,31 +82,28 @@ original source bytes.
 
 ## Validation
 
-All builds selected Ubuntu Clang/Clang++ 21.1.8 and the user-local MLIR 21.1.8
-package named by `AGENTS.md`.
+The restacked survivor was validated with exact 21.1.8 as the product tuple and
+the coherent exact 22.1.8 package as a vector-disabled compatibility control.
 
 | Configuration | Result |
 | --- | --- |
-| Release, experimental option ON, full build | passed |
-| Release, experimental option ON, full CTest | 66/66 passed, 184.26 s |
-| Release, default OFF, full build | 136/136 build steps passed |
-| Release, default OFF, full CTest | 65/65 passed, 208.31 s |
-| Debug, experimental option ON, focused semantic chain | 3/3 passed |
-| Direct vector-readiness executable | 280 checks, 0 failures |
+| Exact 21 Release, OpenBLAS required, buffer + vector ON, full build | 146/146 passed |
+| Exact 21 Release, buffer + vector ON, full CTest | 70/70 passed, 191.51 s |
+| Exact 21 focused composed semantic chain | 5/5 passed |
+| Direct vector-readiness executable | 285 checks, 0 failures |
+| Exact 22 Release, OpenBLAS and vector OFF, full build | 142/142 passed |
+| Exact 22 Release, vector OFF, full CTest | 69/69 passed, 145.70 s |
+| Exact 22 focused buffer sibling chain | 4/4 passed |
 | Option ON with Matcore MLIR OFF | configure rejected as required |
 | Option ON with experimental toolchain 22.1.8 | configure rejected as required |
-| Default-off target and test inventory | no vector target or test |
+| Exact 22/default-off target and test inventory | no vector target or test |
 | Staged install/API firewall | no vector artifact exported |
 | Diff whitespace check | passed |
 
-The first opt-in full CTest run correctly caught dirty-checkout and stale
-embedded-source-SHA provenance. After committing the documentation, cleanly
-reconfiguring, and rebuilding `matcore-bench` at exact HEAD, the full 66/66
-rerun passed. No test or provenance check was relaxed.
-
-`clang-format-21` was unavailable. The three new C++ files were formatted with
-the available LLVM 22.1.8 formatter and then compiled and tested with the exact
-21.1.8 product toolchain.
+The existing exact-21 Release workflow now enables vector readiness only in
+the OpenBLAS-disabled, Matcore-MLIR-enabled matrix row, runs the exact vector
+test with `--no-tests=error`, and then runs the complete suite. Existing check
+names/counts and every other default-OFF configuration are preserved.
 
 ## Rejected alternatives and non-claims
 
