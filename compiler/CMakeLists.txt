@@ -8,6 +8,7 @@ include(CTest)
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/MatcoreDSLCompilerOptions.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/MatcoreDSLToolchainVersion.cmake")
 
 if(NOT CMAKE_GENERATOR STREQUAL "Ninja")
   message(FATAL_ERROR "The standalone MDSLC compiler currently supports the Ninja generator only")
@@ -109,6 +110,28 @@ option(
 )
 mark_as_advanced(MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE)
 
+# Product and release builds remain pinned to the audited 21.1.8 tuple.  This
+# internal-only escape hatch exists so a compatibility branch can measure one
+# explicitly named coherent upstream tuple without weakening the default.
+set(MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION "" CACHE STRING
+  "Exact non-product LLVM/Clang/MLIR version used for a portability experiment")
+mark_as_advanced(MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION)
+set(MDSLC_REQUIRED_TOOLCHAIN_VERSION "21.1.8")
+set(MDSLC_EXPERIMENTAL_TOOLCHAIN_ACTIVE 0)
+if(NOT MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION STREQUAL "")
+  if(NOT MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION STREQUAL "22.1.8")
+    message(FATAL_ERROR
+      "MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION admits only the reviewed "
+      "22.1.8 portability experiment")
+  endif()
+  set(MDSLC_REQUIRED_TOOLCHAIN_VERSION
+    "${MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION}")
+  set(MDSLC_EXPERIMENTAL_TOOLCHAIN_ACTIVE 1)
+  message(WARNING
+    "MDSLC experimental toolchain ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} is "
+    "compatibility evidence only; canonical product support remains 21.1.8")
+endif()
+
 if(MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE AND NOT BUILD_TESTING)
   message(FATAL_ERROR
     "MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE is allowed only with BUILD_TESTING=ON")
@@ -118,19 +141,30 @@ if(NOT MDSLC_ENABLE_NATIVE_FRONTEND AND NOT MDSLC_ENABLE_BOOTSTRAP_FRONTEND)
   message(FATAL_ERROR "At least one MDSLC frontend must be enabled")
 endif()
 
+function(mdslc_target_match_llvm_rtti target)
+  if(DEFINED LLVM_ENABLE_RTTI AND NOT LLVM_ENABLE_RTTI)
+    if(MSVC)
+      target_compile_options(${target} PRIVATE /GR-)
+    else()
+      target_compile_options(${target} PRIVATE -fno-rtti)
+    endif()
+  endif()
+endfunction()
+
 if(MDSLC_ENABLE_MATCORE_MLIR)
   if(NOT DEFINED MLIR_DIR OR MLIR_DIR STREQUAL "")
     message(FATAL_ERROR
       "MDSLC_ENABLE_MATCORE_MLIR requires an explicit MLIR_DIR for the "
-      "audited LLVM/Clang/MLIR 21.1.8 tuple")
+      "selected coherent LLVM/Clang/MLIR tuple")
   endif()
-  find_package(LLVM 21.1.8 EXACT CONFIG REQUIRED)
-  find_package(Clang 21.1.8 EXACT CONFIG REQUIRED)
-  find_package(MLIR 21.1.8 EXACT CONFIG REQUIRED)
-  if(NOT LLVM_PACKAGE_VERSION VERSION_EQUAL "21.1.8" OR
-     NOT MLIR_VERSION VERSION_EQUAL "21.1.8")
+  find_package(LLVM ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} EXACT CONFIG REQUIRED)
+  find_package(Clang ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} EXACT CONFIG REQUIRED)
+  find_package(MLIR ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} EXACT CONFIG REQUIRED)
+  if(NOT LLVM_PACKAGE_VERSION VERSION_EQUAL MDSLC_REQUIRED_TOOLCHAIN_VERSION OR
+     NOT MLIR_VERSION VERSION_EQUAL MDSLC_REQUIRED_TOOLCHAIN_VERSION)
     message(FATAL_ERROR
-      "Matcore MLIR requires exact LLVM/Clang/MLIR 21.1.8 packages; found "
+      "Matcore MLIR requires exact coherent LLVM/Clang/MLIR "
+      "${MDSLC_REQUIRED_TOOLCHAIN_VERSION} packages; found "
       "LLVM ${LLVM_PACKAGE_VERSION} and MLIR ${MLIR_VERSION}")
   endif()
   foreach(MDSLC_REQUIRED_MLIR_TARGET IN ITEMS
@@ -144,7 +178,7 @@ if(MDSLC_ENABLE_MATCORE_MLIR)
       MLIRSideEffectInterfaces)
     if(NOT TARGET ${MDSLC_REQUIRED_MLIR_TARGET})
       message(FATAL_ERROR
-        "MLIR 21.1.8 package is missing required component target "
+        "MLIR ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} package is missing required component target "
         "${MDSLC_REQUIRED_MLIR_TARGET}")
     endif()
   endforeach()
@@ -156,11 +190,12 @@ if(MDSLC_ENABLE_MATCORE_MLIR)
 endif()
 
 if(MDSLC_ENABLE_NATIVE_FRONTEND)
-  find_package(LLVM 21.1.8 EXACT CONFIG REQUIRED)
-  find_package(Clang 21.1.8 EXACT CONFIG REQUIRED)
-  if(NOT LLVM_PACKAGE_VERSION VERSION_EQUAL "21.1.8")
+  find_package(LLVM ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} EXACT CONFIG REQUIRED)
+  find_package(Clang ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} EXACT CONFIG REQUIRED)
+  if(NOT LLVM_PACKAGE_VERSION VERSION_EQUAL MDSLC_REQUIRED_TOOLCHAIN_VERSION)
     message(FATAL_ERROR
-      "MDSLC native frontend requires the audited LLVM/Clang 21.1.8 tuple; "
+      "MDSLC native frontend requires the selected coherent LLVM/Clang "
+      "${MDSLC_REQUIRED_TOOLCHAIN_VERSION} tuple; "
       "found LLVM ${LLVM_PACKAGE_VERSION}")
   endif()
   if(WIN32 AND TARGET LLVMDebugInfoPDB)
@@ -195,7 +230,8 @@ if(MDSLC_ENABLE_NATIVE_FRONTEND)
         elseif(NOT EXISTS "${MDSLC_PDB_INTERFACE_LIBRARY}" OR
                IS_DIRECTORY "${MDSLC_PDB_INTERFACE_LIBRARY}")
           message(FATAL_ERROR
-            "LLVM 21.1.8 exports a missing build-host DIA SDK dependency "
+            "LLVM ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} exports a missing "
+            "build-host DIA SDK dependency "
             "(${MDSLC_PDB_INTERFACE_LIBRARY}). Set "
             "MDSLC_DIAGUIDS_LIBRARY to the coherent Visual Studio DIA SDK "
             "amd64 diaguids.lib used by this build.")
@@ -252,7 +288,8 @@ if(MDSLC_ENABLE_NATIVE_FRONTEND)
         clangBasic)
       if(NOT TARGET ${MDSLC_REQUIRED_CLANG_TARGET})
         message(FATAL_ERROR
-          "Clang 21 CMake package provides neither clang-cpp nor required "
+          "Clang ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} CMake package provides "
+          "neither clang-cpp nor required "
           "component target ${MDSLC_REQUIRED_CLANG_TARGET}")
       endif()
       list(APPEND MDSLC_CLANG_TOOLING_LIBRARIES
@@ -271,7 +308,8 @@ if(MDSLC_ENABLE_NATIVE_FRONTEND)
       clang/AST/Attr.h)
     if(NOT EXISTS "${CLANG_INCLUDE_DIRS}/${MDSLC_REQUIRED_CLANG_HEADER}")
       message(FATAL_ERROR
-        "Matching Clang 21 development header is required: ${MDSLC_REQUIRED_CLANG_HEADER}")
+        "Matching Clang ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} development "
+        "header is required: ${MDSLC_REQUIRED_CLANG_HEADER}")
     endif()
   endforeach()
   message(STATUS
@@ -312,10 +350,15 @@ if(MDSLC_ENABLE_NATIVE_FRONTEND)
     ERROR_VARIABLE MDSLC_CLANGXX_VERSION_ERROR
     OUTPUT_STRIP_TRAILING_WHITESPACE
   )
+  mdslc_extract_clang_version_token(
+    "${MDSLC_CLANGXX_VERSION_OUTPUT}\n${MDSLC_CLANGXX_VERSION_ERROR}"
+    MDSLC_CLANGXX_REPORTED_VERSION)
   if(NOT MDSLC_CLANGXX_VERSION_STATUS EQUAL 0 OR
-     NOT MDSLC_CLANGXX_VERSION_OUTPUT MATCHES "clang version 21\\.1\\.8")
+     NOT "${MDSLC_CLANGXX_REPORTED_VERSION}" STREQUAL
+       "${MDSLC_REQUIRED_TOOLCHAIN_VERSION}")
     message(FATAL_ERROR
-      "Native frontend requires a Clang 21.1.8 driver coherent with the linked "
+      "Native frontend requires a Clang ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} "
+      "driver coherent with the linked "
       "LLVM/Clang packages; ${MDSLC_CLANGXX_EXECUTABLE} reported: "
       "${MDSLC_CLANGXX_VERSION_OUTPUT}${MDSLC_CLANGXX_VERSION_ERROR}")
   endif()
@@ -384,6 +427,28 @@ target_link_libraries(mdslc_driver PRIVATE MatcoreDSL::PlatformSupportV1)
 add_dependencies(mdslc_driver matcore-extract matcore_runtime)
 
 set_property(TARGET matcore-extract PROPERTY EXPORT_NAME Extractor)
+
+# The exact-22 lane deliberately keeps LLVM/Clang external.  Its installed
+# extractor records the authenticated imported clang-cpp directory as an
+# experimental-only loader search path and checks the loaded DSO at startup.
+# No LLVM artifact is copied into the MatcoreDSL package.
+if(NOT WIN32 AND MDSLC_EXPERIMENTAL_TOOLCHAIN_ACTIVE)
+  if(NOT TARGET clang-cpp)
+    message(FATAL_ERROR
+      "The non-Windows experimental toolchain requires the imported "
+      "clang-cpp shared runtime target")
+  endif()
+  get_target_property(MDSLC_EXPERIMENTAL_CLANG_CPP_TYPE clang-cpp TYPE)
+  if(NOT MDSLC_EXPERIMENTAL_CLANG_CPP_TYPE STREQUAL "SHARED_LIBRARY")
+    message(FATAL_ERROR
+      "The non-Windows experimental toolchain requires a shared clang-cpp "
+      "runtime; found ${MDSLC_EXPERIMENTAL_CLANG_CPP_TYPE}")
+  endif()
+  set_property(TARGET matcore-extract PROPERTY INSTALL_RPATH
+    "$<TARGET_FILE_DIR:clang-cpp>")
+  target_compile_definitions(matcore-extract PRIVATE
+    "MDSLC_EXPECTED_CLANG_CPP_RUNTIME=\"$<TARGET_FILE:clang-cpp>\"")
+endif()
 
 install(
   TARGETS mdslc_driver matcore-extract matcore_runtime matcore-plan
@@ -457,6 +522,12 @@ if(WIN32)
 endif()
 
 if(BUILD_TESTING)
+  add_test(
+    NAME toolchain.version_token.contract
+    COMMAND "${CMAKE_COMMAND}"
+      -DMDSLC_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/toolchain_version_contract.cmake"
+  )
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
     if(MDSLC_ENABLE_NATIVE_FRONTEND AND MDSLC_ENABLE_BOOTSTRAP_FRONTEND)
@@ -466,6 +537,7 @@ if(BUILD_TESTING)
           "${Python3_EXECUTABLE}"
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/run_native_frontend_tests.py"
           --extractor "$<TARGET_FILE:matcore-extract>"
+          --expected-toolchain-version "${MDSLC_REQUIRED_TOOLCHAIN_VERSION}"
       )
       set_tests_properties(
         frontend.native.focused
@@ -478,6 +550,7 @@ if(BUILD_TESTING)
           "${Python3_EXECUTABLE}"
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/run_frontend_tests.py"
           --extractor "$<TARGET_FILE:matcore-extract>"
+          --clang "${MDSLC_CLANGXX_EXECUTABLE}"
       )
       set_tests_properties(
         frontend.native.primary
@@ -766,6 +839,11 @@ if(BUILD_TESTING)
         list(APPEND MDSLC_SOURCE_INACCESSIBLE_MLIR_ARGUMENTS
           --mlir-dir "${MLIR_DIR}")
       endif()
+      set(MDSLC_SOURCE_INACCESSIBLE_RUNTIME_ARGUMENTS)
+      if(NOT WIN32 AND MDSLC_EXPERIMENTAL_TOOLCHAIN_ACTIVE)
+        list(APPEND MDSLC_SOURCE_INACCESSIBLE_RUNTIME_ARGUMENTS
+          --expected-clang-runtime "$<TARGET_FILE:clang-cpp>")
+      endif()
       add_test(
         NAME package.installed_source_inaccessible
         COMMAND
@@ -786,7 +864,10 @@ if(BUILD_TESTING)
           --clang-dir "${Clang_DIR}"
           --matcore-mlir-available "${MDSLC_MATCORE_MLIR_AVAILABLE}"
           --default-semantic-pipeline "${MDSLC_DEFAULT_SEMANTIC_PIPELINE}"
+          --experimental-toolchain-version
+            "${MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION}"
           ${MDSLC_SOURCE_INACCESSIBLE_MLIR_ARGUMENTS}
+          ${MDSLC_SOURCE_INACCESSIBLE_RUNTIME_ARGUMENTS}
       )
       set_tests_properties(
         package.installed_source_inaccessible

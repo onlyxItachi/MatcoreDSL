@@ -748,7 +748,13 @@ def main() -> int:
     llvm_nm = require_file(llvm_root / "bin" / "llvm-nm.exe")
 
     clang_version = run([str(clang_cl), "--version"]).stdout
-    if f"clang version {arguments.expected_clang_version}" not in clang_version:
+    clang_version_match = re.search(
+        r"clang version ([^\s(]+)", clang_version
+    )
+    if (
+        clang_version_match is None
+        or clang_version_match.group(1) != arguments.expected_clang_version
+    ):
         raise RuntimeError(f"unexpected clang-cl version:\n{clang_version}")
 
     expected = {

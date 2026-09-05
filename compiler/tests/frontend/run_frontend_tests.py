@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -94,6 +95,7 @@ def generation_command(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--extractor", type=Path, required=True)
+    parser.add_argument("--clang", type=Path, default=Path("/usr/bin/clang++-21"))
     arguments = parser.parse_args()
 
     repository = Path(__file__).resolve().parents[3]
@@ -328,7 +330,7 @@ def main() -> int:
             "  *) printf '\\n// concurrent edit\\n' >> "
             "\"$MDSLC_RACE_SOURCE\" ;;\n"
             "esac\n"
-            "exec /usr/bin/clang++-21 \"$@\"\n",
+            f"exec {shlex.quote(str(arguments.clang))} \"$@\"\n",
             encoding="utf-8",
         )
         changing_compiler.chmod(0o755)
@@ -466,7 +468,7 @@ def main() -> int:
                 object_path = generated_dir / f"same.{kind}.o"
                 compiled = subprocess.run(
                     [
-                        "/usr/bin/clang++-21",
+                        str(arguments.clang),
                         "-std=c++20",
                         f"-I{repository / 'compiler/include'}",
                         f"-I{generated_dir}",
@@ -490,7 +492,7 @@ def main() -> int:
                 combined_object = generated_dir / "same.o"
                 combined = subprocess.run(
                     [
-                        "/usr/bin/clang++-21",
+                        str(arguments.clang),
                         "-r",
                         *(str(path) for path in objects),
                         "-o",
@@ -512,7 +514,7 @@ def main() -> int:
         if len(multi_tu_objects) == 2:
             linked = subprocess.run(
                 [
-                    "/usr/bin/clang++-21",
+                    str(arguments.clang),
                     "-r",
                     *(str(path) for path in multi_tu_objects),
                     "-o",
@@ -604,7 +606,7 @@ def main() -> int:
                 object_path = generated_dir / f"same.{kind}.o"
                 compiled = subprocess.run(
                     [
-                        "/usr/bin/clang++-21",
+                        str(arguments.clang),
                         "-std=c++20",
                         f"-I{repository / 'compiler/include'}",
                         f"-I{source_dir}",
@@ -629,7 +631,7 @@ def main() -> int:
                 combined_object = generated_dir / "same.o"
                 combined = subprocess.run(
                     [
-                        "/usr/bin/clang++-21",
+                        str(arguments.clang),
                         "-r",
                         *(str(path) for path in objects),
                         "-o",
@@ -675,7 +677,7 @@ def main() -> int:
         if len(collision_objects) == 2:
             linked = subprocess.run(
                 [
-                    "/usr/bin/clang++-21",
+                    str(arguments.clang),
                     "-r",
                     *(str(path) for path in collision_objects),
                     "-o",
@@ -721,7 +723,7 @@ def main() -> int:
             for kind in ("host", "stubs", "backend"):
                 object_path = output_root / f"gemm_capture.{kind}.o"
                 compile_command = [
-                    "/usr/bin/clang++-21",
+                    str(arguments.clang),
                     "-std=c++20",
                     "-Wall",
                     "-Wextra",
@@ -751,7 +753,7 @@ def main() -> int:
             if len(objects) == 3:
                 combined = subprocess.run(
                     [
-                        "/usr/bin/clang++-21",
+                        str(arguments.clang),
                         "-r",
                         *(str(path) for path in objects),
                         "-o",

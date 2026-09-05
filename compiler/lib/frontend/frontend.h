@@ -168,6 +168,12 @@ std::unique_ptr<Frontend> createClangAstJsonBootstrapFrontend();
 // operation declarations and source ranges through LibTooling APIs.
 std::unique_ptr<Frontend> createClangLibToolingFrontend();
 
+// Internal startup attestation for the Clang implementation actually loaded
+// into matcore-extract. The path query is available on Linux shared-runtime
+// builds and fails closed when the loaded clang-cpp DSO is ambiguous.
+std::string nativeClangRuntimeVersionV1();
+std::optional<std::string> nativeClangRuntimeLibraryPathV1(std::string &error);
+
 // Shared naming contract used by every frontend producer.
 std::string stableSourceIdentity(const std::string &canonical_input);
 std::string stableCompilationIdentity(const Options &options);

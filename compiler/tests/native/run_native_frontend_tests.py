@@ -37,6 +37,7 @@ def command(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--extractor", type=Path, required=True)
+    parser.add_argument("--expected-toolchain-version", default="21.1.8")
     arguments = parser.parse_args()
     extractor = arguments.extractor.resolve()
     repository = Path(__file__).resolve().parents[3]
@@ -153,9 +154,53 @@ def main() -> int:
         )
         if (
             wrong_compiler.returncode == 0
-            or "coherent Clang 21.1.8" not in wrong_compiler.stderr
+            or f"coherent Clang {arguments.expected_toolchain_version}"
+            not in wrong_compiler.stderr
         ):
             failures.append("native mode did not reject a mismatched --clang executable")
+
+        for forgery_name, forged_version in (
+            ("suffix", f"{arguments.expected_toolchain_version}0"),
+            ("prefix", f"1{arguments.expected_toolchain_version}"),
+        ):
+            forged_compiler = output_root / f"clang++-near-{forgery_name}"
+            forged_compiler.write_text(
+                "#!/bin/sh\n"
+                f"printf 'clang version {forged_version} "
+                f"(deliberate {forgery_name} forgery)\\n'\n",
+                encoding="utf-8",
+            )
+            forged_compiler.chmod(0o755)
+            forged_output = output_root / f"near-{forgery_name}.json"
+            forged_result = subprocess.run(
+                [
+                    str(extractor),
+                    "--frontend=native",
+                    "--clang",
+                    str(forged_compiler),
+                    "--input",
+                    source.as_posix(),
+                    "--ir-out",
+                    str(forged_output),
+                    "--",
+                    "-std=c++20",
+                    source.as_posix(),
+                ],
+                cwd=repository,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if (
+                forged_result.returncode == 0
+                or f"coherent Clang {arguments.expected_toolchain_version}"
+                not in forged_result.stderr
+                or forged_output.exists()
+            ):
+                failures.append(
+                    "native mode admitted a near-version "
+                    f"{forgery_name} forgery:\n{forged_result.stderr}"
+                )
 
         wrong_placeholder = subprocess.run(
             [
@@ -177,7 +222,8 @@ def main() -> int:
         )
         if (
             wrong_placeholder.returncode == 0
-            or "coherent Clang 21.1.8" not in wrong_placeholder.stderr
+            or f"coherent Clang {arguments.expected_toolchain_version}"
+            not in wrong_placeholder.stderr
         ):
             failures.append(
                 "native mode did not reject a mismatched compiler placeholder"
@@ -187,7 +233,7 @@ def main() -> int:
         for failure in failures:
             print(f"FAIL: {failure}", file=sys.stderr)
         return 1
-    print("native frontend focused tests: 16 checks passed")
+    print("native frontend focused tests: 18 checks passed")
     return 0
 
 
