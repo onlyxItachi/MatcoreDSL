@@ -1,5 +1,9 @@
 # Authenticated ordered two-GEMM region admission v1
 
+Successor: [per-call guard/obligation ledger](REGION_GUARD_LEDGER_V1.md) refines
+the six guard groups described in this historical checkpoint without changing
+region admission or execution authority.
+
 Date: 2026-09-05. Canonical starting checkpoint:
 `5f455bacde0959983b2b888f15fd5dabd4b1ceaa` (PR #28).
 
