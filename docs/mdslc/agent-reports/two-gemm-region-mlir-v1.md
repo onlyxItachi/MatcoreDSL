@@ -112,3 +112,36 @@ Buffer allocation/copy ownership and exceptional provider behavior remain
 unconsumed execution obligations. The next step requires an explicitly reviewed
 storage/failure implementation boundary; deeper buffer-looking IR alone cannot
 authorize execution.
+
+## Sanitizer dependency-boundary correction
+
+Hosted ASan+UBSan subsequently exposed four existing MLIR tests failing during
+builtin context initialization, before Matcore's dialect loaded. The address
+was a user-poisoned byte 176 bytes into a live allocator slab, not freed storage.
+Independent header/symbol inspection and two small reproducers identified a
+mixed allocator protocol: singleton registration instantiated an instrumented
+weak LLVM `AllocateSlow`, but the prebuilt MLIR library retained its uninstrumented
+inline fast allocation path. A fresh slab was poisoned without subsequent
+fast-path allocations being unpoisoned.
+
+The LLVM-only reproducer fails even without calling its registration function;
+link-time selection of the template body is sufficient. A real upstream MLIR
+context plus one custom singleton reproduces the same pre-dialect failure.
+Compiling only that registration translation unit without ASan, retaining UBSan
+and the fully ASan-instrumented client, makes both reproducers pass.
+
+Commit `577283c877ef1e3c5ce5c31ddee4747427d0484f` isolates the production
+`addTypes` call into `MatcoreRegionTypeRegistration.cpp`. The integration owner's
+source-only build option matches the selected non-ASan prebuilt dependency
+protocol. All parsers, semantic operations, builders, verifiers and tests retain
+ASan; this shim contains no semantic or execution logic. A future coherently
+instrumented MLIR dependency must revisit this explicit package assumption.
+
+Durable fixtures and exact commands live in
+`compiler/tests/sanitizer/README.md`. Local actual-MLIR controls pass **4/4**:
+expected mixed failure, compatible success, and retained heap-overflow and
+manual-poison detection. The checker changes only diagnostic symbolization,
+not sanitizer checking/poisoning policy. An independent lane additionally
+confirmed that ordinary heap use-after-free remains detected. Full repository
+sanitizer and hosted rerun outcomes belong to the integration record and are
+not inferred from these controls.
