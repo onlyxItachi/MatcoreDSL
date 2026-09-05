@@ -249,8 +249,9 @@ void testUpstreamStorageControls() {
             all<mlir::memref::CopyOp>(*buffer_module).size() == 1 &&
             all<mlir::memref::DeallocOp>(*buffer_module).empty(),
         "materialization exposes allocation/copy and unresolved ownership, not zero-copy");
-  auto copy = all<mlir::memref::CopyOp>(*buffer_module).front();
-  check(copy.getTarget() == all<mlir::func::FuncOp>(*buffer_module).front().getArgument(1),
+  auto copies = all<mlir::memref::CopyOp>(*buffer_module);
+  check(copies.size() == 1 && copies.front().getTarget() ==
+                                 all<mlir::func::FuncOp>(*buffer_module).front().getArgument(1),
         "materialization copies into the required original output");
   std::string error;
   check(!bridge::verifyTwoGemmRegionModuleV1(*buffer_module, error),
