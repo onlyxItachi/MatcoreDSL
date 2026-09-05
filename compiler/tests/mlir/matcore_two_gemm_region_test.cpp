@@ -41,8 +41,9 @@ template <typename T> llvm::SmallVector<T> all(mlir::ModuleOp module) {
 }
 bool capture(frontend::Result &result) {
   frontend::Options options;
-  auto path = std::filesystem::path(MDSLC_REGION_TEST_FRONTEND_DIR).parent_path() /
-              "mlir/two_gemm_region_source.mdsl";
+  auto path = std::filesystem::path(MDSLC_REGION_TEST_PUBLIC_HEADER)
+                  .parent_path().parent_path().parent_path() /
+              "tests/mlir/two_gemm_region_source.mdsl";
   options.input_path = path.string();
   options.clang_path = MDSLC_REGION_TEST_CLANG;
   options.clang_resource_directory = MDSLC_REGION_TEST_RESOURCE_DIR;
@@ -200,9 +201,9 @@ void testRegion(frontend::Result &source) {
   check(!matcore::mdslc::mlir_lowering::lowerExplicitGemmToCpuRuntimeDispatchV1(module, records, error) && records.empty(),
         "CPU runtime lowerer rejects inspection region");
   mlir::OwningOpRef<mlir::ModuleOp> forged = module.clone();
-  forged->removeAttr("mdsl.analysis_only");
-  forged->removeAttr("mdsl.execution_authority");
-  forged->setAttr("mdsl.producer", mlir::StringAttr::get(&context, "clang-libtooling-v1"));
+  (*forged)->removeAttr("mdsl.analysis_only");
+  (*forged)->removeAttr("mdsl.execution_authority");
+  (*forged)->setAttr("mdsl.producer", mlir::StringAttr::get(&context, "clang-libtooling-v1"));
   check(!matcore::mdslc::mlir_lowering::lowerExplicitGemmToCpuRuntimeDispatchV1(*forged, records, error) && records.empty(),
         "forged labels cannot make region executable");
 }

@@ -461,13 +461,13 @@ TwoGemmRegionResultV1 deriveAuthenticatedTwoGemmRegionsV1(
     return result;
   mlir::Builder b(&context);
   result.module = mlir::ModuleOp::create(b.getUnknownLoc());
-  result.module->setAttr("mdsl.analysis_only", b.getBoolAttr(true));
-  result.module->setAttr("mdsl.execution_authority", b.getStringAttr("inspection_only"));
-  result.module->setAttr("mdsl.two_gemm_region_version", b.getI32IntegerAttr(1));
-  result.module->setAttr("mdsl.capture_identity", b.getStringAttr(identity));
-  result.module->setAttr("mdsl.failure_obligations", b.getStringAttr(kFailure));
-  result.module->setAttr("mdsl.alias_facts", b.getStringAttr("distinct_descriptors_may_alias"));
-  result.module->setAttr("mdsl.guard_status", b.getStringAttr("conditional_success_no_runtime_facts_discharged"));
+  (*result.module)->setAttr("mdsl.analysis_only", b.getBoolAttr(true));
+  (*result.module)->setAttr("mdsl.execution_authority", b.getStringAttr("inspection_only"));
+  (*result.module)->setAttr("mdsl.two_gemm_region_version", b.getI32IntegerAttr(1));
+  (*result.module)->setAttr("mdsl.capture_identity", b.getStringAttr(identity));
+  (*result.module)->setAttr("mdsl.failure_obligations", b.getStringAttr(kFailure));
+  (*result.module)->setAttr("mdsl.alias_facts", b.getStringAttr("distinct_descriptors_may_alias"));
+  (*result.module)->setAttr("mdsl.guard_status", b.getStringAttr("conditional_success_no_runtime_facts_discharged"));
   for (const auto &region : regions)
     appendRegion(*result.module, region);
   if (!verifyTwoGemmRegionMatchesNativeEvidenceV1(evidence, *result.module, result.error))
