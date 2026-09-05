@@ -145,3 +145,10 @@ not sanitizer checking/poisoning policy. An independent lane additionally
 confirmed that ordinary heap use-after-free remains detected. Full repository
 sanitizer and hosted rerun outcomes belong to the integration record and are
 not inferred from these controls.
+
+An independent harness review identified that Python `assert` statements could
+be removed by optimized Python. The control now uses explicit runtime checks.
+With `PYTHONOPTIMIZE=1`, the actual-MLIR fixture still passes **4/4** (exit 0);
+adding caller policy `ASAN_OPTIONS=allow_user_poisoning=0` makes it fail (exit 1),
+as required. The harness does not reset that caller policy or print a success
+banner after the failed control.
