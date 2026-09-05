@@ -48,6 +48,7 @@ constexpr const char *parameters =
     "md::matrix_view &E, const md::matrix_view &D";
 constexpr const char *first = "md::gemm(md::out(C), A, B);\n";
 constexpr const char *second = "md::gemm(md::out(E), C, D);\n";
+constexpr const char *second_rhs = "md::gemm(md::out(E), D, C);\n";
 
 std::string function(const std::string &body) {
   return std::string(prefix) + "void run(" + parameters + ") {\n" + body + "}\n";
@@ -170,6 +171,10 @@ int main(int argc, char **argv) {
       const auto result = extract(name, function(std::string(first) + barrier + second));
       require(admitted(result) == 0 && reason(result, "intervening host statement"),
               std::string(name) + ": host barrier was crossed without an actionable rejection");
+      const auto rhs_result = extract(std::string(name) + "_rhs",
+                                     function(std::string(first) + barrier + second_rhs));
+      require(admitted(rhs_result) == 0 && reason(rhs_result, "intervening host statement"),
+              std::string(name) + ": RHS dependence crossed a host barrier");
     }
     for (const auto &[name, body] : {
              std::pair{"conditional", std::string("if (C.rows) {\n") + first + second + "}\n"},
@@ -183,9 +188,95 @@ int main(int argc, char **argv) {
     const auto separate = extract("functions", std::string(prefix) + "void one(" + parameters +
         ") {" + first + "}\nvoid two(" + parameters + ") {" + second + "}\n");
     require(admitted(separate) == 0 && reason(separate, "control and scope"), "cross-function pair admitted");
-    const auto rhs = extract("rhs_dependence", function(std::string(first) +
-        "md::gemm(md::out(E), D, C);\n"));
-    require(admitted(rhs) == 0 && reason(rhs, "second GEMM lhs"), "unsupported RHS dependence admitted");
+    auto rhs = extract("rhs_dependence", function(std::string(first) + second_rhs));
+    require(admitted(rhs) == 1, "direct RHS dependence was not admitted");
+    const auto &rhs_pair = rhs.two_gemm_regions.front();
+    require(rhs_pair.sites[0].bindings[0].descriptor_id ==
+                rhs_pair.sites[1].bindings[2].descriptor_id &&
+                rhs_pair.sites[0].bindings[0].descriptor_id !=
+                rhs_pair.sites[1].bindings[1].descriptor_id &&
+                rhs_pair.sites[1].bindings[1].source_expression == "D" &&
+                rhs_pair.sites[1].bindings[2].source_expression == "C" &&
+                rhs_pair.sites[1].bindings[2].snapshot_stage == 1,
+            "RHS dependence changed operand order or descriptor snapshot identity");
+    const auto rhs_seal = *rhs.native_evidence;
+    std::swap(rhs.two_gemm_regions.front().sites[1].bindings[1],
+              rhs.two_gemm_regions.front().sites[1].bindings[2]);
+    require(EvidenceAccess::result(rhs_seal).two_gemm_regions.front().sites[1]
+                .bindings[2].source_expression == "C",
+            "mutable result swapped a sealed RHS dependency into the lhs position");
+
+    const auto rhs_aliases = extract("rhs_references", function(
+        std::string("auto &output_alias = C; auto &alias = output_alias;\n") +
+        "md::gemm(md::out(output_alias), A, B);\n"
+        "md::gemm(md::out(E), D, alias);\n"));
+    require(admitted(rhs_aliases) == 1, "transparent RHS reference chain rejected");
+    const auto &rhs_alias_pair = rhs_aliases.two_gemm_regions.front();
+    require(rhs_alias_pair.sites[0].bindings[0].descriptor_id ==
+                rhs_alias_pair.sites[1].bindings[2].descriptor_id &&
+                rhs_alias_pair.sites[0].bindings[0].declaration_id !=
+                rhs_alias_pair.sites[1].bindings[2].declaration_id &&
+                rhs_alias_pair.sites[1].bindings[2].declaration_id !=
+                rhs_alias_pair.sites[1].bindings[2].descriptor_id,
+            "RHS reference use declarations and resolved descriptor root conflated");
+    require(admitted(extract("rhs_qualified", std::string(prefix) +
+        "namespace input { md::matrix_view A, B; }\n"
+        "namespace output { md::matrix_view A, E; }\n"
+        "void run() { md::gemm(md::out(output::A), input::A, input::B);\n"
+        "md::gemm(md::out(output::E), input::B, output::A); }\n")) == 1,
+        "qualified RHS binding was confused with a same-spelled input declaration");
+    const auto rhs_same_spelling = extract("rhs_same_spelling_not_dependency", std::string(prefix) +
+        "namespace input { md::matrix_view C, A, B; }\n"
+        "namespace output { md::matrix_view C, E; }\n"
+        "void run() { md::gemm(md::out(output::C), input::A, input::B);\n"
+        "md::gemm(md::out(output::E), input::B, input::C); }\n");
+    require(admitted(rhs_same_spelling) == 0 && reason(rhs_same_spelling, "input descriptor (lhs or rhs)"),
+            "same-spelled RHS declaration manufactured a dependency on another scope's output");
+    require(admitted(extract("rhs_try_body", function(
+        std::string("try {\n") + first + second_rhs + "} catch (...) {}\n"))) == 1,
+        "RHS pair in a direct try body rejected");
+
+    const auto both_inputs = extract("both_inputs_depend", function(std::string(first) +
+        "md::gemm(md::out(E), C, C);\n"));
+    require(admitted(both_inputs) == 1, "existing C*C admission was narrowed to exclusive dependence");
+    const auto &both_pair = both_inputs.two_gemm_regions.front();
+    require(both_pair.sites[0].bindings[0].descriptor_id ==
+                both_pair.sites[1].bindings[1].descriptor_id &&
+                both_pair.sites[0].bindings[0].descriptor_id ==
+                both_pair.sites[1].bindings[2].descriptor_id,
+            "C*C lost one of its two ordered operand bindings");
+
+    for (const auto &[name, body] : {
+             std::pair{"independent", std::string(first) + "md::gemm(md::out(E), D, A);\n"},
+             std::pair{"copied_descriptor", std::string("auto copy = C;\n") + first +
+                       "md::gemm(md::out(E), D, copy);\n"}}) {
+      const auto result = extract(name, function(body));
+      require(admitted(result) == 0 && reason(result, "input descriptor (lhs or rhs)"),
+              std::string(name) + ": no proven descriptor dependence nevertheless admitted");
+    }
+    const auto repeated_output = extract("rhs_repeated_output", function(
+        std::string("auto &output_alias = C;\n") + first +
+        "md::gemm(md::out(output_alias), D, C);\n"));
+    require(admitted(repeated_output) == 0 && reason(repeated_output, "distinct descriptor bindings"),
+            "RHS dependence bypassed distinct output bindings");
+    for (const auto &[name, body] : {
+             std::pair{"rhs_output_own_lhs", std::string("auto &input_alias = E;\n") + first +
+                       "md::gemm(md::out(E), input_alias, C);\n"},
+             std::pair{"rhs_first_output_own_input", std::string("auto &input_alias = C;\n") +
+                       "md::gemm(md::out(C), input_alias, B);\n" + second_rhs}}) {
+      const auto result = extract(name, function(body));
+      require(admitted(result) == 0 && reason(result, "own input descriptor"),
+              std::string(name) + ": RHS dependence bypassed proven output/input alias rejection");
+    }
+    for (const auto &[name, initialization] : {
+             std::pair{"rhs_reference_call", "md::matrix_view &choose(md::matrix_view &); auto &alias = choose(C);\n"},
+             std::pair{"rhs_reference_cast", "auto &alias = static_cast<md::matrix_view &>(C);\n"},
+             std::pair{"rhs_static_reference", "static auto &alias = C;\n"}}) {
+      const auto result = extract(name, function(std::string(initialization) + first +
+          "md::gemm(md::out(E), D, alias);\n"));
+      require(admitted(result) == 0 && reason(result, "transparent local reference"),
+              std::string(name) + ": an unsupported RHS reference origin acquired descriptor identity");
+    }
     const auto reference_call = extract("reference_call", std::string(prefix) +
         "md::matrix_view &choose(md::matrix_view &);\nvoid run(" + parameters + ") {\n"
         "auto &alias = choose(C);\n" + first + "md::gemm(md::out(E), alias, D);\n}\n");
