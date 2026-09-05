@@ -100,3 +100,33 @@ Independent read-only review found no C++ validity or FP restoration blocker.
 Its precision suggestions were incorporated: the canary assertion claims only
 unchanged elements (the no-read property comes from the audited plan API), and
 report snapshots use `memcpy` to avoid aggregate-padding copy assumptions.
+
+## Final immutable cross-lane review
+
+Reviewed integration `11f99037a1a5e431e526fda1bb17bc78016898ac` against canonical
+`c01e3851158fe87f3ace4fd5031d432ebcc483a4`, read-only and without a build.
+Verdict: no source/runtime classification or authority blocker found.
+
+The exact per-call catalog retains seven representation-only entries, eighteen
+runtime-validation requirements, six unproved caller obligations, and five
+dispatch/execution obligations. Source designation does not become physical
+storage proof; output/input overlap requirements do not prohibit input/input
+aliasing. The source-required alignment remains a pending runtime requirement.
+The closed vocabulary cannot claim execution or discharge, and native paired
+verification binds the ledger to the sealed contracts and descriptor snapshots.
+Standalone consistency alone is deliberately insufficient authentication.
+
+The new CLI null-second-input and second-output-overlap cases exercise both
+established per-call execution routes: the first write must remain observable
+while pre-execution rejection of the second call leaves its output unchanged.
+The runtime oracle CMake target uses only the existing Runtime and PlatformV1
+targets; it does not require MLIR or the native frontend. Physical FTZ mutation
+is guarded for Linux x86-64, with an explicit skip elsewhere; this review does
+not claim execution on another platform.
+
+Remaining limitations are intentional: ledger row order is not first-failure
+evaluation order; capacity, lifetime, access permission and concurrency remain
+caller obligations; plan success proves neither FP compatibility nor provider
+readiness; provider failure may follow an output write. No runtime predicate is
+executed or consumed by the inspection ledger. Fresh integrated and regression
+results were still pending with the integration owner at this review checkpoint.
