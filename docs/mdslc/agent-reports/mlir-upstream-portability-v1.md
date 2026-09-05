@@ -3,8 +3,10 @@
 ## Scope and checkpoint
 
 - Canonical campaign base: `327530d287e41c4115365598e76b17e149a1c45a`.
-- Compatibility implementation validated below:
-  `831774146a1e6552d3dd88cbdf5d8ed681daeebe`.
+- Final reviewed compatibility head:
+  `370fa09ade1e886f4469f80037d7fe7df4c05a67`.
+- Canonical PR #22 merge:
+  `8ba5861affe3b70e375b6e18eae46530b556dde9`.
 - Branch: `mdslc/mlir-upstream-portability-v1`.
 - Product truth remains the exact LLVM/Clang/MLIR `21.1.8` tuple. The new
   `MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION=22.1.8` switch is an advanced,
@@ -123,17 +125,16 @@ release promise.
 
 ## Validation
 
-At clean implementation commit `831774146a1e6552d3dd88cbdf5d8ed681daeebe`:
+At final reviewed head `370fa09ade1e886f4469f80037d7fe7df4c05a67`:
 
 - LLVM/Clang/MLIR 22.1.8, Release, MLIR on, native plus bootstrap frontends,
-  default `capture-v0`, OpenBLAS off: build passed; CTest `65/65` passed in
-  `80.95 s`. The final source-inaccessible test performed a fresh clean clone,
-  build, install, relocation, dynamic-dependency identity check, producer-tree
-  removal, and consumer build/run.
+  default `capture-v0`, OpenBLAS off: build passed; CTest `67/67` passed. The
+  final source-inaccessible test performed a fresh clean clone, build, install,
+  relocation, dynamic-dependency identity check, producer-tree removal, and
+  consumer build/run.
 - Audited LLVM/Clang/MLIR 21.1.8, Release, MLIR on, native plus bootstrap
   frontends, default `matcore-mlir`, OpenBLAS 0.3.32 required: build passed;
-  CTest `65/65` passed in `105.68 s`, including its own clean
-  source-inaccessible rebuild.
+  CTest `67/67` passed, including its own clean source-inaccessible rebuild.
 - The exact-22 matrix includes native/frontend adversarial tests, exact
   structured-GEMM verification, explicit GEMM CPU execution, runtime/planner,
   installed consumer and source-inaccessible relocation, C ABI, package,
@@ -150,6 +151,8 @@ At clean implementation commit `831774146a1e6552d3dd88cbdf5d8ed681daeebe`:
   authentication with exit 2.
 - `git diff --check` and Python bytecode compilation of the changed harnesses
   passed.
+- Independent review was GO, and the reviewed head passed all 19 hosted checks
+  before normal integration through PR #22.
 
 ## Unresolved evidence
 
@@ -160,8 +163,10 @@ At clean implementation commit `831774146a1e6552d3dd88cbdf5d8ed681daeebe`:
 - No 22.1.8 Debug or sanitizer matrix was run.
 - OpenBLAS-enabled behavior was covered on product 21.1.8, not on the 22.1.8
   compatibility build.
-- The bufferization and vector experiment branches were not composed with this
-  branch at this checkpoint.
+- Certified bufferization was subsequently composed with both exact tuples and
+  integrated through PR #26. The separate vector-readiness proof remains
+  deliberately exact-21-only and rejects combination with this exact-22
+  selector. Neither result turns 22.1.8 into product support.
 - No performance, Native BLAS parity, zero-copy, GPU, NPU, or target-support
   conclusion follows from this control.
 - Newer upstream deprecations should be addressed only when they block an
@@ -170,9 +175,7 @@ At clean implementation commit `831774146a1e6552d3dd88cbdf5d8ed681daeebe`:
 
 ## Disposition
 
-The hardened compatibility implementation is a candidate for canonical
-integration after independent review and hosted checks of its new head. The
-previous hosted head was green, but these loader-binding corrections are only
-locally validated at this checkpoint. Keep 21.1.8 as product truth. Use 22.1.8
-only as an explicitly selected, exact compatibility lane until a separate
-migration decision establishes broader platform evidence.
+The hardened compatibility implementation is canonical internal infrastructure
+through PR #22. Keep 21.1.8 as product truth. Use 22.1.8 only as an explicitly
+selected, exact compatibility lane until a separate migration decision
+establishes broader platform evidence.
