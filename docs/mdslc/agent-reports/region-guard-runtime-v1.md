@@ -83,8 +83,15 @@ The new source passed:
 git diff --check
 ```
 
-Linked execution and regression results are the integration owner's next
-validation step; syntax success is not recorded as a runtime test pass. The
-test requires C++20 and links existing `MatcoreDSL::Runtime` and
+The integration owner also performed a narrow linked check with Clang 21,
+`-O2 -DNDEBUG -Wall -Wextra -Wpedantic -Werror`, using the existing prior-region
+Release/OpenBLAS-off runtime/platform artifacts at `187e`. Before running it,
+the owner verified that those runtime/platform source trees have no diff to
+canonical `63d642d`. The new oracle reported **219 checks, zero failures; no
+GEMM executed**. This is a linked oracle result against unchanged existing
+runtime/platform code, not a fresh integrated-CMake or full regression result.
+
+Fresh integration and regression results remain the integration owner's next
+validation step. The test requires C++20 and links existing `MatcoreDSL::Runtime` and
 `MatcoreDSL::PlatformV1` targets. It requires no MLIR dependency and no new
 production dependency.
