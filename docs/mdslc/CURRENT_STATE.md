@@ -1,7 +1,7 @@
 # MDSLC current state
 
 Engineering checkpoint: canonical merge
-`63d642d9e4eb4183acf58a4391e1c668e734b9f0`, [PR #29](https://github.com/onlyxItachi/MatcoreDSL/pull/29).
+`8a825350ae8e3f24e55bc8d050375a0b2c0da3dd`, [PR #31](https://github.com/onlyxItachi/MatcoreDSL/pull/31).
 This identifies the latest engineering merge; documentation-only updates may follow.
 
 ## Architecture
@@ -14,7 +14,7 @@ Ordinary valid C++ with explicit Matcore mathematical intent
       -> inspection-only structured / buffer / vector specimens
   -> bounded two-GEMM region inspection from sealed declaration bindings
       -> descriptor identity separate from tensor values and physical aliasing
-      -> ordered guards, real Linalg computation, observable commits
+      -> source-bound obligation ledger, ordered Linalg computation/commits
       -> source-paired mechanical verification; no execution authority
 Matcore owns semantic legality, provenance and observable ordering.
 MLIR owns structured transformation machinery; LLVM/backends own machine lowering.
@@ -23,26 +23,28 @@ Legacy Python/JIT remains a separate compatibility surface.
 
 ## Material change
 
-Two adjacent dependent authenticated GEMMs now preserve their actual value
-dependency, storage bindings and ordered failure/write frontiers. Adversarial
-checks reject semantic/authority forgery and survive admitted upstream rewrites.
-An isolated type-registration shim reconciles the prebuilt allocator's sanitizer
-protocol without disabling semantic checks. Details: [region checkpoint](TWO_GEMM_REGION_V1.md),
-[independent review](agent-reports/two-gemm-region-adversarial-v1.md).
+Each call now distinguishes source representation, pending runtime predicates,
+unproven caller storage preconditions and retained dispatch/completion duties.
+Source-paired checks reject false discharge and cross-call ledger reuse. Malformed
+integer metadata fails closed. Release and Debug: 74/74 each; ASan/UBSan: 24/24;
+hosted checks: 19/19. Details: [ledger checkpoint](REGION_GUARD_LEDGER_V1.md),
+[independent review](agent-reports/region-guard-adversarial-v1.md).
 
 ## Unsupported or unproven
 
-Region guards are retained obligations, not discharged runtime predicates.
+Region guards remain obligations, not executed or discharged runtime predicates.
 No region execution, fusion or tiling; no generated runtime replacement, GPU/NPU,
-expanded semantic tensor/view frontend or API/ABI freeze. Pointer range checks do not prove backing capacity or
-lifetime. Recovered C++ recognition grants no execution authority. Native BLAS
+expanded semantic tensor/view frontend or API/ABI freeze. A valid byte range or
+successful plan proves neither backing capacity/lifetime nor full execution
+legality. Provider failure may follow writes. Recovered C++ recognition grants
+no execution authority. Native BLAS
 parity ([#15](https://github.com/onlyxItachi/MatcoreDSL/issues/15)) remains partial;
 tensor/view types ([#20](https://github.com/onlyxItachi/MatcoreDSL/issues/20)) remain design-only.
 
 ## Exactly one next boundary
 
-An inspection-only per-call guard/discharge ledger for this same region:
-distinguish source-proven representation facts, still-required runtime predicates
-and unproven caller obligations, using existing validation as the oracle. This
-follows because the region preserves ordered guard groups but does not yet
-mechanically classify their individual proof obligations.
+Mirrored RHS-only region admission: `C=A*B; E=D*C`. Existing sealed bindings and
+role-specific obligations can support this symmetry without changing execution.
+Preserve existing `E=C*C` as forwarded lhs plus late rhs read; prove operand
+order, asymmetric shapes, late aliases and failure ordering. No new dual carried
+edges, general DAGs or deeper lowering follows automatically.
