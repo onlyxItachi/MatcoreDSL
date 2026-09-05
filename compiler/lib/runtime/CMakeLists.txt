@@ -376,6 +376,21 @@ if(BUILD_TESTING)
     COMMAND matcore_cpu_runtime_validation_test
   )
 
+  # These are nonexecuting descriptor/planner and FP predicate oracles for the
+  # inspection-only region ledger. In particular a successful plan does not
+  # authenticate backing capacity, a provider, or executable region authority.
+  add_executable(matcore_region_guard_oracle_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/region_guard_oracle_test.cpp"
+  )
+  target_compile_features(matcore_region_guard_oracle_test PRIVATE cxx_std_20)
+  mdslc_target_enable_warnings(matcore_region_guard_oracle_test WERROR)
+  target_link_libraries(matcore_region_guard_oracle_test
+    PRIVATE MatcoreDSL::Runtime MatcoreDSL::PlatformV1
+  )
+  add_test(NAME runtime.c_abi.region_guard_oracles_v1
+    COMMAND matcore_region_guard_oracle_test
+  )
+
   add_executable(matcore_public_context_c_api_test
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/public_context_c_api_test.cpp"
   )

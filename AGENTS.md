@@ -44,6 +44,10 @@ in `context.md`.
   barriers. This route must never enter the v1-to-v0 execution projection,
   discharge runtime predicates by assertion, or acquire execution authority
   from serialized attributes. See `docs/mdslc/TWO_GEMM_REGION_V1.md`.
+  Its per-call guard ledger distinguishes representation intent, required
+  runtime predicates, unproven caller storage preconditions and retained
+  dispatch/completion obligations. Neither serialized evidence nor a successful
+  plan discharges runtime legality. See `docs/mdslc/REGION_GUARD_LEDGER_V1.md`.
 - Preserve semantic information until the final optimization that can use it.
   Matcore semantic operations describe WHAT. Legality, planning, structured
   upstream dialects, scheduling, and library/generated-code selection describe

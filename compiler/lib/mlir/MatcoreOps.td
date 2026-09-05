@@ -126,7 +126,7 @@ def Matcore_RegionGuardOp : Matcore_Op<"region_guard", [
   let arguments = (ins AnyType:$order, AnyType:$lhs, AnyType:$rhs,
                        AnyType:$output, I64Attr:$stage,
                        DictionaryAttr:$semantic_contract,
-                       ArrayAttr:$required_guards);
+                       DictionaryAttr:$guard_ledger);
   let results = (outs AnyType:$checked);
   let hasVerifier = 1;
 }

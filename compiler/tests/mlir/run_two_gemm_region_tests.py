@@ -112,10 +112,21 @@ def main() -> int:
         require("linalg.matmul" in first, "region must contain real structured computation")
         require("bufferization.to_tensor" not in first,
                 "descriptor bindings may not become unjustified restricted imports")
+        require(first.count("guard_ledger =") == 2,
+                "each admitted call must expose its own bound obligation ledger")
+        for classification in ("representation_only", "runtime_validation_required",
+                               "caller_precondition_unproven",
+                               "dispatch_execution_obligation_retained"):
+            require(classification in first,
+                    f"inspection lost the evidence class {classification}")
+        require("backing_capacity_sufficient" in first and
+                "provider_state_and_synchronous_completion" in first and
+                "execution_and_return" in first,
+                "inspection must retain caller capacity and post-execution obligations")
         ok(run(command(positive, output), temporary), "repeat region admission")
         require(output.read_text(encoding="utf-8") == first,
                 "same sealed source must derive deterministic region text")
-        checks += 7
+        checks += 10
 
         cases = {
             "dependent": (positive, True),
@@ -129,6 +140,10 @@ def main() -> int:
                 extra_setup="md::matrix_view &Cref = C;", first_output="Cref")), True),
             "second_failure": (source("second_failure", program(
                 d_rows=2, expected_e=-9, expect_failure=True)), True),
+            "second_null_pointer": (source("second_null_pointer", program(
+                d_pointer="nullptr", expected_e=-9, expect_failure=True)), True),
+            "second_output_overlap": (source("second_output_overlap", program(
+                extra_setup="E.data = c;", expected_e=-9, expect_failure=True)), True),
             "observer": (source("observer", program(
                 between='std::printf("observed:%g\\n", c[0]);')), False),
             "descriptor_mutation": (source("descriptor_mutation", program(
@@ -153,7 +168,8 @@ def main() -> int:
                    name + " compile " + pipeline)
                 result = run([str(executable)], temporary)
                 ok(result, name + " execution " + pipeline)
-                if name == "second_failure":
+                if name in ("second_failure", "second_null_pointer",
+                            "second_output_overlap"):
                     require("C=6 E=-9 failed=1" in result.stdout,
                             "second failure must preserve the first successful write")
                 if name == "observer":

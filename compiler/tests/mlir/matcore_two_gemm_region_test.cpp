@@ -2,6 +2,7 @@
 #include "MatcoreBufferizedGemmHandoff.h"
 #include "MatcoreCpuRuntimeLowering.h"
 #include "MatcoreOps.h"
+#include "MatcoreRegionGuardLedger.h"
 #include "MatcoreV1Bridge.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/Transforms/Bufferize.h"
@@ -90,6 +91,17 @@ void changeFirstSite(mlir::ModuleOp module, llvm::StringRef key,
   updated.front() = field(b, mlir::cast<mlir::DictionaryAttr>(updated.front()), key, value);
   function->setAttr("mdsl.region", field(b, region, "sites", b.getArrayAttr(updated)));
 }
+void changeFirstBinding(mlir::ModuleOp module, llvm::StringRef key,
+                        mlir::Attribute value) {
+  mlir::Builder b(module.getContext());
+  auto function = all<mlir::func::FuncOp>(module).front();
+  auto region = function->getAttrOfType<mlir::DictionaryAttr>("mdsl.region");
+  auto site = mlir::cast<mlir::DictionaryAttr>(region.getAs<mlir::ArrayAttr>("sites")[0]);
+  auto bindings = site.getAs<mlir::ArrayAttr>("bindings");
+  llvm::SmallVector<mlir::Attribute> updated(bindings.begin(), bindings.end());
+  updated.front() = field(b, mlir::cast<mlir::DictionaryAttr>(updated.front()), key, value);
+  changeFirstSite(module, "bindings", b.getArrayAttr(updated));
+}
 bool optimize(mlir::ModuleOp module, bool generalize) {
   mlir::PassManager passes(module.getContext());
   if (generalize)
@@ -98,6 +110,234 @@ bool optimize(mlir::ModuleOp module, bool generalize) {
   passes.addPass(mlir::createCSEPass());
   passes.addPass(mlir::createSymbolDCEPass());
   return mlir::succeeded(passes.run(module));
+}
+void changeLedgerRow(mlir::ModuleOp module, llvm::StringRef predicate,
+                     const std::function<mlir::DictionaryAttr(mlir::Builder &,
+                                                             mlir::DictionaryAttr)> &mutate) {
+  mlir::Builder b(module.getContext());
+  auto guard = all<dialect::RegionGuardOp>(module).front();
+  auto ledger = guard.getGuardLedger();
+  auto entries = ledger.getAs<mlir::ArrayAttr>("entries");
+  llvm::SmallVector<mlir::Attribute> changed(entries.begin(), entries.end());
+  bool found = false;
+  for (auto &entry : changed) {
+    auto row = mlir::cast<mlir::DictionaryAttr>(entry);
+    if (row.getAs<mlir::StringAttr>("predicate").getValue() == predicate) {
+      entry = mutate(b, row);
+      found = true;
+      break;
+    }
+  }
+  check(found, "ledger mutation targets an existing predicate");
+  guard.setGuardLedgerAttr(field(b, ledger, "entries", b.getArrayAttr(changed)));
+}
+void testGuardLedger(mlir::ModuleOp module,
+                     const frontend::AuthenticatedNativeFrontendEvidenceV1 &seal) {
+  using P = bridge::RegionGuardPredicateV1;
+  using E = bridge::RegionGuardEvidenceV1;
+  using F = bridge::RegionGuardFrontierV1;
+  using V = matcore::mdslc::ir::v1::ValueId;
+  auto guards = all<dialect::RegionGuardOp>(module);
+  for (auto guard : guards) {
+    bridge::RegionGuardLedgerV1 ledger;
+    std::string error;
+    check(bridge::decodeRegionGuardLedgerV1(guard.getGuardLedger(), ledger, error),
+          "closed typed guard ledger decodes: " + error);
+    std::array<unsigned, 4> classes{};
+    unsigned overlaps = 0, post_execution = 0;
+    for (const auto &entry : ledger.entries) {
+      ++classes[static_cast<unsigned>(entry.evidence)];
+      if (entry.predicate == P::PointerAlignmentRequired)
+        check(entry.alignment_bytes == 4 && entry.evidence == E::RuntimeValidationRequired,
+              "f32 alignment remains a required minimum, not source-proved pointer alignment");
+      if (entry.predicate == P::OutputInputNoOverlap) {
+        ++overlaps;
+        check(entry.subjects.size() == 2 && entry.subjects[0] == V::Output,
+              "overlap requirements involve output only; A/B alias remains legal");
+      }
+      if (entry.frontier == F::ExecutionAndReturn) {
+        ++post_execution;
+        check(entry.evidence == E::DispatchExecutionObligationRetained,
+              "post-write provider/completion obligations are not pre-compute proofs");
+      }
+    }
+    check(classes == std::array<unsigned, 4>{7, 18, 6, 5},
+          "all representation/runtime/caller/dispatch obligations are present");
+    check(overlaps == 2 && post_execution == 2,
+          "both role-specific overlap and both post-execution obligations are retained");
+    check(ledger.stage == guard.getStage() &&
+              ledger.site_id == guard.getSemanticContract().getAs<mlir::StringAttr>("site_id").getValue(),
+          "ledger source identity is scoped to its original call");
+  }
+  bridge::RegionGuardLedgerV1 aliased;
+  std::string error;
+  check(bridge::decodeRegionGuardLedgerV1(guards[2].getGuardLedger(), aliased, error) &&
+            aliased.bindings[1] == aliased.bindings[2],
+        "equal A/B descriptors retain distinct operand-role obligations");
+  for (llvm::StringRef value : {"runtime_discharged", "guard_executed", "proven"})
+    reject(module, seal, [value](mlir::ModuleOp m) {
+      changeLedgerRow(m, "data_nonnull", [value](mlir::Builder &b, mlir::DictionaryAttr row) {
+        return field(b, row, "evidence", b.getStringAttr(value));
+      });
+    }, "editable ledger cannot invent execution/discharge evidence", true);
+  for (llvm::StringRef predicate : {"data_nonnull", "pointer_alignment_required",
+                                    "backing_host_accessible", "backing_capacity_sufficient",
+                                    "backing_lifetime_valid", "backing_access_permitted",
+                                    "descriptor_object_valid", "no_conflicting_concurrent_access",
+                                    "selected_implementation_eligible"})
+    reject(module, seal, [predicate](mlir::ModuleOp m) {
+      changeLedgerRow(m, predicate, [](mlir::Builder &b, mlir::DictionaryAttr row) {
+        return field(b, row, "evidence", b.getStringAttr("representation_only"));
+      });
+    }, "representation cannot discharge physical/caller/provider predicate " + predicate.str(), true);
+  for (bool duplicate : {false, true})
+    reject(module, seal, [duplicate](mlir::ModuleOp m) {
+      mlir::Builder b(m.getContext());
+      auto guard = all<dialect::RegionGuardOp>(m).front();
+      auto ledger = guard.getGuardLedger();
+      auto entries = ledger.getAs<mlir::ArrayAttr>("entries");
+      llvm::SmallVector<mlir::Attribute> changed(entries.begin(), entries.end());
+      if (duplicate)
+        changed.push_back(changed.front());
+      else
+        changed.erase(changed.begin());
+      guard.setGuardLedgerAttr(field(b, ledger, "entries", b.getArrayAttr(changed)));
+    }, duplicate ? "duplicate ledger obligation rejects" : "missing ledger obligation rejects", true);
+  reject(module, seal, [](mlir::ModuleOp m) {
+    changeLedgerRow(m, "data_nonnull", [](mlir::Builder &b, mlir::DictionaryAttr row) {
+      return field(b, row, "predicate", b.getStringAttr("unreviewed_predicate"));
+    });
+  }, "unknown predicates cannot extend the bounded ledger", true);
+  reject(module, seal, [](mlir::ModuleOp m) {
+    changeLedgerRow(m, "data_nonnull", [](mlir::Builder &b, mlir::DictionaryAttr row) {
+      return field(b, row, "executed", b.getBoolAttr(true));
+    });
+  }, "unknown row fields cannot smuggle proof banners", true);
+  reject(module, seal, [](mlir::ModuleOp m) {
+    mlir::Builder b(m.getContext());
+    auto guard = all<dialect::RegionGuardOp>(m).front();
+    guard.setGuardLedgerAttr(field(b, guard.getGuardLedger(), "executed", b.getBoolAttr(true)));
+  }, "unknown wrapper fields cannot smuggle proof banners", true);
+  reject(module, seal, [](mlir::ModuleOp m) {
+    auto guards = all<dialect::RegionGuardOp>(m);
+    guards[1].setGuardLedgerAttr(guards[0].getGuardLedger());
+  }, "second call cannot borrow first call's ledger scope", true);
+  for (llvm::StringRef key : {"site_id", "stage", "bindings"})
+    reject(module, seal, [key](mlir::ModuleOp m) {
+      mlir::Builder b(m.getContext());
+      auto guard = all<dialect::RegionGuardOp>(m).front();
+      auto ledger = guard.getGuardLedger();
+      mlir::Attribute changed = b.getStringAttr("another_source_site");
+      if (key == "stage")
+        changed = b.getI64IntegerAttr(1);
+      if (key == "bindings")
+        changed = field(b, ledger.getAs<mlir::DictionaryAttr>("bindings"),
+                        "lhs", b.getStringAttr("another_descriptor"));
+      guard.setGuardLedgerAttr(field(b, ledger, key, changed));
+    }, "ledger site/stage/descriptor bindings each independently pair with source", true);
+  reject(module, seal, [](mlir::ModuleOp m) {
+    changeLedgerRow(m, "pointer_alignment_required", [](mlir::Builder &b, mlir::DictionaryAttr row) {
+      return field(b, row, "alignment_bytes", b.getI64IntegerAttr(8));
+    });
+  }, "pointer alignment minimum must match source contract", true);
+  for (int malformed : {0, 1, 2, 3})
+    reject(module, seal, [malformed](mlir::ModuleOp m) {
+      changeLedgerRow(m, "pointer_alignment_required", [malformed](mlir::Builder &b, mlir::DictionaryAttr row) {
+        mlir::Attribute value = b.getI64IntegerAttr(malformed == 0 ? -4 : 3);
+        if (malformed == 2)
+          value = b.getI32IntegerAttr(4);
+        if (malformed == 3)
+          value = b.getIntegerAttr(b.getIntegerType(128), llvm::APInt::getOneBitSet(128, 100));
+        return field(b, row, "alignment_bytes", value);
+      });
+    }, "malformed alignment width/sign/power is rejected without narrowing", true);
+  for (llvm::StringRef key : {"argument", "snapshot_stage"})
+    for (int malformed : {0, 1, 2, 3})
+      reject(module, seal, [key, malformed](mlir::ModuleOp m) {
+        mlir::Builder b(m.getContext());
+        mlir::Attribute value = b.getI64IntegerAttr(-1);
+        if (malformed == 1)
+          value = b.getI32IntegerAttr(0);
+        if (malformed == 2)
+          value = b.getStringAttr("zero");
+        if (malformed == 3)
+          value = b.getIntegerAttr(b.getIntegerType(128), llvm::APInt::getOneBitSet(128, 100));
+        changeFirstBinding(m, key, value);
+      }, "malformed descriptor binding integer rejects before getInt", true);
+  for (llvm::StringRef key : {"frontier", "subjects"})
+    reject(module, seal, [key](mlir::ModuleOp m) {
+      changeLedgerRow(m, "data_nonnull", [key](mlir::Builder &b, mlir::DictionaryAttr row) {
+        mlir::Attribute value = key == "frontier"
+            ? mlir::Attribute(b.getStringAttr("already_executed"))
+            : mlir::Attribute(b.getStrArrayAttr({"other_operand"}));
+        return field(b, row, key, value);
+      });
+    }, "unknown frontier/operand role is outside the ledger vocabulary", true);
+  for (llvm::StringRef role : {"lhs", "rhs"})
+    reject(module, seal, [role](mlir::ModuleOp m) {
+      mlir::Builder b(m.getContext());
+      auto guard = all<dialect::RegionGuardOp>(m).front();
+      auto ledger = guard.getGuardLedger();
+      llvm::SmallVector<mlir::Attribute> changed;
+      unsigned removed = 0;
+      for (auto entry : ledger.getAs<mlir::ArrayAttr>("entries")) {
+        auto row = mlir::cast<mlir::DictionaryAttr>(entry);
+        if (row.getAs<mlir::StringAttr>("predicate").getValue() == "output_input_no_overlap" &&
+            row.getAs<mlir::ArrayAttr>("subjects")[1] == b.getStringAttr(role))
+          ++removed;
+        else
+          changed.push_back(entry);
+      }
+      check(removed == 1, "role-specific overlap adversary removes exactly its target");
+      guard.setGuardLedgerAttr(field(b, ledger, "entries", b.getArrayAttr(changed)));
+    }, "both output-versus-input roles require their own overlap obligation", true);
+  reject(module, seal, [](mlir::ModuleOp m) {
+    changeLedgerRow(m, "contraction_dimension_equal", [](mlir::Builder &b, mlir::DictionaryAttr row) {
+      return field(b, row, "predicate", b.getStringAttr("output_rows_equal"));
+    });
+  }, "K equality cannot be substituted by another dimension equation", true);
+  reject(module, seal, [](mlir::ModuleOp m) {
+    changeLedgerRow(m, "output_input_no_overlap", [](mlir::Builder &b, mlir::DictionaryAttr row) {
+      return field(b, row, "subjects", b.getStrArrayAttr({"lhs", "rhs"}));
+    });
+  }, "input-input noalias cannot replace output-input overlap obligation", true);
+  for (llvm::StringRef predicate : {"provider_state_and_synchronous_completion",
+                                    "may_write_before_failure_no_rollback"})
+    reject(module, seal, [predicate](mlir::ModuleOp m) {
+      changeLedgerRow(m, predicate, [](mlir::Builder &b, mlir::DictionaryAttr row) {
+        return field(b, row, "frontier", b.getStringAttr("call_validation_before_compute"));
+      });
+    }, "post-execution obligation is not an atomic pre-write validation", true);
+  for (bool wide : {false, true})
+    reject(module, seal, [wide](mlir::ModuleOp m) {
+      mlir::Builder b(m.getContext());
+      auto guard = all<dialect::RegionGuardOp>(m).front();
+      auto contract = guard.getSemanticContract();
+      auto output = contract.getAs<mlir::DictionaryAttr>("output_semantics");
+      mlir::Attribute value = wide
+          ? mlir::Attribute(b.getIntegerAttr(b.getIntegerType(128), llvm::APInt::getOneBitSet(128, 100)))
+          : mlir::Attribute(b.getI64IntegerAttr(-4));
+      contract = field(b, contract, "output_semantics", field(b, output, "alignment_bytes", value));
+      guard.setSemanticContractAttr(contract);
+      changeFirstSite(m, "source_contract", contract);
+    }, "malformed source alignment rejects before ledger derivation narrows it", true);
+  mlir::OwningOpRef<mlir::ModuleOp> coordinated = module.clone();
+  mlir::Builder b(module.getContext());
+  auto guard = all<dialect::RegionGuardOp>(*coordinated).front();
+  auto contract = guard.getSemanticContract();
+  contract = field(b, contract, "output_semantics", field(b,
+      contract.getAs<mlir::DictionaryAttr>("output_semantics"), "alignment_bytes", b.getI64IntegerAttr(8)));
+  guard.setSemanticContractAttr(contract);
+  changeFirstSite(*coordinated, "source_contract", contract);
+  auto region = all<mlir::func::FuncOp>(*coordinated).front()->getAttrOfType<mlir::DictionaryAttr>("mdsl.region");
+  auto site = mlir::cast<mlir::DictionaryAttr>(region.getAs<mlir::ArrayAttr>("sites")[0]);
+  auto ledger = bridge::buildRegionGuardLedgerV1(b, contract, site.getAs<mlir::ArrayAttr>("bindings"), 0, error);
+  check(static_cast<bool>(ledger), "changed declared requirement has a regenerated diagnostic ledger");
+  guard.setGuardLedgerAttr(ledger);
+  check(bridge::verifyTwoGemmRegionModuleV1(*coordinated, error),
+        "coordinated source contract and regenerated ledger can be self-consistent");
+  check(!bridge::verifyTwoGemmRegionMatchesNativeEvidenceV1(seal, *coordinated, error),
+        "coordinated source/ledger edits still cannot replace immutable native evidence");
 }
 void testRegion(frontend::Result &source) {
   check(source.native_evidence && source.native_evidence->valid(), "native source issued sealed region evidence");
@@ -121,6 +361,7 @@ void testRegion(frontend::Result &source) {
   check(!mlir::isMemoryEffectFree(commits[1]), "unused last tensor still has observable write");
   std::string error;
   check(bridge::verifyTwoGemmRegionMatchesNativeEvidenceV1(seal, module, error), "initial source pairing: " + error);
+  testGuardLedger(module, seal);
   mlir::MLIRContext parsed_context;
   bridge::registerTwoGemmRegionDialectsV1(parsed_context);
   auto parsed = mlir::parseSourceString<mlir::ModuleOp>(
@@ -193,7 +434,7 @@ void testRegion(frontend::Result &source) {
   }, "unused final tensor cannot eliminate externally observable write");
   reject(module, seal, [](mlir::ModuleOp m) {
     mlir::Builder b(m.getContext());
-    all<dialect::RegionGuardOp>(m).front().setRequiredGuardsAttr(b.getArrayAttr({}));
+    all<dialect::RegionGuardOp>(m).front().setGuardLedgerAttr(b.getDictionaryAttr({}));
   }, "empty guard banner cannot replace descriptor/alias/fenv/policy obligations");
   reject(module, seal, [](mlir::ModuleOp m) {
     mlir::Builder b(m.getContext());
