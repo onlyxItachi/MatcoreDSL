@@ -175,9 +175,10 @@ this proof.
 Product implementation checkpoint tested locally:
 `de204b5bc288fe90865284b30661aeffadd132d4`. The test-only follow-up
 `f8f15eb3fad50af81e07e2deecb25b024975c572` adds serialization round-trip in a
-fresh MLIR context and has identical production code. The subsequent commits
-record reviews and validation; reviewed pre-merge and normal-merge SHAs are
-preserved by Git history and the integration PR.
+fresh MLIR context and has identical production code. A subsequent hosted
+sanitizer failure required the narrowly reviewed registration integration fix
+described below. Reviewed heads and normal-merge provenance are preserved by
+Git history and [PR #29](https://github.com/onlyxItachi/MatcoreDSL/pull/29).
 
 | Validation | Exact observed result |
 | --- | --- |
@@ -186,8 +187,9 @@ preserved by Git history and the integration PR.
 | `mlir.semantic.two-gemm-region` | PASS: 83/83 at de204b5; 85/85 after fresh-context test-only follow-up, independently reproduced |
 | `integration.two_gemm_region` | PASS: 62 grouped test steps, 16 unchanged-route executable cases, both capture-v0 and Matcore MLIR CPU routes |
 | Full standalone Release CTest at de204b5 | PASS: 73/73, no skips, 201.33 seconds; includes ABI/runtime/planner, package/install/source isolation, frontend and prior structured/buffer/vector proofs |
+| Fresh Debug, OpenBLAS 0.3.32 required, same exact-21 tuple and vector-readiness tests, at 7845de0 | PASS: 73/73, no skips, 314.20 seconds |
 | Repository hygiene and `git diff --check` | PASS |
-| Expanded hosted ASan+UBSan selection inventory | Exactly 22 tests, including both new in-process tests; actual sanitizer execution is a separate CI gate |
+| Local ASan+UBSan after registration fix | PASS: 23/23, no skips, 5.14 seconds; all original 20 tests, both new in-process tests, allocator protocol controls |
 
 Hosted Debug, Release/OpenBLAS ON and OFF, no-MLIR, sanitizers, Windows and
 legacy/hygiene results belong to the exact-head integration PR checks. They
@@ -205,6 +207,35 @@ The corpus identity and limitations remain those in
 `CORPUS_REENTRY_RECONCILIATION_V1.md` and
 `CONTRACTION_CAMPAIGN_RECONCILIATION_V1.md`. No corpus observations become
 performance thresholds, new target support, or benchmark evidence here.
+
+### Hosted sanitizer counterexample and correction
+
+Initial head `7845de0` had 17/19 hosted checks pass; both ASan jobs failed four
+existing MLIR tests during builtin context initialization, before Matcore
+dialect loading. Both new tests passed. This was not accepted or merged.
+
+Independent LLVM-only and actual-MLIR reproductions established incompatible
+allocator instrumentation: newly instantiated ASan weak allocator slow paths
+poisoned slabs used by prebuilt MLIR's unsanitized inline fast paths. Valid
+later allocations were left poisoned. Local pre-fix `mlir.semantic.core` also
+failed; after the fix all four failing tests and both new tests passed (6/6,
+0.62 seconds), followed by the full selected 23-test sanitizer scope above.
+
+`MatcoreRegionTypeRegistration.cpp` contains only one upstream `addTypes` call.
+Only that shim is compiled without ASan to match the pinned prebuilt allocator
+protocol; UBSan is retained. Semantic operations, parsing, building, legality,
+source pairing, tests and runtime remain instrumented. No check was removed,
+no global poison suppression was enabled, and no system toolchain was changed.
+The real-MLIR mixed/matching allocator controls are retained under
+`compiler/tests/sanitizer/` and registered as a sanitizer-only CTest. They also
+prove that intentional heap overflow/manual poison still fail. Optimized Python
+cannot erase their checks, and disabling caller poisoning makes the harness
+fail, not report success. Symbolization alone was disabled locally to avoid
+network debug-info stalls.
+
+This does not claim instrumented internals of the prebuilt upstream libraries.
+A future fully sanitized upstream tuple must revisit this explicit integration
+boundary. Exact-head hosted checks remain the merge gate.
 
 ## Single next justified boundary
 
