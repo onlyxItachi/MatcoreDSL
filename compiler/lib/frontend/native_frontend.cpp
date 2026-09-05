@@ -1098,9 +1098,12 @@ private:
         // Attribute merging can attach a user attribute to an earlier Decl;
         // authenticate its own source location, not just the owning Decl.
         const auto location = attribute->getLocation();
-        if (location.isInvalid() || location.isMacroID() ||
+        if (location.isInvalid() ||
             !declarationIsTrusted(*redeclaration, manager, state_) ||
-            !isTrustedFile(manager.getFileEntryForID(manager.getFileID(location)), state_))
+            !isTrustedFile(manager.getFileEntryForID(
+                manager.getFileID(manager.getSpellingLoc(location))), state_) ||
+            !isTrustedFile(manager.getFileEntryForID(
+                manager.getFileID(manager.getExpansionLoc(location))), state_))
           return false;
       }
     }
