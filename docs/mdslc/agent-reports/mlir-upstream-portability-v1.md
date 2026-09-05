@@ -89,6 +89,16 @@ The archive reports commit
    near matches are rejected. `--help` and `--frontend-info` expose the
    experimental compatibility-only status rather than presenting it as
    product support.
+10. Composing the canonical contraction foundation exposed one genuine MLIR
+    22 difference: the standalone `linalg.matmul_transpose_a`,
+    `linalg.matmul_transpose_b`, and batched counterparts used by the MLIR 21
+    proof fixtures are no longer registered operations. MLIR 22 carries the
+    same transpose topology on `linalg.matmul` and `linalg.batch_matmul`
+    through explicit `indexing_maps`. The version-scoped proof fixtures now
+    use those upstream carriers and mechanically compare maps, iterator roles,
+    and operand ranks to the unchanged Matcore topology. The exact-21 named-op
+    controls remain intact. No Matcore semantic change or lowering shim was
+    introduced.
 
 ## Architectural implication
 
@@ -150,8 +160,8 @@ At clean implementation commit `831774146a1e6552d3dd88cbdf5d8ed681daeebe`:
 - No 22.1.8 Debug or sanitizer matrix was run.
 - OpenBLAS-enabled behavior was covered on product 21.1.8, not on the 22.1.8
   compatibility build.
-- The campaign's contraction, bufferization, and vector experiment branches
-  were not yet composed with this branch at this checkpoint.
+- The bufferization and vector experiment branches were not composed with this
+  branch at this checkpoint.
 - No performance, Native BLAS parity, zero-copy, GPU, NPU, or target-support
   conclusion follows from this control.
 - Newer upstream deprecations should be addressed only when they block an
