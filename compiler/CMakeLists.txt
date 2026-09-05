@@ -75,6 +75,12 @@ option(
   "Build the internal Matcore MLIR semantic dialect and inspection tool"
   OFF
 )
+option(
+  MDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS
+  "Build the opt-in inspection-only MLIR Transform/Vector readiness seam"
+  OFF
+)
+mark_as_advanced(MDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS)
 set(
   MDSLC_DEFAULT_SEMANTIC_PIPELINE
   "capture-v0"
@@ -95,6 +101,12 @@ if(MDSLC_DEFAULT_SEMANTIC_PIPELINE STREQUAL "matcore-mlir" AND
    NOT MDSLC_ENABLE_MATCORE_MLIR)
   message(FATAL_ERROR
     "MDSLC_DEFAULT_SEMANTIC_PIPELINE=matcore-mlir requires "
+    "MDSLC_ENABLE_MATCORE_MLIR=ON")
+endif()
+if(MDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS AND
+   NOT MDSLC_ENABLE_MATCORE_MLIR)
+  message(FATAL_ERROR
+    "MDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS=ON requires "
     "MDSLC_ENABLE_MATCORE_MLIR=ON")
 endif()
 set(MDSLC_MATCORE_MLIR_AVAILABLE "OFF")
@@ -130,6 +142,13 @@ if(NOT MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION STREQUAL "")
   message(WARNING
     "MDSLC experimental toolchain ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} is "
     "compatibility evidence only; canonical product support remains 21.1.8")
+endif()
+if(MDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS AND
+   MDSLC_EXPERIMENTAL_TOOLCHAIN_ACTIVE)
+  message(FATAL_ERROR
+    "MDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS is certified only for "
+    "the exact LLVM/Clang/MLIR 21.1.8 product tuple; the experimental "
+    "toolchain compatibility path is not admitted")
 endif()
 
 if(MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE AND NOT BUILD_TESTING)
@@ -167,7 +186,7 @@ if(MDSLC_ENABLE_MATCORE_MLIR)
       "${MDSLC_REQUIRED_TOOLCHAIN_VERSION} packages; found "
       "LLVM ${LLVM_PACKAGE_VERSION} and MLIR ${MLIR_VERSION}")
   endif()
-  foreach(MDSLC_REQUIRED_MLIR_TARGET IN ITEMS
+  set(MDSLC_REQUIRED_MLIR_TARGETS
       MLIRIR
       MLIRArithDialect
       MLIRBufferizationDialect
@@ -181,6 +200,16 @@ if(MDSLC_ENABLE_MATCORE_MLIR)
       MLIRTransforms
       MLIRDestinationStyleOpInterface
       MLIRSideEffectInterfaces)
+  if(MDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS)
+    list(APPEND MDSLC_REQUIRED_MLIR_TARGETS
+      MLIRLinalgTransformOps
+      MLIRTensorDialect
+      MLIRTransformDialect
+      MLIRTransformDialectTransforms
+      MLIRUBDialect
+      MLIRVectorDialect)
+  endif()
+  foreach(MDSLC_REQUIRED_MLIR_TARGET IN LISTS MDSLC_REQUIRED_MLIR_TARGETS)
     if(NOT TARGET ${MDSLC_REQUIRED_MLIR_TARGET})
       message(FATAL_ERROR
         "MLIR ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} package is missing required component target "

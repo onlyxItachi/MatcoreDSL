@@ -121,6 +121,45 @@ target_link_libraries(
 mdslc_target_enable_warnings(matcore_mlir_bufferized_handoff)
 mdslc_target_match_llvm_rtti(matcore_mlir_bufferized_handoff)
 
+if(MDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS)
+  # This is a downstream, inspection-only proof seam. The implementation runs
+  # an explicit upstream Transform dialect schedule against a verified
+  # structured handoff; it is not part of semantic WHAT, the core Matcore MLIR
+  # dependency baseline, or the executable runtime route.
+  add_library(
+    matcore_mlir_vector_readiness
+    STATIC
+      MatcoreStructuredGemmVectorReadiness.cpp
+  )
+  target_compile_features(matcore_mlir_vector_readiness PUBLIC cxx_std_20)
+  target_include_directories(
+    matcore_mlir_vector_readiness
+    PUBLIC
+      "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
+  )
+  target_include_directories(
+    matcore_mlir_vector_readiness
+    SYSTEM PRIVATE
+      "${LLVM_INCLUDE_DIRS}"
+      "${MLIR_INCLUDE_DIRS}"
+  )
+  target_link_libraries(
+    matcore_mlir_vector_readiness
+    PUBLIC
+      matcore_mlir_structured_handoff
+    PRIVATE
+      MLIRLinalgTransformOps
+      MLIRParser
+      MLIRTensorDialect
+      MLIRTransformDialect
+      MLIRTransformDialectTransforms
+      MLIRUBDialect
+      MLIRVectorDialect
+  )
+  mdslc_target_enable_warnings(matcore_mlir_vector_readiness)
+  mdslc_target_match_llvm_rtti(matcore_mlir_vector_readiness)
+endif()
+
 if(MDSLC_ENABLE_NATIVE_FRONTEND AND NOT WIN32)
   # Recovery analysis is kept in a separate internal library so the general
   # semantic dialect and explicit-v1 bridge never depend on Clang frontend
@@ -241,6 +280,35 @@ if(BUILD_TESTING)
   mdslc_target_enable_warnings(matcore_mlir_structured_gemm_handoff_tests)
   add_test(NAME mlir.structured.gemm-handoff-v1
     COMMAND matcore_mlir_structured_gemm_handoff_tests)
+
+  if(MDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS)
+    add_executable(
+      matcore_mlir_structured_gemm_vector_readiness_tests
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/mlir/matcore_structured_gemm_vector_readiness_test.cpp"
+    )
+    target_link_libraries(
+      matcore_mlir_structured_gemm_vector_readiness_tests
+      PRIVATE
+        matcore_mlir_vector_readiness
+        MLIRParser
+    )
+    target_include_directories(
+      matcore_mlir_structured_gemm_vector_readiness_tests
+      SYSTEM PRIVATE "${LLVM_INCLUDE_DIRS}" "${MLIR_INCLUDE_DIRS}"
+    )
+    target_compile_definitions(
+      matcore_mlir_structured_gemm_vector_readiness_tests
+      PRIVATE
+        MDSLC_MLIR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/mlir"
+        MDSLC_IR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/ir"
+    )
+    mdslc_target_enable_warnings(
+      matcore_mlir_structured_gemm_vector_readiness_tests)
+    mdslc_target_match_llvm_rtti(
+      matcore_mlir_structured_gemm_vector_readiness_tests)
+    add_test(NAME mlir.structured.gemm-vector-readiness-v1
+      COMMAND matcore_mlir_structured_gemm_vector_readiness_tests)
+  endif()
 
   add_executable(
     matcore_mlir_derived_handoff_certificate_tests
