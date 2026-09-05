@@ -22,6 +22,7 @@
 
 #include <array>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -39,6 +40,16 @@ std::string printed(mlir::Attribute value) {
 }
 bool same(mlir::Attribute a, mlir::Attribute b) {
   return a && b && printed(a) == printed(b);
+}
+template <typename T>
+std::optional<unsigned> forwardedInput(T output, T lhs, T rhs) {
+  // Preserve the existing C*C representation: carry the lhs and reload the
+  // rhs after the second guard. This is not both-input SSA forwarding.
+  if (output == lhs)
+    return 0;
+  if (output == rhs)
+    return 1;
+  return std::nullopt;
 }
 template <typename T>
 T build(mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange operands,
@@ -59,6 +70,7 @@ struct SourceRegion {
   mlir::Location location;
   std::string symbol;
   unsigned descriptor_count;
+  unsigned forwarded_input;
 };
 
 bool collectSource(const frontend::AuthenticatedNativeFrontendEvidenceV1 &seal,
@@ -95,15 +107,16 @@ bool collectSource(const frontend::AuthenticatedNativeFrontendEvidenceV1 &seal,
       continue;
     if (candidate.sites.size() != 2 || !candidate.rejection_reasons.empty() ||
         candidate.region_id.empty() || candidate.source_snapshot_sha256.empty() ||
-        candidate.sites[0].bindings[0].descriptor_id !=
-            candidate.sites[1].bindings[1].descriptor_id ||
+        !forwardedInput(candidate.sites[0].bindings[0].descriptor_id,
+                        candidate.sites[1].bindings[1].descriptor_id,
+                        candidate.sites[1].bindings[2].descriptor_id) ||
         candidate.sites[0].bindings[0].descriptor_id ==
             candidate.sites[1].bindings[0].descriptor_id) {
       error = "sealed two-GEMM region lacks the admitted producer/consumer relationship";
       return false;
     }
     SourceRegion region{{}, {}, {}, {}, {}, b.getUnknownLoc(),
-                        "__matcore_region_" + candidate.region_id, 0};
+                        "__matcore_region_" + candidate.region_id, 0, 0};
     llvm::StringMap<unsigned> descriptors;
     llvm::SmallVector<mlir::Attribute> descriptor_ids;
     llvm::SmallVector<mlir::Attribute> sites;
@@ -154,6 +167,8 @@ bool collectSource(const frontend::AuthenticatedNativeFrontendEvidenceV1 &seal,
           b.getNamedAttr("tensor_type", mlir::TypeAttr::get(region.types[stage]))}));
     }
     region.descriptor_count = descriptors.size();
+    region.forwarded_input = *forwardedInput(
+        region.bindings[0][0], region.bindings[1][1], region.bindings[1][2]);
     region.contract = b.getDictionaryAttr({
         b.getNamedAttr("region_id", b.getStringAttr(candidate.region_id)),
         b.getNamedAttr("function_identity", b.getStringAttr(candidate.function_identity)),
@@ -208,8 +223,10 @@ void appendRegion(mlir::ModuleOp module, const SourceRegion &source) {
           {b.getNamedAttr("stage", b.getI64IntegerAttr(stage)),
            b.getNamedAttr("role", b.getStringAttr(role))}).getValue();
     };
-    mlir::Value lhs = stage ? previous_value : read(lhs_desc, 0, "lhs");
-    mlir::Value rhs = read(rhs_desc, 1, "rhs");
+    mlir::Value lhs = stage && source.forwarded_input == 0
+                          ? previous_value : read(lhs_desc, 0, "lhs");
+    mlir::Value rhs = stage && source.forwarded_input == 1
+                          ? previous_value : read(rhs_desc, 1, "rhs");
     auto output_type = mlir::cast<mlir::RankedTensorType>(source.types[stage].getInput(2));
     llvm::SmallVector<mlir::Value> sizes;
     if (output_type.isDynamicDim(0))
@@ -358,6 +375,28 @@ bool verifyFunction(mlir::func::FuncOp function, std::string &error) {
   for (auto argument : function.getArguments())
     if (!mlir::isa<d::RegionDescriptorType>(argument.getType()))
       return fail(error, "region inputs must be source descriptor references");
+  std::array<std::array<mlir::Value, 3>, 2> arguments;
+  for (unsigned stage = 0; stage != 2; ++stage) {
+    auto site = mlir::dyn_cast<mlir::DictionaryAttr>(sites[stage]);
+    auto bindings = site ? site.getAs<mlir::ArrayAttr>("bindings") : mlir::ArrayAttr{};
+    if (!bindings || bindings.size() != 3)
+      return fail(error, "region source contract requires output/lhs/rhs bindings");
+    for (unsigned role = 0; role != 3; ++role) {
+      auto binding = mlir::dyn_cast<mlir::DictionaryAttr>(bindings[role]);
+      auto index = binding ? binding.getAs<mlir::IntegerAttr>("argument") : mlir::IntegerAttr{};
+      auto descriptor = binding ? binding.getAs<mlir::StringAttr>("descriptor") : mlir::StringAttr{};
+      auto snapshot = binding ? binding.getAs<mlir::IntegerAttr>("snapshot_stage") : mlir::IntegerAttr{};
+      if (!index || !index.getType().isSignlessInteger(64) || index.getInt() < 0 ||
+          index.getInt() >= function.getNumArguments() ||
+          !descriptor || descriptor != descriptors[index.getInt()] ||
+          !snapshot || !snapshot.getType().isSignlessInteger(64) || snapshot.getInt() != stage)
+        return fail(error, "region descriptor binding or snapshot stage changed");
+      arguments[stage][role] = function.getArgument(index.getInt());
+    }
+  }
+  auto forwarded = forwardedInput(arguments[0][0], arguments[1][1], arguments[1][2]);
+  if (!forwarded || arguments[0][0] == arguments[1][0])
+    return fail(error, "second GEMM must consume the first committed descriptor version");
   std::array<d::RegionGuardOp, 2> guard;
   std::array<d::RegionCommitOp, 2> commit;
   std::array<std::array<d::RegionReadOp, 2>, 2> reads;
@@ -385,7 +424,7 @@ bool verifyFunction(mlir::func::FuncOp function, std::string &error) {
       auto stage = value.getStage();
       unsigned role = value.getRole() == "lhs" ? 0 : 1;
       if (!guard[stage] || boundary != 2 + 2 * stage || reads[stage][role] ||
-          (stage == 1 && role == 0))
+          (stage == 1 && role == *forwarded))
         return fail(error, "input snapshots must follow their guard and previous commit");
       reads[stage][role] = value;
     } else if (auto value = mlir::dyn_cast<d::RegionEndOp>(op)) {
@@ -401,7 +440,7 @@ bool verifyFunction(mlir::func::FuncOp function, std::string &error) {
     }
   }
   if (!begin || !end || !guard[0] || !guard[1] || !commit[0] || !commit[1] ||
-      !reads[0][0] || !reads[0][1] || !reads[1][1] || boundary != 6)
+      !reads[0][0] || !reads[0][1] || !reads[1][1 - *forwarded] || boundary != 6)
     return fail(error, "region lost a required validation, input snapshot or observable commit");
   auto ret = mlir::dyn_cast<mlir::func::ReturnOp>(function.getBody().front().getTerminator());
   if (!ret || ret.getNumOperands() || guard[0].getOrder() != begin.getOrder() ||
@@ -421,37 +460,23 @@ bool verifyFunction(mlir::func::FuncOp function, std::string &error) {
                                   guard[stage].getSemanticContract(), bindings,
                                   stage, error))
       return false;
-    std::array<mlir::Value, 3> arguments;
-    for (unsigned role = 0; role != 3; ++role) {
-      auto binding = mlir::dyn_cast<mlir::DictionaryAttr>(bindings[role]);
-      auto index = binding ? binding.getAs<mlir::IntegerAttr>("argument") : mlir::IntegerAttr{};
-      auto descriptor = binding ? binding.getAs<mlir::StringAttr>("descriptor") : mlir::StringAttr{};
-      auto snapshot = binding ? binding.getAs<mlir::IntegerAttr>("snapshot_stage") : mlir::IntegerAttr{};
-      if (!index || !index.getType().isSignlessInteger(64) || index.getInt() < 0 ||
-          index.getInt() >= function.getNumArguments() ||
-          !descriptor || descriptor != descriptors[index.getInt()] ||
-          !snapshot || snapshot.getInt() != stage)
-        return fail(error, "region descriptor binding or snapshot stage changed");
-      arguments[role] = function.getArgument(index.getInt());
-    }
-    if (guard[stage].getOutput() != arguments[0] || guard[stage].getLhs() != arguments[1] ||
-        guard[stage].getRhs() != arguments[2] || commit[stage].getDescriptor() != arguments[0] ||
+    if (guard[stage].getOutput() != arguments[stage][0] || guard[stage].getLhs() != arguments[stage][1] ||
+        guard[stage].getRhs() != arguments[stage][2] || commit[stage].getDescriptor() != arguments[stage][0] ||
         commit[stage].getCommitted().getType() != type.getResult(0))
       return fail(error, "guard and commit do not refer to their original descriptor bindings");
     for (unsigned role = 0; role != 2; ++role) {
-      if (stage && !role)
+      if (stage && role == *forwarded)
         continue;
       auto read = reads[stage][role];
-      if (read.getDescriptor() != arguments[role + 1] ||
+      if (read.getDescriptor() != arguments[stage][role + 1] ||
           read.getChecked() != guard[stage].getChecked() ||
           read.getValue().getType() != type.getInput(role))
         return fail(error, "region input snapshot has stale guard or descriptor");
     }
-    auto lhs = stage ? commit[0].getCommitted() : reads[0][0].getValue();
-    auto rhs = reads[stage][1].getValue();
-    if (stage && (arguments[1] != commit[0].getDescriptor() ||
-                  arguments[0] == commit[0].getDescriptor()))
-      return fail(error, "second GEMM must consume the first committed descriptor version");
+    auto lhs = stage && *forwarded == 0 ? commit[0].getCommitted() : reads[stage][0].getValue();
+    auto rhs = stage && *forwarded == 1 ? commit[0].getCommitted() : reads[stage][1].getValue();
+    if (stage && commit[0].getCommitted().getType() != type.getInput(*forwarded))
+      return fail(error, "carried descriptor version must retain its declared input type");
     if (!computation(commit[stage], lhs, rhs, validated_computations, error))
       return false;
   }
