@@ -53,6 +53,7 @@ target_link_libraries(
     MLIRSideEffectInterfaces
 )
 mdslc_target_enable_warnings(matcore_mlir_semantics)
+mdslc_target_match_llvm_rtti(matcore_mlir_semantics)
 
 # The first structured projection is intentionally a separate internal layer:
 # semantic WHAT remains independent of Linalg/Arith transformation machinery.
@@ -84,6 +85,7 @@ target_link_libraries(
     MLIRLinalgDialect
 )
 mdslc_target_enable_warnings(matcore_mlir_structured_handoff)
+mdslc_target_match_llvm_rtti(matcore_mlir_structured_handoff)
 
 if(MDSLC_ENABLE_NATIVE_FRONTEND AND NOT WIN32)
   # Recovery analysis is kept in a separate internal library so the general
@@ -113,6 +115,7 @@ if(MDSLC_ENABLE_NATIVE_FRONTEND AND NOT WIN32)
       matcore_frontend_native
   )
   mdslc_target_enable_warnings(matcore_mlir_recovered_analysis)
+  mdslc_target_match_llvm_rtti(matcore_mlir_recovered_analysis)
 endif()
 
 if(BUILD_TESTING)

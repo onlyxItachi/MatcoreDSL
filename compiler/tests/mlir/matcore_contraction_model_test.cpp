@@ -12,6 +12,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Config/llvm-config.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
@@ -603,6 +604,29 @@ void testUpstreamNamedCarriers() {
       "linalg.dot", Operation::Dot, Orientation::Normal, Orientation::Normal,
       /*reorder_vecmat_operands=*/false, "DOT named carrier");
 
+#if LLVM_VERSION_MAJOR >= 22
+  verifyNamedCarrier(
+      R"mlir(module {
+  func.func @gemm_tn(%a: tensor<3x2xf32>, %b: tensor<3x4xf32>, %c: tensor<2x4xf32>) -> tensor<2x4xf32> {
+    %0 = linalg.matmul indexing_maps = [affine_map<(m, n, k) -> (k, m)>, affine_map<(m, n, k) -> (k, n)>, affine_map<(m, n, k) -> (m, n)>] ins(%a, %b : tensor<3x2xf32>, tensor<3x4xf32>) outs(%c : tensor<2x4xf32>) -> tensor<2x4xf32>
+    return %0 : tensor<2x4xf32>
+  }
+})mlir",
+      "linalg.matmul", Operation::Gemm, Orientation::Transpose,
+      Orientation::Normal, /*reorder_vecmat_operands=*/false,
+      "GEMM-TN indexed matmul carrier");
+
+  verifyNamedCarrier(
+      R"mlir(module {
+  func.func @gemm_nt(%a: tensor<2x3xf32>, %b: tensor<4x3xf32>, %c: tensor<2x4xf32>) -> tensor<2x4xf32> {
+    %0 = linalg.matmul indexing_maps = [affine_map<(m, n, k) -> (m, k)>, affine_map<(m, n, k) -> (n, k)>, affine_map<(m, n, k) -> (m, n)>] ins(%a, %b : tensor<2x3xf32>, tensor<4x3xf32>) outs(%c : tensor<2x4xf32>) -> tensor<2x4xf32>
+    return %0 : tensor<2x4xf32>
+  }
+})mlir",
+      "linalg.matmul", Operation::Gemm, Orientation::Normal,
+      Orientation::Transpose, /*reorder_vecmat_operands=*/false,
+      "GEMM-NT indexed matmul carrier");
+#else
   verifyNamedCarrier(
       R"mlir(module {
   func.func @gemm_tn(%a: tensor<3x2xf32>, %b: tensor<3x4xf32>, %c: tensor<2x4xf32>) -> tensor<2x4xf32> {
@@ -624,6 +648,7 @@ void testUpstreamNamedCarriers() {
       "linalg.matmul_transpose_b", Operation::Gemm, Orientation::Normal,
       Orientation::Transpose, /*reorder_vecmat_operands=*/false,
       "GEMM-NT named carrier");
+#endif
 
   verifyNamedCarrier(
       R"mlir(module {
@@ -636,6 +661,31 @@ void testUpstreamNamedCarriers() {
       Orientation::Normal, /*reorder_vecmat_operands=*/false,
       "batched GEMM-NN named carrier");
 
+#if LLVM_VERSION_MAJOR >= 22
+  verifyNamedCarrier(
+      R"mlir(module {
+  func.func @batch_tn(%a: tensor<5x3x2xf32>, %b: tensor<5x3x4xf32>, %c: tensor<5x2x4xf32>) -> tensor<5x2x4xf32> {
+    %0 = linalg.batch_matmul indexing_maps = [affine_map<(b, m, n, k) -> (b, k, m)>, affine_map<(b, m, n, k) -> (b, k, n)>, affine_map<(b, m, n, k) -> (b, m, n)>] ins(%a, %b : tensor<5x3x2xf32>, tensor<5x3x4xf32>) outs(%c : tensor<5x2x4xf32>) -> tensor<5x2x4xf32>
+    return %0 : tensor<5x2x4xf32>
+  }
+})mlir",
+      "linalg.batch_matmul", Operation::BatchedGemm, Orientation::Transpose,
+      Orientation::Normal,
+      /*reorder_vecmat_operands=*/false,
+      "batched GEMM-TN indexed matmul carrier");
+
+  verifyNamedCarrier(
+      R"mlir(module {
+  func.func @batch_nt(%a: tensor<5x2x3xf32>, %b: tensor<5x4x3xf32>, %c: tensor<5x2x4xf32>) -> tensor<5x2x4xf32> {
+    %0 = linalg.batch_matmul indexing_maps = [affine_map<(b, m, n, k) -> (b, m, k)>, affine_map<(b, m, n, k) -> (b, n, k)>, affine_map<(b, m, n, k) -> (b, m, n)>] ins(%a, %b : tensor<5x2x3xf32>, tensor<5x4x3xf32>) outs(%c : tensor<5x2x4xf32>) -> tensor<5x2x4xf32>
+    return %0 : tensor<5x2x4xf32>
+  }
+})mlir",
+      "linalg.batch_matmul", Operation::BatchedGemm, Orientation::Normal,
+      Orientation::Transpose,
+      /*reorder_vecmat_operands=*/false,
+      "batched GEMM-NT indexed matmul carrier");
+#else
   verifyNamedCarrier(
       R"mlir(module {
   func.func @batch_tn(%a: tensor<5x3x2xf32>, %b: tensor<5x3x4xf32>, %c: tensor<5x2x4xf32>) -> tensor<5x2x4xf32> {
@@ -645,8 +695,7 @@ void testUpstreamNamedCarriers() {
 })mlir",
       "linalg.batch_matmul_transpose_a", Operation::BatchedGemm,
       Orientation::Transpose, Orientation::Normal,
-      /*reorder_vecmat_operands=*/false,
-      "batched GEMM-TN named carrier");
+      /*reorder_vecmat_operands=*/false, "batched GEMM-TN named carrier");
 
   verifyNamedCarrier(
       R"mlir(module {
@@ -657,8 +706,8 @@ void testUpstreamNamedCarriers() {
 })mlir",
       "linalg.batch_matmul_transpose_b", Operation::BatchedGemm,
       Orientation::Normal, Orientation::Transpose,
-      /*reorder_vecmat_operands=*/false,
-      "batched GEMM-NT named carrier");
+      /*reorder_vecmat_operands=*/false, "batched GEMM-NT named carrier");
+#endif
 }
 
 } // namespace

@@ -41,6 +41,7 @@ if(MDSLC_ENABLE_NATIVE_FRONTEND)
     ${CLANG_INCLUDE_DIRS}
   )
   target_compile_definitions(matcore_frontend_native PRIVATE ${LLVM_DEFINITIONS})
+  mdslc_target_match_llvm_rtti(matcore_frontend_native)
   target_link_libraries(matcore_frontend_native
     PUBLIC matcore_frontend_common
     PRIVATE ${MDSLC_CLANG_TOOLING_LIBRARIES} MatcoreDSL::PlatformSupportV1

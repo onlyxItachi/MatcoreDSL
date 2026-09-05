@@ -841,11 +841,11 @@ std::optional<CompilerToolchain> DiscoverCompilerToolchain(
   const std::optional<support::ProcessResultV1> version = RunCapturedCommand(
       std::move(version_command), false, CompilerChildEnvironment());
   if (!version || version->exit_code != 0 ||
-      (version->stdout_text + version->stderr_text)
-              .find("clang version 21.1.8") == std::string::npos) {
-    std::cerr << "mdslc++: compiler must be the coherent Clang 21.1.8 "
-                 "driver: "
-              << *compiler << '\n';
+      !support::clang_version_matches_exact_v1(version->stdout_text + "\n" +
+                                                   version->stderr_text,
+                                               MDSLC_TOOLCHAIN_VERSION)) {
+    std::cerr << "mdslc++: compiler must be the coherent Clang "
+              << MDSLC_TOOLCHAIN_VERSION << " driver: " << *compiler << '\n';
     return std::nullopt;
   }
 
@@ -858,8 +858,8 @@ std::optional<CompilerToolchain> DiscoverCompilerToolchain(
       RunCapturedCommand(std::move(resource_command), false,
                          CompilerChildEnvironment());
   if (!resource_result || resource_result->exit_code != 0) {
-    std::cerr << "mdslc++: cannot query the coherent Clang 21.1.8 resource "
-                 "directory\n";
+    std::cerr << "mdslc++: cannot query the coherent Clang "
+              << MDSLC_TOOLCHAIN_VERSION << " resource directory\n";
     return std::nullopt;
   }
   std::string resource_text = resource_result->stdout_text;
@@ -893,8 +893,8 @@ std::optional<CompilerToolchain> DiscoverCompilerToolchain(
       relative_resource.is_absolute() ||
       *relative_resource.begin() == "..") {
     std::cerr << "mdslc++: Clang resource directory is outside the selected "
-                 "21.1.8 toolchain prefix: "
-              << resource_directory << '\n';
+              << MDSLC_TOOLCHAIN_VERSION
+              << " toolchain prefix: " << resource_directory << '\n';
     return std::nullopt;
   }
 
@@ -905,8 +905,9 @@ std::optional<CompilerToolchain> DiscoverCompilerToolchain(
         PathArgument(adjacent_archiver), error);
     if (!discovered) {
       std::cerr << "mdslc++: Windows compile-only output requires llvm-lib "
-                   "from the same LLVM 21.1.8 tool directory as clang-cl: "
-                << error << '\n';
+                   "from the same LLVM "
+                << MDSLC_TOOLCHAIN_VERSION
+                << " tool directory as clang-cl: " << error << '\n';
       return std::nullopt;
     }
     // llvm-lib intentionally has no --version interface.  Same-directory
@@ -921,9 +922,11 @@ std::optional<CompilerToolchain> DiscoverCompilerToolchain(
           RunCapturedCommand({PathArgument(*config), "--version"}, false,
                              CompilerChildEnvironment());
       if (!archive_version || archive_version->exit_code != 0 ||
-          archive_version->stdout_text.find("21.1.8") == std::string::npos) {
+          !support::trimmed_output_matches_exact_v1(
+              archive_version->stdout_text + archive_version->stderr_text,
+              MDSLC_TOOLCHAIN_VERSION)) {
         std::cerr << "mdslc++: llvm-lib tool directory does not match LLVM "
-                     "21.1.8\n";
+                  << MDSLC_TOOLCHAIN_VERSION << '\n';
         return std::nullopt;
       }
     }
