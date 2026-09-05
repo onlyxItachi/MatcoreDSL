@@ -64,10 +64,10 @@ does not satisfy the vector postcondition.
 The focused executable performs 285 checks. Its negative cases include
 malformed structured input; source mutation; source substitution; multi-site
 reorder/drop; aggregate and per-site fingerprint forgery; retained source type
-and shape drift; module/function/block-argument/generated-operation location
-drift; exact numerical-ledger drift; retained numerical-contract mutation;
-square type-compatible map substitution; initial-C read; nonzero accumulator;
-partial or masked transfer; result bypass; unauthorized attributes; authority
+and shape drift; function/block-argument/generated-operation location drift;
+exact numerical-ledger drift; retained numerical-contract mutation; square
+type-compatible map substitution; initial-C read; nonzero accumulator; loss of
+the full `in_bounds` proof; result bypass; unauthorized attributes; authority
 changes; and runtime-lowering attempts.
 
 Positive controls cover a non-square golden, cross-context round trips,
