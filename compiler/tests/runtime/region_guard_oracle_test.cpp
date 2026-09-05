@@ -89,7 +89,8 @@ void plan_case(std::string_view predicate, matcore_status_code_v0 expected,
   const auto c_before = fixture.c;
   mutation(fixture);
   auto report = empty_report();
-  const auto report_before = report;
+  std::array<unsigned char, sizeof(report)> report_before{};
+  std::memcpy(report_before.data(), &report, sizeof(report));
   // The real existing C ABI shares validate_gemm_v0 with one-shot execution.
   // It does not execute GEMM, probe OpenBLAS, or inspect the FP environment.
   const auto result = matcore_runtime_plan_gemm_f32_v1(
@@ -98,7 +99,7 @@ void plan_case(std::string_view predicate, matcore_status_code_v0 expected,
   expect(fixture.a == a_before && fixture.b == b_before && fixture.c == c_before,
          std::string(predicate) + ": planner preserves all tensor canaries");
   if (expected != MATCORE_STATUS_OK_V0)
-    expect(std::memcmp(&report, &report_before, sizeof(report)) == 0,
+    expect(std::memcmp(&report, report_before.data(), sizeof(report)) == 0,
            std::string(predicate) + ": failure preserves report");
 }
 
@@ -217,7 +218,7 @@ void capacity_remains_a_caller_obligation() {
              MATCORE_STATUS_OK_V0,
          "backing_capacity_sufficient remains unproved after successful plan");
   expect(a[0] == 2.0F && b[0] == 3.0F && c[0] == -17.0F,
-         "undersized capacity witness was inspected without tensor access");
+         "undersized capacity inspection left actual elements unchanged");
   // descriptor_object_valid, backing_host_accessible, backing_lifetime_valid,
   // backing_access_permitted and no_conflicting_concurrent_access likewise
   // remain caller obligations. Do not manufacture dangling or inaccessible

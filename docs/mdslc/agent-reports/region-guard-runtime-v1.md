@@ -95,3 +95,8 @@ Fresh integration and regression results remain the integration owner's next
 validation step. The test requires C++20 and links existing `MatcoreDSL::Runtime` and
 `MatcoreDSL::PlatformV1` targets. It requires no MLIR dependency and no new
 production dependency.
+
+Independent read-only review found no C++ validity or FP restoration blocker.
+Its precision suggestions were incorporated: the canary assertion claims only
+unchanged elements (the no-read property comes from the audited plan API), and
+report snapshots use `memcpy` to avoid aggregate-padding copy assumptions.
