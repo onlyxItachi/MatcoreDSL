@@ -6,6 +6,9 @@
 #include "../../lib/mlir/MatcoreStructuredGemmHandoff.h"
 #include "../../lib/mlir/MatcoreV1Bridge.h"
 #endif
+#if MDSLC_HAS_TWO_GEMM_REGION
+#include "../../lib/mlir/MatcoreTwoGemmRegion.h"
+#endif
 #include "platform_support.h"
 #include "mdslc_config.h"
 
@@ -51,6 +54,7 @@ struct CommandLine {
   std::string backend_output;
   std::string semantic_ir_output;
   std::string structured_ir_output;
+  std::string two_gemm_region_output;
   std::string verify_ir;
   std::string compiler_arguments_file;
   std::string recovered_gemm_report;
@@ -162,6 +166,7 @@ bool validateOutputPaths(const CommandLine &command) {
       {"--backend-out", command.backend_output},
       {"--semantic-ir-out", command.semantic_ir_output},
       {"--structured-ir-out", command.structured_ir_output},
+      {"--two-gemm-region-out", command.two_gemm_region_output},
       {"--inspect-recovered-gemm", command.recovered_gemm_report},
   };
   std::vector<std::pair<std::string_view, std::filesystem::path>> validated;
@@ -249,6 +254,9 @@ void usage(std::ostream &output) {
       << "  --structured-ir-out FILE\n"
          "                         write verified analysis-only structured "
          "GEMM MLIR\n"
+      << "  --two-gemm-region-out FILE\n"
+         "                         standalone native two-GEMM region inspection; "
+         "no --ir-out, rewrite, or execution pipeline\n"
       << "  --ir-version N        emit Matcore IR 0 (default) or typed IR 1\n"
       << "  --verify-ir FILE      verify serialized Matcore IR v0/v1 and exit\n"
       << "  --frontend-info       describe the built frontend modes\n"
@@ -482,6 +490,11 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
                      "--semantic-ir-out")) {
         return std::nullopt;
       }
+    } else if (argument == "--two-gemm-region-out") {
+      if (!takeValue(argc, argv, index, command.two_gemm_region_output,
+                     "--two-gemm-region-out")) {
+        return std::nullopt;
+      }
     } else if (argument == "--structured-ir-out") {
       if (!takeValue(argc, argv, index, command.structured_ir_output,
                      "--structured-ir-out")) {
@@ -616,6 +629,7 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
         !command.stubs_output.empty() || !command.backend_output.empty() ||
         !command.semantic_ir_output.empty() ||
         !command.structured_ir_output.empty() ||
+        !command.two_gemm_region_output.empty() ||
         !command.recovered_gemm_report.empty() ||
         !command.compiler_arguments_file.empty() ||
         !command.frontend.compiler_arguments.empty() ||
@@ -632,6 +646,30 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
     std::cerr << "matcore-extract: unsupported --frontend value: "
               << command.frontend_name << '\n';
     return std::nullopt;
+  }
+  if (!command.two_gemm_region_output.empty()) {
+    // A separate inspection request, never an executable semantic pipeline or
+    // a producer of rewritten source. In particular, this route does not send
+    // the richer source bindings back through the v1-to-v0 codegen adapter.
+    if (command.frontend_name != "native" ||
+        command.semantic_pipeline_was_explicit ||
+        command.ir_version_was_explicit || !command.ir_output.empty() ||
+        !command.recovered_gemm_report.empty() ||
+        !command.semantic_ir_output.empty() ||
+        !command.structured_ir_output.empty() ||
+        !command.rewrite_output.empty() || !command.sites_output.empty() ||
+        !command.stubs_output.empty() || !command.backend_output.empty()) {
+      std::cerr << "matcore-extract: --two-gemm-region-out requires native "
+                   "inspection alone; it cannot produce capture/rewrite/"
+                   "execution artifacts or select an executable pipeline\n";
+      return std::nullopt;
+    }
+#if !MDSLC_HAS_TWO_GEMM_REGION
+    std::cerr << "matcore-extract: two-GEMM region inspection requires the "
+                 "Linux native frontend and Matcore MLIR build\n";
+    return std::nullopt;
+#endif
+    command.frontend.inspect_two_gemm_regions = true;
   }
   if (!command.recovered_gemm_report.empty() &&
       command.frontend_name != "native") {
@@ -699,8 +737,10 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
                  "available on Windows; use native LibTooling\n";
     return std::nullopt;
   }
-  if (command.frontend.input_path.empty() || command.ir_output.empty()) {
-    std::cerr << "matcore-extract: --input and --ir-out are required\n";
+  if (command.frontend.input_path.empty() ||
+      (command.ir_output.empty() && command.two_gemm_region_output.empty())) {
+    std::cerr << "matcore-extract: --input and --ir-out (or the separate "
+                 "--two-gemm-region-out inspection request) are required\n";
     return std::nullopt;
   }
   if (!selectCompilerArgument(command)) return std::nullopt;
@@ -1018,6 +1058,49 @@ int ExtractorMain(int argc, char **argv) {
       printDiagnostic(diagnostic);
     }
     return 1;
+  }
+
+  if (!command->two_gemm_region_output.empty()) {
+#if MDSLC_HAS_TWO_GEMM_REGION
+    // An inspection artifact must not overwrite any source in its sealed
+    // dependency closure (including aliases of headers, not just the main TU).
+    if (command->two_gemm_region_output != "-") {
+      const auto output = pathFromUtf8(command->two_gemm_region_output, "output");
+      if (!output) return 1;
+      for (const auto &dependency : result.region_dependencies) {
+        const auto input = pathFromUtf8(dependency.path, "dependency");
+        if (!input || pathsReferToSameLocation(*output, *input)) {
+          std::cerr << "matcore-extract: region output must not overwrite or "
+                       "alias a captured source dependency\n";
+          return 1;
+        }
+      }
+    }
+    if (!result.native_evidence) {
+      std::cerr << "matcore-extract: region inspection requires sealed native "
+                   "source evidence\n";
+      return 1;
+    }
+    mlir::MLIRContext context;
+    auto region = matcore::mdslc::mlir_bridge::
+        deriveAuthenticatedTwoGemmRegionsV1(*result.native_evidence, context);
+    std::string error;
+    if (!region ||
+        !matcore::mdslc::mlir_bridge::verifyTwoGemmRegionMatchesNativeEvidenceV1(
+            *result.native_evidence, *region.module, error)) {
+      std::cerr << command->frontend.input_path
+                << ": error: two-GEMM region admission failed: "
+                << (region ? error : region.error) << '\n';
+      return 1;
+    }
+    return writeAtomically(command->two_gemm_region_output,
+                           matcore::mdslc::mlir_bridge::
+                               serializeDeterministicMlir(*region.module))
+               ? 0
+               : 1;
+#else
+    return 1; // Parse-time admission already diagnoses this unavailable mode.
+#endif
   }
 
   std::string verification_error;

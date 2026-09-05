@@ -3,6 +3,7 @@
 
 #include "../ir/matcore_ir.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -40,6 +41,9 @@ struct Options {
   // Native-only, diagnostic recovery experiment. This never authorizes a
   // source rewrite and never adds a recovered operation to Matcore IR v0/v1.
   bool inspect_recovered_cpp_gemm = false;
+  // Native-only ordered two-call inspection. Never authorizes source rewriting
+  // or generated execution; normal capture is unchanged when this is false.
+  bool inspect_two_gemm_regions = false;
   bool verbose = false;
 };
 
@@ -109,6 +113,40 @@ struct RecoveredGemmCandidate {
   std::vector<std::string> rejection_reasons;
 };
 
+// Transient admission evidence, not a new serialized semantic IR. A descriptor
+// identity proves only the same C++ descriptor binding (including a transparent
+// local reference alias), never distinct or nonoverlapping physical storage.
+// Every different descriptor pair remains MAYalias at runtime.
+struct TwoGemmDescriptorBindingV1 {
+  std::string declaration_id;
+  std::string descriptor_id;
+  std::string source_expression;
+  unsigned snapshot_stage = 0;
+};
+
+struct TwoGemmRegionSiteV1 {
+  std::string site_id;
+  std::size_t capture_ordinal = 0;
+  // Original output, lhs, rhs. Stage one must snapshot and reload only after
+  // stage zero commits. These ordinals alone do not encode that ordering.
+  std::array<TwoGemmDescriptorBindingV1, 3> bindings;
+};
+
+struct TwoGemmRegionCandidateV1 {
+  bool admitted = false;
+  std::string region_id;
+  std::string function_identity;
+  std::string source_snapshot_sha256;
+  ir::SourceRange source_range;
+  std::vector<TwoGemmRegionSiteV1> sites;
+  std::vector<std::string> rejection_reasons;
+};
+
+struct RegionDependencySnapshotV1 {
+  std::string path;
+  std::string sha256;
+};
+
 // Native-only, immutable-by-API evidence issued after a successful LibTooling
 // extraction. It seals copies of every Result field plus the effective Options
 // used for that extraction. It is deliberately non-default-constructible and
@@ -147,8 +185,15 @@ struct Result {
   // Exact bytes parsed for source ranges and later consumed by codegen.
   std::string source_snapshot;
   std::vector<RecoveredGemmCandidate> recovered_gemm_candidates;
+  std::vector<TwoGemmRegionCandidateV1> two_gemm_regions;
+  // Identity of parsed physical dependency bytes, native compiler version and
+  // effective capture options. Not an executable cache key or authorization to
+  // use files after extraction; consumers must bind the sealed context.
+  std::string region_capture_identity;
+  std::string region_native_clang_version;
+  std::vector<RegionDependencySnapshotV1> region_dependencies;
   // Present only for a successful native extraction requested in explicit
-  // recovery-inspection mode. Ordinary compilation does not pay the cost of
+  // recovery- or region-inspection mode. Ordinary compilation does not pay the cost of
   // the sealed source snapshot copy.
   std::optional<AuthenticatedNativeFrontendEvidenceV1> native_evidence;
 };

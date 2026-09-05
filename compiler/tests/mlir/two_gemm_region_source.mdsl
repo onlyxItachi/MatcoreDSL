@@ -1,0 +1,16 @@
+#include <matcore/mdsl.h>
+namespace md = matcore::mdsl;
+
+void two_gemm_region(md::matrix_view A, md::matrix_view B,
+                     md::matrix_view C, md::matrix_view D,
+                     md::matrix_view E) {
+  md::gemm(md::out(C), A, B);
+  md::gemm(md::out(E), C, D);
+}
+
+// Exact input aliasing is legal. One descriptor may occupy both input roles.
+void aliased_inputs(md::matrix_view A, md::matrix_view C,
+                    md::matrix_view D, md::matrix_view E) {
+  md::gemm(md::out(C), A, A);
+  md::gemm(md::out(E), C, D);
+}

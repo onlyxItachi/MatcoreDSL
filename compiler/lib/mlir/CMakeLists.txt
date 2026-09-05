@@ -18,6 +18,8 @@ add_library(
     MatcoreDialect.cpp
     MatcoreGemmSemanticBuilder.cpp
     MatcoreOps.cpp
+    MatcoreRegionBoundaryOps.cpp
+    MatcoreRegionTypeRegistration.cpp
     MatcoreV1Bridge.cpp
     MatcoreCpuRuntimeLowering.cpp
 )
@@ -54,6 +56,18 @@ target_link_libraries(
 )
 mdslc_target_enable_warnings(matcore_mlir_semantics)
 mdslc_target_match_llvm_rtti(matcore_mlir_semantics)
+
+# The supported prebuilt LLVM/MLIR tuples have an unsanitized bump allocator.
+# Singleton registration instantiates weak LLVM allocator templates: compiling
+# those with ASan can interpose poisoning slow paths into upstream unsanitized
+# fast paths, which cannot unpoison subsequent valid allocations. Match that
+# allocator protocol in this registration-only shim, not in Matcore semantic
+# verification, parsing, boundary ops, tests, or runtime. UBSan remains enabled.
+# A future instrumented upstream tuple needs its own coherent validation.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU" AND NOT MSVC)
+  set_source_files_properties(MatcoreRegionTypeRegistration.cpp PROPERTIES
+    COMPILE_OPTIONS "-fno-sanitize=address")
+endif()
 
 # The first structured projection is intentionally a separate internal layer:
 # semantic WHAT remains independent of Linalg/Arith transformation machinery.
@@ -161,6 +175,21 @@ if(MDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS)
 endif()
 
 if(MDSLC_ENABLE_NATIVE_FRONTEND AND NOT WIN32)
+  # This source-authenticated inspection boundary is not an execution consumer.
+  # Keep frontend evidence and structured machinery out of the core dialect.
+  add_library(matcore_mlir_two_gemm_region STATIC MatcoreTwoGemmRegion.cpp)
+  target_compile_features(matcore_mlir_two_gemm_region PUBLIC cxx_std_20)
+  target_include_directories(matcore_mlir_two_gemm_region PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>")
+  target_include_directories(matcore_mlir_two_gemm_region SYSTEM PRIVATE
+    "${LLVM_INCLUDE_DIRS}" "${MLIR_INCLUDE_DIRS}")
+  target_link_libraries(matcore_mlir_two_gemm_region
+    PUBLIC matcore_mlir_semantics matcore_frontend_native
+    PRIVATE matcore_mlir_structured_handoff MLIRArithDialect
+      MLIRLinalgDialect MLIRTensorDialect)
+  mdslc_target_enable_warnings(matcore_mlir_two_gemm_region)
+  mdslc_target_match_llvm_rtti(matcore_mlir_two_gemm_region)
+
   # Recovery analysis is kept in a separate internal library so the general
   # semantic dialect and explicit-v1 bridge never depend on Clang frontend
   # implementation details.
@@ -192,6 +221,35 @@ if(MDSLC_ENABLE_NATIVE_FRONTEND AND NOT WIN32)
 endif()
 
 if(BUILD_TESTING)
+  # Deliberately mixed vs matching prebuilt allocator protocol, plus live ASan
+  # controls. Do not make expected sanitizer failures normal unsanitized tests.
+  if(NOT WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND
+     CMAKE_CXX_FLAGS MATCHES "fsanitize=[^ ]*address")
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    foreach(mode IN ITEMS mixed compatible)
+      add_library(matcore_mlir_allocator_${mode} OBJECT
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/sanitizer/mlir_allocator_registration.cpp")
+      add_executable(matcore_mlir_allocator_${mode}_test
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/sanitizer/mlir_allocator_client.cpp"
+        $<TARGET_OBJECTS:matcore_mlir_allocator_${mode}>)
+      foreach(target IN ITEMS matcore_mlir_allocator_${mode}
+                              matcore_mlir_allocator_${mode}_test)
+        target_compile_features(${target} PRIVATE cxx_std_20)
+        target_include_directories(${target} SYSTEM PRIVATE
+          "${LLVM_INCLUDE_DIRS}" "${MLIR_INCLUDE_DIRS}")
+        mdslc_target_match_llvm_rtti(${target})
+      endforeach()
+      target_link_libraries(matcore_mlir_allocator_${mode}_test PRIVATE MLIRIR)
+    endforeach()
+    target_compile_options(matcore_mlir_allocator_compatible PRIVATE
+      -fno-sanitize=address)
+    add_test(NAME mlir.sanitizer.allocator-protocol
+      COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/sanitizer/check_mlir_allocator_sanitizer.py"
+        --mixed "$<TARGET_FILE:matcore_mlir_allocator_mixed_test>"
+        --compatible "$<TARGET_FILE:matcore_mlir_allocator_compatible_test>")
+  endif()
+
   add_executable(
     matcore_mlir_contraction_model_tests
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/mlir/matcore_contraction_model_test.cpp"
@@ -414,5 +472,21 @@ if(BUILD_TESTING)
     mdslc_target_enable_warnings(matcore_mlir_recovered_gemm_tests)
     add_test(NAME mlir.semantic.recovered-gemm
       COMMAND matcore_mlir_recovered_gemm_tests)
+
+    add_executable(matcore_mlir_two_gemm_region_tests
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/mlir/matcore_two_gemm_region_test.cpp")
+    target_link_libraries(matcore_mlir_two_gemm_region_tests PRIVATE
+      matcore_mlir_two_gemm_region matcore_mlir_bufferized_handoff
+      MLIRLinalgTransforms MLIRTransforms MLIRParser)
+    target_include_directories(matcore_mlir_two_gemm_region_tests SYSTEM PRIVATE
+      "${LLVM_INCLUDE_DIRS}" "${MLIR_INCLUDE_DIRS}")
+    target_compile_definitions(matcore_mlir_two_gemm_region_tests PRIVATE
+      MDSLC_REGION_TEST_CLANG="${MDSLC_CLANGXX_EXECUTABLE}"
+      MDSLC_REGION_TEST_RESOURCE_DIR="${MDSLC_RECOVERED_TEST_RESOURCE_DIR}"
+      MDSLC_REGION_TEST_PUBLIC_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/../../include/matcore/mdsl.h")
+    mdslc_target_enable_warnings(matcore_mlir_two_gemm_region_tests)
+    mdslc_target_match_llvm_rtti(matcore_mlir_two_gemm_region_tests)
+    add_test(NAME mlir.semantic.two-gemm-region
+      COMMAND matcore_mlir_two_gemm_region_tests)
   endif()
 endif()

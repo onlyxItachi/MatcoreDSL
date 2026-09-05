@@ -111,3 +111,45 @@ def Matcore_YieldOp : Matcore_Op<"yield", [
   let arguments = (ins F32:$value);
   let hasVerifier = 1;
 }
+
+// These operations describe only the bounded source-connected two-GEMM
+// inspection. Their unscoped effects deliberately make no pointer-disjointness
+// promise from distinct descriptor SSA values. No executable lowering exists.
+def Matcore_RegionBeginOp : Matcore_Op<"region_begin", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let results = (outs AnyType:$order);
+  let hasVerifier = 1;
+}
+
+def Matcore_RegionGuardOp : Matcore_Op<"region_guard", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let arguments = (ins AnyType:$order, AnyType:$lhs, AnyType:$rhs,
+                       AnyType:$output, I64Attr:$stage,
+                       DictionaryAttr:$semantic_contract,
+                       ArrayAttr:$required_guards);
+  let results = (outs AnyType:$checked);
+  let hasVerifier = 1;
+}
+
+def Matcore_RegionReadOp : Matcore_Op<"region_read", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let arguments = (ins AnyType:$descriptor, AnyType:$checked,
+                       I64Attr:$stage, StrAttr:$role);
+  let results = (outs AnyRankedTensor:$value);
+  let hasVerifier = 1;
+}
+
+def Matcore_RegionCommitOp : Matcore_Op<"region_commit", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let arguments = (ins AnyRankedTensor:$value, AnyType:$descriptor,
+                       AnyType:$checked, I64Attr:$stage,
+                       StrAttr:$failure_behavior);
+  let results = (outs AnyRankedTensor:$committed, AnyType:$order);
+  let hasVerifier = 1;
+}
+
+def Matcore_RegionEndOp : Matcore_Op<"region_end", [
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let arguments = (ins AnyType:$order);
+  let hasVerifier = 1;
+}

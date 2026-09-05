@@ -10,7 +10,9 @@
 #include <clang/AST/Expr.h>
 #include <clang/AST/ExprCXX.h>
 #include <clang/AST/ExprConcepts.h>
+#include <clang/AST/ParentMapContext.h>
 #include <clang/AST/RecordLayout.h>
+#include <clang/AST/StmtCXX.h>
 #include <clang/AST/TypeLoc.h>
 #include <clang/ASTMatchers/ASTMatchFinder.h>
 #include <clang/Basic/CodeGenOptions.h>
@@ -28,7 +30,9 @@
 #include <clang/Tooling/CompilationDatabase.h>
 #include <clang/Tooling/Tooling.h>
 #include <llvm/Config/llvm-config.h>
+#include <llvm/ADT/StringExtras.h>
 #include <llvm/Support/FileSystem.h>
+#include <llvm/Support/SHA256.h>
 #include <llvm/Support/raw_ostream.h>
 
 #include <algorithm>
@@ -233,6 +237,16 @@ FileIdentity identityOf(const llvm::sys::fs::UniqueID &identity) {
   return {identity.getDevice(), identity.getFile()};
 }
 
+std::string snapshotHash(llvm::StringRef bytes) {
+  const auto digest = llvm::SHA256::hash(llvm::arrayRefFromStringRef(bytes));
+  return "sha256:" + llvm::toHex(llvm::ArrayRef(digest), true);
+}
+
+void bindIdentityField(std::string &identity, std::string_view value) {
+  identity += std::to_string(value.size()) + ":";
+  identity.append(value);
+}
+
 struct NativeState {
   NativeState(Result &frontend_result, std::string source_display_path,
               std::string source_canonical_path,
@@ -256,8 +270,11 @@ struct NativeState {
   bool saw_candidate = false;
   clang::SourceLocation first_candidate_location;
   std::vector<const clang::CallExpr *> calls;
+  std::vector<const clang::CallExpr *> captured_calls;
   std::vector<const clang::DeclRefExpr *> function_references;
   bool inspect_recovered_cpp_gemm = false;
+  bool inspect_two_gemm_regions = false;
+  std::map<std::string, FileIdentity> region_dependency_ids;
   unsigned optimization_level = 0;
   std::string denormal_mode;
   std::string fp32_denormal_mode;
@@ -994,6 +1011,219 @@ public:
   }
 
 private:
+  // A binding identity is deliberately not a runtime pointer identity. Two
+  // distinct parameters (even references) may still denote the same storage.
+  std::string declarationIdentity(const clang::Decl &declaration,
+                                  clang::ASTContext &context) {
+    const auto &manager = context.getSourceManager();
+    const auto declared_location = declaration.getCanonicalDecl()->getLocation();
+    if (declared_location.isInvalid() || declared_location.isMacroID()) return {};
+    const auto location = manager.getSpellingLoc(declared_location);
+    const auto file_id = manager.getFileID(location);
+    bool invalid = false;
+    const auto buffer = manager.getBufferData(file_id, &invalid);
+    if (invalid) return {};
+    std::string identity = "mdsl-declaration-v1";
+    bindIdentityField(identity, canonicalPath(manager.getFilename(location).str()));
+    bindIdentityField(identity, snapshotHash(buffer));
+    bindIdentityField(identity, std::to_string(manager.getFileOffset(location)));
+    bindIdentityField(identity, declaration.getDeclKindName());
+    return snapshotHash(identity);
+  }
+
+  const clang::VarDecl *descriptorRoot(const clang::VarDecl *declaration) {
+    std::set<const clang::VarDecl *> visited;
+    while (declaration != nullptr && visited.size() < 64) {
+      declaration = declaration->getCanonicalDecl();
+      if (!visited.insert(declaration).second) return nullptr;
+      if (!declaration->getType()->isReferenceType() ||
+          llvm::isa<clang::ParmVarDecl>(declaration)) return declaration;
+      // Do not chase nonlocal references or initializer expressions with any
+      // operation. Unsupported reference bindings remain an admission barrier.
+      if (!declaration->isLocalVarDecl() || !declaration->hasLocalStorage() ||
+          !declaration->hasInit()) return nullptr;
+      const auto *reference = llvm::dyn_cast<clang::DeclRefExpr>(
+          declaration->getInit()->IgnoreParens());
+      if (reference == nullptr) return nullptr;
+      declaration = llvm::dyn_cast<clang::VarDecl>(reference->getDecl());
+    }
+    return nullptr;
+  }
+
+  bool descriptorBinding(const clang::Expr &expression, unsigned stage,
+                         clang::ASTContext &context,
+                         TwoGemmDescriptorBindingV1 &binding) {
+    const auto *reference = llvm::dyn_cast<clang::DeclRefExpr>(
+        expression.IgnoreParenImpCasts());
+    if (reference == nullptr || expression.HasSideEffects(context)) return false;
+    const auto *declaration = llvm::dyn_cast<clang::VarDecl>(reference->getDecl());
+    const auto *root = descriptorRoot(declaration);
+    if (declaration == nullptr || root == nullptr) return false;
+    const auto range = mainFileTokenRange(expression, context.getSourceManager(),
+                                          context.getLangOpts());
+    if (!range || range->end > state_.source.size()) return false;
+    binding.declaration_id = declarationIdentity(*declaration, context);
+    binding.descriptor_id = declarationIdentity(*root, context);
+    binding.source_expression = state_.source.substr(range->begin,
+                                                    range->end - range->begin);
+    binding.snapshot_stage = stage;
+    return !binding.declaration_id.empty() && !binding.descriptor_id.empty();
+  }
+
+  const clang::CompoundStmt *directCompound(const clang::Stmt &statement,
+                                           clang::ASTContext &context) {
+    const auto parents = context.getParents(statement);
+    return parents.size() == 1 ? parents[0].get<clang::CompoundStmt>() : nullptr;
+  }
+
+  bool supportedCompound(const clang::CompoundStmt &compound,
+                         const clang::FunctionDecl &function,
+                         clang::ASTContext &context) {
+    if (function.getBody() == &compound) return true;
+    const auto parents = context.getParents(compound);
+    if (parents.size() != 1) return false;
+    const auto *try_statement = parents[0].get<clang::CXXTryStmt>();
+    return try_statement != nullptr && try_statement->getTryBlock() == &compound &&
+           directCompound(*try_statement, context) == function.getBody();
+  }
+
+  bool regionDeclarationUncontaminated(const clang::CallExpr &call,
+                                       clang::ASTContext &context) {
+    const auto *canonical = call.getDirectCallee()->getCanonicalDecl();
+    if (canonical->getDefinition() != nullptr) return false;
+    const auto &manager = context.getSourceManager();
+    for (const auto *redeclaration : canonical->redecls()) {
+      for (const auto *attribute : redeclaration->attrs()) {
+        if (attribute->isInherited()) continue;
+        // Attribute merging can attach a user attribute to an earlier Decl;
+        // authenticate its own source location, not just the owning Decl.
+        const auto location = attribute->getLocation();
+        if (location.isInvalid() ||
+            !declarationIsTrusted(*redeclaration, manager, state_) ||
+            !isTrustedFile(manager.getFileEntryForID(
+                manager.getFileID(manager.getSpellingLoc(location))), state_) ||
+            !isTrustedFile(manager.getFileEntryForID(
+                manager.getFileID(manager.getExpansionLoc(location))), state_))
+          return false;
+      }
+    }
+    return true;
+  }
+
+  void snapshotRegionDependencies(clang::ASTContext &context) {
+    const auto &manager = context.getSourceManager();
+    std::map<std::string, std::string> snapshots;
+    for (auto iterator = manager.fileinfo_begin(); iterator != manager.fileinfo_end();
+         ++iterator) {
+      const auto file_id = manager.translateFile(iterator->first);
+      if (file_id.isInvalid()) continue; // Lookup-only, never parsed.
+      bool invalid = false;
+      const auto parsed = manager.getBufferData(file_id, &invalid);
+      const auto entry = manager.getFileEntryRefForID(file_id);
+      if (invalid || !entry) {
+        reject(manager, {}, "cannot authenticate a parsed region dependency");
+        continue;
+      }
+      const std::string path = canonicalPath(entry->getName().str());
+      const auto physical = readFile(path);
+      llvm::sys::fs::UniqueID identity;
+      const bool main_file = file_id == manager.getMainFileID();
+      if (!physical || llvm::StringRef(*physical) != parsed ||
+          llvm::sys::fs::getUniqueID(path, identity) ||
+          (!main_file && identityOf(identity) != identityOf(entry->getUniqueID()))) {
+        reject(manager, {}, "parsed region dependency changed or is not a stable "
+                            "physical file: " + path);
+        continue;
+      }
+      snapshots.insert_or_assign(path, snapshotHash(parsed));
+      state_.region_dependency_ids.insert_or_assign(path, identityOf(identity));
+    }
+    for (const auto &[path, digest] : snapshots)
+      state_.result.region_dependencies.push_back({path, digest});
+  }
+
+  void inspectTwoGemmRegions(clang::ASTContext &context) {
+    if (!state_.inspect_two_gemm_regions) return;
+    snapshotRegionDependencies(context);
+    const auto &operations = state_.result.module.operations;
+    // Greedy nonoverlapping admitted pairs. Rejected neighbouring candidates
+    // remain diagnostics; a later independent pair can still be admitted.
+    for (std::size_t index = 0; index < state_.captured_calls.size();) {
+      TwoGemmRegionCandidateV1 candidate;
+      candidate.source_snapshot_sha256 = snapshotHash(state_.source);
+      const auto *first = state_.captured_calls[index];
+      const auto *function = enclosingFunction(*first, context);
+      if (function != nullptr)
+        candidate.function_identity = declarationIdentity(*function, context);
+      if (candidate.function_identity.empty())
+        candidate.rejection_reasons.push_back(
+            "region requires a direct nonmacro function declaration identity");
+      candidate.source_range = operations[index].call_range;
+      candidate.region_id = makeStableSiteId(
+          stableSourceIdentity(state_.canonical_input), state_.compilation_identity,
+          state_.source, operations[index].source.offset, "two-gemm-region");
+      const std::size_t count = std::min<std::size_t>(2, state_.captured_calls.size() - index);
+      for (std::size_t stage = 0; stage < count; ++stage) {
+        const auto *call = state_.captured_calls[index + stage];
+        const auto *out = llvm::cast<clang::CallExpr>(call->getArg(0)->IgnoreParenImpCasts());
+        TwoGemmRegionSiteV1 site;
+        site.site_id = operations[index + stage].site_id;
+        site.capture_ordinal = index + stage;
+        const clang::Expr *arguments[] = {out->getArg(0), call->getArg(1), call->getArg(2)};
+        for (unsigned operand = 0; operand < 3; ++operand) {
+          if (!descriptorBinding(*arguments[operand], static_cast<unsigned>(stage),
+                                 context, site.bindings[operand]))
+            candidate.rejection_reasons.push_back(
+                "stage " + std::to_string(stage) + " operand " + std::to_string(operand) +
+                " requires a direct descriptor declaration or transparent local reference");
+        }
+        if (!regionDeclarationUncontaminated(*call, context))
+          candidate.rejection_reasons.push_back(
+              "region admission rejects competing GEMM definitions or user redeclaration attributes");
+        candidate.sites.push_back(std::move(site));
+        candidate.source_range.end = operations[index + stage].call_range.end;
+      }
+      if (count != 2) {
+        candidate.rejection_reasons.push_back("no following GEMM call for a two-call region");
+      } else {
+        const auto *second = state_.captured_calls[index + 1];
+        const auto *compound = directCompound(*first, context);
+        if (function == nullptr || compound == nullptr ||
+            compound != directCompound(*second, context) ||
+            function != enclosingFunction(*second, context) ||
+            !supportedCompound(*compound, *function, context)) {
+          candidate.rejection_reasons.push_back(
+              "two GEMMs must be direct statements in the same function-body or direct try-body compound; control and scope are barriers");
+        } else {
+          bool consecutive = false;
+          for (auto current = compound->body_begin(); current != compound->body_end(); ++current) {
+            auto next = current;
+            ++next;
+            if (*current == first && next != compound->body_end() && *next == second)
+              consecutive = true;
+          }
+          if (!consecutive) candidate.rejection_reasons.push_back(
+              "intervening host statement, descriptor mutation or observer splits the region");
+        }
+        const auto &a = candidate.sites[0].bindings;
+        const auto &b = candidate.sites[1].bindings;
+        if (a[0].descriptor_id.empty() || a[0].descriptor_id != b[1].descriptor_id)
+          candidate.rejection_reasons.push_back(
+              "bounded region requires first output to be the second GEMM lhs descriptor");
+        if (!a[0].descriptor_id.empty() && a[0].descriptor_id == b[0].descriptor_id)
+          candidate.rejection_reasons.push_back("the two outputs require distinct descriptor bindings (not a noalias proof)");
+        for (const auto &site : candidate.sites)
+          if (!site.bindings[0].descriptor_id.empty() &&
+              (site.bindings[0].descriptor_id == site.bindings[1].descriptor_id ||
+               site.bindings[0].descriptor_id == site.bindings[2].descriptor_id))
+            candidate.rejection_reasons.push_back("an output is proven to use its own input descriptor");
+      }
+      candidate.admitted = candidate.rejection_reasons.empty();
+      index += candidate.admitted ? 2 : 1;
+      state_.result.two_gemm_regions.push_back(std::move(candidate));
+    }
+  }
+
   const clang::FunctionDecl *
   enclosingFunction(const clang::Stmt &statement, clang::ASTContext &context,
                     unsigned depth = 0) {
@@ -1227,6 +1457,21 @@ private:
     if (!simpleLvalue(*call.getArg(2), rhs_name)) {
       fail("gemm rhs must be a stable matrix lvalue with no side effects");
     }
+    // Region inspection retains the actual qualified expression spelling for
+    // the compatibility report; declaration identity, not an unqualified name,
+    // supplies its alias facts. Leave ordinary extraction byte-for-byte alone.
+    if (state_.inspect_two_gemm_regions) {
+      auto retain_spelling = [&](const clang::Expr &expression, std::string &name) {
+        const auto range = mainFileTokenRange(expression, source_manager,
+                                              context.getLangOpts());
+        if (range && range->end <= state_.source.size())
+          name = state_.source.substr(range->begin, range->end - range->begin);
+      };
+      if (output_call != nullptr && output_call->getNumArgs() == 1)
+        retain_spelling(*output_call->getArg(0), output_name);
+      retain_spelling(*call.getArg(1), lhs_name);
+      retain_spelling(*call.getArg(2), rhs_name);
+    }
     if (!output_name.empty() &&
         (output_name == lhs_name || output_name == rhs_name)) {
       fail("gemm output must not alias lhs or rhs");
@@ -1307,6 +1552,7 @@ private:
     operation.target = target;
     operation.fallback = fallback;
     state_.result.module.operations.push_back(std::move(operation));
+    state_.captured_calls.push_back(&call);
   }
 
   void finalize(clang::ASTContext &context) {
@@ -1342,6 +1588,7 @@ private:
     }
 
     inspectRecoveredLoops(context);
+    inspectTwoGemmRegions(context);
 
     if (state_.saw_candidate && !state_.saw_direct_trusted_include) {
       reject(source_manager, state_.first_candidate_location,
@@ -1451,6 +1698,7 @@ public:
     NativeState state(result, display_path, canonicalPath(options.input_path),
                       stableCompilationIdentity(options), *source);
     state.inspect_recovered_cpp_gemm = options.inspect_recovered_cpp_gemm;
+    state.inspect_two_gemm_regions = options.inspect_two_gemm_regions;
     for (const std::string &trusted_header : options.trusted_public_headers) {
       llvm::sys::fs::UniqueID identity;
       const std::optional<std::string> contents = readFile(trusted_header);
@@ -1505,6 +1753,32 @@ public:
     NativeActionFactory factory(state);
     const int tool_status = tool.run(&factory);
 
+    if (options.inspect_two_gemm_regions) {
+      result.region_native_clang_version = nativeClangRuntimeVersionV1();
+      std::string context_identity = "mdsl-two-gemm-capture-context-v1";
+      bindIdentityField(context_identity, result.region_native_clang_version);
+      bindIdentityField(context_identity, options.clang_path);
+      bindIdentityField(context_identity, options.clang_resource_directory);
+      bindIdentityField(context_identity, state.canonical_input);
+      bindIdentityField(context_identity, snapshotHash(*source));
+      for (const auto &argument : tool_arguments)
+        bindIdentityField(context_identity, argument);
+      for (const auto &dependency : result.region_dependencies) {
+        llvm::sys::fs::UniqueID identity;
+        const auto physical = readFile(dependency.path);
+        if (!physical || snapshotHash(*physical) != dependency.sha256 ||
+            llvm::sys::fs::getUniqueID(dependency.path, identity) ||
+            identityOf(identity) != state.region_dependency_ids.at(dependency.path)) {
+          result.diagnostics.push_back(Diagnostic{
+              .file = dependency.path,
+              .message = "region dependency changed after native parsing; retry from a stable snapshot"});
+        }
+        bindIdentityField(context_identity, dependency.path);
+        bindIdentityField(context_identity, dependency.sha256);
+      }
+      result.region_capture_identity = snapshotHash(context_identity);
+    }
+
     const std::optional<std::string> verified_source = readFile(options.input_path);
     if (!verified_source || *verified_source != *source) {
       result.diagnostics.push_back(Diagnostic{
@@ -1536,7 +1810,7 @@ public:
       result.module.operations.clear();
       return false;
     }
-    if (options.inspect_recovered_cpp_gemm) {
+    if (options.inspect_recovered_cpp_gemm || options.inspect_two_gemm_regions) {
       result.native_evidence =
           detail::NativeFrontendEvidenceIssuerV1::issue(result, options);
     }

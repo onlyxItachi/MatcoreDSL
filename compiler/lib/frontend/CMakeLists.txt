@@ -46,4 +46,22 @@ if(MDSLC_ENABLE_NATIVE_FRONTEND)
     PUBLIC matcore_frontend_common
     PRIVATE ${MDSLC_CLANG_TOOLING_LIBRARIES} MatcoreDSL::PlatformSupportV1
   )
+  if(BUILD_TESTING AND NOT WIN32)
+    execute_process(COMMAND "${MDSLC_CLANGXX_EXECUTABLE}" -print-resource-dir
+      OUTPUT_VARIABLE MDSLC_REGION_FRONTEND_TEST_RESOURCE_DIR
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      COMMAND_ERROR_IS_FATAL ANY)
+    add_executable(matcore_two_gemm_region_frontend_tests
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/native/two_gemm_region_frontend_test.cpp")
+    target_link_libraries(matcore_two_gemm_region_frontend_tests PRIVATE
+      matcore_frontend_native)
+    mdslc_target_enable_warnings(matcore_two_gemm_region_frontend_tests)
+    mdslc_target_match_llvm_rtti(matcore_two_gemm_region_frontend_tests)
+    add_test(NAME frontend.native.two_gemm_region
+      COMMAND matcore_two_gemm_region_frontend_tests
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../.."
+        "${MDSLC_CLANGXX_EXECUTABLE}"
+        "${MDSLC_REGION_FRONTEND_TEST_RESOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../include/matcore/mdsl.h")
+  endif()
 endif()
