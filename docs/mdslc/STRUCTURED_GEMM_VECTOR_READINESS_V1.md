@@ -229,6 +229,33 @@ The exact MLIR 21.1.8 output is pinned in
 change that alters it requires review; blindly refreshing the golden is not an
 upgrade strategy.
 
+## Validation at this checkpoint
+
+The implementation was configured with Ubuntu Clang/Clang++ 21.1.8 and the
+project's user-local MLIR 21.1.8 package. The following surfaces passed:
+
+- opt-in Release: full build, then 66/66 CTest tests;
+- default-off Release: full build, then 65/65 CTest tests;
+- opt-in Debug: the contraction-model, structured-GEMM-handoff, and
+  vector-readiness tests, 3/3;
+- direct vector-readiness executable: 280/280 adversarial checks;
+- default-off target/test inventory: no vector-readiness target or test;
+- invalid option combination: configuration fails when vector readiness is ON
+  and Matcore MLIR is OFF; and
+- staged install inspection: no vector-readiness header, library, package
+  target, or tool was installed.
+
+The first full opt-in CTest invocation was intentionally informative: package
+source-inaccessibility rejected the checkout because documentation was still
+uncommitted, and the native-evidence runner then rejected a benchmark binary
+whose embedded source SHA preceded the documentation commit. A clean
+reconfigure and exact-HEAD benchmark rebuild closed both provenance gates; the
+reported 66/66 result is the clean rerun. No gate was weakened or bypassed.
+
+LLVM 21's `clang-format` executable was not installed in the environment. The
+new C++ files were formatted with the available LLVM 22.1.8 formatter, then
+compiled with Clang 21.1.8 and checked with `git diff --check`.
+
 ## Ownership and next boundary
 
 - Matcore owns exact source admission, semantic/numerical retention,
