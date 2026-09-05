@@ -101,9 +101,42 @@ execution. Internal schema versioning is not a public interchange commitment.
 
 ## Validation and checkpoint
 
-Implementation and validation are in progress. No tests or merge are claimed
-by this working record yet. Final results and independent review will be
-recorded here before integration.
+The implementation was independently accepted at
+`11f99037a1a5e431e526fda1bb17bc78016898ac`. All local tests below ran from that
+clean integration checkpoint; subsequent report commits change documentation
+only. Independent review found and resolved an additional malformed-metadata
+case: a descriptor argument index now requires exact signless i64 before
+conversion. This is a verifier robustness correction, not new semantic or
+execution authority.
+
+| Local scope | Exact result |
+| --- | --- |
+| Fresh Release, OpenBLAS OFF, experimental single-site vector readiness ON | Focused 4/4 (24.72 s), then full 74/74 (206.84 s), no skips. |
+| Fresh Debug, OpenBLAS required (0.3.32), vector readiness ON | Focused 4/4 (50.48 s), then full 74/74 (333.20 s), no skips. |
+| Fresh Debug ASan+UBSan, OpenBLAS OFF | Exact hosted in-process selection expanded to 24 tests; 24/24 (5.19 s), no skips. |
+| Region MLIR checks in all three builds | 292/292; real upstream transformations, source pairing and malformed metadata controls included. |
+| Runtime/FP guard oracle in all three builds | 219 checks, zero failures, no GEMM executed. |
+| CLI integration in Release and Debug | 75 grouped steps; 20 old-route executables across capture-v0 and Matcore-MLIR, not region execution. |
+
+All builds use exact Clang/LLVM/MLIR 21.1.8; no toolchain install or migration.
+The sanitizer run retained allocator-protocol positive/negative controls and
+the existing registration-only shim. `symbolize=0` avoids local symbolizer
+network stalls without suppressing memory checks; leak, initialization-order,
+string and halt-on-error checks remain enabled. This is the established
+in-process sanitizer scope, not a claim of full instrumented CLI/package tests.
+
+Commands used `cmake --build <build> --parallel 2`, focused CTest first and
+`ctest --test-dir <build> --output-on-failure -j1` for complete Release/Debug.
+Local build trees are `build-ledger-release`, `build-ledger-debug-openblas`,
+and `build-ledger-asan`; exact test outputs are in their
+`Testing/Temporary/LastTest.log`. The ASan selection matches
+`.github/workflows/mdslc-native.yml` and explicitly lists 24 tests.
+
+Detailed source/test evidence: [MLIR lane](agent-reports/guard-ledger-mlir-v1.md),
+[runtime and cross-lane review](agent-reports/region-guard-runtime-v1.md),
+[independent adversarial acceptance](agent-reports/region-guard-adversarial-v1.md).
+Hosted checks and the final merge will be authenticated before landing;
+`CURRENT_STATE.md` records the exact resulting engineering SHA/PR afterward.
 
 ## Remaining boundary
 
@@ -118,6 +151,7 @@ same inspection route**: `C = A*B; E = D*C`. The native seal already carries bot
 operand roles, but admission and value forwarding deliberately support only
 the second lhs today. A separate bounded extension can test role symmetry,
 noncommuting/non-square mathematics, late aliasing reads and unchanged failure
-frontiers without new execution authority. Both-input forwarding and general
+frontiers without new execution authority. Preserve existing `E=C*C` admission
+as carried lhs plus late rhs read; new dual carried SSA edges and general
 DAG admission are not part of that boundary. The ledger does not by itself
 justify region bufferization, tiling or generated execution.
