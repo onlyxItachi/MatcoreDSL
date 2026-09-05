@@ -114,10 +114,10 @@ planner/runtime. The full dependency graph and merge gates are in
 
 ### Toolchain gate
 
-The installed standalone frontend tuple remains Clang/LLVM 21.1.8, Ubuntu
-revision `1:21.1.8-6ubuntu1`. A system APT simulation showed that installing
-matching MLIR 21 development packages globally would remove the installed
-MLIR 22 surface. The exact `libmlir-21`, `libmlir-21-dev`, and
+The product/default standalone frontend tuple remains Clang/LLVM 21.1.8,
+Ubuntu revision `1:21.1.8-6ubuntu1`. A system APT simulation showed that
+installing matching MLIR 21 development packages globally would remove the
+installed MLIR 22 surface. The exact `libmlir-21`, `libmlir-21-dev`, and
 `mlir-21-tools` 21.1.8 Debian payloads were instead extracted to a versioned
 user-local development prefix without changing system packages.
 
@@ -125,10 +125,13 @@ The toolchain lane validated an in-process `clang-cpp` + MLIR + LLVM program,
 a TableGen-generated toy dialect/op, and a narrow static
 `MLIRIR`/`MLIRSupport` executable with neither a shared `libMLIR` dependency
 nor a local-prefix RUNPATH. Production configuration may accept the prefix via
-`MLIR_DIR`, but no installed artifact or package export may hardcode it. The
-frontend must not mix MLIR 22 or modify the legacy root MLIR 18.1.3 contract.
-The semantic-foundation implementation may advance only while this coherent
-isolated toolchain and its no-path-leak gate remain green.
+`MLIR_DIR`, but no installed artifact or package export may hardcode it. A
+separately authenticated exact LLVM/Clang/MLIR 22.1.8 Linux x64 tuple is
+admitted only through the advanced internal compatibility selector; it is not
+product support. Mixed distro-22 components remain forbidden, and the legacy
+root MLIR 18.1.3 contract is unchanged. The semantic-foundation implementation
+may advance only while the selected coherent tuple and its path-leak gate
+remain green.
 
 ### Semantic milestones A through H
 
