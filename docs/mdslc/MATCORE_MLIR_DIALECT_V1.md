@@ -25,9 +25,12 @@ The component is opt-in through:
 MDSLC_ENABLE_MATCORE_MLIR=ON
 ```
 
-The default remains `OFF`. Enabling it requires an explicit `MLIR_DIR` and
-exact LLVM, Clang, and MLIR version `21.1.8`. Configuration fails closed if the
-version differs or any of these imported targets is absent:
+The default remains `OFF`. Product/default use requires an explicit `MLIR_DIR`
+and exact LLVM, Clang, and MLIR version `21.1.8`. The advanced internal
+compatibility selector admits only the separately reviewed coherent exact
+22.1.8 Linux x64 tuple; it is not product support or an installed contract.
+Configuration fails closed if the selected exact tuple differs or any of these
+imported targets is absent:
 
 ```text
 MLIRIR
@@ -39,9 +42,11 @@ MLIRSideEffectInterfaces
 ```
 
 The standalone build remains Ninja/C++20/Clang-first. The coherent audited
-configuration uses LLVM and Clang 21.1.8 from the system package and an exact
-MLIR 21.1.8 development prefix. The unrelated system MLIR 22 surface and the
-legacy root project's MLIR 18 requirement are not valid substitutes.
+product configuration uses LLVM and Clang 21.1.8 from the system package and
+an exact MLIR 21.1.8 development prefix. Mixed distro-22 components and the
+legacy root project's MLIR 18 requirement are not valid substitutes. Exact
+22.1.8 compatibility details and limitations are recorded in
+`agent-reports/mlir-upstream-portability-v1.md`.
 
 `matcore_mlir_semantics` is an internal static build target. It is not
 installed or exported. Only the leaf inspection executable `matcore-mlir` is
@@ -551,15 +556,21 @@ tree run.
    enumerated but deliberately unsupported.
 4. `mdsl.map`, domains, and `mdsl.sin` are not part of the strict Milestone B
    capture bridge. Their separate multi-operation envelope is documented in
-   `docs/mdslc/MATCORE_MLIR_COMPOSITION_V1.md`; reductions, contractions, and
-   views remain unsupported.
-5. No Matcore-to-Linalg/LLVM/native lowering or runtime execution goes through
-   this MLIR path yet. The established CPU route remains separate and intact.
-6. The runtime does not yet enforce the complete rounding-mode, exception-mask,
-   FTZ/DAZ, non-finite, and subnormal conformance required before Milestone E
-   execution.
-7. Destination-style identity is not yet bufferized, and the public semantic
-   function names are not machine-emission-safe ABI names.
+   `docs/mdslc/MATCORE_MLIR_COMPOSITION_V1.md`; general reductions, non-GEMM
+   contraction semantics, and views remain unsupported.
+5. Only explicit GEMM semantic MLIR-to-runtime-dispatch lowering is executable,
+   and it delegates to the established CPU runtime. Certified Linalg,
+   bufferized, and Vector derivations remain inspection-only; no generated
+   execution goes through them.
+6. The runtime enforces the `explicit-gemm-f32-v1` control-state guard for the
+   authenticated CPU path, including its execution thread and active native
+   workers. This does not consume the recorded numerical permissions or
+   authorize generated structured/vector execution, and preservation of
+   incoming floating-point exception-status flags remains unspecified.
+7. The certified buffer seam proves SSA/function-boundary argument-2 identity
+   only for its exact admitted program and options. It does not prove physical
+   storage identity, a callable memref ABI, or general zero-copy behavior, and
+   the public semantic function names are not machine-emission-safe ABI names.
 8. Required preconditions are represented but no guard-producing pass exists
    yet.
 9. Tensor layout, strides, memory space, mutability, and operation-local

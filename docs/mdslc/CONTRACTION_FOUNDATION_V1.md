@@ -2,10 +2,11 @@
 
 Date: 2026-09-05
 
-Status: internal implementation checkpoint on
-`mdslc/contraction-foundation-v1`. This is not a public operation/API design,
-an execution route, or a claim that non-GEMM source operations are
-authenticated.
+Status: canonical internal implementation checkpoint. Reviewed branch head
+`1b7bc9fa212894e330777c18c918c7c533d05c4b` merged through PR #24 as
+`5983c2c1bf067bed9e69d0172b0944b7a4c14c00`. This is not a public
+operation/API design, an execution route, or a claim that non-GEMM source
+operations are authenticated.
 
 ## Identity and evidence boundary
 

@@ -320,31 +320,35 @@ Installed packages report `MatcoreDSL_MATCORE_MLIR_AVAILABLE` and
 fail during configuration. The detailed supported/unsupported claim and
 remaining acceptance matrix are frozen in [CPU_BETA_V1.md](CPU_BETA_V1.md).
 
-## Corpus-informed post-beta boundary
+## Corpus-informed post-beta campaign
 
-The first connected structured handoff is implemented on
-`mdslc/structured-gemm-inspection-v1`: exact verified explicit `mdsl.gemm`
-semantics project into a separate analysis-only tensor/DPS form with explicit
-overwrite initialization and `linalg.matmul`. Matcore owns admission, retained
-semantic/provenance contracts, and fail-closed verification; MLIR owns the
-canonical structured operations. The current runtime/provider route remains
-the only executable route. See
-[STRUCTURED_GEMM_HANDOFF_V1.md](STRUCTURED_GEMM_HANDOFF_V1.md).
+The first connected structured handoff and the branchy contraction campaign
+are complete through canonical implementation checkpoint
+`8ac6c4189b6f79aadee150007b6d26894de02660`. The surviving foundation includes:
 
-Its clean regression/package checkpoint is complete: MLIR-enabled Release and
-Debug passed 64/64 CTests each, and the MLIR-disabled/default-`capture-v0`
-Release profile passed 58/58. The next admissible milestone is limited to
-inspection-only bufferization legality and destination-storage identity.
-Matcore must account for every retained fact and verify the postconditions;
-MLIR should own One-Shot Bufferize and standard buffer transformations;
-LLVM/backends still own machine lowering; external libraries remain
-authenticated provider candidates. Entry requires exact MLIR 21.1.8 interface
-evidence and connected static/dynamic traces. Completion requires a
-deterministic verified buffer artifact, allocation/copy accounting, proof that
-the result denotes the original output storage and never reads initial C, and
-unchanged runtime/provider behavior. It must stop before vector/LLVM lowering,
-generated execution, fusion, planner/provider policy, native-BLAS work, or
-GPU/NPU work.
+- distinct standard GEMM/GEMV/DOT/GER/aligned-batch topology carriers;
+- reusable exact derived-source and ordered-site pairing;
+- certified static/dynamic GEMM One-Shot bufferization postconditions;
+- a default-off exact-21 static whole-problem Vector readiness proof;
+- a bounded coherent exact-22 Linux x64 compatibility control; and
+- a provider evidence auditor that preserves negative results.
+
+Only explicit GEMM has authenticated semantics and CPU execution authority.
+Non-GEMM carriers remain model-only, and buffer/vector artifacts remain
+inspection-only siblings with no preferred ordering. See
+[CONTRACTION_CAMPAIGN_RECONCILIATION_V1.md](CONTRACTION_CAMPAIGN_RECONCILIATION_V1.md).
+
+The next admissible compiler milestone is a certified tiled/dynamic GEMM
+transformation-ordering study. Tensor-first and buffer-first evidence branches
+must use upstream MLIR machinery and may use tile values only as test inputs,
+not semantic or product policy. A survivor must prove exact source pairing,
+non-divisible and dynamic output coverage, K-reduction numerical legality,
+remainder/mask bounds, allocation/copy/destination behavior, retained
+unconsumed obligations, runtime-lowerer rejection, exact-21 regression/package
+firewalls, separately bounded exact-22 compatibility, and independent
+adversarial review. It remains non-executable and does not begin Issue #20,
+public non-GEMM operations, provider policy, Native BLAS parity, or GPU/NPU
+work.
 
 ## Dependency graph
 
@@ -375,7 +379,7 @@ F disposition, not a manufactured parity pass. H does not depend on GPU work.
 
 ## Toolchain gate
 
-The standalone compiler uses LLVM/Clang 21.1.8, Ubuntu revision
+The product/default standalone compiler uses LLVM/Clang 21.1.8, Ubuntu revision
 `1:21.1.8-6ubuntu1`. A system-install simulation showed that adding MLIR 21
 would remove the installed MLIR 22 surface. The exact `libmlir-21`,
 `libmlir-21-dev`, and `mlir-21-tools` payloads were therefore extracted into a
@@ -383,10 +387,11 @@ versioned user-local development prefix without changing system packages.
 The lane validated `clang-cpp` + MLIR + LLVM integration, TableGen dialect
 generation, and narrow static MLIR component linking.
 
-The local prefix is never a product path: builds accept it through
-`MLIR_DIR`, prefer narrow imported MLIR components, and must not export or
-embed the prefix. The system LLVM/Clang CMake packages remain version 21.1.8;
-mixing the installed MLIR 22 surface is a hard error.
+The local prefix is never a product path: builds accept it through `MLIR_DIR`,
+prefer narrow imported MLIR components, and must not export or embed the
+prefix. A separate advanced selector admits only the reviewed coherent exact
+22.1.8 Linux x64 compatibility tuple; it is not product support. Mixing distro
+22 components remains a hard error.
 
 MLIR support remains isolated under `compiler/`. It neither changes the legacy
 root CMake request for MLIR 18.1.3 nor makes the compatibility CPU path depend
@@ -394,12 +399,14 @@ silently on MLIR. No LLVM source build is planned.
 
 ## Deferred work
 
-- Public GEMV, GEVM, and ReLU-GEMM APIs are not part of A--H. Private design
-  work remains input to later semantic-operation milestones.
+- Public GEMV (including transpose-oriented variants) and ReLU-GEMM APIs are
+  not part of A--H. Private design work remains input to later
+  semantic-operation milestones.
 - Broad CUDA, HIP, Metal, Vulkan, NPU, heterogeneous placement, GPU fusion,
-  and accelerator kernel work waits until the CPU semantic loop passes.
+  and accelerator kernel work remains unauthorized by completion of the CPU
+  semantic loop; each requires its own explicit scope and executed gates.
 - Runtime autotuning, a general graph compiler, and a full tensor framework
   remain out of scope.
-- A GPU backend will reuse the same `mdsl.gemm` WHAT and introduce explicit
+- Any future GPU backend should reuse the same `mdsl.gemm` WHAT and introduce explicit
   target capability, legalization, planning, runtime, artifact, correctness,
   and performance gates rather than a backend-specific source foundation.

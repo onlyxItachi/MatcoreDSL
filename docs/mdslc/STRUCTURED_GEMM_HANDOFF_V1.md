@@ -2,11 +2,13 @@
 
 Date: 2026-09-05
 
-Status: implementation checkpoint on `mdslc/structured-gemm-inspection-v1`.
-Clean Release, Debug, MLIR-disabled compatibility, package, focused semantic,
-and independent implementation/test review have passed. Hosted validation is
-left to the draft pull request. This document never grants execution or
-performance authority.
+Status: canonical historical proof checkpoint. Reviewed head
+`4a7a8fc80c7a5489c22038f4ed4b80fd79d1069d` passed 19/19 hosted checks and
+merged normally through PR #21 as
+`327530d287e41c4115365598e76b17e149a1c45a`. Later reusable certificate,
+bufferization, and vector dispositions are recorded in
+`CONTRACTION_CAMPAIGN_RECONCILIATION_V1.md`. This document never grants
+execution or performance authority.
 
 ## Repository and evidence identity
 
@@ -368,12 +370,16 @@ not.
 - No corpus evidence resolves fusion, tiles, register caps, packing lifetime,
   provider crossover, target routes, or Native BLAS Parity.
 
-## Exact next technical boundary
+## Historical next technical boundary
 
-After the clean checkpoint above, the smallest justified follow-up is an
-inspection-only **bufferization legality and destination-identity proof** for
-this already verified structured module. It must remain a new downstream seam,
-not a change to the v1 language meaning or the current executable route.
+At this checkpoint, the smallest justified follow-up was an inspection-only
+**bufferization legality and destination-identity proof** for this already
+verified structured module. PR #26 subsequently completed that exact bounded
+proof; it did not prove general or physical zero-copy behavior. PR #27 added an
+independent static Vector sibling without choosing a universal ordering. The
+current next boundary is owned by
+`CONTRACTION_CAMPAIGN_RECONCILIATION_V1.md`; the criteria below are retained as
+the historical gate that led to PR #26.
 
 Matcore should own admission from this exact handoff schema, a ledger showing
 where each retained semantic fact remains represented or is legally consumed,
@@ -395,5 +401,6 @@ accounts for every allocation/copy, proves destination storage identity and no
 read of initial C, retains or legally consumes every semantic contract, rejects
 unsupported cases, and leaves all current runtime/provider behavior unchanged.
 Zero-copy or in-place lowering must not be claimed unless those properties are
-actually proven. Stop before vector, LLVM, generated execution, planner/provider
-policy, fusion, native-BLAS work, or GPU/NPU work.
+actually proven. The buffer milestone was required to stop before Vector,
+LLVM, generated execution, planner/provider policy, fusion, native-BLAS work,
+or GPU/NPU work, and it did so.

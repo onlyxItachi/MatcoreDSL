@@ -2,11 +2,11 @@
 
 Date: 2026-09-05
 
-Status: integration candidate on `mdslc/bufferization-certified-v2`, validated
-at clean implementation checkpoint
-`3573ac7f8b7758279ad798dd72e6f3f7bc128061`. This is an inspection-only proof
-boundary. It does not authorize generated execution, claim a general
-zero-copy property, or change the existing CPU runtime/provider route.
+Status: canonical inspection-only proof integrated through PR #26. The clean
+reviewed head `7538e3ac4d15da6174a93f3e00a79a349fc74845` merged normally as
+`72f02d15e1a0d3a2dae2bab76ea0c1ee968e67de`. It does not authorize generated
+execution, claim a general zero-copy property, or change the existing CPU
+runtime/provider route.
 
 ## Checkpoints and evidence identity
 
@@ -29,6 +29,8 @@ zero-copy property, or change the existing CPU runtime/provider route.
   `12b5e63`.
 - Explicit dependency-target and final RTTI wiring commit: `ddc793a`.
 - Composition merge retaining canonical `09c96b9`: `3573ac7`.
+- Reviewed pre-merge branch head: `7538e3ac4d15da6174a93f3e00a79a349fc74845`.
+- Canonical PR #26 merge: `72f02d15e1a0d3a2dae2bab76ea0c1ee968e67de`.
 - Preserved historical original bufferization implementation:
   `12187a8023906a1c758800ed5d2e1346549155c0`
 - Preserved historical reconciled implementation:
@@ -295,8 +297,11 @@ runtime/planner, C ABI, installed consumer, source-inaccessible package,
 benchmark-contract, and CLI tests. Product 21.1.8 therefore covers the
 OpenBLAS-enabled path, while 22.1.8 is compatibility-only and OpenBLAS-off.
 These local runs do not constitute Debug, sanitizer, Windows-22, performance,
-parity, or generated-code execution validation. Exact final-head hosted checks
-remain an integration gate rather than an inferred result from these runs.
+parity, or generated-code execution validation. Independent exact-head review
+was GO: exact-21 full CTest passed 69/69 in 160.19 seconds, exact-21 and
+exact-22 focused suites each passed 4/4, and the adversarial executable passed
+296/296 on each tuple. The reviewed head passed all 19 hosted checks before
+normal integration.
 
 ## Independent foundation review
 
@@ -334,11 +339,10 @@ portability beyond the exact verified 21.1.8 product and bounded Linux x64
 policy. The authenticated CPU runtime/provider route remains the only
 executable GEMM path. Issue #15 is unchanged.
 
-The candidate is now composed with canonical main and requires independent
-exact-head review plus hosted checks before integration. The Transform/Vector
-readiness result is a sibling derivation from the same structured source, not a
-proven predecessor or successor of bufferization; a combined branch must not
-invent an ordering between them. A later callable-boundary milestone would
-first need explicit runtime descriptor-to-memref ABI ownership, dominating
-dynamic-shape/noalias/alignment/residency guards, and an execution-authority
-decision. This branch deliberately does not begin that work.
+The canonical proof is integrated. The Transform/Vector readiness result is a
+sibling derivation from the same structured source, not a proven predecessor
+or successor of bufferization; later work must not invent an ordering between
+them. A callable-boundary milestone would first need explicit runtime
+descriptor-to-memref ABI ownership, dominating dynamic-shape/noalias/alignment/
+residency guards, and an execution-authority decision. This checkpoint
+deliberately does not begin that work.

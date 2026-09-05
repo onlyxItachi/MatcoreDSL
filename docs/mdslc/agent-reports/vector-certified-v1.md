@@ -10,6 +10,10 @@ Restacked vector implementation: `6f63e47`
 
 Restack hardening and hosted opt-in coverage: `2f9e687`, `8481482`
 
+Reviewed pre-merge head: `7b9501ec12fe99575cfabdd3e738d32f817370df`
+
+Canonical PR #27 merge: `8ac6c4189b6f79aadee150007b6d26894de02660`
+
 ## Scope and dependency
 
 This lane owns only an internal, default-off, inspection-only proof that a
@@ -21,7 +25,7 @@ authority.
 Canonical PR #25 merge `09c96b980020f53bf1d352f9ee6c28fb470540ea`
 provides the single shared derived-source identity implementation. The old
 patch-equivalent local duplicate was dropped. Merge commit `fa074df` gives the
-candidate explicit ancestry from canonical PR #26.
+survivor explicit ancestry from canonical PR #26.
 
 The earlier experimental worktree
 `MatcoreDSL-wt-structured-transform-vector-v1` remained clean and unchanged at
@@ -104,6 +108,8 @@ The existing exact-21 Release workflow now enables vector readiness only in
 the OpenBLAS-disabled, Matcore-MLIR-enabled matrix row, runs the exact vector
 test with `--no-tests=error`, and then runs the complete suite. Existing check
 names/counts and every other default-OFF configuration are preserved.
+Independent review was GO with no remaining findings, and the reviewed head
+passed all 19 hosted checks before normal integration through PR #27.
 
 ## Rejected alternatives and non-claims
 
