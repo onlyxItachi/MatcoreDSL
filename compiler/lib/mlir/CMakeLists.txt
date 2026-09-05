@@ -222,6 +222,7 @@ if(BUILD_TESTING)
     SYSTEM PRIVATE "${LLVM_INCLUDE_DIRS}" "${MLIR_INCLUDE_DIRS}"
   )
   mdslc_target_enable_warnings(matcore_mlir_derived_handoff_certificate_tests)
+  mdslc_target_match_llvm_rtti(matcore_mlir_derived_handoff_certificate_tests)
   add_test(NAME mlir.structured.derived-certificate-v1
     COMMAND matcore_mlir_derived_handoff_certificate_tests)
 
