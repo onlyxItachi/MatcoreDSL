@@ -80,6 +80,7 @@ option(
   "Build the opt-in inspection-only MLIR Transform/Vector readiness seam"
   OFF
 )
+mark_as_advanced(MDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS)
 set(
   MDSLC_DEFAULT_SEMANTIC_PIPELINE
   "capture-v0"
@@ -107,14 +108,6 @@ if(MDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS AND
   message(FATAL_ERROR
     "MDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS=ON requires "
     "MDSLC_ENABLE_MATCORE_MLIR=ON")
-endif()
-if(MDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS AND
-   DEFINED MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION AND
-   NOT MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION STREQUAL "")
-  message(FATAL_ERROR
-    "MDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS is certified only for "
-    "the exact LLVM/Clang/MLIR 21.1.8 product tuple; the experimental "
-    "toolchain compatibility path is not admitted")
 endif()
 set(MDSLC_MATCORE_MLIR_AVAILABLE "OFF")
 if(MDSLC_ENABLE_MATCORE_MLIR)
@@ -149,6 +142,13 @@ if(NOT MDSLC_EXPERIMENTAL_TOOLCHAIN_VERSION STREQUAL "")
   message(WARNING
     "MDSLC experimental toolchain ${MDSLC_REQUIRED_TOOLCHAIN_VERSION} is "
     "compatibility evidence only; canonical product support remains 21.1.8")
+endif()
+if(MDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS AND
+   MDSLC_EXPERIMENTAL_TOOLCHAIN_ACTIVE)
+  message(FATAL_ERROR
+    "MDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS is certified only for "
+    "the exact LLVM/Clang/MLIR 21.1.8 product tuple; the experimental "
+    "toolchain compatibility path is not admitted")
 endif()
 
 if(MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE AND NOT BUILD_TESTING)

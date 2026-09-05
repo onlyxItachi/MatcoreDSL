@@ -157,13 +157,7 @@ if(MDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS)
       MLIRVectorDialect
   )
   mdslc_target_enable_warnings(matcore_mlir_vector_readiness)
-  if(COMMAND mdslc_target_match_llvm_rtti)
-    mdslc_target_match_llvm_rtti(matcore_mlir_vector_readiness)
-  elseif(DEFINED LLVM_ENABLE_RTTI AND NOT LLVM_ENABLE_RTTI)
-    message(FATAL_ERROR
-      "matcore_mlir_vector_readiness requires the project LLVM RTTI matching "
-      "helper when the selected package disables RTTI")
-  endif()
+  mdslc_target_match_llvm_rtti(matcore_mlir_vector_readiness)
 endif()
 
 if(MDSLC_ENABLE_NATIVE_FRONTEND AND NOT WIN32)
@@ -309,6 +303,8 @@ if(BUILD_TESTING)
         MDSLC_IR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/ir"
     )
     mdslc_target_enable_warnings(
+      matcore_mlir_structured_gemm_vector_readiness_tests)
+    mdslc_target_match_llvm_rtti(
       matcore_mlir_structured_gemm_vector_readiness_tests)
     add_test(NAME mlir.structured.gemm-vector-readiness-v1
       COMMAND matcore_mlir_structured_gemm_vector_readiness_tests)

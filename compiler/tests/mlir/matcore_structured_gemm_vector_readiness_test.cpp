@@ -434,8 +434,9 @@ void testStaticDegenerateGemmGeometries(const v1::Module &source) {
     std::uint64_t k;
     std::uint64_t n;
   };
-  constexpr std::array<Shape, 4> shapes = {Shape{1, 3, 1}, Shape{1, 3, 4},
-                                           Shape{2, 3, 1}, Shape{1, 1, 1}};
+  constexpr std::array<Shape, 5> shapes = {
+      Shape{1, 3, 1}, Shape{1, 3, 4}, Shape{2, 3, 1}, Shape{2, 1, 4},
+      Shape{1, 1, 1}};
   for (const Shape shape : shapes) {
     v1::Module capture = source;
     makeStaticGemm(capture, shape.m, shape.k, shape.n);
