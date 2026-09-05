@@ -841,12 +841,11 @@ std::optional<CompilerToolchain> DiscoverCompilerToolchain(
   const std::optional<support::ProcessResultV1> version = RunCapturedCommand(
       std::move(version_command), false, CompilerChildEnvironment());
   if (!version || version->exit_code != 0 ||
-      !support::clang_version_matches_exact_v1(
-          version->stdout_text + "\n" + version->stderr_text,
-          MDSLC_TOOLCHAIN_VERSION)) {
+      !support::clang_version_matches_exact_v1(version->stdout_text + "\n" +
+                                                   version->stderr_text,
+                                               MDSLC_TOOLCHAIN_VERSION)) {
     std::cerr << "mdslc++: compiler must be the coherent Clang "
-              << MDSLC_TOOLCHAIN_VERSION << " driver: "
-              << *compiler << '\n';
+              << MDSLC_TOOLCHAIN_VERSION << " driver: " << *compiler << '\n';
     return std::nullopt;
   }
 
@@ -894,8 +893,8 @@ std::optional<CompilerToolchain> DiscoverCompilerToolchain(
       relative_resource.is_absolute() ||
       *relative_resource.begin() == "..") {
     std::cerr << "mdslc++: Clang resource directory is outside the selected "
-              << MDSLC_TOOLCHAIN_VERSION << " toolchain prefix: "
-              << resource_directory << '\n';
+              << MDSLC_TOOLCHAIN_VERSION
+              << " toolchain prefix: " << resource_directory << '\n';
     return std::nullopt;
   }
 
@@ -908,8 +907,7 @@ std::optional<CompilerToolchain> DiscoverCompilerToolchain(
       std::cerr << "mdslc++: Windows compile-only output requires llvm-lib "
                    "from the same LLVM "
                 << MDSLC_TOOLCHAIN_VERSION
-                << " tool directory as clang-cl: "
-                << error << '\n';
+                << " tool directory as clang-cl: " << error << '\n';
       return std::nullopt;
     }
     // llvm-lib intentionally has no --version interface.  Same-directory

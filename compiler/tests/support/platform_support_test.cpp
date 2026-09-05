@@ -308,17 +308,14 @@ void test_exact_toolchain_versions() {
          "vendor-prefixed Clang output admits an exact version token");
   expect(!support::clang_version_matches_exact_v1("clang version 22.1.80",
                                                   "22.1.8") &&
-             !support::clang_version_matches_exact_v1(
-                 "clang version 122.1.8", "22.1.8") &&
+             !support::clang_version_matches_exact_v1("clang version 122.1.8",
+                                                      "22.1.8") &&
              !support::clang_version_matches_exact_v1(
                  "clang version 22.1.8-rc1", "22.1.8"),
          "suffix, prefix, and prerelease near-version forgeries are rejected");
-  expect(support::trimmed_output_matches_exact_v1("  22.1.8\r\n",
-                                                  "22.1.8") &&
-             !support::trimmed_output_matches_exact_v1("22.1.80\n",
-                                                       "22.1.8") &&
-             !support::trimmed_output_matches_exact_v1("122.1.8\n",
-                                                       "22.1.8"),
+  expect(support::trimmed_output_matches_exact_v1("  22.1.8\r\n", "22.1.8") &&
+             !support::trimmed_output_matches_exact_v1("22.1.80\n", "22.1.8") &&
+             !support::trimmed_output_matches_exact_v1("122.1.8\n", "22.1.8"),
          "plain tool version output is trimmed and compared exactly");
 }
 

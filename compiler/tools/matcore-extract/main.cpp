@@ -211,7 +211,8 @@ bool validateOutputPaths(const CommandLine &command) {
 
 void usage(std::ostream &output) {
   output
-      << "usage: matcore-extract --input FILE.mdsl --ir-out FILE.json [options] "
+      << "usage: matcore-extract --input FILE.mdsl --ir-out FILE.json "
+         "[options] "
          "-- [clang-driver-placeholder] COMPILE_ARGS\n"
       << "\n"
 #if MDSLC_EXPERIMENTAL_TOOLCHAIN_ACTIVE
@@ -340,12 +341,11 @@ discoverConfiguredCompiler(std::string_view requested_compiler,
   request.environment = support::compiler_environment_sanitization_v1();
   const support::ProcessResultV1 result = support::run_process_v1(request);
   if (!result.launched || !result.error.empty() || result.exit_code != 0 ||
-      !support::clang_version_matches_exact_v1(
-          result.stdout_text + "\n" + result.stderr_text,
-          MDSLC_TOOLCHAIN_VERSION)) {
+      !support::clang_version_matches_exact_v1(result.stdout_text + "\n" +
+                                                   result.stderr_text,
+                                               MDSLC_TOOLCHAIN_VERSION)) {
     std::cerr << "matcore-extract: compiler must be the coherent Clang "
-              << MDSLC_TOOLCHAIN_VERSION << " driver: "
-              << compiler << '\n';
+              << MDSLC_TOOLCHAIN_VERSION << " driver: " << compiler << '\n';
     return std::nullopt;
   }
   support::ProcessRequestV1 resource_request;
@@ -569,18 +569,19 @@ std::optional<CommandLine> parseCommandLine(int argc, char **argv) {
                 << MDSLC_TOOLCHAIN_VERSION
                 << "; canonical product support remains 21.1.8\n";
 #else
-      std::cout << "toolchain: canonical product "
-                << MDSLC_TOOLCHAIN_VERSION << "\n";
+      std::cout << "toolchain: canonical product " << MDSLC_TOOLCHAIN_VERSION
+                << "\n";
 #endif
 #if MDSLC_HAS_NATIVE_FRONTEND
-      std::cout << "native [built"
+      std::cout
+          << "native [built"
 #if MDSLC_EXPERIMENTAL_TOOLCHAIN_ACTIVE
-                << ", experimental compatibility-only"
+          << ", experimental compatibility-only"
 #endif
-                << "]: clang-libtooling-v1; runtime-verified in-process Clang "
-                << MDSLC_TOOLCHAIN_VERSION
-                << " PPCallbacks, parse/Sema, ASTMatcher, canonical declaration "
-                   "and AnnotateAttr authentication, SourceManager ranges\n";
+          << "]: clang-libtooling-v1; runtime-verified in-process Clang "
+          << MDSLC_TOOLCHAIN_VERSION
+          << " PPCallbacks, parse/Sema, ASTMatcher, canonical declaration "
+             "and AnnotateAttr authentication, SourceManager ranges\n";
 #else
       std::cout << "native [not built]\n";
 #endif
@@ -910,8 +911,8 @@ int ExtractorMain(int argc, char **argv) {
                                                MDSLC_TOOLCHAIN_VERSION)) {
     std::cerr << "matcore-extract: loaded in-process Clang runtime is not the "
                  "configured exact "
-              << MDSLC_TOOLCHAIN_VERSION << " tuple: "
-              << linked_clang_version << '\n';
+              << MDSLC_TOOLCHAIN_VERSION << " tuple: " << linked_clang_version
+              << '\n';
     return 2;
   }
 #if MDSLC_EXPERIMENTAL_TOOLCHAIN_ACTIVE && !defined(_WIN32)
@@ -940,7 +941,8 @@ int ExtractorMain(int argc, char **argv) {
     std::cerr << "matcore-extract: loaded experimental clang-cpp runtime "
               << *loaded_runtime_path << " does not match the configured "
               << MDSLC_TOOLCHAIN_VERSION << " runtime " << *expected_runtime;
-    if (!identity_error.empty()) std::cerr << ": " << identity_error;
+    if (!identity_error.empty())
+      std::cerr << ": " << identity_error;
     std::cerr << '\n';
     return 2;
   }

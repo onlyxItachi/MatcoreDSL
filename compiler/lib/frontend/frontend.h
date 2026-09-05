@@ -172,8 +172,7 @@ std::unique_ptr<Frontend> createClangLibToolingFrontend();
 // into matcore-extract. The path query is available on Linux shared-runtime
 // builds and fails closed when the loaded clang-cpp DSO is ambiguous.
 std::string nativeClangRuntimeVersionV1();
-std::optional<std::string> nativeClangRuntimeLibraryPathV1(
-    std::string &error);
+std::optional<std::string> nativeClangRuntimeLibraryPathV1(std::string &error);
 
 // Shared naming contract used by every frontend producer.
 std::string stableSourceIdentity(const std::string &canonical_input);

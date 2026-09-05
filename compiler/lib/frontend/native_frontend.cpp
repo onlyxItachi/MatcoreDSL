@@ -7,15 +7,15 @@
 #include <clang/AST/Attr.h>
 #include <clang/AST/Decl.h>
 #include <clang/AST/DeclCXX.h>
-#include <clang/AST/ExprConcepts.h>
 #include <clang/AST/Expr.h>
 #include <clang/AST/ExprCXX.h>
+#include <clang/AST/ExprConcepts.h>
 #include <clang/AST/RecordLayout.h>
 #include <clang/AST/TypeLoc.h>
 #include <clang/ASTMatchers/ASTMatchFinder.h>
+#include <clang/Basic/CodeGenOptions.h>
 #include <clang/Basic/Diagnostic.h>
 #include <clang/Basic/DiagnosticOptions.h>
-#include <clang/Basic/CodeGenOptions.h>
 #include <clang/Basic/FileEntry.h>
 #include <clang/Basic/SourceManager.h>
 #include <clang/Basic/Version.h>
@@ -1554,8 +1554,7 @@ std::string nativeClangRuntimeVersionV1() {
   return clang::getClangFullVersion();
 }
 
-std::optional<std::string> nativeClangRuntimeLibraryPathV1(
-    std::string &error) {
+std::optional<std::string> nativeClangRuntimeLibraryPathV1(std::string &error) {
   error.clear();
 #if defined(__linux__)
   struct SearchState {
@@ -1570,7 +1569,8 @@ std::optional<std::string> nativeClangRuntimeLibraryPathV1(
     }
     const std::filesystem::path candidate(info->dlpi_name);
     const std::string filename = candidate.filename().string();
-    if (!std::string_view(filename).starts_with("libclang-cpp.so")) return 0;
+    if (!std::string_view(filename).starts_with("libclang-cpp.so"))
+      return 0;
     if (search.path && *search.path != info->dlpi_name) {
       search.ambiguous = true;
       return 1;
