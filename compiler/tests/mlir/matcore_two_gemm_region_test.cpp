@@ -183,6 +183,18 @@ void testRegion(frontend::Result &source) {
     auto function = all<mlir::func::FuncOp>(m).front();
     function.erase();
   }, "source region omission is rejected");
+  for (bool scalar_body : {false, true})
+    reject(module, seal, [scalar_body](mlir::ModuleOp m) {
+      mlir::OpBuilder b(m.getContext());
+      if (scalar_body)
+        b.setInsertionPointToStart(&all<mlir::linalg::MatmulOp>(m).front().getRegion().front());
+      else
+        b.setInsertionPointToStart(&all<mlir::func::FuncOp>(m).front().getBody().front());
+      auto one = mlir::arith::ConstantIntOp::create(b, b.getUnknownLoc(), 1, 32);
+      auto zero = mlir::arith::ConstantIntOp::create(b, b.getUnknownLoc(), 0, 32);
+      mlir::arith::DivSIOp::create(b, b.getUnknownLoc(), one, zero);
+    }, scalar_body ? "memory-free UB cannot hide inside scalar computation"
+                   : "memory-free UB is not a harmless incidental operation");
 
   std::vector<matcore::mdslc::mlir_lowering::CpuRuntimeDispatchRecordV1> records;
   check(!matcore::mdslc::mlir_lowering::lowerExplicitGemmToCpuRuntimeDispatchV1(module, records, error) && records.empty(),

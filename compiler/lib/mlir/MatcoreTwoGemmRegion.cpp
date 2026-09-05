@@ -14,6 +14,7 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/raw_ostream.h"
@@ -264,7 +265,8 @@ bool dimension(mlir::Value size, mlir::Value value, unsigned index) {
 bool canonicalScalar(mlir::linalg::LinalgOp operation, bool contraction) {
   auto &block = operation->getRegion(0).front();
   for (auto &nested : block.without_terminator())
-    if (!mlir::isMemoryEffectFree(&nested) || nested.getNumRegions())
+    if (!mlir::isMemoryEffectFree(&nested) || !mlir::isSpeculatable(&nested) ||
+        nested.getNumRegions())
       return false;
   auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(block.getTerminator());
   if (!yield || yield.getNumOperands() != 1)
@@ -283,6 +285,7 @@ bool canonicalScalar(mlir::linalg::LinalgOp operation, bool contraction) {
          product.getRhs() == block.getArgument(1);
 }
 bool computation(d::RegionCommitOp commit, mlir::Value lhs, mlir::Value rhs,
+                 llvm::SmallPtrSetImpl<mlir::Operation *> &validated,
                  std::string &error) {
   auto matmul = mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(
       stripCast(commit.getValue()).getDefiningOp());
@@ -302,6 +305,8 @@ bool computation(d::RegionCommitOp commit, mlir::Value lhs, mlir::Value rhs,
   if (!fill || fill.getNumDpsInputs() != 1 || fill.getNumDpsInits() != 1 ||
       fill->getNumResults() != 1 || !canonicalScalar(fill, false))
     return fail(error, "region overwrite must initialize every output element");
+  validated.insert(matmul.getOperation());
+  validated.insert(fill.getOperation());
   auto zero = fill.getDpsInputOperand(0)->get().getDefiningOp<mlir::arith::ConstantOp>();
   auto constant = zero ? mlir::dyn_cast<mlir::FloatAttr>(zero.getValue()) : mlir::FloatAttr{};
   auto *context = commit.getContext();
@@ -374,8 +379,10 @@ bool verifyFunction(mlir::func::FuncOp function, std::string &error) {
         return fail(error, "region end must follow both commits");
       end = value;
       ++boundary;
-    } else if (!mlir::isMemoryEffectFree(&op)) {
-      return fail(error, "region contains an unmodeled observable effect");
+    } else if (!mlir::isMemoryEffectFree(&op) ||
+               (!mlir::isa<mlir::linalg::LinalgOp>(&op) &&
+                (!mlir::isSpeculatable(&op) || op.getNumRegions()))) {
+      return fail(error, "region contains an unmodeled effect or unsafe speculative computation");
     }
   }
   if (!begin || !end || !guard[0] || !guard[1] || !commit[0] || !commit[1] ||
@@ -386,6 +393,7 @@ bool verifyFunction(mlir::func::FuncOp function, std::string &error) {
       guard[1].getOrder() != commit[0].getOrder() || end.getOrder() != commit[1].getOrder())
     return fail(error, "region successful-continuation chain is disconnected");
   mlir::Builder b(function.getContext());
+  llvm::SmallPtrSet<mlir::Operation *, 4> validated_computations;
   for (unsigned stage = 0; stage != 2; ++stage) {
     auto site = mlir::dyn_cast<mlir::DictionaryAttr>(sites[stage]);
     auto bindings = site ? site.getAs<mlir::ArrayAttr>("bindings") : mlir::ArrayAttr{};
@@ -426,9 +434,13 @@ bool verifyFunction(mlir::func::FuncOp function, std::string &error) {
     if (stage && (arguments[1] != commit[0].getDescriptor() ||
                   arguments[0] == commit[0].getDescriptor()))
       return fail(error, "second GEMM must consume the first committed descriptor version");
-    if (!computation(commit[stage], lhs, rhs, error))
+    if (!computation(commit[stage], lhs, rhs, validated_computations, error))
       return false;
   }
+  for (auto &operation : function.getBody().front())
+    if (mlir::isa<mlir::linalg::LinalgOp>(&operation) &&
+        !validated_computations.contains(&operation))
+      return fail(error, "region contains an unvalidated structured computation");
   return true;
 }
 } // namespace
