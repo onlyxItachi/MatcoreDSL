@@ -87,6 +87,39 @@ target_link_libraries(
 mdslc_target_enable_warnings(matcore_mlir_structured_handoff)
 mdslc_target_match_llvm_rtti(matcore_mlir_structured_handoff)
 
+# Bufferization is a separate, inspection-only proof boundary. It consumes the
+# exact structured handoff through upstream One-Shot Bufferize without making
+# the semantic or runtime layers depend on buffer transformation machinery.
+add_library(
+  matcore_mlir_bufferized_handoff
+  STATIC
+    MatcoreBufferizedGemmHandoff.cpp
+)
+target_compile_features(matcore_mlir_bufferized_handoff PUBLIC cxx_std_20)
+target_include_directories(
+  matcore_mlir_bufferized_handoff
+  PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>"
+)
+target_include_directories(
+  matcore_mlir_bufferized_handoff
+  SYSTEM PRIVATE
+    "${LLVM_INCLUDE_DIRS}"
+    "${MLIR_INCLUDE_DIRS}"
+)
+target_link_libraries(
+  matcore_mlir_bufferized_handoff
+  PUBLIC
+    matcore_mlir_structured_handoff
+  PRIVATE
+    MLIRBufferizationDialect
+    MLIRBufferizationTransforms
+    MLIRLinalgTransforms
+    MLIRMemRefDialect
+    MLIRTensorTransforms
+)
+mdslc_target_enable_warnings(matcore_mlir_bufferized_handoff)
+
 if(MDSLC_ENABLE_NATIVE_FRONTEND AND NOT WIN32)
   # Recovery analysis is kept in a separate internal library so the general
   # semantic dialect and explicit-v1 bridge never depend on Clang frontend
@@ -225,6 +258,29 @@ if(BUILD_TESTING)
   mdslc_target_match_llvm_rtti(matcore_mlir_derived_handoff_certificate_tests)
   add_test(NAME mlir.structured.derived-certificate-v1
     COMMAND matcore_mlir_derived_handoff_certificate_tests)
+
+  add_executable(
+    matcore_mlir_bufferized_gemm_handoff_tests
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/mlir/matcore_bufferized_gemm_handoff_test.cpp"
+  )
+  target_link_libraries(
+    matcore_mlir_bufferized_gemm_handoff_tests
+    PRIVATE
+      matcore_mlir_bufferized_handoff
+      MLIRParser
+  )
+  target_include_directories(
+    matcore_mlir_bufferized_gemm_handoff_tests
+    SYSTEM PRIVATE "${LLVM_INCLUDE_DIRS}" "${MLIR_INCLUDE_DIRS}"
+  )
+  target_compile_definitions(
+    matcore_mlir_bufferized_gemm_handoff_tests
+    PRIVATE
+      MDSLC_IR_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/ir"
+  )
+  mdslc_target_enable_warnings(matcore_mlir_bufferized_gemm_handoff_tests)
+  add_test(NAME mlir.bufferization.gemm-handoff-v1
+    COMMAND matcore_mlir_bufferized_gemm_handoff_tests)
 
   add_executable(
     matcore_mlir_cpu_runtime_lowering_tests
