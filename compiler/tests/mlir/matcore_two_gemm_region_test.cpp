@@ -121,6 +121,13 @@ void testRegion(frontend::Result &source) {
   check(!mlir::isMemoryEffectFree(commits[1]), "unused last tensor still has observable write");
   std::string error;
   check(bridge::verifyTwoGemmRegionMatchesNativeEvidenceV1(seal, module, error), "initial source pairing: " + error);
+  mlir::MLIRContext parsed_context;
+  bridge::registerTwoGemmRegionDialectsV1(parsed_context);
+  auto parsed = mlir::parseSourceString<mlir::ModuleOp>(
+      bridge::serializeDeterministicMlir(module), &parsed_context);
+  check(static_cast<bool>(parsed), "exported descriptor/order types parse in a fresh context");
+  check(parsed && bridge::verifyTwoGemmRegionMatchesNativeEvidenceV1(seal, *parsed, error),
+        "serialized region retains source pairing across independent MLIR contexts: " + error);
   frontend::Result alternate;
   check(capture(alternate, true) && alternate.native_evidence,
         "same source admits under a separately sealed compilation context");
