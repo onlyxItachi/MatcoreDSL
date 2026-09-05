@@ -2,6 +2,7 @@
 #include "MatcoreContractionModel.h"
 #include "MatcoreOps.h"
 #include "MatcoreRegionBoundaryOps.h"
+#include "MatcoreRegionGuardLedger.h"
 #include "MatcoreStructuredGemmHandoff.h"
 #include "MatcoreV1Bridge.h"
 #include "matcore_ir_v1.h"
@@ -29,17 +30,6 @@ namespace {
 namespace d = mlir_dialect;
 constexpr llvm::StringLiteral kFailure =
     "may_write_output_before_failure_no_rollback";
-constexpr llvm::StringLiteral kGuards[] = {
-    "descriptor_rank_dtype_layout_host", "positive_compatible_dimensions",
-    "required_alignment", "output_input_no_overlap", "fp_environment",
-    "target_provider_policy"};
-
-mlir::ArrayAttr guards(mlir::Builder &b) {
-  llvm::SmallVector<mlir::Attribute> values;
-  for (auto name : kGuards)
-    values.push_back(b.getStringAttr(name));
-  return b.getArrayAttr(values);
-}
 std::string printed(mlir::Attribute value) {
   std::string result;
   llvm::raw_string_ostream stream(result);
@@ -65,6 +55,7 @@ struct SourceRegion {
   std::array<mlir::DictionaryAttr, 2> semantics;
   std::array<mlir::FunctionType, 2> types;
   std::array<std::array<unsigned, 3>, 2> bindings;
+  std::array<mlir::DictionaryAttr, 2> ledgers;
   mlir::Location location;
   std::string symbol;
   unsigned descriptor_count;
@@ -111,7 +102,7 @@ bool collectSource(const frontend::AuthenticatedNativeFrontendEvidenceV1 &seal,
       error = "sealed two-GEMM region lacks the admitted producer/consumer relationship";
       return false;
     }
-    SourceRegion region{{}, {}, {}, {}, b.getUnknownLoc(),
+    SourceRegion region{{}, {}, {}, {}, {}, b.getUnknownLoc(),
                         "__matcore_region_" + candidate.region_id, 0};
     llvm::StringMap<unsigned> descriptors;
     llvm::SmallVector<mlir::Attribute> descriptor_ids;
@@ -152,6 +143,10 @@ bool collectSource(const frontend::AuthenticatedNativeFrontendEvidenceV1 &seal,
             b.getNamedAttr("snapshot_stage", b.getI64IntegerAttr(stage)),
             b.getNamedAttr("argument", b.getI64IntegerAttr(inserted.first->second))}));
       }
+      region.ledgers[stage] = buildRegionGuardLedgerV1(
+          b, region.semantics[stage], b.getArrayAttr(bindings), stage, error);
+      if (!region.ledgers[stage])
+        return false;
       sites.push_back(b.getDictionaryAttr({
           b.getNamedAttr("site_id", b.getStringAttr(site.site_id)),
           b.getNamedAttr("source_contract", region.semantics[stage]),
@@ -204,7 +199,7 @@ void appendRegion(mlir::ModuleOp module, const SourceRegion &source) {
         b, source.location, {current, lhs_desc, rhs_desc, output}, {order_type},
         {b.getNamedAttr("stage", b.getI64IntegerAttr(stage)),
          b.getNamedAttr("semantic_contract", source.semantics[stage]),
-         b.getNamedAttr("required_guards", guards(b))});
+         b.getNamedAttr("guard_ledger", source.ledgers[stage])});
     const auto read = [&](mlir::Value descriptor, unsigned index,
                            llvm::StringRef role) -> mlir::Value {
       return build<d::RegionReadOp>(
@@ -412,7 +407,6 @@ bool verifyFunction(mlir::func::FuncOp function, std::string &error) {
   if (!ret || ret.getNumOperands() || guard[0].getOrder() != begin.getOrder() ||
       guard[1].getOrder() != commit[0].getOrder() || end.getOrder() != commit[1].getOrder())
     return fail(error, "region successful-continuation chain is disconnected");
-  mlir::Builder b(function.getContext());
   llvm::SmallPtrSet<mlir::Operation *, 4> validated_computations;
   for (unsigned stage = 0; stage != 2; ++stage) {
     auto site = mlir::dyn_cast<mlir::DictionaryAttr>(sites[stage]);
@@ -421,16 +415,20 @@ bool verifyFunction(mlir::func::FuncOp function, std::string &error) {
     auto type = encoded_type ? mlir::dyn_cast<mlir::FunctionType>(encoded_type.getValue()) : mlir::FunctionType{};
     if (!bindings || bindings.size() != 3 || !type || type.getNumInputs() != 3 ||
         type.getNumResults() != 1 || !same(guard[stage].getSemanticContract(), site.get("source_contract")) ||
-        guard[stage].getRequiredGuards() != guards(b) ||
         commit[stage].getChecked() != guard[stage].getChecked())
       return fail(error, "region guard lost a source contract or conditional runtime obligation");
+    if (!verifyRegionGuardLedgerV1(guard[stage].getGuardLedger(),
+                                  guard[stage].getSemanticContract(), bindings,
+                                  stage, error))
+      return false;
     std::array<mlir::Value, 3> arguments;
     for (unsigned role = 0; role != 3; ++role) {
       auto binding = mlir::dyn_cast<mlir::DictionaryAttr>(bindings[role]);
       auto index = binding ? binding.getAs<mlir::IntegerAttr>("argument") : mlir::IntegerAttr{};
       auto descriptor = binding ? binding.getAs<mlir::StringAttr>("descriptor") : mlir::StringAttr{};
       auto snapshot = binding ? binding.getAs<mlir::IntegerAttr>("snapshot_stage") : mlir::IntegerAttr{};
-      if (!index || index.getInt() < 0 || index.getInt() >= function.getNumArguments() ||
+      if (!index || !index.getType().isSignlessInteger(64) || index.getInt() < 0 ||
+          index.getInt() >= function.getNumArguments() ||
           !descriptor || descriptor != descriptors[index.getInt()] ||
           !snapshot || snapshot.getInt() != stage)
         return fail(error, "region descriptor binding or snapshot stage changed");

@@ -177,7 +177,8 @@ endif()
 if(MDSLC_ENABLE_NATIVE_FRONTEND AND NOT WIN32)
   # This source-authenticated inspection boundary is not an execution consumer.
   # Keep frontend evidence and structured machinery out of the core dialect.
-  add_library(matcore_mlir_two_gemm_region STATIC MatcoreTwoGemmRegion.cpp)
+  add_library(matcore_mlir_two_gemm_region STATIC
+    MatcoreTwoGemmRegion.cpp MatcoreRegionGuardLedger.cpp)
   target_compile_features(matcore_mlir_two_gemm_region PUBLIC cxx_std_20)
   target_include_directories(matcore_mlir_two_gemm_region PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>")
