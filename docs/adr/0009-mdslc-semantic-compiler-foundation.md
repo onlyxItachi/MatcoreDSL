@@ -65,7 +65,7 @@ The architecture has three non-overlapping responsibility layers:
 | Layer | Owner | Examples |
 | --- | --- | --- |
 | WHAT | authenticated capture plus the Matcore MLIR semantic dialect | GEMM, map domain, types, shapes, numerical intent, effects, aliases, provenance |
-| HOW | MDSLC legality, planning, structured transformation, scheduling, and library/generated-code selection | Linalg/Tensor/MemRef/Vector and generic GPU substrates, OpenBLAS versus native, fusion legality, bufferization, tiling, vectorization, target constraints |
+| HOW | MDSLC semantic legality, fact consumption, policy/planning, and orchestration; upstream MLIR transformation machinery | Linalg/Tensor/MemRef/Transform/Vector substrates, OpenBLAS versus native, fusion legality, bufferization, tiling, vectorization, target constraints |
 | MACHINE | LLVM and target-specific dialects plus platform/vendor toolchains | LLVM, NVGPU/NVVM, AMDGPU/ROCDL, target object generation, assembly, and linking |
 
 The semantic dialect never contains a premature implementation name such as
@@ -409,6 +409,13 @@ It also linked and ran a narrow static `MLIRIR`/`MLIRSupport` executable with no
 should prefer the narrow imported MLIR components they consume rather than a
 monolithic shared library. No LLVM source build is required.
 
+A later bounded portability control admits one separately authenticated,
+coherent LLVM/Clang/MLIR 22.1.8 Linux x64 tuple behind an advanced internal
+selector. Product/default/release truth remains exact 21.1.8. Mixed distro-22
+components, cross-version linking, Windows-22 support, redistribution, and a
+stable cross-version MLIR interchange contract remain rejected. See
+`docs/mdslc/agent-reports/mlir-upstream-portability-v1.md`.
+
 ## Milestone dependency graph
 
 ```text
@@ -530,7 +537,7 @@ details into public headers.
   permission: risks semantic miscompilation.
 - Encoding inference/training or CPU/GPU as different mathematical GEMM ops:
   confuses WHAT with HOW.
-- Linking installed MLIR 22 into the Clang/LLVM 21 frontend or changing the
+- Linking mixed distro MLIR 22 into the Clang/LLVM 21 frontend or changing the
   legacy MLIR 18 dependency: creates an incoherent toolchain and unrelated
   regression risk.
 - Blocking CPU beta on handwritten BLAS parity: mistakes an R&D metric for the
@@ -543,6 +550,8 @@ preserving its verified capture DTO and CPU product path. The near-term cost is
 a strict MLIR dependency gate and more explicit numerical/effect contracts
 before fusion or recovered-idiom replacement is allowed.
 
-This ADR does not freeze the public API/ABI/backend contract, claim MLIR
-lowering is implemented, complete Milestone 7, expose GEMV/GEVM, or authorize
-GPU work. Those claims require their own executed gates.
+This ADR does not freeze the public API/ABI/backend contract, complete
+Milestone 7, expose public GEMV (including transposed/oriented variants), or
+authorize GPU work. Those claims require their own executed gates. Later
+structured, bufferization, and vector proof points remain inspection-only and
+do not alter that execution boundary.
