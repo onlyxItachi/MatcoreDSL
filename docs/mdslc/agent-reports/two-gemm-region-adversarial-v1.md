@@ -113,6 +113,81 @@ Wider Debug, OpenBLAS, sanitizer, compatibility and hosted outcomes belong to
 the integration record. They must not be inferred from these focused runs or
 from the Release configuration, which has OpenBLAS disabled.
 
+## Hosted sanitizer follow-up: allocator protocol, not a suppressed failure
+
+Subsequent hosted ASan+UBSan validation failed four existing MLIR tests during
+the first builtin context/type registration, before Matcore's dialect loaded.
+The reviewer inspected `/tmp/mdslc-region-ci-asan-job.log`, SHA-256
+`f4b2e3987c5e4fd586ab95cccb1322730b6e9bb6a418b299aba6ae7716ca6f0b`.
+The first allocation called an instrumented weak LLVM allocator slow path;
+the next builtin type accessed a still-user-poisoned byte in the same live
+slab. This was not a freed-storage trace or execution of a region operation.
+
+Exact-version installed header inspection explains the protocol mismatch:
+the ASan slow path poisons a slab and unpoisons the first allocation, while an
+unsanitized inline fast path lacks the unpoisoning required for later valid
+allocations. The same mechanism is visible in the
+[LLVM 21.1.8 allocator source](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/llvm/include/llvm/Support/Allocator.h).
+Independent symbol inspection and execution of the MLIR lane's LLVM-only
+two-translation-unit reproducer confirmed that link-time selection of the weak
+template is sufficient even when the registration function does not execute:
+the mixed protocol exits 1 with `use-after-poison`; the compatible registration
+object exits 0 and reads/writes its second allocation successfully.
+
+The reviewer separately built an ASan+UBSan caller linked to the compatible
+registration object. Valid allocation passed; deliberate manual poisoning,
+heap overflow and heap use-after-free each exited 1 with the corresponding
+ASan diagnostic. Scratch source:
+`/tmp/mdslc-asan-review-controls.kqc2f3/controls.cpp`, SHA-256
+`0b12aac0c659d0ed593b25da63c75901c059253d3ecf5d5288388f94deec6a2e`.
+Only diagnostic symbolization was disabled after local symbolizer stalls.
+Poisoning, leak checks and failure-on-error remained enabled. Scratch processes
+were allowed to finish or explicitly stopped; no system/toolchain changes or
+duplicate repository builds were performed by the reviewer.
+
+The correction at `3c81bfb8509bef54c798bebe6b5a59cf0be802a5`, plus the integration
+owner's source-specific CMake option, was independently reviewed. Only
+`MatcoreRegionTypeRegistration.cpp`, containing one `addTypes` call, is compiled
+with trailing `-fno-sanitize=address`; UBSan remains enabled. Actual Ninja
+commands confirmed that the parser, boundary operations, region builder and
+verifier, and tests keep ASan+UBSan. No semantic or execution logic was moved
+into the shim.
+
+After the correction, the reviewer independently executed the five MLIR
+sanitizer binaries under leak detection, halt-on-error, strict string checking,
+initialization-order checking and UBSan halt-on-error:
+
+| Binary scope | Independent outcome |
+| --- | --- |
+| Semantic core | 204 checks, zero failures |
+| Map/domain | 343 checks, zero failures |
+| CPU runtime-dispatch lowering | 18 checks, zero failures |
+| Recovered GEMM bridge | 78/78 checks passed |
+| Ordered two-GEMM region | 85/85 checks passed |
+
+The integration owner's six-test rerun, including the new frontend test, was
+also independently inspected: 6/6 passed in 0.62 seconds, including all four
+original failures. Log `/tmp/mdslc-region-asan-fixed-tests.log`, SHA-256
+`c5c7f111a8667b49961c3d6917957e45f50448c0203140e7ea5f0a25467a6542`.
+The integration record owns the complete sanitizer and subsequent hosted
+outcomes; the individual reruns above do not substitute for those gates.
+
+The durable real-MLIR controls were additionally reviewed. The checker retains
+caller sanitizer policy; a caller disabling manual poisoning must fail it.
+The reviewer requested explicit runtime checks rather than Python `assert`,
+which optimization can erase. The implementation lane made that correction and
+reported an optimized-Python positive run plus a poison-disabled negative run.
+Those two additional harness executions were not independently rerun here.
+
+Rejected alternatives included disabling user poisoning globally, suppressing
+the `SmallVector` diagnostic, excluding entire MLIR/semantic libraries from
+ASan, and removing the failing tests. This scoped correction restores the
+pinned non-ASan prebuilt dependency's allocator protocol; it does not claim
+sanitizer instrumentation inside that prebuilt library. A coherently
+ASan-instrumented upstream tuple must revisit this explicit boundary. There is
+no remaining blocker in the reviewed shim; exact final hosted checks remain
+required before integration approval is expanded.
+
 ## Exactly one next engineering boundary
 
 Build an inspection-only per-call guard/discharge ledger for this same admitted
