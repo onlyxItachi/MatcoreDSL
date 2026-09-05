@@ -15,6 +15,10 @@ Status date: 2026-09-05
   [CORPUS_REENTRY_RECONCILIATION_V1.md](CORPUS_REENTRY_RECONCILIATION_V1.md)
 - Corpus-informed structured GEMM handoff checkpoint:
   [STRUCTURED_GEMM_HANDOFF_V1.md](STRUCTURED_GEMM_HANDOFF_V1.md)
+- Contraction campaign implementation checkpoint:
+  `8ac6c4189b6f79aadee150007b6d26894de02660`
+- Contraction campaign reconciliation and current compiler map:
+  [CONTRACTION_CAMPAIGN_RECONCILIATION_V1.md](CONTRACTION_CAMPAIGN_RECONCILIATION_V1.md)
 - Milestone 6 pull request: `#14`, merged normally
 - Milestone 6 umbrella issue / GitHub milestone: `#13` / `#4`, closed
 - Milestone 6 immutable tag: `mdslc-cpu-performance-audit-v1`
@@ -274,35 +278,38 @@ not freeze the public API, ABI, or backend contract or establish native-BLAS
 parity. The bounded product contract is in
 [CPU_BETA_V1.md](CPU_BETA_V1.md).
 
-## Corpus-informed structured GEMM handoff
+## Corpus-informed contraction campaign
 
-The first connected `mdsl.gemm` to structured MLIR seam is implemented on
-`mdslc/structured-gemm-inspection-v1` at focused code commit
-`d696cd9e2f06bb7580eff22fae6cd42ce4ab78da`. It accepts only the exact verified
-explicit Matcore IR v1 semantic bridge envelope and derives a separate
-analysis-only tensor/DPS module with positive-zero `linalg.fill` followed by
-`linalg.matmul`. The complete source semantic contract, provenance, shapes,
-layouts, effects, destination meaning, numerical policy, and source identity
-remain mechanically verified; the existing CPU lowerer continues to consume
-the untouched semantic module and rejects the structured artifact.
+The original connected `mdsl.gemm` to structured MLIR seam remains the
+authoritative starting point. The completed campaign, canonical through
+`8ac6c4189b6f79aadee150007b6d26894de02660`, adds four bounded layers without
+changing its language semantics or execution route:
 
-Focused Release validation passed 220 structured adversarial checks, 13 CLI
-cases, 132 native semantic/structured/CPU integration checks, and all three
-owned CTest entries. At clean committed checkpoint
-`3243e06d6277d8e882df7748a2b5620c51478576`, the MLIR-enabled Release and Debug
-profiles each passed 64/64 CTests, while the MLIR-disabled/default-`capture-v0`
-Release compatibility profile passed 58/58. Installed, relocated, and
-source-inaccessible consumers passed; an explicit install scan found no
-structured header/target or concrete MLIR component dependency in the public
-package. Independent code and test review found no remaining correctness or
-execution-authority blocker.
+- a reusable internal topology model for distinct GEMM, GEMV, DOT, GER, and
+  aligned-batch GEMM identities, including orientation and degenerate-geometry
+  controls;
+- an operation-neutral derived-source certificate for exact per-site and
+  ordered-site-set pairing, while leaving admission and body semantics to each
+  operation owner;
+- a certified One-Shot Bufferize result for the exact static/dynamic GEMM
+  program and options, with allocation/copy and argument-2 destination checks;
+  and
+- a default-off, exact-MLIR-21 proof that positive static rank-2 f32 GEMM can
+  satisfy an exact whole-problem `vector.contract` postcondition.
 
-This is not bufferization, generated execution, vector or machine lowering,
-performance evidence, a public interface commitment, or authority to execute
-serialized MLIR. Issue #15 remains partial and open under its original Native
-BLAS Parity criteria. The exact schema, guarantees, evidence, and next boundary
-are recorded in
-[STRUCTURED_GEMM_HANDOFF_V1.md](STRUCTURED_GEMM_HANDOFF_V1.md).
+Only GEMM has authenticated source semantics. GEMV, DOT, GER, batches, and
+transpose-oriented forms remain model-only; unit dimensions never silently
+change operation identity. Buffer and Vector are sibling inspection results,
+not a proven transformation order. Exact coherent LLVM/Clang/MLIR 22.1.8 is a
+Linux x64 compatibility control only; the product/default tuple remains exact
+21.1.8.
+
+The existing CPU runtime/provider path remains the only execution authority.
+No generated execution, physical zero-copy, target support, performance,
+public API/ABI/interchange freeze, or Native BLAS parity follows. Issue #15
+remains partial and open. Exact guarantees, falsifiers, checkpoints, and the
+next evidence boundary are recorded in
+[CONTRACTION_CAMPAIGN_RECONCILIATION_V1.md](CONTRACTION_CAMPAIGN_RECONCILIATION_V1.md).
 
 ## Milestone 7 native BLAS parity
 
@@ -826,7 +833,9 @@ and all accelerator compiler paths were not attempted.
 
 - Linux and hosted Windows x64, Clang/LLVM 21.1.8, one `.mdsl` input, and
   synchronous host-resident rank-2 row-major contiguous GEMM are the validated
-  compiler/runtime scope. Linux remains the only performance-calibration host.
+  product compiler/runtime scope. Exact 22.1.8 is a bounded Linux x64
+  compatibility control only. Linux remains the only performance-calibration
+  host.
 - `matrix_view` is a minimal host f32 view, not a general tensor framework.
 - Driver-managed shared/static/PIE modes and opaque response/linker option
   forms remain rejected; emit `-c` and perform an ordinary explicit final link.
@@ -839,11 +848,12 @@ and all accelerator compiler paths were not attempted.
 - One-node topology discovery is physically validated on Linux and hosted
   Windows. Multi-node NUMA policy is synthetic-only, with no runtime page
   placement or migration.
-- Windows OpenBLAS, a clean-machine installer test, GEMV, GEVM, ReLU-GEMM,
-  Windows Matcore-MLIR semantic execution, generated Linalg/Vector compute,
-  CUDA/cuBLAS, HIP, Metal, NPU placement, fusion, and autotuning are not
-  implemented or claimed. Linux explicit-GEMM Matcore-MLIR runtime-dispatch
-  lowering exists; map/domain and recovered-loop routes remain inspection-only.
+- Windows OpenBLAS, a clean-machine installer test, public GEMV (including
+  transpose-oriented variants), ReLU-GEMM, Windows Matcore-MLIR semantic
+  execution, generated Linalg/Vector execution, CUDA/cuBLAS, HIP, Metal, NPU
+  placement, fusion, and autotuning are not implemented or claimed. Linux
+  explicit-GEMM Matcore-MLIR runtime-dispatch lowering exists; map/domain,
+  recovered-loop, bufferized, and vector routes remain inspection-only.
 
 The standalone native CPU architecture proof, Milestone 4 performance
 foundation, published Linux Milestone 5 backend, and focused hosted Windows
