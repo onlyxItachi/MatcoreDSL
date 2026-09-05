@@ -232,8 +232,8 @@ def main() -> int:
                     require("observed:6" in result.stdout,
                             "host observer must see the first GEMM output")
                 if name == "rhs_observer":
-                    require("rhs-observed:" in result.stdout,
-                            "RHS host observer still executes between the source calls")
+                    require("rhs-observed:62\n" in result.stdout,
+                            "RHS host observer must see the first successful output write")
                 checks += 2
 
         # Competing definitions remain valid C++, but cannot authenticate a
