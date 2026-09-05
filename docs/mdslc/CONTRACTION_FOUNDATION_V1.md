@@ -152,6 +152,16 @@ certificate for construction, standalone envelope checking, exact contract
 selection, source pairing, and fingerprints. Its emitted v1 module and textual
 golden are unchanged.
 
+The reusable downstream identity API is tested independently of bufferization,
+vectorization, and any operation-specific body. A deliberately inert
+`func.return` carrier passes the generic certificate checks: this is the
+intended proof that the layer binds identity rather than silently granting
+operation semantics. Standalone verification proves only internal retained
+type/fingerprint/site-set consistency. Paired verification additionally binds
+that identity to the exact supplied structured source. Neither mode grants
+execution authority; a downstream consumer must authenticate its source body
+and verify its own derived postconditions.
+
 The following remain intentionally GEMM-specific:
 
 - admission through `verifyMatcoreV1BridgeModule`;
@@ -179,6 +189,10 @@ The focused tests reject:
   context;
 - core-invalid semantic-source or structured MLIR, cross-module function
   handles, and semantic/structured hybrid fingerprint handles;
+- direct downstream-certificate reorder, drop, duplication, cross-site digest
+  substitution, retained-type mutation, per-site/aggregate digest mutation,
+  aggregate-count mutation, source substitution, module/site authority
+  escalation, provenance drift, and function/argument location drift;
 - one-sided entry-argument location drift through the generic digest and pair,
   plus source-only, structured-only, and matching two-sided location forgery
   through the exact operation-specific GEMM verifiers;
