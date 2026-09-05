@@ -695,8 +695,8 @@ int support_test_main(int argc, char **argv) {
            "temporary directory exists while owned");
     test_unicode_boundaries();
     test_windows_quoting();
-  test_compiler_argument_policy();
-  test_exact_toolchain_versions();
+    test_compiler_argument_policy();
+    test_exact_toolchain_versions();
     test_prospective_path_identity(removed_path);
     test_response_files(removed_path);
     test_argument_files(removed_path);
