@@ -168,6 +168,31 @@ misses any acceptance-enabled measured threshold receives a summarizer
 rejected without a performance verdict. Shapes, timing modes, or comparators
 must not be removed merely to manufacture a pass.
 
+## Completeness audit before summarization
+
+The diagnostic auditor inventories an interrupted or transferred campaign
+without weakening the strict summarizer. The expected source checkpoint and
+physical-core count are explicit inputs:
+
+```text
+python3 compiler/tests/performance/audit_native_blas_parity_evidence.py \
+  --forward-manifest RAW_FORWARD_OUTSIDE_GIT/manifest.json \
+  --reverse-manifest RAW_REVERSE_OUTSIDE_GIT/manifest.json \
+  --expected-source-commit EXACT_40_OR_64_HEX_COMMIT \
+  --physical-cores 12 \
+  --json-out AUDIT_OUTSIDE_GIT.json
+```
+
+Exit status `0` means only that both bundles passed the existing strict bundle
+authenticator and paired successfully at the explicitly requested checkpoint.
+It means the evidence is ready for the bounded summarizer; it does not mean a
+performance threshold passed or that Native BLAS Parity is complete. Exit
+status `1` leaves a machine-readable gap matrix, including missing case keys,
+unfinished states, raw-file/digest failures, provider-metadata failures, and
+the strict authenticator's rejection. Exit status `2` is a tool/input safety
+failure. The auditor refuses to overwrite its manifests, raw files, benchmark
+binary, runner, summarizer, or itself.
+
 ## Change-control rule
 
 Candidate changes must preserve the stable C ABI, explicit workspace,

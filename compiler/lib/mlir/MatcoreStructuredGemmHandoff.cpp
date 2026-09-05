@@ -1,6 +1,8 @@
 #include "MatcoreStructuredGemmHandoff.h"
 
+#include "MatcoreContractionModel.h"
 #include "MatcoreOps.h"
+#include "MatcoreStructuredHandoffCertificate.h"
 #include "MatcoreV1Bridge.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -14,7 +16,6 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Twine.h"
-#include "llvm/Support/raw_ostream.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -25,8 +26,6 @@
 namespace matcore::mdslc::mlir_bridge {
 namespace {
 
-constexpr llvm::StringLiteral kSemanticBridgeSchema =
-    "matcore-mlir-semantic-v1";
 constexpr llvm::StringLiteral kStructuredFunctionPrefix =
     "__matcore_structured_";
 constexpr llvm::StringLiteral kSemanticFunctionPrefix =
@@ -37,31 +36,6 @@ constexpr llvm::StringLiteral kOverwriteRole =
     "destination_overwrite_zero_fill";
 constexpr llvm::StringLiteral kContractionRole = "gemm_contraction";
 
-constexpr llvm::StringLiteral kSemanticModuleFields[] = {
-    "mdsl.bridge_schema",      "mdsl.capture_schema",
-    "mdsl.capture_version",    "mdsl.execution_intent",
-    "mdsl.numerical_profile",  "mdsl.producer",
-    "mdsl.semantic_version",   "mdsl.source_file",
-    "mdsl.translation_unit",
-};
-
-constexpr llvm::StringLiteral kStructuredModuleFields[] = {
-    "mdsl.analysis_only",
-    "mdsl.capture_schema",
-    "mdsl.capture_version",
-    "mdsl.execution_authority",
-    "mdsl.execution_intent",
-    "mdsl.numerical_profile",
-    "mdsl.producer",
-    "mdsl.source_producer",
-    "mdsl.source_bridge_schema",
-    "mdsl.source_file",
-    "mdsl.source_semantic_version",
-    "mdsl.structured_handoff_schema",
-    "mdsl.structured_handoff_version",
-    "mdsl.translation_unit",
-};
-
 constexpr llvm::StringLiteral kGemmContractFields[] = {
     "accumulation_type",    "aliasing",      "effects",
     "lhs_semantics",        "numerical",     "origin",
@@ -70,14 +44,19 @@ constexpr llvm::StringLiteral kGemmContractFields[] = {
     "site_id",              "synchronization",
 };
 
-constexpr llvm::StringLiteral kStructuredFunctionFields[] = {
-    "mdsl.capture_ordinal",       "mdsl.semantic_contract",
-    "mdsl.site_id",               "mdsl.source_semantic_symbol",
-    "mdsl.structured_handoff",
-};
-
-constexpr llvm::StringLiteral kSemanticFunctionFields[] = {
-    "mdsl.capture_ordinal", "mdsl.site_id"};
+const StructuredHandoffCertificateProfileV1 &gemmCertificateProfile() {
+  static const StructuredHandoffCertificateProfileV1 profile = {
+      kStructuredGemmHandoffSchemaV1,
+      kStructuredArtifactProducer,
+      kStructuredGemmInspectionAuthorityV1,
+      "mdsl.gemm",
+      "original_output_full_zero_fill",
+      kStructuredFunctionPrefix,
+      kSemanticFunctionPrefix,
+      kStructuredGemmHandoffVersionV1,
+  };
+  return profile;
+}
 
 bool requireExactNames(mlir::DictionaryAttr dictionary,
                        llvm::ArrayRef<llvm::StringLiteral> expected,
@@ -100,180 +79,8 @@ bool requireExactNames(mlir::DictionaryAttr dictionary,
   return true;
 }
 
-mlir::DictionaryAttr selectedAttributes(
-    mlir::Builder &builder, mlir::Operation *operation,
-    llvm::ArrayRef<llvm::StringLiteral> names, llvm::StringRef context,
-    std::string &error) {
-  llvm::SmallVector<mlir::NamedAttribute> selected;
-  selected.reserve(names.size());
-  for (llvm::StringRef name : names) {
-    mlir::Attribute value = operation->getAttr(name);
-    if (!value) {
-      error = context.str() + " is missing field '" + name.str() + "'";
-      return {};
-    }
-    selected.push_back(builder.getNamedAttr(name, value));
-  }
-  mlir::DictionaryAttr result = builder.getDictionaryAttr(selected);
-  if (!requireExactNames(operation->getAttrDictionary(), names, context,
-                         error))
-    return {};
-  return result;
-}
-
-bool requireString(mlir::Operation *operation, llvm::StringRef name,
-                   llvm::StringRef expected, llvm::StringRef context,
-                   std::string &error) {
-  const auto value = operation->getAttrOfType<mlir::StringAttr>(name);
-  if (!value || value.getValue() != expected) {
-    error = context.str() + " field '" + name.str() + "' must be '" +
-            expected.str() + "'";
-    return false;
-  }
-  return true;
-}
-
-bool requireI32(mlir::Operation *operation, llvm::StringRef name,
-                std::int64_t expected, llvm::StringRef context,
-                std::string &error) {
-  const auto value = operation->getAttrOfType<mlir::IntegerAttr>(name);
-  if (!value || !value.getType().isSignlessInteger(32) ||
-      value.getInt() != expected) {
-    error = context.str() + " field '" + name.str() +
-            "' must be the exact signless i32 version";
-    return false;
-  }
-  return true;
-}
-
-template <typename MlirValue>
-std::string textualIdentity(MlirValue value) {
-  std::string text;
-  llvm::raw_string_ostream stream(text);
-  value.print(stream);
-  stream.flush();
-  return text;
-}
-
 bool verifySourceModuleFields(mlir::ModuleOp module, std::string &error) {
-  if (!requireExactNames(module->getAttrDictionary(), kSemanticModuleFields,
-                         "semantic source module", error))
-    return false;
-  if (!requireString(module, "mdsl.bridge_schema", kSemanticBridgeSchema,
-                     "semantic source module", error))
-    return false;
-  for (mlir::func::FuncOp function : module.getOps<mlir::func::FuncOp>()) {
-    if (!requireExactNames(function->getDiscardableAttrDictionary(),
-                           kSemanticFunctionFields,
-                           "semantic source function", error))
-      return false;
-    if (function.getArgAttrsAttr() || function.getResAttrsAttr()) {
-      error = "semantic source functions may not carry argument or result "
-              "optimizer attributes";
-      return false;
-    }
-    if (function.getNoInline() || function.getSymVisibilityAttr()) {
-      error = "semantic source functions may not carry no_inline or an "
-              "explicit visibility property";
-      return false;
-    }
-  }
-  return true;
-}
-
-bool verifyStructuredModuleFields(mlir::ModuleOp module, std::string &error) {
-  if (!requireExactNames(module->getAttrDictionary(), kStructuredModuleFields,
-                         "structured handoff module", error))
-    return false;
-  const auto analysis_only =
-      module->getAttrOfType<mlir::BoolAttr>("mdsl.analysis_only");
-  if (!analysis_only || !analysis_only.getValue()) {
-    error = "structured handoff module must be explicitly analysis-only";
-    return false;
-  }
-  const auto producer =
-      module->getAttrOfType<mlir::StringAttr>("mdsl.producer");
-  const auto source_producer =
-      module->getAttrOfType<mlir::StringAttr>("mdsl.source_producer");
-  const auto source_file =
-      module->getAttrOfType<mlir::StringAttr>("mdsl.source_file");
-  const auto translation_unit =
-      module->getAttrOfType<mlir::StringAttr>("mdsl.translation_unit");
-  if (!producer || producer.getValue() != kStructuredArtifactProducer ||
-      !source_producer ||
-      (source_producer.getValue() != "clang-libtooling-v1" &&
-       source_producer.getValue() != "clang-ast-json-bootstrap-v0") ||
-      !source_file ||
-      !source_file.getValue().ends_with(".mdsl") || !translation_unit ||
-      translation_unit.getValue().empty()) {
-    error = "structured handoff module capture identity is invalid";
-    return false;
-  }
-  return requireString(module, "mdsl.capture_schema", "matcore-ir-v1",
-                       "structured handoff module", error) &&
-         requireI32(module, "mdsl.capture_version",
-                    ir::v1::kMatcoreIrVersion,
-                    "structured handoff module", error) &&
-         requireString(module, "mdsl.execution_intent", "generic",
-                       "structured handoff module", error) &&
-         requireString(module, "mdsl.numerical_profile",
-                       kExplicitGemmF32Profile,
-                       "structured handoff module", error) &&
-         requireString(module, "mdsl.execution_authority",
-                       kStructuredGemmInspectionAuthorityV1,
-                       "structured handoff module", error) &&
-         requireString(module, "mdsl.source_bridge_schema",
-                       kSemanticBridgeSchema, "structured handoff module",
-                       error) &&
-         requireString(module, "mdsl.structured_handoff_schema",
-                       kStructuredGemmHandoffSchemaV1,
-                       "structured handoff module", error) &&
-         requireI32(module, "mdsl.structured_handoff_version",
-                    kStructuredGemmHandoffVersionV1,
-                    "structured handoff module", error) &&
-         requireI32(module, "mdsl.source_semantic_version",
-                    kMatcoreSemanticModuleVersion,
-                    "structured handoff module", error);
-}
-
-mlir::DictionaryAttr handoffAttribute(mlir::Builder &builder) {
-  return builder.getDictionaryAttr(
-      {builder.getNamedAttr(
-           "authority",
-           builder.getStringAttr(kStructuredGemmInspectionAuthorityV1)),
-       builder.getNamedAttr(
-           "destination",
-           builder.getStringAttr("original_output_full_zero_fill")),
-       builder.getNamedAttr("source_operation",
-                            builder.getStringAttr("mdsl.gemm")),
-       builder.getNamedAttr(
-           "version",
-           builder.getI32IntegerAttr(kStructuredGemmHandoffVersionV1))});
-}
-
-bool verifyHandoffAttribute(mlir::DictionaryAttr handoff,
-                            std::string &error) {
-  constexpr llvm::StringLiteral fields[] = {
-      "authority", "destination", "source_operation", "version"};
-  if (!requireExactNames(handoff, fields, "structured function handoff",
-                         error))
-    return false;
-  const auto authority = handoff.getAs<mlir::StringAttr>("authority");
-  const auto destination = handoff.getAs<mlir::StringAttr>("destination");
-  const auto source_operation =
-      handoff.getAs<mlir::StringAttr>("source_operation");
-  const auto version = handoff.getAs<mlir::IntegerAttr>("version");
-  if (!authority ||
-      authority.getValue() != kStructuredGemmInspectionAuthorityV1 ||
-      !destination ||
-      destination.getValue() != "original_output_full_zero_fill" ||
-      !source_operation || source_operation.getValue() != "mdsl.gemm" ||
-      !version || !version.getType().isSignlessInteger(32) ||
-      version.getInt() != kStructuredGemmHandoffVersionV1) {
-    error = "structured function handoff contract is incomplete or invalid";
-    return false;
-  }
-  return true;
+  return verifyStructuredHandoffSourceEnvelopeV1(module, error);
 }
 
 bool verifyGemmContractStorageTypes(mlir::DictionaryAttr contract,
@@ -331,26 +138,42 @@ bool verifyDefaultMatmulMaps(mlir::linalg::MatmulOp matmul,
     return false;
   }
   const mlir::ArrayAttr actual = matmul.getIndexingMaps();
-  const llvm::SmallVector<mlir::AffineMap> expected =
-      mlir::linalg::MatmulOp::getDefaultIndexingMaps(matmul.getContext());
-  if (!actual || actual.size() != expected.size()) {
+  if (!actual || actual.size() != 3) {
     error = "structured GEMM requires the canonical matmul indexing maps";
     return false;
   }
-  for (auto [attribute, map] : llvm::zip(actual, expected)) {
+  llvm::SmallVector<mlir::AffineMap, 3> actual_maps;
+  for (mlir::Attribute attribute : actual) {
     const auto encoded = mlir::dyn_cast<mlir::AffineMapAttr>(attribute);
-    if (!encoded || encoded.getValue() != map) {
-      error = "structured GEMM matmul indexing maps are not canonical "
-              "(m,k),(k,n),(m,n)";
+    if (!encoded) {
+      error = "structured GEMM matmul indexing maps must be affine maps";
       return false;
     }
+    actual_maps.push_back(encoded.getValue());
   }
-  const auto iterators = matmul.getIteratorTypesArray();
-  if (iterators.size() != 3 ||
-      iterators[0] != mlir::utils::IteratorType::parallel ||
-      iterators[1] != mlir::utils::IteratorType::parallel ||
-      iterators[2] != mlir::utils::IteratorType::reduction) {
-    error = "structured GEMM matmul requires parallel M/N and reduction K";
+  llvm::SmallVector<unsigned, 3> operand_ranks;
+  for (mlir::Value value :
+       llvm::concat<mlir::Value>(matmul.getInputs(), matmul.getOutputs())) {
+    const auto type = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
+    if (!type) {
+      error = "structured GEMM matmul operands must remain ranked tensors";
+      return false;
+    }
+    operand_ranks.push_back(type.getRank());
+  }
+  ContractionTopologyResultV1 topology = buildCanonicalContractionTopologyV1(
+      *matmul.getContext(), StandardLinearAlgebraOperationV1::Gemm);
+  if (!topology) {
+    error = "cannot construct the internal canonical GEMM topology: " +
+            topology.error;
+    return false;
+  }
+  if (!verifyStructuredIndexingAgainstContractionTopologyV1(
+          topology.topology, actual_maps, matmul.getIteratorTypesArray(),
+          operand_ranks, error)) {
+    error = "structured GEMM matmul does not realize canonical logical "
+            "(m,k),(k,n),(m,n) topology: " +
+            error;
     return false;
   }
   return true;
@@ -417,45 +240,19 @@ bool verifyStructuredFunction(mlir::func::FuncOp function,
                               llvm::StringRef module_source_file,
                               llvm::StringRef module_numerical_profile,
                               std::string &error) {
-  if (!requireExactNames(function->getDiscardableAttrDictionary(),
-                         kStructuredFunctionFields,
-                         "structured GEMM function", error))
+  VerifiedStructuredHandoffSiteV1 verified;
+  if (!verifyStructuredHandoffSiteCertificateV1(
+          function, expected_ordinal, gemmCertificateProfile(), verified,
+          error))
     return false;
-  if (function.getArgAttrsAttr() || function.getResAttrsAttr() ||
-      function.getNoInline() || function.getSymVisibilityAttr()) {
-    error = "structured GEMM functions may not carry argument/result "
-            "optimizer attributes, no_inline, or explicit visibility";
-    return false;
-  }
-
-  const auto site = function->getAttrOfType<mlir::StringAttr>("mdsl.site_id");
-  const auto ordinal =
-      function->getAttrOfType<mlir::IntegerAttr>("mdsl.capture_ordinal");
-  const auto source_symbol = function->getAttrOfType<mlir::StringAttr>(
-      "mdsl.source_semantic_symbol");
-  const auto contract = function->getAttrOfType<mlir::DictionaryAttr>(
-      "mdsl.semantic_contract");
-  const auto handoff = function->getAttrOfType<mlir::DictionaryAttr>(
-      "mdsl.structured_handoff");
-  if (!site || !ordinal || !ordinal.getType().isSignlessInteger(64) ||
-      ordinal.getInt() != static_cast<std::int64_t>(expected_ordinal) ||
-      !source_symbol || !contract || !handoff || !function.isPublic() ||
-      function.getNumArguments() != 3 || function.getNumResults() != 1) {
-    error = "structured GEMM function identity is incomplete or unordered";
+  const auto site = verified.site_id;
+  const auto contract = verified.semantic_contract;
+  if (function.getNumArguments() != 3 || function.getNumResults() != 1) {
+    error = "structured GEMM function requires lhs, rhs, output, and one "
+            "result";
     return false;
   }
-  const std::string expected_name =
-      (llvm::Twine(kStructuredFunctionPrefix) + site.getValue()).str();
-  const std::string expected_source =
-      (llvm::Twine(kSemanticFunctionPrefix) + site.getValue()).str();
-  if (function.getName() != expected_name ||
-      source_symbol.getValue() != expected_source) {
-    error = "structured GEMM function/source symbols must match the exact "
-            "semantic site identity";
-    return false;
-  }
-  if (!verifyHandoffAttribute(handoff, error) ||
-      !requireExactNames(contract, kGemmContractFields,
+  if (!requireExactNames(contract, kGemmContractFields,
                          "structured GEMM semantic contract", error) ||
       !verifyGemmContractStorageTypes(contract, error))
     return false;
@@ -486,6 +283,13 @@ bool verifyStructuredFunction(mlir::func::FuncOp function,
     return false;
   }
   mlir::Block &block = function.getBody().front();
+  for (mlir::BlockArgument argument : block.getArguments()) {
+    if (argument.getLoc() != function.getLoc()) {
+      error = "structured GEMM function arguments must retain the exact "
+              "authenticated source location";
+      return false;
+    }
+  }
   auto constant = mlir::dyn_cast<mlir::arith::ConstantOp>(block.front());
   auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(*std::next(block.begin()));
   auto matmul =
@@ -556,33 +360,8 @@ bool verifyStructuredFunction(mlir::func::FuncOp function,
 
 bool copySourceModuleMetadata(mlir::ModuleOp source, mlir::ModuleOp target,
                               mlir::Builder &builder, std::string &error) {
-  if (!verifySourceModuleFields(source, error))
-    return false;
-  const auto copy = [&](llvm::StringRef source_name,
-                        llvm::StringRef target_name) {
-    target->setAttr(target_name, source->getAttr(source_name));
-  };
-  copy("mdsl.capture_schema", "mdsl.capture_schema");
-  copy("mdsl.capture_version", "mdsl.capture_version");
-  copy("mdsl.execution_intent", "mdsl.execution_intent");
-  copy("mdsl.numerical_profile", "mdsl.numerical_profile");
-  copy("mdsl.producer", "mdsl.source_producer");
-  copy("mdsl.source_file", "mdsl.source_file");
-  copy("mdsl.translation_unit", "mdsl.translation_unit");
-  copy("mdsl.bridge_schema", "mdsl.source_bridge_schema");
-  copy("mdsl.semantic_version", "mdsl.source_semantic_version");
-  target->setAttr("mdsl.analysis_only", builder.getBoolAttr(true));
-  target->setAttr("mdsl.producer",
-                  builder.getStringAttr(kStructuredArtifactProducer));
-  target->setAttr(
-      "mdsl.execution_authority",
-      builder.getStringAttr(kStructuredGemmInspectionAuthorityV1));
-  target->setAttr("mdsl.structured_handoff_schema",
-                  builder.getStringAttr(kStructuredGemmHandoffSchemaV1));
-  target->setAttr(
-      "mdsl.structured_handoff_version",
-      builder.getI32IntegerAttr(kStructuredGemmHandoffVersionV1));
-  return true;
+  return initializeStructuredHandoffCertificateV1(
+      source, target, builder, gemmCertificateProfile(), error);
 }
 
 bool appendStructuredFunction(mlir::ModuleOp target, mlir::OpBuilder &builder,
@@ -590,8 +369,9 @@ bool appendStructuredFunction(mlir::ModuleOp target, mlir::OpBuilder &builder,
                               mlir_dialect::GemmOp source_gemm,
                               std::string &error) {
   mlir::DictionaryAttr contract =
-      selectedAttributes(builder, source_gemm.getOperation(),
-                         kGemmContractFields, "source mdsl.gemm", error);
+      selectExactSemanticContractV1(builder, source_gemm.getOperation(),
+                                    kGemmContractFields, "source mdsl.gemm",
+                                    error);
   if (!contract)
     return false;
   const auto site = source_gemm.getSiteId();
@@ -600,13 +380,10 @@ bool appendStructuredFunction(mlir::ModuleOp target, mlir::OpBuilder &builder,
   auto function = mlir::func::FuncOp::create(
       source_function.getLoc(), function_name,
       source_function.getFunctionType());
-  function->setAttr("mdsl.capture_ordinal",
-                    source_function->getAttr("mdsl.capture_ordinal"));
-  function->setAttr("mdsl.site_id", builder.getStringAttr(site));
-  function->setAttr("mdsl.source_semantic_symbol",
-                    builder.getStringAttr(source_function.getName()));
-  function->setAttr("mdsl.semantic_contract", contract);
-  function->setAttr("mdsl.structured_handoff", handoffAttribute(builder));
+  if (!attachStructuredHandoffSiteCertificateV1(
+          function, source_function, contract, site, builder,
+          gemmCertificateProfile(), error))
+    return false;
   target.push_back(function);
 
   mlir::Block *entry = function.addEntryBlock();
@@ -762,7 +539,8 @@ bool verifyStructuredGemmHandoffV1(mlir::ModuleOp module,
     error = "structured GEMM handoff failed upstream MLIR verification";
     return false;
   }
-  if (!verifyStructuredModuleFields(module, error))
+  if (!verifyStructuredHandoffCertificateEnvelopeV1(
+          module, gemmCertificateProfile(), error))
     return false;
   const auto source_file =
       module->getAttrOfType<mlir::StringAttr>("mdsl.source_file");
@@ -817,72 +595,28 @@ bool verifyStructuredGemmHandoffMatchesV1(mlir::ModuleOp semantic_module,
   if (!verifySourceModuleFields(semantic_module, error) ||
       !verifyStructuredGemmHandoffV1(structured_module, error))
     return false;
-
-  constexpr std::pair<llvm::StringLiteral, llvm::StringLiteral> module_map[] = {
-      {"mdsl.capture_schema", "mdsl.capture_schema"},
-      {"mdsl.capture_version", "mdsl.capture_version"},
-      {"mdsl.execution_intent", "mdsl.execution_intent"},
-      {"mdsl.numerical_profile", "mdsl.numerical_profile"},
-      {"mdsl.producer", "mdsl.source_producer"},
-      {"mdsl.bridge_schema", "mdsl.source_bridge_schema"},
-      {"mdsl.source_file", "mdsl.source_file"},
-      {"mdsl.semantic_version", "mdsl.source_semantic_version"},
-      {"mdsl.translation_unit", "mdsl.translation_unit"},
-  };
-  for (auto [source_name, structured_name] : module_map) {
-    if (textualIdentity(semantic_module->getAttr(source_name)) !=
-        textualIdentity(structured_module->getAttr(structured_name))) {
-      error = "structured handoff module metadata differs from semantic "
-              "source field '" +
-              source_name.str() + "'";
-      return false;
-    }
-  }
-
-  auto semantic_iterator = semantic_module.getBody()->begin();
-  auto structured_iterator = structured_module.getBody()->begin();
-  for (; semantic_iterator != semantic_module.getBody()->end() &&
-         structured_iterator != structured_module.getBody()->end();
-       ++semantic_iterator, ++structured_iterator) {
-    auto source_function = mlir::cast<mlir::func::FuncOp>(*semantic_iterator);
-    auto source_gemm = mlir::cast<mlir_dialect::GemmOp>(
-        source_function.getBody().front().front());
-    auto structured_function =
-        mlir::cast<mlir::func::FuncOp>(*structured_iterator);
-    mlir::Builder builder(semantic_module.getContext());
-    std::string selection_error;
-    mlir::DictionaryAttr source_contract = selectedAttributes(
-        builder, source_gemm.getOperation(), kGemmContractFields,
-        "source mdsl.gemm", selection_error);
-    if (!source_contract) {
-      error = selection_error;
-      return false;
-    }
-    const auto structured_contract =
-        structured_function->getAttrOfType<mlir::DictionaryAttr>(
-            "mdsl.semantic_contract");
-    const auto source_symbol =
-        structured_function->getAttrOfType<mlir::StringAttr>(
-            "mdsl.source_semantic_symbol");
-    if (textualIdentity(structured_function.getFunctionType()) !=
-            textualIdentity(source_function.getFunctionType()) ||
-        textualIdentity(structured_function.getLoc()) !=
-            textualIdentity(source_function.getLoc()) ||
-        textualIdentity(structured_contract) !=
-            textualIdentity(source_contract) ||
-        !source_symbol ||
-        source_symbol.getValue() != source_function.getName()) {
-      error = "structured GEMM function is not an exact projection of its "
-              "semantic source";
-      return false;
-    }
-  }
-  if (semantic_iterator != semantic_module.getBody()->end() ||
-      structured_iterator != structured_module.getBody()->end()) {
-    error = "structured GEMM handoff changed the number of semantic sites";
-    return false;
-  }
-  return true;
+  mlir::Builder builder(semantic_module.getContext());
+  return verifyStructuredHandoffCertificateMatchesSourceV1(
+      semantic_module, structured_module, gemmCertificateProfile(),
+      [&](mlir::func::FuncOp source_function,
+          std::string &selection_error) -> mlir::DictionaryAttr {
+        if (!llvm::hasSingleElement(source_function.getBody()) ||
+            source_function.getBody().front().empty()) {
+          selection_error =
+              "source function does not contain one semantic operation";
+          return {};
+        }
+        auto source_gemm = mlir::dyn_cast<mlir_dialect::GemmOp>(
+            source_function.getBody().front().front());
+        if (!source_gemm) {
+          selection_error = "source function is not an mdsl.gemm site";
+          return {};
+        }
+        return selectExactSemanticContractV1(
+            builder, source_gemm.getOperation(), kGemmContractFields,
+            "source mdsl.gemm", selection_error);
+      },
+      error);
 }
 
 } // namespace matcore::mdslc::mlir_bridge

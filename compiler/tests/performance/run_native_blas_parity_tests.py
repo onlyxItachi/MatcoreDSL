@@ -386,6 +386,37 @@ def main() -> int:
                 "user-asserted benchmark provenance was accepted"
             )
 
+        for provider_field, forged_value in (
+            ("provider_version", "uninspected"),
+            ("provider_version", "UNKNOWN"),
+            ("provider_config", "   "),
+        ):
+            missing_provider_identity = copy.deepcopy(raw_document)
+            missing_provider_identity["results"][0]["selected_variant"] = (
+                module.OPENBLAS
+            )
+            missing_provider_identity["environment"][provider_field] = forged_value
+            missing_provider_path = (
+                temporary_path / f"missing provider {provider_field}.json"
+            )
+            missing_provider_path.write_text(
+                json.dumps(missing_provider_identity), encoding="utf-8"
+            )
+            try:
+                module.authenticate_report(
+                    missing_provider_path,
+                    case,
+                    first["source_commit"],
+                    physical_cores,
+                )
+            except ValueError as error:
+                assert "provider metadata" in str(error)
+            else:
+                raise AssertionError(
+                    "selected OpenBLAS result with placeholder provider "
+                    "identity was accepted"
+                )
+
         missing_scope = copy.deepcopy(raw_document)
         del missing_scope["results"][0]["cache_mode"]
         missing_scope_path = temporary_path / "missing result scope.json"

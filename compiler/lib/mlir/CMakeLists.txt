@@ -60,6 +60,8 @@ mdslc_target_match_llvm_rtti(matcore_mlir_semantics)
 add_library(
   matcore_mlir_structured_handoff
   STATIC
+    MatcoreContractionModel.cpp
+    MatcoreStructuredHandoffCertificate.cpp
     MatcoreStructuredGemmHandoff.cpp
 )
 target_compile_features(matcore_mlir_structured_handoff PUBLIC cxx_std_20)
@@ -117,6 +119,24 @@ if(MDSLC_ENABLE_NATIVE_FRONTEND AND NOT WIN32)
 endif()
 
 if(BUILD_TESTING)
+  add_executable(
+    matcore_mlir_contraction_model_tests
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/mlir/matcore_contraction_model_test.cpp"
+  )
+  target_link_libraries(
+    matcore_mlir_contraction_model_tests
+    PRIVATE
+      matcore_mlir_structured_handoff
+      MLIRParser
+  )
+  target_include_directories(
+    matcore_mlir_contraction_model_tests
+    SYSTEM PRIVATE "${LLVM_INCLUDE_DIRS}" "${MLIR_INCLUDE_DIRS}"
+  )
+  mdslc_target_enable_warnings(matcore_mlir_contraction_model_tests)
+  add_test(NAME mlir.structured.contraction-model-v1
+    COMMAND matcore_mlir_contraction_model_tests)
+
   add_executable(
     matcore_mlir_semantics_tests
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/mlir/matcore_mlir_test.cpp"
