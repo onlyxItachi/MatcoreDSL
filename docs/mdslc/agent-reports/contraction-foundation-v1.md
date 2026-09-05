@@ -13,6 +13,10 @@ Date: 2026-09-05
   `472e695f061fa9577279b5c159aef1b4b7086419`
 - Exact-head provenance-binding hardening commit:
   `e0c48b35a468d36d6ade96d5c2e0d2a3717618a6`
+- Reviewed pre-merge head:
+  `1b7bc9fa212894e330777c18c918c7c533d05c4b`
+- Canonical PR #24 merge:
+  `5983c2c1bf067bed9e69d0172b0944b7a4c14c00`
 - Branch: `mdslc/contraction-foundation-v1`
 - Corpus and re-entry identity: inherited unchanged from
   `docs/mdslc/CORPUS_REENTRY_RECONCILIATION_V1.md`

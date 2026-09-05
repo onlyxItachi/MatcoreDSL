@@ -15,10 +15,11 @@ The primary evidence-audit implementation checkpoint is
 at `9c6d4647d8bca3590429a00d72d3498833118855`; atomic output safety was hardened
 at `58d947fc0954aa6604d792ac2f934065f42ffc12`; and independent-review closure for
 ambiguous provider identity and bounded output failures is captured at
-`7ff052ce8ddf458c87e555266a4798e0f6b3be0e`. No production planner, runtime,
+`7ff052ce8ddf458c87e555266a4798e0f6b3be0e`. The reviewed pre-merge head is
+`ae1852a13f446a935330ee4938dd2e02f8262bab`; it passed 19/19 hosted checks and
+merged normally through PR #23 as
+`ec7a55a61c0ceb2ee4985211bbf887ccb3b1368e`. No production planner, runtime,
 kernel, public API, public ABI, threshold, or provider-selection policy changed.
-The candidate is published for review as draft PR #23; it was not merged by
-this lane.
 
 Live GitHub Issue #15, **MDSLC Milestone 7 — Native BLAS Parity**, remained open
 at inspection time. Its 2026-07-26 owner disposition still says that the
