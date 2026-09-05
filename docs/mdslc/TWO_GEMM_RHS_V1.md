@@ -130,6 +130,39 @@ Independent evidence: [frontend lane](agent-reports/two-gemm-rhs-frontend-v1.md)
 Final exact-head hosted checks and merge identity are recorded in the PR and
 the post-merge operator checkpoint; no pending hosted result is counted here.
 
+## Canonical merge and hosted evidence
+
+Normal engineering merge: `4e9e6b4d7d8eb4cfd2c409ea02713e6c4633116a`
+([PR #33](https://github.com/onlyxItachi/MatcoreDSL/pull/33)), 2026-09-05 16:35:28 UTC.
+Parents: canonical `e1045988577eeaee4c420d637a3bd6b38dcb3660` and reviewed
+head `973011472ec339de9f51b595c81bbd2bc7a73701`. Reviewed head, hosted synthetic
+PR merge `a004978bff01bba34cb7d48f988f5f28f5f7ae2f` and final canonical merge
+all have tree `6311cce0bf3ec270e95f33c840867435a9b99dba`.
+
+Final independent review accepted `97301147`: compiler/tests tree
+`da3d6ef66201e9ea692f81491f0377700af6f618` and workflow tree
+`21d39aab60ead33255683e8db0c5658d1b957c3b` match local tested `33423177`.
+All three recorded local log hashes were independently checked. These are
+independent agent reviews, not formal GitHub approvals; Copilot returned only
+a quota notice and contributed no review evidence.
+
+All **19/19 hosted checks completed SUCCESS before merge**. Native workflows:
+PR `33977613853`, push `33977611194`; Windows: PR `33977613871`, push
+`33977611207`; hygiene: PR `33977613866`, push `33977611233`; legacy PR
+`33977613857`. PR workflows checked the synthetic merge above; push workflows
+checked the branch head. Post-merge workflows are separate evidence.
+
+Hosted success is not a claim that every scheduled test ran: some runners
+explicitly skipped `runtime.cpu.packed_avx512` for unavailable capability.
+The PR OpenBLAS-off/MLIR-enabled Release job executed 74/74 with no skips;
+its push counterpart executed 73 and skipped one. PR ASan executed 24/24;
+push ASan executed 23 and skipped that AVX-512 test. TSan executed 4/4 in both
+workflows, covering only its established runtime scope. Windows executed
+47/47 Release, 32/32 focused Debug and 1/1 focused runtime ASan in both runs;
+its region mode remains unavailable rejection, not RHS numerical execution.
+Linux package/source-inaccessible tests and Windows relocated Unicode-path,
+C17 ABI and generated native-pipeline checks passed in their supported scopes.
+
 ## Deliberate limits and next boundary
 
 No generated region execution, fusion, general DAGs, dual SSA forwarding,
