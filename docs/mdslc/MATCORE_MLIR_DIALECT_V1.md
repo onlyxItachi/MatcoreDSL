@@ -25,9 +25,12 @@ The component is opt-in through:
 MDSLC_ENABLE_MATCORE_MLIR=ON
 ```
 
-The default remains `OFF`. Enabling it requires an explicit `MLIR_DIR` and
-exact LLVM, Clang, and MLIR version `21.1.8`. Configuration fails closed if the
-version differs or any of these imported targets is absent:
+The default remains `OFF`. Product/default use requires an explicit `MLIR_DIR`
+and exact LLVM, Clang, and MLIR version `21.1.8`. The advanced internal
+compatibility selector admits only the separately reviewed coherent exact
+22.1.8 Linux x64 tuple; it is not product support or an installed contract.
+Configuration fails closed if the selected exact tuple differs or any of these
+imported targets is absent:
 
 ```text
 MLIRIR
@@ -39,9 +42,11 @@ MLIRSideEffectInterfaces
 ```
 
 The standalone build remains Ninja/C++20/Clang-first. The coherent audited
-configuration uses LLVM and Clang 21.1.8 from the system package and an exact
-MLIR 21.1.8 development prefix. The unrelated system MLIR 22 surface and the
-legacy root project's MLIR 18 requirement are not valid substitutes.
+product configuration uses LLVM and Clang 21.1.8 from the system package and
+an exact MLIR 21.1.8 development prefix. Mixed distro-22 components and the
+legacy root project's MLIR 18 requirement are not valid substitutes. Exact
+22.1.8 compatibility details and limitations are recorded in
+`agent-reports/mlir-upstream-portability-v1.md`.
 
 `matcore_mlir_semantics` is an internal static build target. It is not
 installed or exported. Only the leaf inspection executable `matcore-mlir` is
