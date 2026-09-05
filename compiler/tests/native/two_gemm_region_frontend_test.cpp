@@ -201,6 +201,14 @@ int main(int argc, char **argv) {
         "md::gemm(md::out(E), alias, D);\n"));
     require(admitted(static_reference) == 0 && reason(static_reference, "transparent local reference"),
             "a static reference was confused with the current invocation's parameter binding");
+    const auto macro_declaration = extract("macro_declaration", std::string(prefix) +
+        "#define DESCRIPTOR md::matrix_view C;\n"
+        "namespace producer { DESCRIPTOR }\nnamespace consumer { DESCRIPTOR }\n"
+        "void run(md::matrix_view &E, const md::matrix_view &A, const md::matrix_view &B) {\n"
+        "md::gemm(md::out(producer::C), A, B);\n"
+        "md::gemm(md::out(E), consumer::C, B);\n}\n");
+    require(admitted(macro_declaration) == 0 && reason(macro_declaration, "transparent local reference"),
+            "distinct macro-expanded declarations collapsed to their common spelling location");
     const auto three = extract("three", std::string(prefix) + "void run(" + parameters +
         ", md::matrix_view &F) {\n" + first + second + "md::gemm(md::out(F), E, D);\n}\n");
     require(admitted(three) == 1 && three.two_gemm_regions.back().sites.size() == 1,

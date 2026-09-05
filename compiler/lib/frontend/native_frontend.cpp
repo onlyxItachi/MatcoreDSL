@@ -1016,9 +1016,9 @@ private:
   std::string declarationIdentity(const clang::Decl &declaration,
                                   clang::ASTContext &context) {
     const auto &manager = context.getSourceManager();
-    const auto location = manager.getSpellingLoc(
-        declaration.getCanonicalDecl()->getLocation());
-    if (location.isInvalid() || location.isMacroID()) return {};
+    const auto declared_location = declaration.getCanonicalDecl()->getLocation();
+    if (declared_location.isInvalid() || declared_location.isMacroID()) return {};
+    const auto location = manager.getSpellingLoc(declared_location);
     const auto file_id = manager.getFileID(location);
     bool invalid = false;
     const auto buffer = manager.getBufferData(file_id, &invalid);
@@ -1145,6 +1145,9 @@ private:
       const auto *function = enclosingFunction(*first, context);
       if (function != nullptr)
         candidate.function_identity = declarationIdentity(*function, context);
+      if (candidate.function_identity.empty())
+        candidate.rejection_reasons.push_back(
+            "region requires a direct nonmacro function declaration identity");
       candidate.source_range = operations[index].call_range;
       candidate.region_id = makeStableSiteId(
           stableSourceIdentity(state_.canonical_input), state_.compilation_identity,
