@@ -25,8 +25,9 @@ in `context.md`.
 - Output mutation is explicit through `matcore::mdsl::out(C)`. Preserve shape,
   dtype, layout, memory-space, alias, effect, policy, and source-location
   information at compiler boundaries.
-- Native and compatibility capture first produce the verified Matcore JSON IR
-  v0 compatibility DTO, then cross an explicit, mandatory boundary into typed,
+- Existing per-call native and compatibility execution capture first produce
+  the verified Matcore JSON IR v0 compatibility DTO, then cross an explicit,
+  mandatory boundary into typed,
   verified Matcore IR v1. `mdslc++` artifacts are v1. Existing rewrite/codegen
   is reached only through a loss-checked v1-to-v0 projection; do not fork the
   schema, verifier, or code generator. JSON remains a versioned inspection
@@ -36,6 +37,13 @@ in `context.md`.
   internal `mdsl` MLIR dialect. Bridge v1 into that dialect through one
   documented, verified conversion boundary; do not mutate v1 in place or add
   another overlapping JSON optimizer schema.
+- The opt-in two-GEMM region inspection route uses sealed native declaration
+  bindings alongside the per-call contracts. Its descriptor handles are not
+  physical no-alias proofs; committed tensor values and ordered observable
+  effects are distinct. Preserve every call's failure frontier and host
+  barriers. This route must never enter the v1-to-v0 execution projection,
+  discharge runtime predicates by assertion, or acquire execution authority
+  from serialized attributes. See `docs/mdslc/TWO_GEMM_REGION_V1.md`.
 - Preserve semantic information until the final optimization that can use it.
   Matcore semantic operations describe WHAT. Legality, planning, structured
   upstream dialects, scheduling, and library/generated-code selection describe
