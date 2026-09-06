@@ -334,6 +334,18 @@ if(BUILD_TESTING)
     COMMAND matcore_openblas_adapter_test
   )
 
+  if(MDSLC_HAS_OPENBLAS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(matcore_openblas_policy_scope_test
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/openblas_policy_scope_test.cpp")
+    target_compile_features(matcore_openblas_policy_scope_test PRIVATE cxx_std_20)
+    target_link_libraries(matcore_openblas_policy_scope_test PRIVATE
+      MatcoreDSL::CpuBackendsV1 Threads::Threads)
+    target_link_options(matcore_openblas_policy_scope_test PRIVATE
+      "LINKER:--wrap=openblas_set_num_threads_local")
+    add_test(NAME runtime.cpu.openblas_policy_scope
+      COMMAND matcore_openblas_policy_scope_test)
+  endif()
+
   add_executable(matcore_runtime_abi_compat_test
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/runtime/runtime_abi_compat_test.cpp"
   )
