@@ -122,3 +122,19 @@ Composed production SHA-256 identities:
 | detail `region_storage.h` | `f228886210ffa74c9922a3b75db13caf818cc42a0a455ca22eec432df8b38e32` |
 | `closed_host_v1.cpp` | `b895c7f5c83fdba105c34df6ce5b2085a1fc922a25fbe847340ad7cb968a3fb0` |
 | `closed_host_v1.h` | `3a5b06766b669b9a690c376dbe32223f56916b2d16ba12a8e13437c005b93581` |
+
+## Canonical merge checkpoint
+
+PR [#51](https://github.com/onlyxItachi/MatcoreDSL/pull/51) merged normally on
+2026-09-06 at 21:19:02 UTC as `e3defc9b699b33cc9f5d539f32f55044fef87ff8`.
+Parents: canonical `3216b6ba7cf6ee0ac92f104277ebffdd86adfcbc` and reviewed
+head `f2d9706c3ea6f94045372b26f920b65e14f4ef9d`. Merged tree
+`072d72f0e149b8aacae0e61325e66008fc8ad72e` matched the pre-merge tree check.
+
+All **19/19 final-head hosted checks** succeeded. The earlier exact local
+implementation-head results remain **111/111 Release**, **109/109 Debug** and
+**58/58 ASan/UBSan**; the final head added only this integration evidence report.
+The [normal-merge gate](https://github.com/onlyxItachi/MatcoreDSL/pull/51#issuecomment-5562242882)
+records the retained independent source/ownership review and root composition
+review. This supplies hosted/integration evidence without broadening the private
+admission contract into an installed named-region execution claim.

@@ -1,7 +1,7 @@
 # MDSLC current state
 
 Engineering checkpoint: canonical merge
-`322af8d43799304cc289748a5b0c803cf3a0f697`, [PR #48](https://github.com/onlyxItachi/MatcoreDSL/pull/48).
+`e3defc9b699b33cc9f5d539f32f55044fef87ff8`, [PR #51](https://github.com/onlyxItachi/MatcoreDSL/pull/51).
 This identifies the latest engineering merge; documentation-only updates may follow.
 
 ## Architecture
@@ -16,8 +16,7 @@ Private closed regions in real host C++ -> authenticated Clang/Sema AST
   -> frontend-neutral immutable values + separate all-MAY-alias resources
   -> symbolic shapes, checked math, publication/observation/failure ordering
   -> private registered MLIR + structural and sealed-source paired verification
-  -> authenticated compiled C++ orchestration (private Linux x64 consumer)
-  -> checked host adapter, now connected and executed:
+  -> authenticated compiled C++ orchestration + checked host adapter:
   immutable snapshots + all-MAY-alias dense resource views
   -> strict native/generated math, ordered host publication and owning observation
   -> sticky failure prefix + full per-candidate FP environment restoration
@@ -27,24 +26,26 @@ Separate trusted registry -> native/generated strict or legal legacy/provider
 Shared provider adapter serializes Matcore-owned OpenBLAS policy lifetimes.
 Matcore owns legality/effects; MLIR transformations; LLVM/backends machine lowering.
 Legacy Python/JIT remains a separate compatibility surface.
+Experimental named C++ region admission + opaque owning Result: now proven.
 ```
 
 ## Material change
 
-The same authenticated private source programs now execute through both strict
-native and actual MLIR-generated mathematical implementations. Rectangular
-dependencies, late aliased reads, ordered observations, failure prefixes and
-actual candidate identity are checked end to end, including instrumentation of
-the generated object. This connects existing boundaries; it adds no execution
-authority to editable IR. Exact-head Release passed 102/102, ASan/UBSan 51/51,
-and all 19 hosted checks were green. See the
-[composition evidence and canonical record](agent-reports/closed-source-generated-connection-v1.md#canonical-merge-checkpoint).
+Named ordinary C++ functions can now target the closed semantic layer through
+experimental canonical declarations. Hidden member attributes, redeclarations,
+ownership overrides and forged completion are rejected. Opaque owning results
+preserve observations across return/destruction and mixed host STL configurations.
+Implementation-head Release passed 111/111, Debug 109/109, ASan/UBSan 58/58;
+all 19 final-head hosted checks passed. The headers deliberately remain uninstalled.
+See [frontend contract](EXPERIMENTAL_REGION_FRONTEND_V1.md) and
+[independent/integration evidence](agent-reports/experimental-region-integration-v1.md#canonical-merge-checkpoint).
 
 ## Unsupported or unproven
 
 Closed source is a private Linux 21.1.8 compiled native/generated consumer, not an
 installed frontend or a whole-host-TU replacement. The generated leaf accepts
-no user IR and grants no source authority. No public region syntax, general
+no user IR and grants no source authority. Experimental named-region syntax is
+not yet a shipped execution interface. No general
 tensor/view API, fusion, GPU/NPU or API/ABI stability claim. The new adapter
 requires valid exclusive host storage and a conforming trusted allocator; it
 does not cover arbitrary interposed host effects, exports or device transfers.
@@ -59,9 +60,9 @@ remain design-only.
 
 ## Exactly one next boundary
 
-**Establish the experimental named C++ region frontend and owning result contract.**
-The private semantic/execution composition now works. A useful product needs
-ordinary named-function admission and durable host-visible results without hidden
-C++ effects or private standard-library layout leaking across compiler/runtime
-boundaries. This is still an experimental contract, not an API/ABI freeze.
+**Make the private compiler/runtime Value boundary opaque and revision-checked.**
+Public owning results are now defended, but emitted orchestration must also avoid
+depending on private STL layouts or linking silently against a different Session
+layout. This closes a concrete packaging prerequisite without freezing an ABI or
+changing mathematical/effect semantics.
 Independent research branches are not canonical capabilities until integrated.
