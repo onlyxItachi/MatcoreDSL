@@ -1,6 +1,6 @@
 # Foundation decision: immutable values and bounded host publication
 
-Status: **private host adapter implemented; integration validation in progress**.
+Status: **bounded host adapter validated and normally merged in PR #39**.
 This is not yet authenticated source-region or generated-kernel execution.
 Starting canonical main: `fd64850a0c8cb7d2c0801a64dd94d515dd714130`
 ([operator PR #38](https://github.com/onlyxItachi/MatcoreDSL/pull/38)); latest
@@ -189,5 +189,28 @@ The first full Release run on the deliberately uncommitted integration returned
 **78/83 passed** (150.50 seconds). Five existing consumer/benchmark tests rejected
 the dirty source provenance as intended. This is retained as negative evidence,
 not waived: rebuild at a clean committed checkpoint and rerun the complete suite
-before integration. Exact clean-checkpoint and hosted outcomes follow below when
-available.
+before integration. The first clean rebuild gave 82/83 because the package test
+also authenticates cleanliness at CMake configuration time. After clean
+reconfiguration its isolated retry passed (53.74 seconds); the final complete
+Release run passed **83/83** (195.32 seconds) at clean
+`53f390d3cab5ed69d9347748d44793d6e05c87bd`.
+
+Affected integrated ASan/UBSan scope passed **32/32** (24.86 seconds), including
+all five new adapter tests and the existing allocator-protocol negative control.
+No sanitizer exclusion or provenance guard was disabled. Independent review
+also accepted the CMake, workflow and evidence integration.
+
+Normal merge: **`f988882710ac0b3677d908b3442841e3a8986b81`**,
+[PR #39](https://github.com/onlyxItachi/MatcoreDSL/pull/39),
+2026-09-06T18:42:39Z. Parents are the starting canonical `fd64850...` and reviewed
+head `53f390d3cab5ed69d9347748d44793d6e05c87bd`; the merge tree equals that head.
+All **19/19 exact-head hosted checks succeeded** before the normal merge,
+covering Release OpenBLAS on/off, MLIR on/off, Debug, ASan/UBSan, TSan, Windows,
+legacy build/tests and repository hygiene. The Copilot quota notice was not
+counted as an approval. See the
+[validation record](https://github.com/onlyxItachi/MatcoreDSL/pull/39#issuecomment-5561282175)
+and [merge gate](https://github.com/onlyxItachi/MatcoreDSL/pull/39#issuecomment-5561334781).
+
+This merged boundary is an independently instantiated host adapter, not yet a
+connected source compiler. Subsequent candidate/source branches retain their
+own reviews, authority boundaries and integration gates.
