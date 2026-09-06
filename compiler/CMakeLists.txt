@@ -438,6 +438,12 @@ add_subdirectory(lib/codegen)
 add_subdirectory(lib/platform)
 add_subdirectory(tools/matcore-extract)
 add_subdirectory(lib/runtime)
+if(BUILD_TESTING AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+   CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+  # Private host-storage conformance boundary. No installed API or connection
+  # to the compatibility driver is introduced by this adapter.
+  add_subdirectory(tests/closed_host)
+endif()
 add_subdirectory(tools/matcore-plan)
 add_subdirectory(tools/matcore-bench)
 if(BUILD_TESTING AND MDSLC_ENABLE_NATIVE_FRONTEND AND

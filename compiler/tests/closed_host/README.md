@@ -70,13 +70,14 @@ For sanitizer validation replace `-O2` with `-O1 -g`, add
 `DEBUGINFOD_URLS=`, `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1` and
 `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.
 
-Independent scratch-harness review additionally executed 216 adversarial checks
+Independent review additionally executed 216 adversarial checks
 and 131 real replaceable-global-new allocation-failure checks under ASan/UBSan.
+These now live in `closed_host_independent_test.cpp` and
+`closed_host_allocation_test.cpp`, with a separate production-authority CTest.
 Production injection failed compilation, a macro-forged injection client failed
 linking against the production object, and private Value forging failed
-compilation. Those independent artifacts are separate review evidence, not
-claims about this committed test count. The integration owner retains their
-exact identities in the engineering record.
+compilation. Their exact reviewed identities and limits are in the
+[independent review](../../../docs/mdslc/reviews/CLOSED_HOST_ADAPTER_INDEPENDENT_V1.md).
 
 The review found two draft defects before acceptance: production
 warnings-as-errors rejected inactive test-hook fields, and test configuration
