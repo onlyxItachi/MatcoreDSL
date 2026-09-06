@@ -99,6 +99,13 @@ allocation, publication completion, failure rollback, or execution authority.
   out-of-line buffer/TU queries and generic declaration redeclaration iteration
   avoid defining incompatible allocator slow paths in admission code. No
   sanitizer exclusion was added by this lane.
+- Self-review caught an unnecessary grammar shrink: rejecting all inherited
+  attributes would reject an explicit main-source prototype marker inherited
+  by its later definition. The original pre-host admission archive mechanically
+  accepts this control (506 checks, zero failures with the added positive).
+  The redundant attribute-flag rejection was removed; every annotation's full
+  source/PP range is still fenced. The actual continued-pragma witness has
+  neither flag, so the removal does not weaken its logical-directive defense.
 
 ## Validation checkpoint
 
@@ -116,6 +123,14 @@ The latest Release host-admission object has no `BumpPtrAllocator`,
 `LazyGenerational` or `PagedVector` symbols. Root's final sanitizer, clean-build,
 hosted-CI and full integration evidence remains separate; these focused results
 do not claim completion of those gates.
+
+The prototype-marker compatibility experiment compiled the updated hermetic
+test source against the preserved pre-host header/archive, writing only to
+`/tmp/mdsl-prototype-control-z2Mqnf`. The old admission archive SHA-256 is
+`2e4b1d937f99cdf21dc544937e28e57b4942ecc62703a159f89658cbc466ca19`;
+the old worktree remained clean. This proves preservation of existing admitted
+behavior rather than introducing a new annotation grammar. Current-build
+reruns of the new positive and all negative fences remain integration gates.
 
 Real-header positives already demonstrate rectangular dependent GEMMs, late
 reads and ordered publication/observation, reused main-source template helpers,

@@ -321,8 +321,7 @@ private:
       for (const clang::Attr *attribute : declaration->attrs()) {
         const auto *annotation = llvm::dyn_cast<clang::AnnotateAttr>(attribute);
         if (entry && annotation && annotation->getAnnotation() == region_annotation &&
-            inMain(annotation->getLocation()) && !annotation->isImplicit() &&
-            !annotation->isInherited() && closedSourceRange(annotation->getRange())) {
+            inMain(annotation->getLocation()) && closedSourceRange(annotation->getRange())) {
           if (declaration == function) ++markers;
         } else {
           return reject(declaration->getLocation(), "unadmitted function attribute");
