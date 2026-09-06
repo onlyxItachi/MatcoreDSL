@@ -11,6 +11,9 @@
 #include <limits>
 #include <new>
 #include <mutex>
+#include <memory>
+#include <utility>
+#include <vector>
 
 #if defined(MDSLC_CLOSED_HOST_LEGACY_CANDIDATES)
 #include "matcore/runtime_c.h"
@@ -34,18 +37,55 @@ namespace matcore::mdslc::runtime::closed_host_v1 {
 static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559 &&
               std::numeric_limits<float>::digits == 24);
 
-struct ValueStorage {
+struct ValueStorageAbiV2 {
+  std::atomic<std::uint64_t> references{1};
   std::uint64_t rows = 0;
   std::uint64_t columns = 0;
   std::vector<float> elements;
 };
 
+static void retain(ValueStorageAbiV2 *storage) noexcept {
+  if (storage && storage->references.fetch_add(1, std::memory_order_relaxed) ==
+                     std::numeric_limits<std::uint64_t>::max())
+    std::terminate();
+}
+static void release(ValueStorageAbiV2 *storage) noexcept {
+  if (storage && storage->references.fetch_sub(1, std::memory_order_acq_rel) == 1)
+    delete storage;
+}
+namespace detail {
+extern "C" void matcore_closed_host_private_value_abi_v2() noexcept {}
+}
+
+ValueAbiV2::ValueAbiV2() noexcept = default;
+ValueAbiV2::ValueAbiV2(const Value &other) noexcept : storage_(other.storage_) { retain(storage_); }
+Value &ValueAbiV2::operator=(const Value &other) noexcept {
+  if (this != &other) {
+    retain(other.storage_);
+    release(storage_);
+    storage_ = other.storage_;
+  }
+  return *this;
+}
+ValueAbiV2::ValueAbiV2(Value &&other) noexcept : storage_(std::exchange(other.storage_, nullptr)) {}
+Value &ValueAbiV2::operator=(Value &&other) noexcept {
+  if (this != &other) {
+    release(storage_);
+    storage_ = std::exchange(other.storage_, nullptr);
+  }
+  return *this;
+}
+ValueAbiV2::~ValueAbiV2() noexcept { release(storage_); }
+
 // Allocated lazily before the first observation effect; mutable only while the
 // producing Session is thread-confined. After retirement it is immutable, and
 // independent owning public handles may be transferred between host threads.
+// This record is runtime-only and versioned: old helper vector COMDATs must not
+// supply constructors/destructors for the smaller opaque-Value element layout.
+struct ObservationAbiV2 { Frontier frontier; Value value; };
 struct ObservationBlock {
   std::atomic<std::uint64_t> references{1};
-  std::vector<Observation> values;
+  std::vector<ObservationAbiV2> values;
 };
 static void retain(ObservationBlock *block) noexcept {
   if (block && block->references.fetch_add(1, std::memory_order_relaxed) ==
@@ -56,7 +96,7 @@ static void release(ObservationBlock *block) noexcept {
   if (block && block->references.fetch_sub(1, std::memory_order_acq_rel) == 1)
     delete block;
 }
-Session::~Session() noexcept { release(observations_); }
+SessionAbiV2::~SessionAbiV2() noexcept { release(observations_); }
 
 namespace {
 #if defined(MDSLC_CLOSED_HOST_GENERATED_STRICT)
@@ -73,7 +113,7 @@ static_assert(offsetof(GeneratedMemref, sizes) == 24 &&
               offsetof(GeneratedMemref, strides) == 40);
 extern "C" void _mlir_ciface___matcore_strict_gemm_f32_v1(
     GeneratedMemref *, GeneratedMemref *, GeneratedMemref *);
-GeneratedMemref descriptor(const ValueStorage &value) noexcept {
+GeneratedMemref descriptor(const ValueStorageAbiV2 &value) noexcept {
   auto *data = const_cast<float *>(value.elements.data());
   return {data, data, 0,
           {static_cast<std::int64_t>(value.rows),
@@ -338,8 +378,8 @@ private:
   std::uint16_t saved_control_ = 0, saved_status_ = 0, expected_control_ = 0;
 };
 
-void strictGemm(const ValueStorage &lhs, const ValueStorage &rhs,
-                ValueStorage &result) noexcept {
+void strictGemm(const ValueStorageAbiV2 &lhs, const ValueStorageAbiV2 &rhs,
+                ValueStorageAbiV2 &result) noexcept {
   if (result.elements.empty()) return;
   for (std::uint64_t i = 0; i < lhs.rows; ++i) {
     for (std::uint64_t j = 0; j < rhs.columns; ++j) {
@@ -355,33 +395,33 @@ void strictGemm(const ValueStorage &lhs, const ValueStorage &rhs,
 }
 } // namespace
 
-bool Value::valid() const noexcept { return static_cast<bool>(storage_); }
-std::uint64_t Value::rows() const noexcept { return storage_ ? storage_->rows : 0; }
-std::uint64_t Value::columns() const noexcept {
+bool ValueAbiV2::valid() const noexcept { return static_cast<bool>(storage_); }
+std::uint64_t ValueAbiV2::rows() const noexcept { return storage_ ? storage_->rows : 0; }
+std::uint64_t ValueAbiV2::columns() const noexcept {
   return storage_ ? storage_->columns : 0;
 }
-const float *Value::data() const noexcept {
+const float *ValueAbiV2::data() const noexcept {
   return storage_ ? storage_->elements.data() : nullptr;
 }
 
-struct Session::ActiveCall {
+struct SessionAbiV2::ActiveCall {
   explicit ActiveCall(Session &session) noexcept : session(session) {}
   ~ActiveCall() { session.active_ = false; session.active_frontier_ = 0; }
   Session &session;
 };
 
-Status Session::fail(Code code, Frontier frontier) noexcept {
+Status SessionAbiV2::fail(Code code, Frontier frontier) noexcept {
   if (status_.code == Code::ok) {
     status_.code = code;
     status_.failed_frontier = frontier;
   }
   return status_;
 }
-Status Session::succeed(Frontier frontier) noexcept {
+Status SessionAbiV2::succeed(Frontier frontier) noexcept {
   if (status_) status_.completed_frontier = frontier;
   return status_;
 }
-bool Session::begin(Frontier frontier) noexcept {
+bool SessionAbiV2::begin(Frontier frontier) noexcept {
   if (result_taken_) { fail(Code::already_complete, frontier); return false; }
   if (!status_) return false;
   if (active_) { fail(Code::reentrant_use, active_frontier_); return false; }
@@ -398,7 +438,7 @@ bool Session::begin(Frontier frontier) noexcept {
   active_frontier_ = frontier;
   return true;
 }
-bool Session::allocationAllowed() noexcept {
+bool SessionAbiV2::allocationAllowed() noexcept {
 #if defined(MDSLC_CLOSED_HOST_TESTING)
   ++allocation_attempts_;
   return fail_allocation_ == 0 || allocation_attempts_ != fail_allocation_;
@@ -406,42 +446,43 @@ bool Session::allocationAllowed() noexcept {
   return true;
 #endif
 }
-Code Session::allocate(std::uint64_t rows, std::uint64_t columns,
-                       std::shared_ptr<ValueStorage> &storage) noexcept {
+Code SessionAbiV2::allocate(std::uint64_t rows, std::uint64_t columns,
+                       Value &storage) noexcept {
   std::size_t count = 0;
   const auto code = extent(rows, columns, count);
   if (code != Code::ok) return code;
   try {
     if (!allocationAllowed()) return Code::allocation_failure;
-    auto fresh = std::make_shared<ValueStorage>();
+    auto fresh = std::make_unique<ValueStorageAbiV2>();
     fresh->rows = rows;
     fresh->columns = columns;
     if (count != 0) {
       if (!allocationAllowed()) return Code::allocation_failure;
       fresh->elements.resize(count);
     }
-    storage = std::move(fresh);
+    release(storage.storage_);
+    storage.storage_ = fresh.release();
     return Code::ok;
   } catch (...) {
     return Code::allocation_failure;
   }
 }
-Code Session::snapshot(ResourceView view,
-                       std::shared_ptr<ValueStorage> &storage) noexcept {
+Code SessionAbiV2::snapshot(ResourceView view,
+                       Value &storage) noexcept {
   std::size_t count = 0;
   auto code = validate(view, false, count);
   if (code != Code::ok) return code;
   code = allocate(view.rows, view.columns, storage);
   if (code != Code::ok) return code;
   if (count != 0)
-    std::memcpy(storage->elements.data(), view.data, count * sizeof(float));
+    std::memcpy(storage.storage_->elements.data(), view.data, count * sizeof(float));
   return Code::ok;
 }
 
-Status Session::read(Frontier frontier, ResourceView view, Value &result) noexcept {
+Status SessionAbiV2::read(Frontier frontier, ResourceView view, Value &result) noexcept {
   return read(frontier, view, view.rows, view.columns, result);
 }
-Status Session::read(Frontier frontier, ResourceView view,
+Status SessionAbiV2::read(Frontier frontier, ResourceView view,
                      std::uint64_t rows, std::uint64_t columns,
                      Value &result) noexcept {
   if (!begin(frontier)) return status_;
@@ -451,13 +492,13 @@ Status Session::read(Frontier frontier, ResourceView view,
   if (requested != Code::ok) return fail(requested, frontier);
   if (view.rows != rows || view.columns != columns)
     return fail(Code::shape_mismatch, frontier);
-  std::shared_ptr<ValueStorage> storage;
+  Value storage;
   const auto code = snapshot(view, storage);
   if (code != Code::ok) return fail(code, frontier);
-  result.storage_ = std::move(storage);
+  result = std::move(storage);
   return succeed(frontier);
 }
-Status Session::gemm(Frontier frontier, const Value &lhs, const Value &rhs,
+Status SessionAbiV2::gemm(Frontier frontier, const Value &lhs, const Value &rhs,
                      Numeric numeric, Value &result) noexcept {
   if (!begin(frontier)) return status_;
   ActiveCall active(*this);
@@ -472,9 +513,10 @@ Status Session::gemm(Frontier frontier, const Value &lhs, const Value &rhs,
   if (lhs.columns() != rhs.rows()) return rejected(Code::shape_mismatch);
   auto code = candidateLegality(options_.candidate, numeric);
   if (code != Code::ok) return rejected(code);
-  std::shared_ptr<ValueStorage> storage;
-  code = allocate(lhs.rows(), rhs.columns(), storage);
+  Value owned_storage;
+  code = allocate(lhs.rows(), rhs.columns(), owned_storage);
   if (code != Code::ok) return rejected(code);
+  auto *storage = owned_storage.storage_;
   ScopedFp environment;
   if (!environment.valid()) return rejected(Code::unsupported_fp_environment);
 #if defined(MDSLC_CLOSED_HOST_LEGACY_CANDIDATES)
@@ -553,11 +595,11 @@ Status Session::gemm(Frontier frontier, const Value &lhs, const Value &rhs,
   // or clear that error merely because the outer candidate returned success.
   if (!status_) { candidate_report_.code = status_.code; return status_; }
   if (code != Code::ok) return rejected(code);
-  result.storage_ = std::move(storage);
+  result = std::move(owned_storage);
   candidate_report_.value_issued = true;
   return succeed(frontier);
 }
-Status Session::publish(Frontier frontier, const Value &value,
+Status SessionAbiV2::publish(Frontier frontier, const Value &value,
                         ResourceView destination) noexcept {
   if (!begin(frontier)) return status_;
   ActiveCall active(*this);
@@ -576,10 +618,10 @@ Status Session::publish(Frontier frontier, const Value &value,
   status_.completed_effect_frontier = frontier;
   return succeed(frontier);
 }
-Status Session::observe(Frontier frontier, ResourceView view) noexcept {
+Status SessionAbiV2::observe(Frontier frontier, ResourceView view) noexcept {
   if (!begin(frontier)) return status_;
   ActiveCall active(*this);
-  std::shared_ptr<ValueStorage> storage;
+  Value storage;
   const auto code = snapshot(view, storage);
   if (code != Code::ok) return fail(code, frontier);
   try {
@@ -590,9 +632,7 @@ Status Session::observe(Frontier frontier, ResourceView view) noexcept {
     }
     if (observations_->values.size() == observations_->values.capacity() && !allocationAllowed())
       return fail(Code::allocation_failure, frontier);
-    Value value;
-    value.storage_ = std::move(storage);
-    observations_->values.push_back({frontier, std::move(value)});
+    observations_->values.push_back({frontier, std::move(storage)});
   } catch (...) {
     return fail(Code::allocation_failure, frontier);
   }
@@ -600,22 +640,22 @@ Status Session::observe(Frontier frontier, ResourceView view) noexcept {
   status_.completed_effect_frontier = frontier;
   return succeed(frontier);
 }
-Status Session::complete(Frontier frontier) noexcept {
+Status SessionAbiV2::complete(Frontier frontier) noexcept {
   if (!begin(frontier)) return status_;
   ActiveCall active(*this);
   status_.completed = true;
   return succeed(frontier);
 }
-Value Session::observation(std::uint64_t index) const noexcept {
+Value SessionAbiV2::observation(std::uint64_t index) const noexcept {
   return observations_ && index < observations_->values.size()
              ? observations_->values[index].value : Value{};
 }
-Frontier Session::observationFrontier(std::uint64_t index) const noexcept {
+Frontier SessionAbiV2::observationFrontier(std::uint64_t index) const noexcept {
   return observations_ && index < observations_->values.size()
              ? observations_->values[index].frontier : 0;
 }
 
-matcore::mdsl::Result Session::takeResult(
+matcore::mdsl::Result SessionAbiV2::takeResult(
     matcore::mdsl::SourceLocation failure) && noexcept {
   if (active_) {
     fail(Code::reentrant_use, active_frontier_);
@@ -635,7 +675,7 @@ matcore::mdsl::Result Session::takeResult(
 }
 
 #if defined(MDSLC_CLOSED_HOST_TESTING)
-void Session::configureForTesting(TestHooks hooks) noexcept {
+void SessionAbiV2::configureForTesting(TestHooks hooks) noexcept {
   if (active_) { fail(Code::reentrant_use, active_frontier_); return; }
   if (!status_) return;
   if (result_taken_ || status_.completed_frontier != 0 || status_.completed) {
@@ -647,7 +687,7 @@ void Session::configureForTesting(TestHooks hooks) noexcept {
   test_candidate_ = hooks.candidate;
   test_context_ = hooks.context;
 }
-std::uint64_t Session::allocationAttemptsForTesting() const noexcept {
+std::uint64_t SessionAbiV2::allocationAttemptsForTesting() const noexcept {
   return allocation_attempts_;
 }
 #endif

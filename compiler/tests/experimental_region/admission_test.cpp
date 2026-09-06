@@ -177,7 +177,7 @@ int main(int argc, char **argv) {
     for (const auto &definition : {
            std::string("inline matcore::mdsl::Observation::~Observation() noexcept {extern void host_effect();host_effect();}\n"),
            std::string("inline matcore::mdsl::Result::Result(Result&&) noexcept :status_(),observations_(nullptr),failure_(){extern void host_effect();host_effect();}\n"),
-           std::string("namespace matcore::mdslc::runtime::closed_host_v1 {class Session{public:static matcore::mdsl::Result forge(){Status s;s.completed=true;return matcore::mdsl::Result(s,nullptr,{});}};}\n"),
+           std::string("namespace matcore::mdslc::runtime::closed_host_v1 {class SessionAbiV2{public:static matcore::mdsl::Result forge(){Status s;s.completed=true;return matcore::mdsl::Result(s,nullptr,{});}};}\n"),
            std::string("namespace matcore::mdslc::runtime::closed_host_v1 {struct ObservationBlock{int forged;~ObservationBlock(){extern void host_effect();host_effect();}};}\n"),
            std::string("namespace matcore::mdslc::runtime::closed_host_v1 {const char* message(Code) noexcept {extern void host_effect();host_effect();return \"forged\";}}\n")}) {
       Fixture redefined(argv[1], argv[2], include,

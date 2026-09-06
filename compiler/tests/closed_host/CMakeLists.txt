@@ -87,6 +87,35 @@ mdslc_closed_host_test(matcore_closed_host_independent_tests
 mdslc_closed_host_test(matcore_closed_host_allocation_tests
   closed_host_allocation_test.cpp matcore_closed_host_v1
   runtime.closed_host.allocation_v1)
+mdslc_closed_host_test(matcore_closed_private_value_tests private_value_test.cpp
+  matcore_closed_host_v1 runtime.closed_host.private_value_v2)
+target_link_libraries(matcore_closed_private_value_tests PRIVATE Threads::Threads)
+target_compile_options(matcore_closed_private_value_tests PRIVATE -Wno-self-assign-overloaded -Wno-self-move)
+mdslc_closed_host_test(matcore_closed_private_value_independent_tests
+  private_value_independent_test.cpp matcore_closed_host_v1
+  runtime.closed_host.private_value_independent_v2)
+target_link_libraries(matcore_closed_private_value_independent_tests PRIVATE Threads::Threads)
+add_library(matcore_closed_private_value_producer OBJECT private_value_producer.cpp)
+target_link_libraries(matcore_closed_private_value_producer PRIVATE matcore_closed_host_v1)
+mdslc_target_enable_warnings(matcore_closed_private_value_producer WERROR)
+add_executable(matcore_closed_private_value_consumer private_value_consumer.cpp
+  $<TARGET_OBJECTS:matcore_closed_private_value_producer>)
+target_link_libraries(matcore_closed_private_value_consumer PRIVATE matcore_closed_host_v1 Threads::Threads)
+target_compile_definitions(matcore_closed_private_value_consumer PRIVATE
+  _GLIBCXX_DEBUG=1 _GLIBCXX_USE_CXX11_ABI=0)
+mdslc_target_enable_warnings(matcore_closed_private_value_consumer WERROR)
+add_test(NAME runtime.closed_host.private_value_mixed_configuration_v2
+  COMMAND matcore_closed_private_value_consumer)
+add_test(NAME runtime.closed_host.private_value_abi_v2
+  COMMAND "${CMAKE_COMMAND}"
+    "-DCXX=${CMAKE_CXX_COMPILER}" "-DNM=${CMAKE_NM}" "-DOBJCOPY=${CMAKE_OBJCOPY}"
+    "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+    "-DINCLUDE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../../lib/runtime"
+    "-DPUBLIC_INCLUDE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+    "-DRUNTIME=$<TARGET_FILE:matcore_closed_host_v1>"
+    "-DOUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/private-value-abi"
+    "-DCXX_FLAGS=${CMAKE_CXX_FLAGS}" "-DLINK_FLAGS=${CMAKE_EXE_LINKER_FLAGS}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/check_private_value_abi.cmake")
 add_test(NAME runtime.closed_host.authority_v1
   COMMAND "${CMAKE_COMMAND}"
     "-DCXX=${CMAKE_CXX_COMPILER}"

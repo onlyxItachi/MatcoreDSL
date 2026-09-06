@@ -88,7 +88,7 @@ public:
     return status_.completed_effect_frontier;
   }
 private:
-  friend class mdslc::runtime::closed_host_v1::Session;
+  friend mdslc::runtime::closed_host_v1::Session;
   Result(mdslc::runtime::closed_host_v1::Status status,
          mdslc::runtime::closed_host_v1::ObservationBlock *observations,
          SourceLocation failure) noexcept

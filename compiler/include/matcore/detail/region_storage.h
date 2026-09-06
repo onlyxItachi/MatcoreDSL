@@ -6,7 +6,8 @@
 #include <cstdint>
 
 namespace matcore::mdslc::runtime::closed_host_v1 {
-class Session;
+class SessionAbiV2;
+using Session = SessionAbiV2;
 using Frontier = std::uint64_t;
 enum class Access : std::uint8_t { read_only, read_write };
 enum class Numeric : std::uint8_t { strict_f32, reassociate_f32 };

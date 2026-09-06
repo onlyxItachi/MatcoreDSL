@@ -2,8 +2,6 @@
 #define MATCORE_MDSLC_RUNTIME_CLOSED_HOST_V1_H
 
 #include <matcore/region.h>
-#include <memory>
-#include <vector>
 
 namespace matcore::mdslc::runtime::closed_host_v1 {
 
@@ -35,25 +33,38 @@ struct CandidateReport {
   bool provider_probe_invoked = false;
   std::uint32_t actual_threads = 0;
 };
-struct ValueStorage;
-class Value {
+struct ValueStorageAbiV2;
+class ValueAbiV2;
+using Value = ValueAbiV2;
+// Immutable ownership handle only. No standard-library object layout or inline
+// reference-count/destruction implementation crosses the helper/runtime seam.
+class ValueAbiV2 {
 public:
-  Value() noexcept = default;
+  ValueAbiV2() noexcept;
+  ValueAbiV2(const Value &) noexcept;
+  Value &operator=(const Value &) noexcept;
+  ValueAbiV2(Value &&) noexcept;
+  Value &operator=(Value &&) noexcept;
+  ~ValueAbiV2() noexcept;
   bool valid() const noexcept;
   std::uint64_t rows() const noexcept;
   std::uint64_t columns() const noexcept;
   const float *data() const noexcept;
 private:
-  friend class Session;
-  std::shared_ptr<const ValueStorage> storage_;
+  friend Session;
+  ValueStorageAbiV2 *storage_ = nullptr;
 };
-struct Observation { Frontier frontier; Value value; };
 
 // Private execution adapter, not a public source API or frozen ABI. This adapter
 // does not authenticate source, accept serialized authority, or interpret an AST.
 // These shapes describe only the private test injection ABI. No production
 // method accepts a candidate function. Production uses the closed registry above.
 namespace detail {
+// Private helper/runtime layout revision, not semantic execution authority.
+// Versioned class linkage prevents an old inline constructor COMDAT from
+// hiding this reference. Neither gate nor ABI equivalence authenticates source.
+// Bump the classes and symbol for incompatible Value/Session record changes.
+extern "C" void matcore_closed_host_private_value_abi_v2() noexcept;
 struct CandidateInput {
   const float *data;
   std::uint64_t rows;
@@ -97,14 +108,16 @@ struct TestHooks {
 // In particular allocation, failure and deallocation must preserve caller FP
 // state and introduce no arbitrary host effects. They can occur outside the
 // numerical scope, including result destruction after a candidate returns.
-class Session {
+class SessionAbiV2 {
 public:
-  Session() noexcept = default;
-  explicit Session(Options options) noexcept : options_(options) {}
-  ~Session() noexcept;
-  Session(const Session &) = delete;
+  SessionAbiV2() noexcept { detail::matcore_closed_host_private_value_abi_v2(); }
+  explicit SessionAbiV2(Options options) noexcept : options_(options) {
+    detail::matcore_closed_host_private_value_abi_v2();
+  }
+  ~SessionAbiV2() noexcept;
+  SessionAbiV2(const Session &) = delete;
   Session &operator=(const Session &) = delete;
-  Session(Session &&) = delete;
+  SessionAbiV2(Session &&) = delete;
   Session &operator=(Session &&) = delete;
 
   Status read(Frontier, ResourceView, Value &) noexcept;
@@ -143,9 +156,9 @@ private:
   Status fail(Code, Frontier) noexcept;
   Status succeed(Frontier) noexcept;
   bool allocationAllowed() noexcept;
-  Code snapshot(ResourceView, std::shared_ptr<ValueStorage> &) noexcept;
+  Code snapshot(ResourceView, Value &) noexcept;
   Code allocate(std::uint64_t rows, std::uint64_t columns,
-                std::shared_ptr<ValueStorage> &) noexcept;
+                Value &) noexcept;
   Status status_;
   Options options_;
   CandidateReport candidate_report_;
