@@ -1,7 +1,7 @@
 # MDSLC current state
 
 Engineering checkpoint: canonical merge
-`5df9ac3c451539bdd9c1e577d6558802fca30535`, [PR #40](https://github.com/onlyxItachi/MatcoreDSL/pull/40).
+`76b024abadcb32eb9f01effe92ec19ea13d6d763`, [PR #43](https://github.com/onlyxItachi/MatcoreDSL/pull/43).
 This identifies the latest engineering merge; documentation-only updates may follow.
 
 ## Architecture
@@ -22,6 +22,7 @@ Independent private Linux x64 host adapter, now executed and tested:
   -> strict native math, ordered host publication and owning observation
   -> sticky failure prefix + full per-candidate FP environment restoration
 Private strict GEMM -> verified Linalg/buffer path -> LLVM -> tested x64 object
+Shared provider adapter serializes Matcore-owned OpenBLAS policy lifetimes.
 Matcore owns semantic legality, provenance and observable ordering.
 MLIR owns structured transformations; LLVM/backends own machine lowering.
 Legacy Python/JIT remains a separate compatibility surface.
@@ -29,14 +30,15 @@ Legacy Python/JIT remains a separate compatibility surface.
 
 ## Material change
 
-The compiler can now issue a fixed strict GEMM implementation through upstream
-MLIR/LLVM and execute its object on Linux x64. Structural checks, independent
-numerical oracles and a real generated-load ASan negative control defend this
-leaf. Validation: 90/90 Release and 19/19 hosted checks, including the 39-test
-sanitizer scope; independent review ACCEPT. See the
-[implementation evidence](agent-reports/generated-strict-cpu-candidate-v1.md),
-[independent review](agent-reports/generated-strict-cpu-independent-review-v1.md)
-and [host contract](FOUNDATION_RESOURCE_DECISION_V1.md).
+An adversarial concurrent-first-use test exposed OpenBLAS's shared thread-policy
+state despite its `_local` API name. The owning adapter now excludes overlapping
+probe/execute/save/restore scopes for all Matcore callers. Validation: local
+29/29 provider-on, 28/28 off, 26/26 ASan/UBSan runtime suites; independent
+reproduction/fix review and 19/19 hosted checks passed, including the actual
+pinned provider's concurrent-scope oracle. See the
+[failure and correction record](agent-reports/openblas-shared-policy-scope-v1.md).
+The [generated leaf](agent-reports/generated-strict-cpu-candidate-v1.md) and
+[host value contract](FOUNDATION_RESOURCE_DECISION_V1.md) remain independently proven.
 
 ## Unsupported or unproven
 
@@ -46,6 +48,7 @@ no user IR and grants no source authority. No public region syntax, general
 tensor/view API, fusion, GPU/NPU or API/ABI stability claim. The new adapter
 requires valid exclusive host storage and a conforming trusted allocator; it
 does not cover arbitrary interposed host effects, exports or device transfers.
+Uncoordinated external OpenBLAS calls or duplicate adapter instances are not protected.
 Snapshots are conservative realization, not a zero-copy or performance claim.
 Resource/descriptor inequality never proves noalias; recovered C++ grants no
 execution authority. Existing mutating GEMM has not been reinterpreted as pure.
