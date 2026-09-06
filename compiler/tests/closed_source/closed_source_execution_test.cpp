@@ -521,10 +521,10 @@ int main(int argc,char **argv) {
     compile.working_directory=output.path();
     compile.environment=support::compiler_environment_sanitization_v1();
     compile.argv={clang,"-std=c++20","-O1","-g","-Wall","-Wextra","-Werror",
-                  "-frounding-math","-ftrapping-math","-ffp-contract=off","-I",runtime};
+                  "-frounding-math","-ftrapping-math","-ffp-contract=off","-I",runtime,
+                  "-I",(compiler/"include").string()};
     compile.argv.insert(compile.argv.end(),childFlags.begin(),childFlags.end());
-    if(generated) compile.argv.insert(compile.argv.end(),{"-DMDSLC_SOURCE_TRUSTED_REGISTRY=1",
-                                                        "-I",(compiler/"include").string()});
+    if(generated) compile.argv.push_back("-DMDSLC_SOURCE_TRUSTED_REGISTRY=1");
     const auto base=compile.argv;
     compile.argv.insert(compile.argv.end(),{"-c",cpp.string(),"-o",object.string()});
     auto compiled=support::run_process_v1(compile);

@@ -12,6 +12,7 @@
 #include <clang/Lex/PPCallbacks.h>
 #include <clang/Lex/Lexer.h>
 #include <clang/Lex/Preprocessor.h>
+#include <clang/Lex/MacroInfo.h>
 #include <clang/Tooling/Tooling.h>
 #include <llvm/ADT/SmallString.h>
 #include <cstdint>
@@ -31,6 +32,8 @@ struct ParseState {
   bool admitted = false;
   bool volatile_preprocessing = false;
   bool preprocessing_budget_exceeded = false;
+  std::optional<ExperimentalRegionHeaders> public_headers;
+  ClosedRegionEntryBinding entry;
 };
 
 class Diagnostics final : public clang::DiagnosticConsumer {
@@ -57,12 +60,14 @@ public:
                 ParseState &state)
       : sources_(sources), language_(language), state_(state) {}
   void MacroExpands(const clang::Token &token,
-                    const clang::MacroDefinition &, clang::SourceRange range,
+                    const clang::MacroDefinition &definition, clang::SourceRange range,
                     const clang::MacroArgs *) override {
     const std::string name = token.getIdentifierInfo()
                                  ? token.getIdentifierInfo()->getName().str()
                                  : "<unnamed>";
-    add(range, "macro expansion " + name);
+    add(range, "macro expansion " + name,
+        name == "MATCORE_REGION" && definition.getMacroInfo()
+          ? definition.getMacroInfo()->getDefinitionLoc() : clang::SourceLocation{});
     if (name == "__DATE__" || name == "__TIME__" || name == "__TIMESTAMP__")
       state_.volatile_preprocessing = true;
   }
@@ -119,12 +124,13 @@ public:
     add({location, location}, "endif directive");
   }
 private:
-  void add(clang::SourceRange range, std::string description) {
+  void add(clang::SourceRange range, std::string description,
+           clang::SourceLocation definition = {}) {
     if (state_.policy.events.size() >= 250000) {
       state_.preprocessing_budget_exceeded = true;
       return;
     }
-    state_.policy.events.push_back({range, std::move(description)});
+    state_.policy.events.push_back({range, std::move(description), definition});
   }
   clang::SourceManager &sources_;
   const clang::LangOptions &language_;
@@ -165,6 +171,10 @@ bool bindPreprocessing(clang::ASTContext &context, ParseState &state) {
     field(event.description);
     if (!location(event.range.getBegin()) || !location(event.range.getEnd())) {
       state.error = "preprocessor callback source range could not be authenticated";
+      return false;
+    }
+    if (event.definition.isValid() && !location(event.definition)) {
+      state.error = "owned region marker definition could not be authenticated";
       return false;
     }
   }
@@ -208,12 +218,17 @@ public:
       return;
     }
     if (!bindPreprocessing(context, state_)) return;
-    state_.policy.owned_header = detail::authenticateClosedRegionHeader(
-        context, compiler_.getFileManager(), state_.error);
+    if (state_.public_headers) {
+      if (!detail::authenticateExperimentalRegionHeaders(context, compiler_.getFileManager(),
+              *state_.public_headers, state_.policy, state_.error)) return;
+    } else {
+      state_.policy.owned_header = detail::authenticateClosedRegionHeader(
+          context, compiler_.getFileManager(), state_.error);
+    }
     if (!state_.error.empty()) return;
     state_.admitted = detail::admitClosedRegionParsedAST(
         context, anchor_, state_.region_name, state_.program,
-        state_.policy, state_.error);
+        state_.policy, state_.error, state_.public_headers ? &state_.entry : nullptr);
   }
 private:
   clang::CompilerInstance &compiler_;
@@ -258,12 +273,20 @@ bool parse(const std::vector<std::string> &arguments,
 }
 
 void initialize(ParseState &state, const std::string &source,
-                const std::string &input, const std::string &region) {
+                const std::string &input, const std::string &region,
+                const ExperimentalRegionHeaders *headers = nullptr) {
   state.region_name = region;
   state.program.source_identity = input;
   state.program.source_sha256 = detail::closedRegionDigest(source);
   state.program.header_sha256 = detail::closedRegionDigest(detail::closedRegionOwnedHeaderSource());
   state.program.compiler_identity = clang::getClangFullVersion();
+  if (headers) {
+    state.public_headers = *headers;
+    state.policy.experimental = true;
+    state.program.header_sha256 = detail::closedRegionDigest(
+        std::string(detail::experimentalRegionHeaderSource()) +
+        detail::experimentalRegionStorageHeaderSource());
+  }
 }
 void bindContext(cr::Program &program, const std::string &identity) {
   program.compiler_identity += "; closed-host-context-sha256=" + identity;
@@ -273,11 +296,12 @@ void bindContext(cr::Program &program, const std::string &identity) {
 namespace detail {
 bool replayClosedRegionHost(const host::HostInputSnapshot &snapshot,
                            const std::string &region_name, cr::Program &program,
-                           std::string &error) {
+                           std::string &error, const ExperimentalRegionHeaders *headers,
+                           ClosedRegionEntryBinding *entry) {
   auto replay = snapshot.replay();
   if (!replay.ok(error)) return false;
   ParseState state;
-  initialize(state, snapshot.sourceSnapshot(), snapshot.inputPath(), region_name);
+  initialize(state, snapshot.sourceSnapshot(), snapshot.inputPath(), region_name, headers);
   bool syntax_valid = false;
   const bool admitted = parse(snapshot.arguments(), snapshot.workingDirectory(),
                              replay.filesystem, state, syntax_valid);
@@ -288,12 +312,14 @@ bool replayClosedRegionHost(const host::HostInputSnapshot &snapshot,
   }
   bindContext(state.program, snapshot.identity());
   program = std::move(state.program);
+  if (entry) *entry = std::move(state.entry);
   return true;
 }
 
-ClosedRegionAdmissionResult admitClosedRegionHostForTesting(
+static ClosedRegionAdmissionResult admitHost(
     const Options &options, const std::string &working_directory,
-    const std::string &region_name, const std::function<void()> &after_initial_parse) {
+    const std::string &region_name, const std::function<void()> &after_initial_parse,
+    const ExperimentalRegionHeaders *headers) {
   ClosedRegionAdmissionResult result;
   if (region_name.empty() || region_name.size() > 4096) {
     result.error = "bounded closed host admission requires a selected region";
@@ -303,7 +329,7 @@ ClosedRegionAdmissionResult admitClosedRegionHostForTesting(
       {{closedRegionOwnedHeaderPath(), closedRegionOwnedHeaderSource()}}, result.error);
   if (!capture) return result;
   ParseState state;
-  initialize(state, capture->sourceSnapshot(), capture->inputPath(), region_name);
+  initialize(state, capture->sourceSnapshot(), capture->inputPath(), region_name, headers);
   if (!parse(capture->arguments(), capture->workingDirectory(),
              capture->fileSystem(), state, result.syntax_valid)) {
     result.error = state.error;
@@ -314,7 +340,13 @@ ClosedRegionAdmissionResult admitClosedRegionHostForTesting(
   if (!snapshot) return result;
   bindContext(state.program, snapshot->identity());
   cr::Program replay;
-  if (!replayClosedRegionHost(*snapshot, region_name, replay, result.error)) return result;
+  ClosedRegionEntryBinding replay_entry;
+  if (!replayClosedRegionHost(*snapshot, region_name, replay, result.error,
+                             headers, headers ? &replay_entry : nullptr)) return result;
+  if (headers && !sameClosedRegionEntryBinding(state.entry, replay_entry)) {
+    result.error = "experimental entry body/signature binding changed during immutable replay";
+    return result;
+  }
   // Reuse the existing exact semantic verifier; no second graph comparator or
   // private serialization is introduced to assert replay equivalence.
   mlir::MLIRContext context;
@@ -324,7 +356,20 @@ ClosedRegionAdmissionResult admitClosedRegionHostForTesting(
     return result;
   }
   if (!snapshot->unchanged(result.error)) return result;
-  return ClosedRegionEvidenceIssuer::host(std::move(state.program), std::move(snapshot), region_name);
+  return ClosedRegionEvidenceIssuer::host(std::move(state.program), std::move(snapshot), region_name,
+      headers ? std::optional<ClosedRegionEntryBinding>(std::move(state.entry)) : std::nullopt,
+      headers ? std::optional<ExperimentalRegionHeaders>(*headers) : std::nullopt);
+}
+ClosedRegionAdmissionResult admitClosedRegionHostForTesting(
+    const Options &options, const std::string &working_directory,
+    const std::string &region_name, const std::function<void()> &after_initial_parse) {
+  return admitHost(options, working_directory, region_name, after_initial_parse, nullptr);
+}
+ClosedRegionAdmissionResult admitExperimentalRegionHostForTesting(
+    const Options &options, const std::string &working_directory,
+    const ExperimentalRegionHeaders &headers, const std::string &region_name,
+    const std::function<void()> &after_initial_parse) {
+  return admitHost(options, working_directory, region_name, after_initial_parse, &headers);
 }
 } // namespace detail
 
@@ -332,5 +377,11 @@ ClosedRegionAdmissionResult admitClosedRegionHost(
     const Options &options, const std::string &working_directory,
     const std::string &region_name) {
   return detail::admitClosedRegionHostForTesting(options, working_directory, region_name, {});
+}
+ClosedRegionAdmissionResult admitExperimentalRegionHost(
+    const Options &options, const std::string &working_directory,
+    const ExperimentalRegionHeaders &headers, const std::string &region_name) {
+  return detail::admitExperimentalRegionHostForTesting(
+      options, working_directory, headers, region_name, {});
 }
 } // namespace matcore::mdslc::frontend
