@@ -87,6 +87,7 @@ jobs:
         if: matrix.mlir_enable == 'ON'
         run: |
           sudo apt-get install -y --no-install-recommends \
+            libclang-rt-21-dev \
             libmlir-21-dev \
             mlir-21-tools
           /usr/bin/mlir-opt-21 --version | grep -F "LLVM version 21.1.8"
@@ -248,6 +249,7 @@ jobs:
             g++-multilib \
             libclang-21-dev \
             libclang-cpp21-dev \
+            libclang-rt-21-dev \
             libmlir-21-dev \
             llvm-21-dev \
             mlir-21-tools \

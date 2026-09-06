@@ -57,6 +57,20 @@ machinery are reused, but no inspection authority field is flipped.
 
 ## Validation and retained negative results
 
+The generated-code tests intentionally include an ASan-instrumented object and
+an out-of-bounds negative control even in Release and Debug builds. Therefore
+Linux MLIR test builds require the matching Clang sanitizer runtime (Ubuntu
+package `libclang-rt-21-dev`). The first hosted Release/Debug runs at integration
+head `085d2f20b02f5696c85c3961b627d5a569755cfc` failed to link the ASan tests
+because those jobs had not installed that runtime; the dedicated sanitizer job
+passed. The dependency is now explicit in both affected installation steps;
+the test and its negative control remain mandatory.
+
+An initial root full local run returned 88/90 when the workflow correction was
+edited during testing: the existing package and benchmark-runner tests correctly
+rejected the newly dirty source. This is not execution evidence. A clean committed
+reconfiguration and full rerun are required before integration.
+
 | Local validation | Exact outcome |
 | --- | --- |
 | Release generated candidate + affected existing closed/structured/buffer tests | 10/10 PASS, 0.28 s |
