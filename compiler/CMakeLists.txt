@@ -451,6 +451,7 @@ if(BUILD_TESTING AND MDSLC_ENABLE_NATIVE_FRONTEND AND
   # Private admission plus its explicitly bounded host execution consumer.
   # No installed headers or driver option; compatibility targets are unchanged.
   add_subdirectory(tests/closed_region)
+  add_subdirectory(tests/generated_cpu)
   add_subdirectory(tests/closed_source)
 endif()
 if(MDSLC_ENABLE_MATCORE_MLIR)
