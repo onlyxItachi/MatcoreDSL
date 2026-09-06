@@ -152,6 +152,7 @@ jobs:
         run: |
           mlir_options=(
             -DMDSLC_ENABLE_MATCORE_MLIR=${{ matrix.mlir_enable }}
+            -DMDSLC_ENABLE_EXPERIMENTAL_REGIONS=${{ matrix.mlir_enable }}
             -DMDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS=${{ matrix.vector_readiness_enable }}
           )
           if [[ "${{ matrix.mlir_enable }}" == "ON" ]]; then
@@ -216,6 +217,10 @@ jobs:
 
       - name: Test standalone MDSLC
         run: |
+          ctest --test-dir build-mdslc -N \
+            -R '^package\.experimental_regions\.(configuration_rejections|install_contract)$' \
+            | tee build-mdslc/experimental-package-test-list.txt
+          grep -Fx "Total Tests: 2" build-mdslc/experimental-package-test-list.txt
           if [[ "${{ matrix.mlir_enable }}" == "ON" ]]; then
             expected_candidates=10
             if [[ "${{ matrix.openblas_require }}" == "ON" ]]; then
@@ -236,6 +241,30 @@ jobs:
               -R '^mlir\.structured\.gemm-vector-readiness-v1$'
           fi
           ctest --test-dir build-mdslc --output-on-failure -j1
+
+      - name: Prove opt-in production build without test targets
+        if: matrix.mlir_enable == 'ON' && matrix.openblas_enable == 'OFF'
+        run: |
+          cmake -S compiler -B build-regions-production -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+            -DCMAKE_C_COMPILER=/usr/bin/clang-21 \
+            -DCMAKE_CXX_COMPILER=/usr/bin/clang++-21 \
+            -DMDSLC_CLANGXX_EXECUTABLE=/usr/bin/clang++-21 \
+            -DMDSLC_ENABLE_NATIVE_FRONTEND=ON \
+            -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=ON \
+            -DMDSLC_ENABLE_OPENBLAS=OFF -DMDSLC_REQUIRE_OPENBLAS=OFF \
+            -DMDSLC_ENABLE_MATCORE_MLIR=ON \
+            -DMDSLC_ENABLE_EXPERIMENTAL_REGIONS=ON \
+            -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
+            -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang \
+            -DMLIR_DIR=/usr/lib/llvm-21/lib/cmake/mlir
+          cmake --build build-regions-production --parallel 2
+          cmake "-DBINARY_DIR=${PWD}/build-regions-production" \
+            "-DSOURCE_DIR=${PWD}/compiler" -DCXX=/usr/bin/clang++-21 \
+            -DINSTALL_LIBDIR=lib -DINSTALL_INCLUDEDIR=include \
+            -DNM=/usr/bin/nm -DOBJCOPY=/usr/bin/objcopy \
+            -DENABLED=ON -DHAS_OPENBLAS=OFF \
+            -P compiler/tests/cmake/experimental_regions_install.cmake
 
   clang-21-debug-mlir:
     name: Clang 21.1.8 Debug (Matcore MLIR enabled, OpenBLAS disabled)
@@ -288,6 +317,7 @@ jobs:
             -DMDSLC_ENABLE_OPENBLAS=OFF \
             -DMDSLC_REQUIRE_OPENBLAS=OFF \
             -DMDSLC_ENABLE_MATCORE_MLIR=ON \
+            -DMDSLC_ENABLE_EXPERIMENTAL_REGIONS=ON \
             -DMDSLC_DEFAULT_SEMANTIC_PIPELINE=matcore-mlir \
             -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
             -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang \
@@ -377,6 +407,7 @@ jobs:
             -DMDSLC_ENABLE_OPENBLAS=OFF \
             -DMDSLC_REQUIRE_OPENBLAS=OFF \
             -DMDSLC_ENABLE_MATCORE_MLIR=ON \
+            -DMDSLC_ENABLE_EXPERIMENTAL_REGIONS=ON \
             -DMDSLC_DEFAULT_SEMANTIC_PIPELINE=matcore-mlir \
             -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
             -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang \
@@ -405,10 +436,10 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1:check_initialization_order=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: |
-          sanitizer_tests='^(frontend\.experimental_region_admission|frontend\.experimental_region\.ordinary_link_rejected|runtime\.experimental_region\.(owning_result|header_order|mixed_configuration_ownership|independent_retirement|independent_mixed_configuration)|frontend\.closed_region_admission|frontend\.closed_region_host_context|frontend\.closed_source(_generated)?_execution_v1|mlir\.closed_region_semantics|frontend\.native\.two_gemm_region|ir\.v1\.core|mlir\.sanitizer\.allocator-protocol|mlir\.semantic\.(core|map-domain|recovered-gemm|two-gemm-region)|mlir\.cpu\.runtime_dispatch_lowering_v1|platform\.fp_environment\.v1|generated_cpu\..*|closed_candidates\..*|runtime\.closed_host\.((contract|production|independent|allocation|authority)_v1|private_value(_independent|_mixed_configuration|_abi)?_v2)|runtime\.cpu\.(reference_types|packed_avx2|packed_avx512|execution_context\.v1|parallel_packed\.v1|planner_v3_resources|workspace_v1|openblas_adapter|variant_conformance\.v1|gemm_v0)|runtime\.c_abi\.(typed_reference_v1|compatibility_v1|fp_environment_v1|region_guard_oracles_v1|public_context_v1))$'
+          sanitizer_tests='^(package\.experimental_regions\.install_contract|frontend\.experimental_region_admission|frontend\.experimental_region\.ordinary_link_rejected|runtime\.experimental_region\.(owning_result|header_order|mixed_configuration_ownership|independent_retirement|independent_mixed_configuration)|frontend\.closed_region_admission|frontend\.closed_region_host_context|frontend\.closed_source(_generated)?_execution_v1|mlir\.closed_region_semantics|frontend\.native\.two_gemm_region|ir\.v1\.core|mlir\.sanitizer\.allocator-protocol|mlir\.semantic\.(core|map-domain|recovered-gemm|two-gemm-region)|mlir\.cpu\.runtime_dispatch_lowering_v1|platform\.fp_environment\.v1|generated_cpu\..*|closed_candidates\..*|runtime\.closed_host\.((contract|production|independent|allocation|authority)_v1|private_value(_independent|_mixed_configuration|_abi)?_v2)|runtime\.cpu\.(reference_types|packed_avx2|packed_avx512|execution_context\.v1|parallel_packed\.v1|planner_v3_resources|workspace_v1|openblas_adapter|variant_conformance\.v1|gemm_v0)|runtime\.c_abi\.(typed_reference_v1|compatibility_v1|fp_environment_v1|region_guard_oracles_v1|public_context_v1))$'
           ctest --test-dir build-mdslc-asan-ubsan -N -R "${sanitizer_tests}" \
             | tee build-mdslc-asan-ubsan/focused-test-list.txt
-          grep -Fx "Total Tests: 62" \
+          grep -Fx "Total Tests: 63" \
             build-mdslc-asan-ubsan/focused-test-list.txt
           ctest --test-dir build-mdslc-asan-ubsan --output-on-failure -j1 \
             -R "${sanitizer_tests}"
