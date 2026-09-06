@@ -119,6 +119,13 @@ int main() {
            "Extent rows=m; auto a=read(A,rows,k); auto b=read(B,k,n);\n"
            "auto c=gemm(a,b,Numerics::strict_f32); publish(c,C);",
            "using Extent=decltype(Shape{});"), 1},
+      {"explicit_main_prototype_marker",
+           "using namespace mdsl_probe;\n"
+           "[[clang::annotate(\"mdsl.private.closed_region.v1\")]]\n"
+           "void region(Storage A, Storage B, Storage C, Shape m, Shape k, Shape n);\n"
+           "void region(Storage A, Storage B, Storage C, Shape m, Shape k, Shape n) {\n"
+           "auto a=read(A,m,k); auto b=read(B,k,n);\n"
+           "auto c=gemm(a,b,Numerics::strict_f32); publish(c,C);\n}", 1},
   };
   for (const auto &item : positive) {
     auto admission = fe::admitClosedRegionSource(item.source, item.name + ".mdsl");
