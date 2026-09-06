@@ -60,11 +60,13 @@ set(provider_flag)
 if(HAS_OPENBLAS)
   set(provider_flag -DEXPECT_OPENBLAS)
 endif()
-foreach(test IN ITEMS result candidates)
+foreach(test IN ITEMS result candidates private_value)
   if(test STREQUAL "result")
     set(source "${SOURCE_DIR}/tests/experimental_region/result_test.cpp")
-  else()
+  elseif(test STREQUAL "candidates")
     set(source "${SOURCE_DIR}/tests/closed_candidates/candidate_test.cpp")
+  else()
+    set(source "${SOURCE_DIR}/tests/closed_host/private_value_independent_test.cpp")
   endif()
   set(executable "${prefix}/${test}")
   execute_process(COMMAND "${CXX}" -std=c++20 ${compile_flags}
@@ -83,6 +85,54 @@ foreach(test IN ITEMS result candidates)
   endif()
   message(STATUS "Installed ${test}: ${output}")
 endforeach()
+# Exercise actual installed owning handles across differing host STL settings.
+# Only the consumer changes configuration; both use installed header bytes and
+# the same installed production archive. No compiler-private build include leaks.
+foreach(kind IN ITEMS result value)
+  if(kind STREQUAL "result")
+    set(test_dir "${SOURCE_DIR}/tests/experimental_region")
+    set(stem mixed_configuration)
+  else()
+    set(test_dir "${SOURCE_DIR}/tests/closed_host")
+    set(stem private_value)
+  endif()
+  set(object "${prefix}/${kind}-producer.o")
+  execute_process(COMMAND "${CXX}" -std=c++20 ${compile_flags}
+    "-I${include}" "-I${private}/include" -c "${test_dir}/${stem}_producer.cpp"
+    -o "${object}" RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
+  if(NOT status EQUAL 0)
+    message(FATAL_ERROR "Installed ${kind} producer failed: ${output}\n${error}")
+  endif()
+  set(executable "${prefix}/${kind}-mixed")
+  execute_process(COMMAND "${CXX}" -std=c++20 ${compile_flags}
+    -D_GLIBCXX_DEBUG=1 -D_GLIBCXX_USE_CXX11_ABI=0
+    "-I${include}" "-I${private}/include" "${test_dir}/${stem}_consumer.cpp"
+    "${object}" "${archive}" "-L${lib}" -lmatcore_runtime -lm -pthread
+    "-Wl,-rpath,${lib}" ${link_flags} -o "${executable}"
+    RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
+  if(NOT status EQUAL 0)
+    message(FATAL_ERROR "Installed mixed ${kind} consumer failed to link: ${output}\n${error}")
+  endif()
+  execute_process(COMMAND "${executable}"
+    RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
+  if(NOT status EQUAL 0)
+    message(FATAL_ERROR "Installed mixed ${kind} ownership failed: ${output}\n${error}")
+  endif()
+  message(STATUS "Installed mixed ${kind} ownership: PASS ${output}")
+endforeach()
+set(abi_link_flags "${LINK_FLAGS} -L\"${lib}\" -lmatcore_runtime -lm -pthread -Wl,-rpath,\"${lib}\"")
+execute_process(COMMAND "${CMAKE_COMMAND}"
+  "-DCXX=${CXX}" "-DNM=${NM}" "-DOBJCOPY=${OBJCOPY}"
+  "-DSOURCE_DIR=${SOURCE_DIR}/tests/closed_host"
+  "-DINCLUDE_DIR=${private}/include" "-DPUBLIC_INCLUDE_DIR=${include}"
+  "-DRUNTIME=${archive}" "-DOUTPUT_DIR=${prefix}/abi-control"
+  "-DCXX_FLAGS=${CXX_FLAGS}" "-DLINK_FLAGS=${abi_link_flags}"
+  -P "${SOURCE_DIR}/tests/closed_host/check_private_value_abi.cmake"
+  RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
+if(NOT status EQUAL 0)
+  message(FATAL_ERROR "Installed private Value revision gate failed: ${output}\n${error}")
+endif()
+message(STATUS "${output}")
 if(CXX_FLAGS MATCHES "fsanitize=.*address")
   set(executable "${prefix}/installed-leaf-asan-control")
   execute_process(COMMAND "${CXX}" -std=c++20 ${compile_flags}
