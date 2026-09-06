@@ -1,11 +1,19 @@
 #include "closed_host_v1.h"
 
 #include <cfenv>
+#include <array>
+#include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <exception>
 #include <limits>
 #include <new>
+#include <mutex>
+
+#if defined(MDSLC_CLOSED_HOST_LEGACY_CANDIDATES)
+#include "matcore/runtime_c.h"
+#endif
 
 #if defined(__FAST_MATH__)
 #error "closed host strict-f32 adapter must not be compiled with fast math"
@@ -32,6 +40,188 @@ struct ValueStorage {
 };
 
 namespace {
+#if defined(MDSLC_CLOSED_HOST_GENERATED_STRICT)
+// Private pinned MLIR 21 x86-64 identity-memref ABI, never an installed type.
+struct GeneratedMemref {
+  float *allocated;
+  float *aligned;
+  std::int64_t offset;
+  std::int64_t sizes[2];
+  std::int64_t strides[2];
+};
+static_assert(sizeof(GeneratedMemref) == 56 && alignof(GeneratedMemref) == 8);
+static_assert(offsetof(GeneratedMemref, sizes) == 24 &&
+              offsetof(GeneratedMemref, strides) == 40);
+extern "C" void _mlir_ciface___matcore_strict_gemm_f32_v1(
+    GeneratedMemref *, GeneratedMemref *, GeneratedMemref *);
+GeneratedMemref descriptor(const ValueStorage &value) noexcept {
+  auto *data = const_cast<float *>(value.elements.data());
+  return {data, data, 0,
+          {static_cast<std::int64_t>(value.rows),
+           static_cast<std::int64_t>(value.columns)},
+          {static_cast<std::int64_t>(value.columns), 1}};
+}
+#endif
+
+Candidate selectedCandidate(Candidate request) noexcept {
+  if (request != Candidate::automatic) return request;
+#if defined(MDSLC_CLOSED_HOST_GENERATED_STRICT)
+  return Candidate::generated_strict;
+#else
+  return Candidate::native_strict;
+#endif
+}
+
+Code candidateLegality(Candidate request, Numeric numeric) noexcept {
+  switch (selectedCandidate(request)) {
+  case Candidate::native_strict: return Code::ok;
+  case Candidate::generated_strict:
+#if defined(MDSLC_CLOSED_HOST_GENERATED_STRICT)
+    return Code::ok;
+#else
+    return Code::candidate_unavailable;
+#endif
+  case Candidate::existing_native:
+  case Candidate::authenticated_openblas:
+    if (numeric != Numeric::reassociate_f32)
+      return Code::candidate_incompatible;
+#if !defined(MDSLC_CLOSED_HOST_LEGACY_CANDIDATES)
+    return Code::candidate_unavailable;
+#else
+    if (request == Candidate::authenticated_openblas) {
+#if !defined(MDSLC_CLOSED_HOST_OPENBLAS)
+      return Code::candidate_unavailable;
+#endif
+    }
+    return Code::ok;
+#endif
+  case Candidate::automatic: break;
+  }
+  return Code::invalid_candidate;
+}
+
+#if defined(MDSLC_CLOSED_HOST_LEGACY_CANDIDATES)
+matcore_tensor_desc_v0 legacyDescriptor(const float *data, std::uint64_t rows,
+                                      std::uint64_t columns,
+                                      bool writable) noexcept {
+  matcore_tensor_desc_v0 descriptor{};
+  descriptor.struct_size = sizeof(descriptor);
+  descriptor.data = const_cast<float *>(data);
+  descriptor.dtype = MATCORE_DTYPE_F32_V0;
+  descriptor.rank = 2;
+  descriptor.dims[0] = static_cast<std::int64_t>(rows);
+  descriptor.dims[1] = static_cast<std::int64_t>(columns);
+  descriptor.strides[0] = descriptor.dims[1];
+  descriptor.strides[1] = 1;
+  descriptor.memory_space = MATCORE_MEMORY_SPACE_HOST_V0;
+  descriptor.mutability = writable ? MATCORE_MUTABILITY_READ_WRITE_V0
+                                   : MATCORE_MUTABILITY_READ_ONLY_V0;
+  return descriptor;
+}
+
+Code legacyGemm(Candidate candidate, const float *lhs, const float *rhs,
+                float *output, std::uint64_t m, std::uint64_t n,
+                std::uint64_t k, CandidateReport &evidence) noexcept {
+  auto a = legacyDescriptor(lhs, m, k, false);
+  auto b = legacyDescriptor(rhs, k, n, false);
+  auto c = legacyDescriptor(output, m, n, true);
+  matcore_policy_v0 policy{};
+  policy.struct_size = sizeof(policy);
+  policy.target = MATCORE_TARGET_CPU_V0;
+  policy.fallback = MATCORE_FALLBACK_ERROR_V0;
+  matcore_cpu_gemm_execution_options_v1 options{};
+  options.abi_version = MATCORE_RUNTIME_EXECUTION_ABI_VERSION_V1;
+  options.struct_size = sizeof(options);
+  options.requested_threads = 1;
+  const bool provider = candidate == Candidate::authenticated_openblas;
+  options.request = provider ? MATCORE_CPU_GEMM_REQUEST_FORCE_EXTERNAL_OPENBLAS_V2
+                            : MATCORE_CPU_GEMM_REQUEST_FORCE_REFERENCE_V2;
+  matcore_cpu_gemm_plan_report_v2 report{};
+  report.abi_version = MATCORE_RUNTIME_PLAN_ABI_VERSION_V2;
+  report.struct_size = sizeof(report);
+  evidence.invocation_attempted = true;
+  const auto status = matcore_runtime_gemm_f32_execute_v1(
+      &c, &a, &b, &policy, &options, nullptr, 0, &report);
+  const char *expected = provider ? "cpu.external.openblas.f32.v1"
+                                  : "cpu.reference.f32.v1";
+  const bool identified = report.selected_stable_id != nullptr &&
+                         std::strcmp(report.selected_stable_id, expected) == 0 &&
+                         report.selected_actual_threads == 1 &&
+                         report.selected_workspace_bytes == 0;
+  if (identified) {
+    evidence.actual = provider ? Implementation::authenticated_openblas
+                              : Implementation::existing_reference;
+    evidence.actual_threads = 1;
+  }
+  if (status.code == MATCORE_STATUS_UNAVAILABLE_VARIANT_V0)
+    return Code::candidate_unavailable;
+  if (status.code != MATCORE_STATUS_OK_V0 || !identified ||
+      report.plan_status != MATCORE_CPU_PLAN_STATUS_SELECTED_V1)
+    return Code::candidate_failure;
+  return Code::ok;
+}
+
+bool sameNumber(float a, float b) noexcept {
+  return (std::isnan(a) && std::isnan(b)) ||
+         std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b);
+}
+
+bool allowedPair(float result, float a, float b, float c, float d) noexcept {
+  const float p = a * b, q = c * d, z = 0.0F;
+  const float zp = z + p, zq = z + q, pq = p + q;
+  // This bounded probe checks membership, not agreement with one arbitrary
+  // reassociated oracle. NaN payloads are deliberately outside the contract.
+  for (float value : std::array<float, 9>{zp + q, zq + p, z + pq,
+           std::fma(a, b, zq), std::fma(c, d, zp),
+           std::fma(a, b, std::fma(c, d, z)),
+           std::fma(c, d, std::fma(a, b, z)),
+           z + std::fma(a, b, q), z + std::fma(c, d, p)})
+    if (sameNumber(result, value)) return true;
+  return false;
+}
+
+Code closedProviderContract(CandidateReport &evidence) noexcept {
+  static std::once_flag once;
+  static Code result = Code::candidate_incompatible;
+  evidence.provider_contract_checked = true;
+  try {
+    // Runs inside the full FP scope. Stack-only Matcore fixture preparation;
+    // the unchanged runtime authenticates provider identity and thread/FP state.
+    // This does not prove all versions/cores or substitute for release evidence.
+    std::call_once(once, [&] {
+      evidence.provider_probe_invoked = true;
+      const float tiny = std::numeric_limits<float>::denorm_min();
+      const float inf = std::numeric_limits<float>::infinity();
+      const std::array<float, 8> a{-1, 0x1.000002p0F, tiny, 0, inf, -inf, -0.0F, -0.0F};
+      const std::array<float, 8> b{1, 1, 0, -1, 0x1.fffffep-1F, 1, 1, -1};
+      std::array<float, 16> out{};
+      CandidateReport probe;
+      auto code = legacyGemm(Candidate::authenticated_openblas, a.data(), b.data(),
+                             out.data(), 4, 4, 2, probe);
+      if (code != Code::ok) { result = code; return; }
+      for (std::size_t i = 0; i < 4; ++i)
+        for (std::size_t j = 0; j < 4; ++j)
+          if (!allowedPair(out[4*i+j], a[2*i], b[j], a[2*i+1], b[4+j]))
+            return;
+      for (const auto pair : std::array<std::array<float, 2>, 4>{
+             std::array<float, 2>{-0.0F, 1.0F}, {tiny, 0.5F}, {inf, 0.0F}, {tiny, 1.0F}}) {
+        float scalar = 99;
+        code = legacyGemm(Candidate::authenticated_openblas, &pair[0], &pair[1],
+                          &scalar, 1, 1, 1, probe);
+        if (code != Code::ok) { result = code; return; }
+        const float product = pair[0] * pair[1], separate = 0.0F + product;
+        if (!sameNumber(scalar, separate) &&
+            !sameNumber(scalar, std::fma(pair[0], pair[1], 0.0F))) return;
+      }
+      result = Code::ok;
+    });
+  } catch (...) {
+    return Code::candidate_failure;
+  }
+  return result;
+}
+#endif
+
 constexpr bool supportedPlatform() noexcept {
 #if defined(__linux__) && defined(__x86_64__)
   return true;
@@ -248,17 +438,36 @@ Status Session::gemm(Frontier frontier, const Value &lhs, const Value &rhs,
                      Numeric numeric, Value &result) noexcept {
   if (!begin(frontier)) return status_;
   ActiveCall active(*this);
-  if (!lhs.valid() || !rhs.valid()) return fail(Code::invalid_value, frontier);
+  candidate_report_ = {frontier, options_.candidate, Implementation::none, numeric};
+  const auto rejected = [&](Code code) noexcept {
+    candidate_report_.code = code;
+    return fail(code, frontier);
+  };
+  if (!lhs.valid() || !rhs.valid()) return rejected(Code::invalid_value);
   if (numeric != Numeric::strict_f32 && numeric != Numeric::reassociate_f32)
-    return fail(Code::invalid_value, frontier);
-  if (lhs.columns() != rhs.rows()) return fail(Code::shape_mismatch, frontier);
+    return rejected(Code::invalid_value);
+  if (lhs.columns() != rhs.rows()) return rejected(Code::shape_mismatch);
+  auto code = candidateLegality(options_.candidate, numeric);
+  if (code != Code::ok) return rejected(code);
   std::shared_ptr<ValueStorage> storage;
-  auto code = allocate(lhs.rows(), rhs.columns(), storage);
-  if (code != Code::ok) return fail(code, frontier);
+  code = allocate(lhs.rows(), rhs.columns(), storage);
+  if (code != Code::ok) return rejected(code);
   ScopedFp environment;
-  if (!environment.valid()) return fail(Code::unsupported_fp_environment, frontier);
+  if (!environment.valid()) return rejected(Code::unsupported_fp_environment);
+#if defined(MDSLC_CLOSED_HOST_LEGACY_CANDIDATES)
+  if (options_.candidate == Candidate::authenticated_openblas) {
+    code = closedProviderContract(candidate_report_);
+    if (!environment.controlsUnchanged()) code = Code::candidate_failure;
+    if (code != Code::ok) {
+      environment.restore();
+      return rejected(code);
+    }
+  }
+#endif
 #if defined(MDSLC_CLOSED_HOST_TESTING)
   if (test_candidate_ != nullptr) {
+    candidate_report_.actual = Implementation::test_only;
+    candidate_report_.invocation_attempted = true;
     try {
       code = test_candidate_(
           {lhs.storage_->elements.data(), lhs.rows(), lhs.columns()},
@@ -271,17 +480,58 @@ Status Session::gemm(Frontier frontier, const Value &lhs, const Value &rhs,
   } else
 #endif
   {
-    // Strict evaluation is also a legal member of the reassociation-permitted
-    // profile. This is a new scalar reference candidate, not old runtime GEMM.
-    strictGemm(*lhs.storage_, *rhs.storage_, *storage);
+    // Availability and numerical compatibility remain forced-choice obligations
+    // even for empty math. Never enter generated zero-output outer loops or the
+    // old runtime's positive-shape-only/BLAS quick-return contract for empties.
+    if (storage->elements.empty()) {
+      candidate_report_.actual = Implementation::empty_output;
+    } else if (lhs.columns() == 0) {
+      // vector<float> value initialization already produced positive zero.
+      candidate_report_.actual = Implementation::zero_reduction;
+    } else {
+      switch (selectedCandidate(options_.candidate)) {
+      case Candidate::native_strict:
+        candidate_report_.actual = Implementation::native_strict;
+        candidate_report_.invocation_attempted = true;
+        candidate_report_.actual_threads = 1;
+        strictGemm(*lhs.storage_, *rhs.storage_, *storage);
+        break;
+      case Candidate::generated_strict:
+#if defined(MDSLC_CLOSED_HOST_GENERATED_STRICT)
+        {
+          auto a = descriptor(*lhs.storage_), b = descriptor(*rhs.storage_);
+          auto c = descriptor(*storage);
+          candidate_report_.actual = Implementation::generated_strict;
+          candidate_report_.invocation_attempted = true;
+          candidate_report_.actual_threads = 1;
+          _mlir_ciface___matcore_strict_gemm_f32_v1(&a, &b, &c);
+        }
+#else
+        code = Code::candidate_unavailable;
+#endif
+        break;
+      case Candidate::existing_native:
+      case Candidate::authenticated_openblas:
+#if defined(MDSLC_CLOSED_HOST_LEGACY_CANDIDATES)
+        code = legacyGemm(options_.candidate, lhs.storage_->elements.data(),
+                          rhs.storage_->elements.data(), storage->elements.data(),
+                          lhs.rows(), rhs.columns(), lhs.columns(), candidate_report_);
+#else
+        code = Code::candidate_unavailable;
+#endif
+        break;
+      case Candidate::automatic: code = Code::invalid_candidate; break;
+      }
+    }
   }
   if (!environment.controlsUnchanged()) code = Code::candidate_failure;
   environment.restore();
   // Test-hook reentry may already have failed this Session. Never issue a value
   // or clear that error merely because the outer candidate returned success.
-  if (!status_) return status_;
-  if (code != Code::ok) return fail(Code::candidate_failure, frontier);
+  if (!status_) { candidate_report_.code = status_.code; return status_; }
+  if (code != Code::ok) return rejected(code);
   result.storage_ = std::move(storage);
+  candidate_report_.value_issued = true;
   return succeed(frontier);
 }
 Status Session::publish(Frontier frontier, const Value &value,
@@ -369,8 +619,25 @@ const char *message(Code code) noexcept {
   case Code::unsupported_fp_environment: return "unsupported full floating-point environment adapter";
   case Code::reentrant_use: return "same-session reentry is forbidden";
   case Code::already_complete: return "session is already complete";
+  case Code::invalid_candidate: return "unknown compile-trusted candidate request";
+  case Code::candidate_unavailable: return "forced candidate unavailable; fallback forbidden";
+  case Code::candidate_incompatible: return "forced candidate violates numerical permissions";
   }
   return "unknown closed-host status";
+}
+
+const char *implementationName(Implementation implementation) noexcept {
+  switch (implementation) {
+  case Implementation::none: return "none";
+  case Implementation::native_strict: return "closed.native.strict_f32.v1";
+  case Implementation::generated_strict: return "closed.generated.strict_f32.mlir21.v1";
+  case Implementation::existing_reference: return "cpu.reference.f32.v1";
+  case Implementation::authenticated_openblas: return "cpu.external.openblas.f32.v1";
+  case Implementation::empty_output: return "closed.semantic.empty_output.v1";
+  case Implementation::zero_reduction: return "closed.semantic.zero_reduction.v1";
+  case Implementation::test_only: return "test-only-injected-candidate";
+  }
+  return "invalid";
 }
 
 } // namespace matcore::mdslc::runtime::closed_host_v1

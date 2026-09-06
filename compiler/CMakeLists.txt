@@ -453,6 +453,7 @@ if(BUILD_TESTING AND MDSLC_ENABLE_NATIVE_FRONTEND AND
   # runtime/frontend targets stay unchanged.
   add_subdirectory(tests/closed_region)
   add_subdirectory(tests/generated_cpu)
+  add_subdirectory(tests/closed_candidates)
 endif()
 if(MDSLC_ENABLE_MATCORE_MLIR)
   add_subdirectory(tools/matcore-mlir)
