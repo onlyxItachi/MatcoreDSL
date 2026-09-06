@@ -26,6 +26,15 @@ if(MDSLC_ENABLE_BOOTSTRAP_FRONTEND)
 endif()
 
 if(MDSLC_ENABLE_NATIVE_FRONTEND)
+  add_library(matcore_frontend_runtime_identity STATIC
+    native_frontend_runtime_identity.cpp)
+  target_compile_features(matcore_frontend_runtime_identity PUBLIC cxx_std_20)
+  target_include_directories(matcore_frontend_runtime_identity SYSTEM PRIVATE
+    ${LLVM_INCLUDE_DIRS} ${CLANG_INCLUDE_DIRS})
+  target_compile_definitions(matcore_frontend_runtime_identity PRIVATE ${LLVM_DEFINITIONS})
+  mdslc_target_match_llvm_rtti(matcore_frontend_runtime_identity)
+  target_link_libraries(matcore_frontend_runtime_identity PRIVATE
+    ${MDSLC_CLANG_TOOLING_LIBRARIES})
   add_library(matcore_frontend_native STATIC
     native_frontend_evidence.cpp
     native_frontend.cpp
@@ -45,6 +54,7 @@ if(MDSLC_ENABLE_NATIVE_FRONTEND)
   target_link_libraries(matcore_frontend_native
     PUBLIC matcore_frontend_common
     PRIVATE ${MDSLC_CLANG_TOOLING_LIBRARIES} MatcoreDSL::PlatformSupportV1
+      matcore_frontend_runtime_identity
   )
   if(BUILD_TESTING AND NOT WIN32)
     execute_process(COMMAND "${MDSLC_CLANGXX_EXECUTABLE}" -print-resource-dir
