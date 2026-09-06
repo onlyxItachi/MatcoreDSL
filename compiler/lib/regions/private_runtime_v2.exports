@@ -1,0 +1,57 @@
+# Exact Linux x86-64/Clang 21.1.8 private link contract, not a frozen public ABI.
+# Export only out-of-line public owning methods and compiler orchestration
+# entrypoints. Runtime implementation, STL instantiations, cleanup, the issued
+# leaf and internal state are local. Inline helper definitions are isolated at
+# the earlier LLVM host/helper boundary instead.
+{
+global:
+  matcore_closed_host_private_value_abi_v2;
+  _ZN7matcore4mdsl11ObservationC1EOS1_;
+  _ZN7matcore4mdsl11ObservationC2EOS1_;
+  _ZN7matcore4mdsl11ObservationC1ERKS1_;
+  _ZN7matcore4mdsl11ObservationC2ERKS1_;
+  _ZN7matcore4mdsl11ObservationD1Ev;
+  _ZN7matcore4mdsl11ObservationD2Ev;
+  _ZN7matcore4mdsl11ObservationaSEOS1_;
+  _ZN7matcore4mdsl11ObservationaSERKS1_;
+  _ZNK7matcore4mdsl11Observation4dataEv;
+  _ZNK7matcore4mdsl11Observation4rowsEv;
+  _ZNK7matcore4mdsl11Observation5validEv;
+  _ZNK7matcore4mdsl11Observation7columnsEv;
+  _ZN7matcore4mdsl6ResultC1EOS1_;
+  _ZN7matcore4mdsl6ResultC2EOS1_;
+  _ZN7matcore4mdsl6ResultD1Ev;
+  _ZN7matcore4mdsl6ResultD2Ev;
+  _ZN7matcore4mdsl6ResultaSEOS1_;
+  _ZNK7matcore4mdsl6Result11observationEy;
+  _ZNK7matcore4mdsl6Result17observation_countEv;
+  _ZN7matcore5mdslc7runtime14closed_host_v110ValueAbiV2C1Ev;
+  _ZN7matcore5mdslc7runtime14closed_host_v110ValueAbiV2C2Ev;
+  _ZN7matcore5mdslc7runtime14closed_host_v110ValueAbiV2C1EOS3_;
+  _ZN7matcore5mdslc7runtime14closed_host_v110ValueAbiV2C2EOS3_;
+  _ZN7matcore5mdslc7runtime14closed_host_v110ValueAbiV2C1ERKS3_;
+  _ZN7matcore5mdslc7runtime14closed_host_v110ValueAbiV2C2ERKS3_;
+  _ZN7matcore5mdslc7runtime14closed_host_v110ValueAbiV2D1Ev;
+  _ZN7matcore5mdslc7runtime14closed_host_v110ValueAbiV2D2Ev;
+  _ZN7matcore5mdslc7runtime14closed_host_v110ValueAbiV2aSEOS3_;
+  _ZN7matcore5mdslc7runtime14closed_host_v110ValueAbiV2aSERKS3_;
+  _ZNK7matcore5mdslc7runtime14closed_host_v110ValueAbiV24dataEv;
+  _ZNK7matcore5mdslc7runtime14closed_host_v110ValueAbiV24rowsEv;
+  _ZNK7matcore5mdslc7runtime14closed_host_v110ValueAbiV25validEv;
+  _ZNK7matcore5mdslc7runtime14closed_host_v110ValueAbiV27columnsEv;
+  _ZN7matcore5mdslc7runtime14closed_host_v112SessionAbiV2D1Ev;
+  _ZN7matcore5mdslc7runtime14closed_host_v112SessionAbiV2D2Ev;
+  _ZN7matcore5mdslc7runtime14closed_host_v112SessionAbiV24readEmNS2_12ResourceViewERNS2_10ValueAbiV2E;
+  _ZN7matcore5mdslc7runtime14closed_host_v112SessionAbiV24readEmNS2_12ResourceViewEmmRNS2_10ValueAbiV2E;
+  _ZN7matcore5mdslc7runtime14closed_host_v112SessionAbiV24gemmEmRKNS2_10ValueAbiV2ES6_NS2_7NumericERS4_;
+  _ZN7matcore5mdslc7runtime14closed_host_v112SessionAbiV27publishEmRKNS2_10ValueAbiV2ENS2_12ResourceViewE;
+  _ZN7matcore5mdslc7runtime14closed_host_v112SessionAbiV27observeEmNS2_12ResourceViewE;
+  _ZN7matcore5mdslc7runtime14closed_host_v112SessionAbiV28completeEm;
+  _ZNK7matcore5mdslc7runtime14closed_host_v112SessionAbiV211observationEm;
+  _ZNK7matcore5mdslc7runtime14closed_host_v112SessionAbiV219observationFrontierEm;
+  _ZNO7matcore5mdslc7runtime14closed_host_v112SessionAbiV210takeResultENS_4mdsl14SourceLocationE;
+  _ZN7matcore5mdslc7runtime14closed_host_v17messageENS2_4CodeE;
+  _ZN7matcore5mdslc7runtime14closed_host_v118implementationNameENS2_14ImplementationE;
+local:
+  *;
+};

@@ -120,12 +120,16 @@ set(MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS "${MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS
 # Test variants use exactly this definition, with injection enabled only in the
 # dedicated archive. The default invocation produces the installed candidate set.
 function(mdslc_add_closed_candidate_runtime target)
-  cmake_parse_arguments(REGION "TESTING;NATIVE_ONLY" "" "" ${ARGN})
+  cmake_parse_arguments(REGION "TESTING;NATIVE_ONLY;SHARED" "" "" ${ARGN})
   if(REGION_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR "Unknown closed candidate runtime option: ${REGION_UNPARSED_ARGUMENTS}")
   endif()
   set(compiler_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../..")
-  add_library(${target} STATIC "${compiler_dir}/lib/runtime/closed_host_v1.cpp")
+  set(library_kind STATIC)
+  if(REGION_SHARED)
+    set(library_kind SHARED)
+  endif()
+  add_library(${target} ${library_kind} "${compiler_dir}/lib/runtime/closed_host_v1.cpp")
   target_include_directories(${target} PUBLIC
     "${compiler_dir}/lib/runtime" "${compiler_dir}/include")
   target_compile_features(${target} PUBLIC cxx_std_20)
@@ -151,6 +155,7 @@ function(mdslc_add_closed_candidate_runtime target)
   endif()
 endfunction()
 mdslc_add_closed_candidate_runtime(matcore_closed_candidates_production_v1)
+include(PrivateRuntime.cmake)
 include(Driver.cmake)
 
 if(MDSLC_ENABLE_EXPERIMENTAL_REGIONS)
