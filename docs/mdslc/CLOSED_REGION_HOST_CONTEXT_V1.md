@@ -117,11 +117,45 @@ AST consumer and allocator template instantiations merely to reuse its identity
 queries in a Clang+MLIR inspection binary. No new sanitizer exclusion is used.
 Windows keeps its existing behavior; the new host proof is Linux-scoped.
 
-Focused Release integration after the final mathematical/context controls:
-**5/5 CTest tests passed, 14.21 seconds; 173 host checks, zero failures**.
-The selection includes the existing two-GEMM native frontend, hermetic admission,
-semantic model and ordinary-compiler fixture rejection. Final clean-source full
-regression, sanitizer and hosted results are recorded below after execution.
+Final local validation at clean source checkpoint
+`00f269503da2d16a1e11d9cc0d21add214d35604`, after normally integrating canonical
+`7e64f20237329d6e129ef798615f85bb19dd5cee`:
+
+| Check | Observed result |
+| --- | --- |
+| Focused Release CTest | 5/5 passed, 14.51 seconds |
+| Complete Release standalone CTest | 78/78 passed, 234.99 seconds |
+| Focused Debug ASan+UBSan, exact CI selection | 27/27 passed, 23.72 seconds |
+| Final host / hermetic admission / semantic checks | 179 / 506 / 71; zero failures |
+| Independently syntax-checked host source catalogue | 38/38 ordinary Clang C++20 valid |
+| Repository hygiene and `git diff --check` | Passed |
+
+Release uses the exact tuple in `AGENTS.md`, MLIR and experimental vector
+readiness enabled, OpenBLAS disabled. Reconfigure from the clean source commit
+before the complete suite, then `cmake --build build-host-release -- -j2` and
+`ctest --test-dir build-host-release --output-on-failure -j1`. The suite includes
+frontend contracts, semantic/structured/buffer/vector verification, original CPU
+execution, planner/runtime/ABI, installed consumers, source-inaccessible package
+installation and benchmark-evidence contract tests. It does not produce new
+performance or provider-parity evidence.
+
+The separate Debug build uses `-O1 -g -fsanitize=address,undefined
+-fno-omit-frame-pointer` in both language flags and the sanitizer link flags;
+vector readiness and OpenBLAS are disabled. Run with `DEBUGINFOD_URLS=` and the
+strict ASAN/UBSAN options and exact 27-test regex in
+`.github/workflows/mdslc-native.yml`. The allocator protocol's intentional-error
+controls still detect errors. The new HostAdmission and shared runtime-identity
+objects retain sanitizer instrumentation and define none of the checked
+`BumpPtrAllocator`, `LazyGenerational` or `PagedVector` allocator templates.
+
+Independent final integration review ACCEPTed the complete diff against
+canonical `7e64f20237329d6e129ef798615f85bb19dd5cee` at source commit
+`00f269503da2d16a1e11d9cc0d21add214d35604`, including the compatibility repair,
+all source/context counterexamples, build integration and unchanged execution
+boundary. Approval remained conditional on the local and exact-head hosted
+gates. The subsequent validation-record commit changes documentation only.
+Hosted evidence and the normal-merge checkpoint are recorded after those gates
+complete, not inferred from local success.
 
 Independent evidence:
 [adversarial review](agent-reports/closed-region-host-adversarial-v1.md),
