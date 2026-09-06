@@ -1,0 +1,11 @@
+execute_process(COMMAND "${NM}" --defined-only --extern-only "${ARCHIVE}"
+  RESULT_VARIABLE status OUTPUT_VARIABLE symbols ERROR_VARIABLE error)
+if(NOT status EQUAL 0)
+  message(FATAL_ERROR "cannot inspect candidate archive: ${error}")
+endif()
+if(symbols MATCHES "configureForTesting|allocationAttemptsForTesting")
+  message(FATAL_ERROR "production registry exported test authority")
+endif()
+if(NOT symbols MATCHES "_mlir_ciface___matcore_strict_gemm_f32_v1")
+  message(FATAL_ERROR "generated candidate not linked into production registry")
+endif()

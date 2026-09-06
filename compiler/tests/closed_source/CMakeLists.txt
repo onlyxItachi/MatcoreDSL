@@ -1,5 +1,5 @@
-# Private authenticated-source execution proof. Generated C++ orchestrates the
-# new strict native adapter; this does not claim an MLIR-generated math kernel.
+# Private authenticated-source execution proof: retain the strict-native control
+# and, when linked, separately execute the trusted MLIR-generated mathematical leaf.
 add_library(matcore_closed_host_emitter STATIC
   ../../lib/codegen/ClosedHostEmitter.cpp)
 target_compile_features(matcore_closed_host_emitter PUBLIC cxx_std_20)
@@ -34,3 +34,24 @@ add_test(NAME frontend.closed_source_execution_v1
     "${CMAKE_CURRENT_SOURCE_DIR}/../.."
     ${closed_source_child_flags})
 set_tests_properties(frontend.closed_source_execution_v1 PROPERTIES TIMEOUT 180)
+
+# Exercise the same admitted source programs through the real compile-trusted
+# registry. Its archive already contains the issued LLVM object: linking another
+# copy would conceal an integration error behind duplicate kernel definitions.
+if(TARGET matcore_closed_candidates_production_v1)
+  add_dependencies(matcore_closed_source_execution_tests
+    matcore_closed_candidates_production_v1 matcore_generated_cpu_asan_test)
+  add_test(NAME frontend.closed_source_generated_execution_v1
+    COMMAND matcore_closed_source_execution_tests
+      "${MDSLC_CLANGXX_EXECUTABLE}"
+      "${closed_source_resource_dir}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../.."
+      --registry "$<TARGET_FILE:matcore_closed_candidates_production_v1>"
+      --runtime "$<TARGET_FILE:matcore_runtime>"
+      --asan-control "$<TARGET_FILE:matcore_generated_cpu_asan_test>"
+      --kernel "${CMAKE_BINARY_DIR}/tests/generated_cpu/strict-normal.o"
+      --asan-kernel "${CMAKE_BINARY_DIR}/tests/generated_cpu/strict-asan.o"
+      ${closed_source_child_flags})
+  set_tests_properties(frontend.closed_source_generated_execution_v1
+    PROPERTIES TIMEOUT 180)
+endif()

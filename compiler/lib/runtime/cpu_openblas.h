@@ -63,6 +63,14 @@ enum class OpenBlasExecutionStatusV1 : std::uint8_t {
 // detected after the opaque CBLAS call, so the caller's output may already
 // have been modified even though control and provider-thread restoration was
 // attempted and the execution is reported as failed.
+//
+// All Matcore-managed provider policy/probe/execution lifetimes in this adapter
+// instance are serialized. The OpenBLAS *_local API name is not proof of TLS;
+// the supported provider can mutate process-global thread settings. Direct
+// external OpenBLAS calls or policy mutation must not overlap these scopes unless
+// the caller supplies equivalent shared exclusion. Independently embedded copies
+// of this private adapter do not share a mutex; the product uses one runtime DSO.
+// Serialization is correctness adaptation, not provider parallelism evidence.
 
 OpenBlasProviderInfoV1 openblas_provider_info_v1() noexcept;
 OpenBlasConformanceReportV1 openblas_conformance_report_v1() noexcept;

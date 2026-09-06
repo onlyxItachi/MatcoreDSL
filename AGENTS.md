@@ -86,9 +86,15 @@ in `context.md`.
   compatibility; additive v1 APIs expose caller-owned workspace and prepacked
   B storage. Packed execution must never hide allocation or packing.
 - OpenBLAS is an optional authenticated CBLAS provider, never a requirement or
-  a silent fallback. Control its thread count locally, report the actual
-  provider policy, and prevent a nominal single-thread comparison from using
-  an uncontrolled provider pool.
+  a silent fallback. Adapt and restore its thread count in one shared provider
+  policy scope, report the actual policy, and prevent a nominal single-thread
+  comparison from using an uncontrolled provider pool. The supported OpenBLAS
+  `openblas_set_num_threads_local` implementation mutates process-global state;
+  its name is not evidence of TLS. Serialize every Matcore-owned probe and
+  execution policy lifetime through the canonical runtime adapter. Direct
+  external provider calls/policy mutation and independently embedded adapter
+  copies require equivalent shared exclusion; do not claim process-wide
+  isolation from one private runtime-instance mutex.
 - Reference, tiled, and compiler-vectorized v1 execute with and report one
   actual thread even when the request permits more; native packed v1 requires
   exactly one requested thread. None is a parallel implementation.

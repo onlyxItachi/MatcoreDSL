@@ -13,7 +13,8 @@ enum class Numeric : std::uint8_t { strict_f32, reassociate_f32 };
 enum class Code : std::uint8_t {
   ok, invalid_frontier, invalid_value, invalid_view, shape_mismatch,
   extent_overflow, insufficient_capacity, access_denied, allocation_failure,
-  candidate_failure, unsupported_fp_environment, reentrant_use, already_complete
+  candidate_failure, unsupported_fp_environment, reentrant_use, already_complete,
+  invalid_candidate, candidate_unavailable, candidate_incompatible
 };
 struct Status {
   Code code = Code::ok;

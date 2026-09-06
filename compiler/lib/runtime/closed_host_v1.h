@@ -7,6 +7,34 @@
 
 namespace matcore::mdslc::runtime::closed_host_v1 {
 
+// Private compile-trusted registry. No source/serialized identifier or callback
+// creates a candidate. Default sessions retain the original strict native path;
+// automatic explicitly chooses linked strict generated, otherwise strict native.
+enum class Candidate : std::uint8_t {
+  automatic, native_strict, generated_strict, existing_native,
+  authenticated_openblas
+};
+enum class Implementation : std::uint8_t {
+  none, native_strict, generated_strict, existing_reference,
+  authenticated_openblas, empty_output, zero_reduction, test_only
+};
+struct Options { Candidate candidate = Candidate::native_strict; };
+struct CandidateReport {
+  Frontier frontier = 0;
+  Candidate requested = Candidate::native_strict;
+  Implementation actual = Implementation::none;
+  Numeric numeric = Numeric::strict_f32;
+  Code code = Code::ok;
+  // A selected implementation may fail before producing a value. For a legacy
+  // route, actual is set only after its own report confirms the fixed variant.
+  bool invocation_attempted = false;
+  bool value_issued = false;
+  // Authentication probes are distinct from the requested GEMM: a first forced
+  // provider request, including empty math, may run the fixed private probe.
+  bool provider_contract_checked = false;
+  bool provider_probe_invoked = false;
+  std::uint32_t actual_threads = 0;
+};
 struct ValueStorage;
 class Value {
 public:
@@ -24,8 +52,7 @@ struct Observation { Frontier frontier; Value value; };
 // Private execution adapter, not a public source API or frozen ABI. This adapter
 // does not authenticate source, accept serialized authority, or interpret an AST.
 // These shapes describe only the private test injection ABI. No production
-// method accepts a candidate function. A future generated candidate needs its
-// own compile-trusted registry and numerical/effect contract.
+// method accepts a candidate function. Production uses the closed registry above.
 namespace detail {
 struct CandidateInput {
   const float *data;
@@ -73,6 +100,7 @@ struct TestHooks {
 class Session {
 public:
   Session() noexcept = default;
+  explicit Session(Options options) noexcept : options_(options) {}
   ~Session() noexcept;
   Session(const Session &) = delete;
   Session &operator=(const Session &) = delete;
@@ -89,6 +117,9 @@ public:
   Status observe(Frontier, ResourceView) noexcept;
   Status complete(Frontier) noexcept;
   Status status() const noexcept { return status_; }
+  // Value snapshot of the last attempted GEMM, not mutable registry authority.
+  // Later non-GEMM operations and sticky failures do not rewrite this report.
+  CandidateReport candidateReport() const noexcept { return candidate_report_; }
   // Returns a stable immutable handle, not a pointer invalidated by record growth.
   Value observation(std::uint64_t index) const noexcept;
   Frontier observationFrontier(std::uint64_t index) const noexcept;
@@ -116,6 +147,8 @@ private:
   Code allocate(std::uint64_t rows, std::uint64_t columns,
                 std::shared_ptr<ValueStorage> &) noexcept;
   Status status_;
+  Options options_;
+  CandidateReport candidate_report_;
   bool active_ = false;
   bool result_taken_ = false;
   Frontier active_frontier_ = 0;
@@ -129,6 +162,7 @@ private:
 };
 
 const char *message(Code) noexcept;
+const char *implementationName(Implementation) noexcept;
 
 } // namespace matcore::mdslc::runtime::closed_host_v1
 #endif
