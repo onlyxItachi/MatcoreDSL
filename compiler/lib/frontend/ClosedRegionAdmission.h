@@ -8,6 +8,8 @@
 
 namespace matcore::mdslc::frontend {
 
+struct Options;
+namespace detail { class ClosedRegionEvidenceIssuer; }
 struct ClosedRegionAdmissionResult;
 
 // An in-process inspection seal, not a signature, serialized authority, or
@@ -17,6 +19,8 @@ public:
   const closed_region::Program &program() const;
   const std::string &sourceSnapshot() const;
   const std::string &regionName() const;
+  bool hasHostContext() const;
+  const std::string &hostContextIdentity() const;
 
 private:
   struct Payload;
@@ -24,6 +28,9 @@ private:
   std::shared_ptr<const Payload> payload_;
   friend ClosedRegionAdmissionResult admitClosedRegionSource(
       const std::string &, const std::string &, const std::string &);
+  friend class detail::ClosedRegionEvidenceIssuer;
+  friend bool verifyClosedRegionMatchesEvidence(
+      const AuthenticatedClosedRegionEvidence &, mlir::ModuleOp, std::string &);
 };
 
 struct ClosedRegionAdmissionResult {
@@ -39,6 +46,13 @@ struct ClosedRegionAdmissionResult {
 // overlays, physical fixture headers, host callbacks, or execution fallback.
 ClosedRegionAdmissionResult admitClosedRegionSource(
     const std::string &source, const std::string &source_identity,
+    const std::string &region_name = "region");
+
+// Same grammar in a bounded physical host TU. Options are inputs, not trusted
+// authority: the fixed compiler tuple, flags, environment, dependencies and
+// source preprocessing are authenticated before an immutable seal is issued.
+ClosedRegionAdmissionResult admitClosedRegionHost(
+    const Options &options, const std::string &working_directory,
     const std::string &region_name = "region");
 
 // Re-admits sealed bytes using the same fixed compiler contract and compares

@@ -1,4 +1,4 @@
-#include "ClosedRegionAdmission.h"
+#include "ClosedRegionAdmissionInternal.h"
 
 #define MDSLC_INTERNAL_EMBED_CLOSED_REGION_FIXTURE
 #include "../../tests/closed_region/fixture_language.h"
@@ -12,6 +12,7 @@
 #include <clang/AST/StmtCXX.h>
 #include <clang/AST/TypeLoc.h>
 #include <clang/Basic/Diagnostic.h>
+#include <clang/Basic/FileManager.h>
 #include <clang/Basic/SourceManager.h>
 #include <clang/Basic/Version.h>
 #include <clang/Frontend/ASTUnit.h>
@@ -85,19 +86,24 @@ using Environment = std::map<const clang::ValueDecl *, Binding>;
 // constructs a user object, substitutes a template, or chooses a shape-if arm.
 class Admission {
 public:
-  Admission(clang::ASTUnit &ast, const std::string &selected,
-            cr::Program &program, std::string &error)
-      : ast_(ast), context_(ast.getASTContext()),
+  Admission(clang::ASTContext &context, const clang::Decl *anchor,
+            const std::string &selected, cr::Program &program,
+            const detail::ClosedRegionASTPolicy &policy, std::string &error)
+      : context_(context), anchor_(anchor), policy_(policy),
         sources_(context_.getSourceManager()),
         selected_(selected), program_(program), error_(error) {}
 
   bool run() {
-    if (ast_.isMainFileAST() || ast_.top_level_empty())
+    if (!anchor_ || policy_.owned_header.isInvalid())
       return reject({}, "inspection requires a fresh source AST with top-level declarations");
     // Decl's out-of-line query retrieves the same complete translation unit,
     // including the injected header. ASTContext's inline TU getter would
     // instantiate lazy redeclaration allocation in the instrumented caller.
-    discover((*ast_.top_level_begin())->getTranslationUnitDecl());
+    for (const auto &event : policy_.events)
+      if (inHeader(sources_.getExpansionLoc(event.range.getBegin())))
+        return reject(event.range.getBegin(),
+                      "preprocessing altered the compiler-owned declaration buffer");
+    discover(anchor_->getTranslationUnitDecl());
     if (!value_type_ || !storage_type_ || !numerics_type_ || ops_.size() != 6)
       return reject({}, "tool-owned declaration set is incomplete");
     if (entries_.size() != 1 || selected_declarations_.size() != 1)
@@ -144,7 +150,7 @@ private:
   }
   bool inHeader(clang::SourceLocation location) const {
     return location.isValid() && !location.isMacroID() &&
-           sources_.getFilename(location) == header_path;
+           sources_.getFileID(location) == policy_.owned_header;
   }
   bool reject(clang::SourceLocation location, const std::string &reason) {
     if (error_.empty()) {
@@ -193,6 +199,26 @@ private:
     result.line = sources_.getSpellingLineNumber(begin);
     result.column = sources_.getSpellingColumnNumber(begin);
     return result;
+  }
+  bool closedSourceRange(clang::SourceRange range) {
+    if (!inMain(range.getBegin()) || !inMain(range.getEnd()))
+      return reject(range.getBegin(), "closed declaration spelling is not main-source-owned");
+    const auto span = site(range);
+    if (!error_.empty()) return false;
+    const auto bytes = sources_.getBufferData(sources_.getMainFileID());
+    if (hasPreprocessing(bytes.substr(span.offset, span.length).str()))
+      return reject(range.getBegin(), "preprocessing directive or escaped token inside closed source range");
+    for (const auto &event : policy_.events) {
+      const auto begin = sources_.getExpansionLoc(event.range.getBegin());
+      const auto end = sources_.getExpansionLoc(event.range.getEnd());
+      if (!inMain(begin) || !inMain(end)) continue;
+      const auto event_span = site({begin, end});
+      if (!error_.empty()) return false;
+      if (event_span.offset < span.offset + span.length &&
+          span.offset < event_span.offset + event_span.length)
+        return reject(begin, "preprocessing inside closed source range: " + event.description);
+    }
+    return true;
   }
   void discover(const clang::DeclContext *context) {
     for (const clang::Decl *declaration : context->decls()) {
@@ -246,6 +272,7 @@ private:
          location = location.getNextTypeLoc()) {
       if (!inMain(location.getBeginLoc()) || !inMain(location.getEndLoc()))
         return reject(location.getBeginLoc(), "macro or unowned source type spelling");
+      if (!closedSourceRange(location.getSourceRange())) return false;
       if (!location.getAs<clang::DecltypeTypeLoc>().isNull() ||
           !location.getAs<clang::TypeOfExprTypeLoc>().isNull() ||
           !location.getAs<clang::TypeOfTypeLoc>().isNull() ||
@@ -287,13 +314,15 @@ private:
         return reject(function->getLocation(), "unexpected non-function redeclaration");
       if (!inMain(declaration->getLocation()))
         return reject(declaration->getLocation(), "helper or region redeclaration is not source-owned");
+      if (!closedSourceRange(declaration->getSourceRange())) return false;
       const auto *prototype = declaration->getType()->getAs<clang::FunctionProtoType>();
       if (!prototype || prototype->getCallConv() != clang::CC_C)
         return reject(declaration->getLocation(), "nonstandard calling convention is not admitted");
       for (const clang::Attr *attribute : declaration->attrs()) {
         const auto *annotation = llvm::dyn_cast<clang::AnnotateAttr>(attribute);
         if (entry && annotation && annotation->getAnnotation() == region_annotation &&
-            inMain(annotation->getLocation())) {
+            inMain(annotation->getLocation()) && !annotation->isImplicit() &&
+            !annotation->isInherited() && closedSourceRange(annotation->getRange())) {
           if (declaration == function) ++markers;
         } else {
           return reject(declaration->getLocation(), "unadmitted function attribute");
@@ -344,6 +373,13 @@ private:
         !inMain(statement->getEndLoc()))
       return reject(statement ? statement->getBeginLoc() : clang::SourceLocation(),
                     "macro or non-main-source AST node is unsupported");
+    const clang::FPOptions baseline(context_.getLangOpts());
+    if (const auto *expression = llvm::dyn_cast<clang::Expr>(statement))
+      if (!(expression->getFPFeaturesInEffect(context_.getLangOpts()) == baseline))
+        return reject(statement->getBeginLoc(), "inherited floating-point policy is outside the fixed closed contract");
+    if (const auto *compound = llvm::dyn_cast<clang::CompoundStmt>(statement))
+      if (!(compound->getStoredFPFeaturesOrDefault().applyOverrides(context_.getLangOpts()) == baseline))
+        return reject(statement->getBeginLoc(), "inherited compound floating-point policy is outside the fixed closed contract");
     return true;
   }
 
@@ -665,8 +701,9 @@ private:
     return !helper || reject(function->getLocation(), "helper requires one terminal return");
   }
 
-  clang::ASTUnit &ast_;
   clang::ASTContext &context_;
+  const clang::Decl *anchor_;
+  const detail::ClosedRegionASTPolicy &policy_;
   clang::SourceManager &sources_;
   const std::string &selected_;
   cr::Program &program_;
@@ -688,6 +725,7 @@ struct AuthenticatedClosedRegionEvidence::Payload {
   cr::Program program;
   std::string source;
   std::string region_name;
+  std::shared_ptr<const closed_region_host::HostInputSnapshot> host;
 };
 AuthenticatedClosedRegionEvidence::AuthenticatedClosedRegionEvidence(
     std::shared_ptr<const Payload> payload) : payload_(std::move(payload)) {}
@@ -700,6 +738,59 @@ const std::string &AuthenticatedClosedRegionEvidence::sourceSnapshot() const {
 const std::string &AuthenticatedClosedRegionEvidence::regionName() const {
   return payload_->region_name;
 }
+bool AuthenticatedClosedRegionEvidence::hasHostContext() const {
+  return static_cast<bool>(payload_->host);
+}
+const std::string &AuthenticatedClosedRegionEvidence::hostContextIdentity() const {
+  static const std::string empty;
+  return payload_->host ? payload_->host->identity() : empty;
+}
+
+namespace detail {
+const char *closedRegionOwnedHeaderPath() { return header_path; }
+const char *closedRegionOwnedHeaderSource() { return closed_region_fixture_source; }
+std::string closedRegionDigest(const std::string &bytes) { return digest(bytes); }
+clang::FileID authenticateClosedRegionHeader(clang::ASTContext &context,
+                                             clang::FileManager &files,
+                                             std::string &error) {
+  auto entry = files.getFileRef(header_path);
+  if (!entry) {
+    llvm::consumeError(entry.takeError());
+    error = "compiler-owned declaration file was not resolved";
+    return {};
+  }
+  const auto id = context.getSourceManager().translateFile(&entry->getFileEntry());
+  bool invalid = false;
+  if (id.isInvalid() || context.getSourceManager().getBufferData(id, &invalid) !=
+                            closed_region_fixture_source || invalid) {
+    error = "compiler-owned declaration FileID or exact immutable bytes disagree";
+    return {};
+  }
+  return id;
+}
+bool admitClosedRegionParsedAST(clang::ASTContext &context,
+                               const clang::Decl *anchor,
+                               const std::string &selected, cr::Program &program,
+                               const ClosedRegionASTPolicy &policy,
+                               std::string &error) {
+  Admission admission(context, anchor, selected, program, policy, error);
+  return admission.run() && cr::verifyProgram(program, error);
+}
+ClosedRegionAdmissionResult ClosedRegionEvidenceIssuer::host(
+    cr::Program program,
+    std::shared_ptr<const closed_region_host::HostInputSnapshot> snapshot,
+    const std::string &region_name) {
+  ClosedRegionAdmissionResult result;
+  result.syntax_valid = true;
+  auto payload = std::make_shared<AuthenticatedClosedRegionEvidence::Payload>();
+  payload->program = std::move(program);
+  payload->source = snapshot->sourceSnapshot();
+  payload->region_name = region_name;
+  payload->host = std::move(snapshot);
+  result.evidence = AuthenticatedClosedRegionEvidence(std::move(payload));
+  return result;
+}
+} // namespace detail
 
 ClosedRegionAdmissionResult admitClosedRegionSource(
     const std::string &source, const std::string &source_identity,
@@ -735,8 +826,15 @@ ClosedRegionAdmissionResult admitClosedRegionSource(
   program.source_sha256 = digest(source);
   program.header_sha256 = digest(detail::closed_region_fixture_source);
   program.compiler_identity = clang::getClangFullVersion();
-  Admission admission(*ast, region_name, program, result.error);
-  if (!admission.run() || !cr::verifyProgram(program, result.error)) return result;
+  if (ast->isMainFileAST() || ast->top_level_empty()) {
+    result.error = "inspection requires a fresh source AST";
+    return result;
+  }
+  detail::ClosedRegionASTPolicy policy;
+  policy.owned_header = detail::authenticateClosedRegionHeader(
+      ast->getASTContext(), ast->getFileManager(), result.error);
+  if (!detail::admitClosedRegionParsedAST(ast->getASTContext(),
+      *ast->top_level_begin(), region_name, program, policy, result.error)) return result;
   auto payload = std::make_shared<AuthenticatedClosedRegionEvidence::Payload>();
   payload->program = std::move(program);
   payload->source = source;
@@ -748,6 +846,14 @@ ClosedRegionAdmissionResult admitClosedRegionSource(
 bool verifyClosedRegionMatchesEvidence(
     const AuthenticatedClosedRegionEvidence &evidence, mlir::ModuleOp module,
     std::string &error) {
+  if (evidence.payload_->host) {
+    cr::Program replay;
+    // An issued seal authenticates historical immutable inputs. Live files
+    // are checked before issuance, never substituted into later replay.
+    if (!detail::replayClosedRegionHost(*evidence.payload_->host,
+                                      evidence.regionName(), replay, error)) return false;
+    return cr::verifyModuleMatchesProgram(replay, module, error);
+  }
   const auto replay = admitClosedRegionSource(
       evidence.sourceSnapshot(), evidence.program().source_identity, evidence.regionName());
   if (!replay) {
