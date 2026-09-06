@@ -1,6 +1,38 @@
 # Independent candidate-coexistence arithmetic review
 
-**Verdict update: HOLD pending the provider-policy concurrency correction.**
+**Final verdict: ACCEPT the registry together with its owning-provider fix.**
+
+Required implementation checkpoints are registry
+`78135023dfdd99bd2dd8c3323c2137f6041d64ac` **plus** provider correction
+`437bdcc1d15373634f6cacd5439566ea6cd3d689`. The latter serializes the complete
+provider-policy transaction inside the existing shared adapter, including its
+conformance probe. It does not hold the policy mutex while waiting for the
+conformance once flag; the probe acquires the mutex itself. Early exits and
+restoration remain within the policy scope. Both legacy and new routes use it.
+
+The reviewer reran the original oracle in **100 fresh Release processes**
+(4.73 seconds) and **30 fresh whole-issuer ASan+UBSan processes** (4.44 seconds):
+all passed, 47,638 checks per process. The deterministic owning-adapter scope
+test also passed: 128 requested GEMMs, maximum one active provider-policy scope,
+correct results and one actual provider thread. The implementation author's
+preserved pre-fix binary fails that same scope test; the original Release
+counterexample below was independently reproduced by this reviewer.
+
+Final provider implementation hashes:
+
+- `cpu_openblas.cpp`: `e1f5cfdbf9f57b67720dd9eaf5058f5d66d38934eca1b8165549ce73013bd5a5`.
+- `cpu_openblas.h`: `172ef492ffd6ce7fc377109144f4b181ab3106b0e6f169ecaebb133a42e5bad1`.
+- Independent oracle, with failure diagnostics retained:
+  `2bcb51e69e3d12af435041b5e9820518e3e91f130545ead038d611ea378b5daa`.
+
+No tensor-resource/global-publication mutex is introduced. Sessions remain
+thread-confined. One runtime DSO owns this adapter; concurrent direct external
+provider activity or independently embedded adapter copies must supply equivalent
+exclusion and are not covered by these tests. Serialization is a correctness
+adaptation, not a provider-performance or parallelism claim.
+
+## Historical HOLD: concurrency falsification
+
 The initial instrumented pass below is retained as historical evidence, but a
 fresh-process Release repetition subsequently falsified provider independence.
 Do not treat this report's earlier passing run as unconditional acceptance.
