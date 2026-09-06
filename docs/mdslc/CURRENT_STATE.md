@@ -1,7 +1,7 @@
 # MDSLC current state
 
 Engineering checkpoint: canonical merge
-`f6a5d9718a8c704231ad37d9e315f7d2d6912a39`, [PR #37](https://github.com/onlyxItachi/MatcoreDSL/pull/37).
+`f988882710ac0b3677d908b3442841e3a8986b81`, [PR #39](https://github.com/onlyxItachi/MatcoreDSL/pull/39).
 This identifies the latest engineering merge; documentation-only updates may follow.
 
 ## Architecture
@@ -16,7 +16,11 @@ Private closed regions in real host C++ -> authenticated Clang/Sema AST
   -> frontend-neutral immutable values + separate all-MAY-alias resources
   -> symbolic shapes, checked math, publication/observation/failure ordering
   -> private registered MLIR + structural and sealed-source paired verification
-  -> no execution, physical storage strategy or public syntax
+  -> still no connected execution or public syntax on canonical main
+Independent private Linux x64 host adapter, now executed and tested:
+  immutable snapshots + all-MAY-alias dense resource views
+  -> strict native math, ordered host publication and owning observation
+  -> sticky failure prefix + full per-candidate FP environment restoration
 Matcore owns semantic legality, provenance and observable ordering.
 MLIR owns structured transformations; LLVM/backends own machine lowering.
 Legacy Python/JIT remains a separate compatibility surface.
@@ -24,21 +28,21 @@ Legacy Python/JIT remains a separate compatibility surface.
 
 ## Material change
 
-The same closed grammar now survives real host headers, preprocessing and
-unrelated host IO/RAII. Source/lookup identity, immutable replay and macro/pragma
-closure are checked without a second parser/evaluator. The mathematical and
-value/effect contract is unchanged. Validation: 78/78 Release, 27/27 focused
-ASan/UBSan and 19/19 hosted checks; independent adversarial review accepted.
-See [host-context evidence](CLOSED_REGION_HOST_CONTEXT_V1.md) and
-[semantic contract](CLOSED_REGION_ADMISSION_V1.md).
+The host storage/failure contract now has an executable adapter and independent
+falsification coverage. Old values survive overlapping writes; late reads see
+publication; later failures preserve earlier effects. Host publication has a
+strong normal-return guarantee, not whole-region rollback. Validation: 83/83
+Release, 32/32 affected ASan/UBSan, 19/19 hosted checks; independent review ACCEPT.
+See [decision and evidence](FOUNDATION_RESOURCE_DECISION_V1.md).
 
 ## Unsupported or unproven
 
-The host proof is private Linux 21.1.8 inspection, not an installed frontend.
-Header-defined mathematical helpers and arbitrary compiler contexts remain
-unsupported. No public region syntax, tensor/view API, generated execution,
-storage/materialization lowering, fusion, GPU/NPU or API/ABI freeze. Guards,
-storage/provider adapters and FP-status/trap adaptation remain unproven.
+Closed source is still a private Linux 21.1.8 admission proof, not an installed
+frontend or connected generated execution. No public region syntax, general
+tensor/view API, fusion, GPU/NPU or API/ABI stability claim. The new adapter
+requires valid exclusive host storage and a conforming trusted allocator; it
+does not cover arbitrary interposed host effects, exports or device transfers.
+Snapshots are conservative realization, not a zero-copy or performance claim.
 Resource/descriptor inequality never proves noalias; recovered C++ grants no
 execution authority. Existing mutating GEMM has not been reinterpreted as pure.
 Native BLAS parity ([#15](https://github.com/onlyxItachi/MatcoreDSL/issues/15))
@@ -47,8 +51,8 @@ remain design-only.
 
 ## Exactly one next boundary
 
-**Design-only external-storage/provider-publication adapter contract review.**
-Host admission is now demonstrated; old-value preservation across aliases,
-failure-visible publication and provider/FP adaptation remain unsettled.
-Resolve these counterexamples and obtain owner approval before choosing a
-consequential contract or implementing a consumer. Execution remains forbidden.
+**Connect authenticated closed regions to a validated strict generated CPU
+candidate through the checked host adapter.** The host storage/failure boundary
+is now defended; source orchestration, generated-kernel issuance and trusted
+candidate selection must compose before claiming source-to-generated execution.
+Independent research branches are not canonical capabilities until integrated.
