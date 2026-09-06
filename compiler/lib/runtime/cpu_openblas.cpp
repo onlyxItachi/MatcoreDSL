@@ -61,11 +61,17 @@ bool complete_identity(const OpenBlasProviderInfoV1 &provider) noexcept {
 #if MATCORE_MDSLC_HAS_OPENBLAS
 std::atomic<bool> openblas_provider_info_complete{false};
 std::once_flag openblas_conformance_once;
+// OpenBLAS 0.3.32's *_local helper still mutates process-global thread policy.
+// One Matcore adapter instance must exclude every policy-save/set/call/restore
+// lifetime, including its conformance probe. Do not hold this mutex while
+// waiting for openblas_conformance_once: the probe itself acquires the mutex.
+std::mutex openblas_policy_mutex;
 OpenBlasConformanceReportV1 openblas_conformance_report;
 std::atomic<bool> openblas_conformance_complete{false};
 
 OpenBlasConformanceReportV1 run_openblas_conformance_probe_v1(
     const OpenBlasProviderInfoV1 &provider) noexcept {
+  const std::lock_guard<std::mutex> policy_scope(openblas_policy_mutex);
   OpenBlasConformanceReportV1 report;
   report.provider_linked = provider.linked;
   report.provider_identity_key = provider_identity_key(provider);
@@ -260,6 +266,7 @@ OpenBlasExecutionStatusV1 execute_openblas_gemm_f32_v1(
     return OpenBlasExecutionStatusV1::provider_conformance_failed;
   }
 
+  const std::lock_guard<std::mutex> policy_scope(openblas_policy_mutex);
   const int threads_before = openblas_get_num_threads();
   const int previous_threads =
       openblas_set_num_threads_local(static_cast<int>(requested_threads));
