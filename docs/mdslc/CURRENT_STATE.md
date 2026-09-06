@@ -1,7 +1,7 @@
 # MDSLC current state
 
 Engineering checkpoint: canonical merge
-`f988882710ac0b3677d908b3442841e3a8986b81`, [PR #39](https://github.com/onlyxItachi/MatcoreDSL/pull/39).
+`5df9ac3c451539bdd9c1e577d6558802fca30535`, [PR #40](https://github.com/onlyxItachi/MatcoreDSL/pull/40).
 This identifies the latest engineering merge; documentation-only updates may follow.
 
 ## Architecture
@@ -21,6 +21,7 @@ Independent private Linux x64 host adapter, now executed and tested:
   immutable snapshots + all-MAY-alias dense resource views
   -> strict native math, ordered host publication and owning observation
   -> sticky failure prefix + full per-candidate FP environment restoration
+Private strict GEMM -> verified Linalg/buffer path -> LLVM -> tested x64 object
 Matcore owns semantic legality, provenance and observable ordering.
 MLIR owns structured transformations; LLVM/backends own machine lowering.
 Legacy Python/JIT remains a separate compatibility surface.
@@ -28,17 +29,20 @@ Legacy Python/JIT remains a separate compatibility surface.
 
 ## Material change
 
-The host storage/failure contract now has an executable adapter and independent
-falsification coverage. Old values survive overlapping writes; late reads see
-publication; later failures preserve earlier effects. Host publication has a
-strong normal-return guarantee, not whole-region rollback. Validation: 83/83
-Release, 32/32 affected ASan/UBSan, 19/19 hosted checks; independent review ACCEPT.
-See [decision and evidence](FOUNDATION_RESOURCE_DECISION_V1.md).
+The compiler can now issue a fixed strict GEMM implementation through upstream
+MLIR/LLVM and execute its object on Linux x64. Structural checks, independent
+numerical oracles and a real generated-load ASan negative control defend this
+leaf. Validation: 90/90 Release and 19/19 hosted checks, including the 39-test
+sanitizer scope; independent review ACCEPT. See the
+[implementation evidence](agent-reports/generated-strict-cpu-candidate-v1.md),
+[independent review](agent-reports/generated-strict-cpu-independent-review-v1.md)
+and [host contract](FOUNDATION_RESOURCE_DECISION_V1.md).
 
 ## Unsupported or unproven
 
 Closed source is still a private Linux 21.1.8 admission proof, not an installed
-frontend or connected generated execution. No public region syntax, general
+frontend or connected source-to-generated execution. The generated leaf accepts
+no user IR and grants no source authority. No public region syntax, general
 tensor/view API, fusion, GPU/NPU or API/ABI stability claim. The new adapter
 requires valid exclusive host storage and a conforming trusted allocator; it
 does not cover arbitrary interposed host effects, exports or device transfers.
@@ -51,8 +55,9 @@ remain design-only.
 
 ## Exactly one next boundary
 
-**Connect authenticated closed regions to a validated strict generated CPU
-candidate through the checked host adapter.** The host storage/failure boundary
-is now defended; source orchestration, generated-kernel issuance and trusted
-candidate selection must compose before claiming source-to-generated execution.
+**Connect authenticated closed regions to the generated CPU candidate through
+the checked host adapter and trusted candidate registry.** Both the host
+storage/failure boundary and generated leaf are now defended independently;
+source orchestration and candidate selection must compose before claiming the
+connected source-to-generated path.
 Independent research branches are not canonical capabilities until integrated.
