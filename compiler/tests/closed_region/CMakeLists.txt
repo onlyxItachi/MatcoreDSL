@@ -14,9 +14,17 @@ add_library(matcore_closed_region_admission STATIC
   ../../lib/frontend/ClosedRegionAdmission.cpp
   ../../lib/frontend/ClosedRegionHostAdmission.cpp
   ../../lib/frontend/ClosedRegionHostInputs.cpp)
+set(region_include "${CMAKE_CURRENT_SOURCE_DIR}/../../include/matcore")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${region_include}/region.h" "${region_include}/detail/region_storage.h")
+file(READ "${region_include}/region.h" MDSLC_EXPERIMENTAL_REGION_SOURCE)
+file(READ "${region_include}/detail/region_storage.h" MDSLC_EXPERIMENTAL_REGION_STORAGE_SOURCE)
+configure_file(../../lib/frontend/ExperimentalRegionHeaders.inc.in
+  "${CMAKE_CURRENT_BINARY_DIR}/ExperimentalRegionHeaders.inc" @ONLY)
 target_compile_features(matcore_closed_region_admission PUBLIC cxx_std_20)
 target_include_directories(matcore_closed_region_admission PUBLIC
-  "${CMAKE_CURRENT_SOURCE_DIR}/../../lib/frontend")
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../lib/frontend"
+  PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_include_directories(matcore_closed_region_admission SYSTEM PRIVATE
   ${LLVM_INCLUDE_DIRS} ${CLANG_INCLUDE_DIRS})
 target_compile_definitions(matcore_closed_region_admission PRIVATE
@@ -61,6 +69,15 @@ add_test(NAME frontend.closed_region_ordinary_rejected
     -P "${CMAKE_CURRENT_SOURCE_DIR}/ordinary_rejected.cmake")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET clang-cpp)
+  add_executable(matcore_experimental_region_admission_tests ../experimental_region/admission_test.cpp)
+  target_link_libraries(matcore_experimental_region_admission_tests PRIVATE
+    matcore_closed_region_admission MatcoreDSL::PlatformSupportV1 MLIRParser)
+  mdslc_target_enable_warnings(matcore_experimental_region_admission_tests)
+  mdslc_target_match_llvm_rtti(matcore_experimental_region_admission_tests)
+  add_test(NAME frontend.experimental_region_admission
+    COMMAND matcore_experimental_region_admission_tests
+      "${MDSLC_CLANGXX_EXECUTABLE}" "${MDSLC_CLOSED_REGION_HOST_RESOURCE_DIR}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../include")
   add_executable(matcore_closed_region_host_tests host_admission_test.cpp)
   target_link_libraries(matcore_closed_region_host_tests PRIVATE
     matcore_closed_region_admission MatcoreDSL::PlatformSupportV1 MLIRParser)

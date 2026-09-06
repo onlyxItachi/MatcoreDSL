@@ -1,6 +1,6 @@
 # Independent negative controls. A successful ordinary link is required before
 # treating a failed authority-forgery link as evidence.
-foreach(required CXX NM SOURCE_DIR INCLUDE_DIR PRODUCTION_LIBRARY OUTPUT_DIR)
+foreach(required CXX NM SOURCE_DIR INCLUDE_DIR PUBLIC_INCLUDE_DIR PRODUCTION_LIBRARY OUTPUT_DIR)
   if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
     message(FATAL_ERROR "Missing closed-host authority test input: ${required}")
   endif()
@@ -14,7 +14,7 @@ separate_arguments(link_flags NATIVE_COMMAND "${LINK_FLAGS}")
 
 execute_process(
   COMMAND "${CXX}" ${compile_flags} -std=c++20 -UMDSLC_CLOSED_HOST_TESTING
-    -I "${INCLUDE_DIR}" "${SOURCE_DIR}/production_link_control.cpp"
+    -I "${INCLUDE_DIR}" -I "${PUBLIC_INCLUDE_DIR}" "${SOURCE_DIR}/production_link_control.cpp"
     "${PRODUCTION_LIBRARY}" ${link_flags} -o "${OUTPUT_DIR}/link-control"
   RESULT_VARIABLE control_result OUTPUT_VARIABLE control_stdout
   ERROR_VARIABLE control_stderr)
@@ -24,7 +24,7 @@ endif()
 
 execute_process(
   COMMAND "${CXX}" ${compile_flags} -std=c++20 -UMDSLC_CLOSED_HOST_TESTING
-    -I "${INCLUDE_DIR}" -fsyntax-only "${SOURCE_DIR}/forged_value.cpp"
+    -I "${INCLUDE_DIR}" -I "${PUBLIC_INCLUDE_DIR}" -fsyntax-only "${SOURCE_DIR}/forged_value.cpp"
   RESULT_VARIABLE value_result OUTPUT_VARIABLE value_stdout
   ERROR_VARIABLE value_stderr)
 if(value_result EQUAL 0 OR NOT value_stderr MATCHES "storage_" OR
@@ -34,7 +34,7 @@ endif()
 
 execute_process(
   COMMAND "${CXX}" ${compile_flags} -std=c++20 -UMDSLC_CLOSED_HOST_TESTING
-    -I "${INCLUDE_DIR}" -fsyntax-only
+    -I "${INCLUDE_DIR}" -I "${PUBLIC_INCLUDE_DIR}" -fsyntax-only
     "${SOURCE_DIR}/production_candidate_injection.cpp"
   RESULT_VARIABLE setter_result OUTPUT_VARIABLE setter_stdout
   ERROR_VARIABLE setter_stderr)
@@ -45,7 +45,7 @@ endif()
 
 execute_process(
   COMMAND "${CXX}" ${compile_flags} -std=c++20
-    -DMDSLC_CLOSED_HOST_TESTING=1 -I "${INCLUDE_DIR}"
+    -DMDSLC_CLOSED_HOST_TESTING=1 -I "${INCLUDE_DIR}" -I "${PUBLIC_INCLUDE_DIR}"
     "${SOURCE_DIR}/production_candidate_injection.cpp"
     "${PRODUCTION_LIBRARY}" ${link_flags} -o "${OUTPUT_DIR}/forged-test-authority"
   RESULT_VARIABLE link_result OUTPUT_VARIABLE link_stdout

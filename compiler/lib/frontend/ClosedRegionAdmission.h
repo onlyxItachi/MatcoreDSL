@@ -9,8 +9,47 @@
 namespace matcore::mdslc::frontend {
 
 struct Options;
-namespace detail { class ClosedRegionEvidenceIssuer; }
+namespace detail {
+class ClosedRegionEvidenceIssuer;
+class ClosedRegionCompilationAccess;
+}
 struct ClosedRegionAdmissionResult;
+
+// Compiler installation inputs, not a source-selected declaration override.
+// Admission requires both exact expected bytes and the physically resolved
+// parsed FileIDs. The driver supplies these paths from its own installation.
+struct ExperimentalRegionHeaders {
+  std::string region_path;
+  std::string storage_path;
+};
+struct ClosedRegionParameterBinding {
+  enum class Kind { Storage, Shape };
+  std::string name;
+  Kind kind = Kind::Storage;
+  bool operator==(const ClosedRegionParameterBinding &) const = default;
+};
+struct ClosedRegionNamespaceBinding {
+  std::string name;
+  bool is_inline = false;
+  bool operator==(const ClosedRegionNamespaceBinding &) const = default;
+};
+struct ClosedRegionHelperBinding {
+  std::string qualified_name;
+  std::string mangled_name;
+  closed_region::SourceSite body;
+};
+// Frontend-specific rewrite witness. It is intentionally absent from semantic
+// Program and cannot be supplied by a serialized graph or imported MLIR.
+struct ClosedRegionEntryBinding {
+  std::string qualified_name;
+  std::string mangled_name;
+  std::string signature_sha256;
+  closed_region::SourceSite body;
+  closed_region::SourceSite completion;
+  std::vector<ClosedRegionNamespaceBinding> namespaces;
+  std::vector<ClosedRegionParameterBinding> parameters;
+  std::vector<ClosedRegionHelperBinding> value_helpers;
+};
 
 // An in-process inspection seal, not a signature, serialized authority, or
 // permission to execute. Only successful admission can construct its payload.
@@ -23,6 +62,7 @@ public:
   const std::string &regionName() const;
   bool hasHostContext() const;
   const std::string &hostContextIdentity() const;
+  const std::optional<ClosedRegionEntryBinding> &entryBinding() const;
 
 private:
   struct Payload;
@@ -31,6 +71,7 @@ private:
   friend ClosedRegionAdmissionResult admitClosedRegionSource(
       const std::string &, const std::string &, const std::string &);
   friend class detail::ClosedRegionEvidenceIssuer;
+  friend class detail::ClosedRegionCompilationAccess;
   friend bool verifyClosedRegionMatchesEvidence(
       const AuthenticatedClosedRegionEvidence &, mlir::ModuleOp, std::string &);
 };
@@ -56,6 +97,12 @@ ClosedRegionAdmissionResult admitClosedRegionSource(
 ClosedRegionAdmissionResult admitClosedRegionHost(
     const Options &options, const std::string &working_directory,
     const std::string &region_name = "region");
+
+// Experimental Result-returning mathematical function in a real host TU.
+// Private fixture entry points and their inspection behavior remain unchanged.
+ClosedRegionAdmissionResult admitExperimentalRegionHost(
+    const Options &options, const std::string &working_directory,
+    const ExperimentalRegionHeaders &headers, const std::string &region_name);
 
 // Re-admits sealed bytes using the same fixed compiler contract and compares
 // the complete untransformed semantic graph, including source/effect bindings.

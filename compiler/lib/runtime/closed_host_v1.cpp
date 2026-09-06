@@ -1,6 +1,7 @@
 #include "closed_host_v1.h"
 
 #include <cfenv>
+#include <atomic>
 #include <cstddef>
 #include <cstring>
 #include <exception>
@@ -30,6 +31,24 @@ struct ValueStorage {
   std::uint64_t columns = 0;
   std::vector<float> elements;
 };
+
+// Allocated lazily before the first observation effect; mutable only while the
+// producing Session is thread-confined. After retirement it is immutable, and
+// independent owning public handles may be transferred between host threads.
+struct ObservationBlock {
+  std::atomic<std::uint64_t> references{1};
+  std::vector<Observation> values;
+};
+static void retain(ObservationBlock *block) noexcept {
+  if (block && block->references.fetch_add(1, std::memory_order_relaxed) ==
+                   std::numeric_limits<std::uint64_t>::max())
+    std::terminate();
+}
+static void release(ObservationBlock *block) noexcept {
+  if (block && block->references.fetch_sub(1, std::memory_order_acq_rel) == 1)
+    delete block;
+}
+Session::~Session() noexcept { release(observations_); }
 
 namespace {
 constexpr bool supportedPlatform() noexcept {
@@ -151,6 +170,9 @@ std::uint64_t Value::rows() const noexcept { return storage_ ? storage_->rows : 
 std::uint64_t Value::columns() const noexcept {
   return storage_ ? storage_->columns : 0;
 }
+const float *Value::data() const noexcept {
+  return storage_ ? storage_->elements.data() : nullptr;
+}
 
 struct Session::ActiveCall {
   explicit ActiveCall(Session &session) noexcept : session(session) {}
@@ -170,6 +192,7 @@ Status Session::succeed(Frontier frontier) noexcept {
   return status_;
 }
 bool Session::begin(Frontier frontier) noexcept {
+  if (result_taken_) { fail(Code::already_complete, frontier); return false; }
   if (!status_) return false;
   if (active_) { fail(Code::reentrant_use, active_frontier_); return false; }
   if (status_.completed) { fail(Code::already_complete, frontier); return false; }
@@ -311,11 +334,15 @@ Status Session::observe(Frontier frontier, ResourceView view) noexcept {
   if (code != Code::ok) return fail(code, frontier);
   try {
     // Record-growth allocation must complete before the effect is retired.
-    if (observations_.size() == observations_.capacity() && !allocationAllowed())
+    if (!observations_) {
+      if (!allocationAllowed()) return fail(Code::allocation_failure, frontier);
+      observations_ = new ObservationBlock;
+    }
+    if (observations_->values.size() == observations_->values.capacity() && !allocationAllowed())
       return fail(Code::allocation_failure, frontier);
     Value value;
     value.storage_ = std::move(storage);
-    observations_.push_back({frontier, std::move(value)});
+    observations_->values.push_back({frontier, std::move(value)});
   } catch (...) {
     return fail(Code::allocation_failure, frontier);
   }
@@ -330,17 +357,38 @@ Status Session::complete(Frontier frontier) noexcept {
   return succeed(frontier);
 }
 Value Session::observation(std::uint64_t index) const noexcept {
-  return index < observations_.size() ? observations_[index].value : Value{};
+  return observations_ && index < observations_->values.size()
+             ? observations_->values[index].value : Value{};
 }
 Frontier Session::observationFrontier(std::uint64_t index) const noexcept {
-  return index < observations_.size() ? observations_[index].frontier : 0;
+  return observations_ && index < observations_->values.size()
+             ? observations_->values[index].frontier : 0;
+}
+
+matcore::mdsl::Result Session::takeResult(
+    matcore::mdsl::SourceLocation failure) && noexcept {
+  if (active_) {
+    fail(Code::reentrant_use, active_frontier_);
+    return matcore::mdsl::Result(status_, {}, failure);
+  }
+  if (result_taken_) {
+    Status invalid;
+    invalid.code = Code::already_complete;
+    return matcore::mdsl::Result(invalid, {}, {});
+  }
+  if (status_ && !status_.completed) fail(Code::invalid_frontier, 0);
+  result_taken_ = true;
+  auto *observations = observations_;
+  observations_ = nullptr;
+  return matcore::mdsl::Result(status_, observations,
+                              status_ ? matcore::mdsl::SourceLocation{} : failure);
 }
 
 #if defined(MDSLC_CLOSED_HOST_TESTING)
 void Session::configureForTesting(TestHooks hooks) noexcept {
   if (active_) { fail(Code::reentrant_use, active_frontier_); return; }
   if (!status_) return;
-  if (status_.completed_frontier != 0 || status_.completed) {
+  if (result_taken_ || status_.completed_frontier != 0 || status_.completed) {
     fail(Code::invalid_frontier, 0);
     return;
   }
@@ -374,3 +422,71 @@ const char *message(Code code) noexcept {
 }
 
 } // namespace matcore::mdslc::runtime::closed_host_v1
+
+namespace matcore::mdsl {
+namespace host = mdslc::runtime::closed_host_v1;
+
+Observation::Observation(host::ObservationBlock *block, Shape index) noexcept
+    : block_(block), index_(index) { host::retain(block_); }
+Observation::Observation(const Observation &other) noexcept
+    : Observation(other.block_, other.index_) {}
+Observation &Observation::operator=(const Observation &other) noexcept {
+  if (this != &other) {
+    host::retain(other.block_);
+    host::release(block_);
+    block_ = other.block_;
+    index_ = other.index_;
+  }
+  return *this;
+}
+Observation::Observation(Observation &&other) noexcept
+    : block_(other.block_), index_(other.index_) {
+  other.block_ = nullptr;
+  other.index_ = 0;
+}
+Observation &Observation::operator=(Observation &&other) noexcept {
+  if (this != &other) {
+    host::release(block_);
+    block_ = other.block_;
+    index_ = other.index_;
+    other.block_ = nullptr;
+    other.index_ = 0;
+  }
+  return *this;
+}
+Observation::~Observation() noexcept { host::release(block_); }
+bool Observation::valid() const noexcept {
+  return block_ && index_ < block_->values.size();
+}
+Shape Observation::rows() const noexcept { return valid() ? block_->values[index_].value.rows() : 0; }
+Shape Observation::columns() const noexcept { return valid() ? block_->values[index_].value.columns() : 0; }
+const float *Observation::data() const noexcept { return valid() ? block_->values[index_].value.data() : nullptr; }
+
+Result::Result(Result &&other) noexcept
+    : status_(other.status_), observations_(other.observations_), failure_(other.failure_) {
+  other.observations_ = nullptr;
+  other.status_ = {};
+  other.status_.code = Error::invalid_value;
+  other.failure_ = {};
+}
+Result &Result::operator=(Result &&other) noexcept {
+  if (this != &other) {
+    host::release(observations_);
+    status_ = other.status_;
+    observations_ = other.observations_;
+    failure_ = other.failure_;
+    other.observations_ = nullptr;
+    other.status_ = {};
+    other.status_.code = Error::invalid_value;
+    other.failure_ = {};
+  }
+  return *this;
+}
+Result::~Result() noexcept { host::release(observations_); }
+Shape Result::observation_count() const noexcept {
+  return observations_ ? observations_->values.size() : 0;
+}
+Observation Result::observation(Shape index) const noexcept {
+  return index < observation_count() ? Observation(observations_, index) : Observation();
+}
+} // namespace matcore::mdsl
