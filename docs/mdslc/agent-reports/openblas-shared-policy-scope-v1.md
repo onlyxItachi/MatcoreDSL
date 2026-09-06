@@ -86,6 +86,7 @@ execution, scaling, parity, or an updated performance envelope.
 - Release OFF: **10/10** candidate/absence/hostile-provider-boundary tests.
 - Independent arithmetic reviewer repeated the original failing Release oracle
   in **100 fresh processes**: all passed, 47,638 checks per process, 4.73 s total.
+  **30 fresh ASan+UBSan processes** also passed the same independent oracle.
   The policy-scope test separately passed. Guard reviewer independently repeated
   the pre-fix oracle (maximum 2 simultaneous scopes, 2 failures) and fixed tests.
 - Both independent source reviews accepted the lock scope and once ordering at
@@ -93,4 +94,32 @@ execution, scaling, parity, or an updated performance envelope.
   `e1f5cfdbf9f57b67720dd9eaf5058f5d66d38934eca1b8165549ce73013bd5a5`, header
   `172ef492ffd6ce7fc377109144f4b181ab3106b0e6f169ecaebb133a42e5bad1`.
 
-Hosted CI and canonical integration remain root-owned follow-up validation.
+## Standalone canonical integration
+
+The focused integration starts from independently refreshed local `main`,
+`origin/main`, and GitHub `main`, all
+`f988882710ac0b3677d908b3442841e3a8986b81` (PR #39). The canonical worktree was
+clean. Original fix `437bdcc1d15373634f6cacd5439566ea6cd3d689` was cherry-picked
+normally as `b42942e`; the registry and generated/source experiments are **not**
+included. The owning `AGENTS.md` now describes shared policy scope rather than
+assuming the provider's `_local` spelling means thread-local isolation. The
+independently reviewed adapter hashes above are unchanged.
+
+Clean standalone runtime builds used Clang 21, Ninja and
+`cmake -S compiler/lib/runtime`, followed by the full registered CTest suite:
+
+- `build-runtime-release`, Release with `MDSLC_ENABLE_OPENBLAS=ON` and
+  `MDSLC_REQUIRE_OPENBLAS=ON`: **29/29 passed**, 5.69 s.
+- `build-runtime-off`, Release with `MDSLC_ENABLE_OPENBLAS=OFF`:
+  **28/28 passed**, 4.72 s. The real-provider policy test is correctly absent.
+- `build-runtime-asan`, Debug with OpenBLAS required, `-O1 -g`,
+  `-fsanitize=address,undefined -fno-omit-frame-pointer`, leak detection,
+  initialization-order checking and halt-on-error: **26/26 passed**, 6.32 s.
+  Established sanitizer configuration excludes three object-instruction tests;
+  no registered test was skipped. The linked external OpenBLAS library is not
+  itself sanitizer-instrumented.
+
+These suites cover runtime numerical profiles, native kernels, planner,
+workspace/context, C ABI, FP guards, provider-enabled/disabled behavior and
+platform support. Hosted checks and the final canonical merge are recorded on
+the focused PR; they are not implied by these local outcomes.
