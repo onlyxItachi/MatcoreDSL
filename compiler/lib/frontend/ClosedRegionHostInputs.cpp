@@ -646,6 +646,13 @@ bool configure(const Options &options, const std::string &cwd, Records &records,
       error = "unsafe host-context compiler argument: " + argument; return false;
     }
     if (argument == "-std=c++20") continue;
+    // Sanitizer feature macros affect ordinary host preprocessing. Admit the
+    // exact diagnostic profile here, before capture, rather than appending it
+    // only when generating LLVM from an already authenticated different TU.
+    if (argument == "-fsanitize=address,undefined") {
+      records.arguments.push_back(argument);
+      continue;
+    }
     const bool separate = argument == "-I" || argument == "-isystem" ||
                           argument == "-iquote" || argument == "-D" || argument == "-U";
     if (separate) {
