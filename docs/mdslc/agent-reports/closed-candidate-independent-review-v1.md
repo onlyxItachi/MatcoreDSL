@@ -1,6 +1,36 @@
 # Independent candidate-coexistence arithmetic review
 
-**Verdict: ACCEPT within the bounded synchronous Linux x64 host contract.**
+**Verdict update: HOLD pending the provider-policy concurrency correction.**
+The initial instrumented pass below is retained as historical evidence, but a
+fresh-process Release repetition subsequently falsified provider independence.
+Do not treat this report's earlier passing run as unconditional acceptance.
+
+The reviewer reproduced a distinct-Session concurrent-first-use failure on the
+third fresh Release process. The adapter returned `candidate_failure`, issued no
+Value, and suppressed publication correctly. A throwaway link-time wrapper around
+the real legacy C ABI identified status 19, `OpenBLAS SGEMM failed or did not honor
+the thread policy`, with no selected implementation or actual threads. FP
+restoration itself did not fail. Arithmetic membership remained correct.
+
+Upstream OpenBLAS 0.3.32 explains the contradiction: its
+[`openblas_set_num_threads_local` implementation](https://raw.githubusercontent.com/OpenMathLib/OpenBLAS/v0.3.32/driver/others/openblas_set_num_threads.c)
+calls the global setter and writes `blas_omp_threads_local`; the pthread
+[`blas_server.c` implementation](https://raw.githubusercontent.com/OpenMathLib/OpenBLAS/v0.3.32/driver/others/blas_server.c)
+declares that variable as ordinary global storage, not TLS. The name "local"
+does not prove thread-local ownership. Concurrent save/configure/restore sequences
+can interfere even though each new Session has private tensor resources.
+
+The recommended correction belongs in the existing shared provider adapter:
+serialize its complete policy transaction, including probes, across legacy and
+new routes. A lock only in the new wrapper leaves mixed-route interference.
+Concurrent external direct OpenBLAS policy mutation must remain an explicit
+unsupported host precondition unless it participates in the same authority.
+Repeat fresh-process tests and validate mixed-route behavior before acceptance.
+The counterexample does not require changing immutable values, output isolation,
+source architecture or the per-publication failure guarantee.
+
+## Initial bounded review before repeated-Release falsification
+
 The reviewer authored the earlier host adapter but not this candidate registry,
 generated issuer, provider selection, provider gate or implementation tests.
 This review independently attacked the new arithmetic permissions, provider gate,
@@ -71,7 +101,7 @@ tested scope but does not change that trust boundary. No planner crossover polic
 packed-path authority, multithreaded provider authority or performance claim is
 introduced by this acceptance.
 
-No implementation counterexample was found in this review. Rejecting strict
+No arithmetic counterexample was found in this review. Rejecting strict
 requests for existing/provider candidates is essential: their allowed FMA is not
 the strict increasing-K separate multiply/add contract. The prior generated
 N-zero outer-loop limitation remains safely short-circuited in the adapter.
