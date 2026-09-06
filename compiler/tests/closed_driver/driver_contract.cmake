@@ -26,7 +26,7 @@ function(execute name)
   set(last_output "${output}" PARENT_SCOPE)
 endfunction()
 function(reject name)
-  execute_process(COMMAND "${DRIVER}" ${ARGN} -o "${root}/${name}"
+  execute_process(COMMAND "${DRIVER}" -o "${root}/${name}" ${ARGN}
     RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
   if(status EQUAL 0 OR EXISTS "${root}/${name}")
     message(FATAL_ERROR "${name}: invalid invocation published an artifact: ${output}\n${error}")
