@@ -114,6 +114,27 @@ int main(int argc, char **argv) {
           "ordinary STL host and explicit runtime exports remain legal: " + error);
     check(report.runtime_exports == 6 && report.provider_exports == 9,
           "complete runtime/provider export sets counted without demangling");
+    auto iostream = fixture.host("iostream", "#include <iostream>\nvoid host(){std::cout << 7;}\n");
+    check(cg::verifyHostArtifactSymbolOwnership(*iostream, artifacts, report, error),
+          "real libstdc++ iostream declaration is harmless: " + error);
+    for (const auto *assembly : {
+        ".globl _ZSt21ios_base_library_initv; .set matcore_runtime_owned,0",
+        ".globl _ZSt21ios_base_library_initv\n.globl matcore_runtime_owned",
+        ".globl _ZSt21ios_base_library_initv\nmatcore_runtime_owned:",
+        ".globl \"_ZSt21ios_base_library_initv\"",
+        ".globl matcore_runtime_owned"}) {
+      iostream->setModuleInlineAsm(assembly);
+      check(!cg::verifyHostArtifactSymbolOwnership(*iostream, artifacts, report, error) &&
+            error.find("module assembly") != std::string::npos,
+            "iostream exception admits no suffix, label, quoted spelling or other symbol");
+    }
+    iostream->setModuleInlineAsm(".globl _ZSt21ios_base_library_initv\n");
+    auto reserved_iostream = fixture.library("reserved_iostream",
+        "extern \"C\" int other() asm(\"_ZSt21ios_base_library_initv\"); int other(){return 1;}\n");
+    const cg::TrustedSymbolArtifact reserved[] = {artifacts[0],
+        {cg::SymbolArtifactOwner::ExternalProvider, reserved_iostream->getMemBufferRef()}};
+    check(!cg::verifyHostArtifactSymbolOwnership(*iostream, reserved, report, error),
+          "even exact iostream .globl cannot promote a reserved artifact symbol");
     auto reject = [&](const std::string &name, const std::string &source, const std::string &reason) {
       auto module = fixture.host(name, source);
       const bool admitted = cg::verifyHostArtifactSymbolOwnership(*module, artifacts, report, error);

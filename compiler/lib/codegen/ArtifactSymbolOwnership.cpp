@@ -82,10 +82,6 @@ bool verifyHostArtifactSymbolOwnership(
     error = "artifact symbol ownership supports only the Linux x86-64 host contract";
     return false;
   }
-  if (!host.getModuleInlineAsm().empty()) {
-    error = "host module assembly can define symbols outside the authenticated ownership graph";
-    return false;
-  }
   for (const auto &function : host)
     for (const auto &block : function)
       for (const auto &instruction : block)
@@ -108,6 +104,19 @@ bool verifyHostArtifactSymbolOwnership(
   ArtifactSymbolOwnershipReport candidate;
   for (const auto &artifact : artifacts)
     if (!collect(artifact, symbols, candidate, error)) return false;
+
+  // GNU libstdc++ <iostream> emits this declaration to retain its initialization
+  // dependency. It defines no symbol. Do not interpret arbitrary assembly or
+  // trust a source/header location: only these exact declaration bytes qualify.
+  // Even .globl may promote an existing local assembler-label definition, so
+  // the declared name must not belong to either authenticated artifact owner.
+  const auto module_asm = llvm::StringRef(host.getModuleInlineAsm()).trim();
+  if (!module_asm.empty() &&
+      (module_asm != ".globl _ZSt21ios_base_library_initv" ||
+       symbols.contains("_ZSt21ios_base_library_initv"))) {
+    error = "host module assembly can define symbols outside the authenticated ownership graph";
+    return false;
+  }
 
   for (const auto &value : host.global_values()) {
     if (value.isDeclaration() || value.hasLocalLinkage()) continue;

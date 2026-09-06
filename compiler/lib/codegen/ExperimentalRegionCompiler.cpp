@@ -123,6 +123,9 @@ static ExperimentalLLVMCompilationResult compileRegion(
     diagnostic.print("mdslc-region", output);
     return result;
   }
+  ArtifactSymbolOwnershipReport ownership;
+  if (!verifyHostArtifactSymbolOwnership(*original_module, inputs.symbol_artifacts,
+                                        ownership, result.error)) return result;
   auto linked = linkAuthenticatedHostThunk(*original_module, *implementation,
       {compilation.emission.host_symbol, compilation.emission.helper_symbol,
        compilation.emission.retired_value_helpers});

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ExperimentalRegionEmitter.h"
+#include "ArtifactSymbolOwnership.h"
 #include "../frontend/ClosedRegionHostInputs.h"
 #include <filesystem>
 #include <functional>
@@ -16,6 +17,9 @@ struct ExperimentalCompilerInputs {
   std::filesystem::path private_runtime_header;
   std::filesystem::path staging_directory;
   bool address_undefined_sanitizers = false;
+  // Borrowed immutable bytes of exact pinned link inputs, owned by the driver
+  // until compilation returns. Exactly one canonical runtime is mandatory.
+  std::vector<TrustedSymbolArtifact> symbol_artifacts;
 };
 
 struct ExperimentalLLVMCompilation {

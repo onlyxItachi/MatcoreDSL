@@ -13,3 +13,5 @@
 #define REGION_CLANG "@MDSLC_CLANGXX_EXECUTABLE@"
 #define REGION_RESOURCE_DIR "@MDSLC_CLOSED_REGION_HOST_RESOURCE_DIR@"
 #define REGION_SANITIZED @region_sanitized@
+#define REGION_PROVIDER_PATH "@region_provider_path@"
+#define REGION_LINKER "@region_linker@"

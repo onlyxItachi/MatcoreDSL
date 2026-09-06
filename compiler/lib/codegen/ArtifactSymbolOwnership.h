@@ -34,7 +34,10 @@ struct ArtifactSymbolOwnershipReport {
 //
 // Nonempty module and instruction inline assembly is outside this bounded link
 // contract because it can define symbols absent from LLVM's global-value graph.
-// Empty instruction barriers cannot define symbols and remain allowed.
+// Empty instruction barriers remain allowed. The exact libstdc++ iostream
+// declaration `.globl _ZSt21ios_base_library_initv` is also allowed only when
+// that symbol is not owned by a trusted artifact; no general assembler grammar
+// or header-path exemption is admitted.
 //
 // The private candidate archive must still be wholly linked by the driver: this
 // DSO check does not replace ordinary strong-definition collision diagnostics.

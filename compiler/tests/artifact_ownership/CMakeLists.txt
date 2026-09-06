@@ -23,11 +23,15 @@ if(NOT TARGET matcore_artifact_symbol_ownership)
     PRIVATE LLVMObject LLVMTargetParser)
   mdslc_target_enable_warnings(matcore_artifact_symbol_ownership WERROR)
   mdslc_target_match_llvm_rtti(matcore_artifact_symbol_ownership)
+  set(artifact_ownership_test_llvm LLVMIRReader LLVMAsmParser)
+else()
+  # Integrated Clang/MLIR owns one shared LLVM runtime; do not add static LLVM.
+  set(artifact_ownership_test_llvm LLVM)
 endif()
 
 add_executable(matcore_artifact_symbol_ownership_test artifact_symbol_ownership_test.cpp)
 target_link_libraries(matcore_artifact_symbol_ownership_test PRIVATE
-  matcore_artifact_symbol_ownership LLVMIRReader LLVMAsmParser MatcoreDSL::PlatformSupportV1)
+  matcore_artifact_symbol_ownership ${artifact_ownership_test_llvm} MatcoreDSL::PlatformSupportV1)
 mdslc_target_enable_warnings(matcore_artifact_symbol_ownership_test WERROR)
 mdslc_target_match_llvm_rtti(matcore_artifact_symbol_ownership_test)
 if(NOT MDSLC_CLANGXX_EXECUTABLE)

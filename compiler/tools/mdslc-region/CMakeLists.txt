@@ -17,6 +17,19 @@ if(region_runtime_install_rpath)
   message(FATAL_ERROR "Experimental region driver requires the canonical empty Runtime INSTALL_RPATH")
 endif()
 # No external configuration file or source option can choose the owning runtime.
+# Do not let the invocation environment select a linker behind pinned Clang.
+find_program(region_linker NAMES ld PATHS /usr/bin NO_DEFAULT_PATH REQUIRED)
+file(REAL_PATH "${region_linker}" region_linker)
+set(region_provider_path "")
+get_target_property(region_provider_inputs matcore_cpu_backends_v1 MDSLC_PROVIDER_LINK_INPUTS)
+if(region_provider_inputs)
+  list(LENGTH region_provider_inputs region_provider_count)
+  if(NOT region_provider_count EQUAL 1 OR NOT IS_ABSOLUTE "${region_provider_inputs}"
+      OR NOT region_provider_inputs MATCHES "\\.so(\\.[0-9]+)*$")
+    message(FATAL_ERROR "Experimental region driver requires one concrete ELF OpenBLAS shared library")
+  endif()
+  set(region_provider_path "${region_provider_inputs}")
+endif()
 file(RELATIVE_PATH region_prefix_from_bin "/${CMAKE_INSTALL_BINDIR}" "/")
 configure_file(config.h.in region_driver_paths.h.in @ONLY)
 file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/region_driver_paths.h"
@@ -26,9 +39,14 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/region_driver_identity.h"
   COMMAND "${CMAKE_COMMAND}"
     "-DARCHIVE=$<TARGET_FILE:matcore_closed_candidates_production_v1>"
     "-DRUNTIME=$<TARGET_FILE:matcore_runtime>"
+    "-DPROVIDER=${region_provider_path}"
+    "-DCLANG=${MDSLC_CLANGXX_EXECUTABLE}"
+    "-DLINKER=${region_linker}"
     "-DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/region_driver_identity.h"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/installation_identity.cmake"
   DEPENDS matcore_closed_candidates_production_v1 matcore_runtime
+    ${region_provider_path}
+    "${MDSLC_CLANGXX_EXECUTABLE}" "${region_linker}"
     "${CMAKE_CURRENT_SOURCE_DIR}/installation_identity.cmake" VERBATIM)
 target_sources(mdslc-region PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/region_driver_identity.h")
 install(TARGETS mdslc-region RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")

@@ -1,4 +1,5 @@
 #include "ExperimentalRegionCompiler.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "../../lib/support/platform_support.h"
 #include <fstream>
 #include <iostream>
@@ -114,8 +115,11 @@ int main(int argc, char **argv) {
                                                   headers, "example::pipeline");
   check(bool(admitted) && admitted.syntax_valid, "real public source admission: " + admitted.error);
   if (!admitted) return 1;
+  auto runtime_artifact = llvm::MemoryBuffer::getFile(argv[5]);
+  if (!runtime_artifact) throw std::runtime_error("missing trusted test runtime artifact");
   cg::ExperimentalCompilerInputs inputs{argv[1], argv[2], compiler / "include",
-      compiler / "lib/runtime/closed_host_v1.h", staging->path(), sanitized};
+      compiler / "lib/runtime/closed_host_v1.h", staging->path(), sanitized,
+      {{cg::SymbolArtifactOwner::MatcoreRuntime, (*runtime_artifact)->getMemBufferRef()}}};
   auto changed_inputs = inputs;
   changed_inputs.staging_directory = substituted->path();
   auto substitution = cg::compileExperimentalRegionToLLVMForTesting(*admitted.evidence,

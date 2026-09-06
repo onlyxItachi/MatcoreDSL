@@ -4,6 +4,8 @@
 #include "ClosedRegionAdmission.h"
 #include "platform_support.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Object/ELFObjectFile.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SHA256.h"
 
@@ -25,10 +27,8 @@ namespace codegen = matcore::mdslc::codegen;
 
 [[noreturn]] void reject(const std::string &message) { throw std::runtime_error(message); }
 
-std::string digest(const fs::path &path) {
-  auto bytes = llvm::MemoryBuffer::getFile(path.string());
-  if (!bytes) reject("cannot read compiler input: " + path.string());
-  return llvm::toHex(llvm::SHA256::hash(llvm::arrayRefFromStringRef((*bytes)->getBuffer())), true);
+std::string digest(const std::string &bytes) {
+  return llvm::toHex(llvm::SHA256::hash(llvm::arrayRefFromStringRef(bytes)), true);
 }
 bool same(const support::FileSnapshotV1 &a, const support::FileSnapshotV1 &b) {
   return a.version == b.version && a.exists == b.exists && a.regular_file == b.regular_file &&
@@ -40,17 +40,21 @@ struct Artifact {
   fs::path path;
   support::FileSnapshotV1 snapshot;
   std::string sha;
+  std::string bytes;
   static Artifact capture(const fs::path &path, const char *expected = nullptr) {
     std::string error;
     auto before = support::capture_file_snapshot_v1(path, error);
     if (!error.empty() || !before.exists || !before.regular_file || !before.identity ||
         before.size_bytes > 512ULL * 1024 * 1024)
       reject("invalid or oversized compiler artifact: " + path.string() + ": " + error);
-    auto sha = digest(path);
+    auto buffer = llvm::MemoryBuffer::getFile(path.string());
+    if (!buffer) reject("cannot read compiler input: " + path.string());
+    auto bytes = (*buffer)->getBuffer().str();
+    auto sha = digest(bytes);
     auto after = support::capture_file_snapshot_v1(path, error);
     if (!error.empty() || !same(before, after) || (expected && sha != expected))
       reject("compiler artifact changed or differs from its compiled identity: " + path.string());
-    return {path, std::move(after), std::move(sha)};
+    return {path, std::move(after), std::move(sha), std::move(bytes)};
   }
   void unchanged() const {
     auto now = capture(path);
@@ -63,6 +67,32 @@ struct Layout {
   fs::path include, header, archive, runtime;
   bool build_tree = false;
 };
+
+void verifyOutput(const Artifact &artifact, bool compile_only) {
+  auto parsed = llvm::object::ObjectFile::createObjectFile(
+      llvm::MemoryBufferRef(artifact.bytes, "issued compiler output"));
+  if (!parsed) reject("compiler output is not an object: " + llvm::toString(parsed.takeError()));
+  const auto *elf = llvm::dyn_cast<llvm::object::ELF64LEObjectFile>(parsed->get());
+  if (!elf || elf->getELFFile().getHeader().e_machine != llvm::ELF::EM_X86_64)
+    reject("compiler output is not a Linux x86-64 ELF artifact");
+  const auto &file = elf->getELFFile();
+  const auto &header = file.getHeader();
+  if (compile_only) {
+    if (header.e_type != llvm::ELF::ET_REL)
+      reject("compiler object output is not relocatable ELF");
+    return;
+  }
+  if ((header.e_type != llvm::ELF::ET_EXEC && header.e_type != llvm::ELF::ET_DYN) ||
+      !header.e_entry || (fs::status(artifact.path).permissions() & fs::perms::owner_exec) == fs::perms::none)
+    reject("compiler executable output lacks executable ELF identity");
+  auto segments = file.program_headers();
+  if (!segments) reject("compiler executable has invalid segments: " + llvm::toString(segments.takeError()));
+  for (const auto &segment : *segments)
+    if (segment.p_type == llvm::ELF::PT_LOAD && (segment.p_flags & llvm::ELF::PF_X) &&
+        header.e_entry >= segment.p_vaddr && header.e_entry - segment.p_vaddr < segment.p_memsz)
+      return;
+  reject("compiler executable entry is not in an executable load segment");
+}
 Layout layout() {
   std::string error;
   auto executable = support::current_executable_path_v1(error);
@@ -160,9 +190,19 @@ int run(int argc, char **argv) {
   const auto ir = staging.path / "host.ll", binary = staging.path / "result";
   write(ir, ""); write(binary, ""); // Freeze parent directory membership before admission.
   const auto installed = layout();
+  const auto clang = Artifact::capture(REGION_CLANG, REGION_CLANG_SHA);
+  const auto linker = Artifact::capture(REGION_LINKER, REGION_LINKER_SHA);
   const auto archive = Artifact::capture(installed.archive, REGION_ARCHIVE_SHA);
   const auto runtime = Artifact::capture(installed.runtime,
       installed.build_tree ? REGION_RUNTIME_SHA : REGION_INSTALLED_RUNTIME_SHA);
+  std::optional<Artifact> provider;
+  if (std::strlen(REGION_PROVIDER_PATH))
+    provider = Artifact::capture(REGION_PROVIDER_PATH, REGION_PROVIDER_SHA);
+  std::vector<codegen::TrustedSymbolArtifact> symbol_artifacts{
+      {codegen::SymbolArtifactOwner::MatcoreRuntime,
+       llvm::MemoryBufferRef(runtime.bytes, "canonical Matcore Runtime")}};
+  if (provider) symbol_artifacts.push_back({codegen::SymbolArtifactOwner::ExternalProvider,
+      llvm::MemoryBufferRef(provider->bytes, "canonical OpenBLAS provider")});
   const auto public_header = Artifact::capture(installed.include / "matcore/region.h");
   const auto storage_header = Artifact::capture(installed.include / "matcore/detail/region_storage.h");
   const auto private_header = Artifact::capture(installed.header);
@@ -178,12 +218,13 @@ int run(int argc, char **argv) {
   if (!admitted) reject(admitted.error);
   auto compilation = codegen::compileExperimentalRegionToLLVM(*admitted.evidence,
       {REGION_CLANG, REGION_RESOURCE_DIR, installed.include, installed.header,
-       staging.path / "helper", bool(REGION_SANITIZED)}, args.policy);
+       staging.path / "helper", bool(REGION_SANITIZED), std::move(symbol_artifacts)}, args.policy);
   if (!compilation) reject(compilation.error);
   auto unchanged = [&] {
     if (!compilation.compilation->inputsUnchanged(error)) reject(error);
-    for (const auto *artifact : {&archive, &runtime, &public_header, &storage_header, &private_header})
+    for (const auto *artifact : {&archive, &runtime, &public_header, &storage_header, &private_header, &clang, &linker})
       artifact->unchanged();
+    if (provider) provider->unchanged();
   };
   unchanged();
   write(ir, compilation.compilation->llvm_ir);
@@ -191,11 +232,17 @@ int run(int argc, char **argv) {
   support::ProcessRequestV1 process;
   process.working_directory = staging.path;
   process.environment = support::compiler_environment_sanitization_v1();
+  // These are tool/library search inputs, not source semantics. Only configured
+  // system-toolchain paths and explicit Matcore artifacts may reach final link.
+  for (const auto *name : {"COMPILER_PATH", "GCC_EXEC_PREFIX", "LIBRARY_PATH",
+       "LD_RUN_PATH", "LDEMULATION", "GNUTARGET", "LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH"})
+    process.environment.push_back({name, std::nullopt});
   process.argv = {REGION_CLANG, "--no-default-config", "-resource-dir=" REGION_RESOURCE_DIR,
                   "-x", "ir", ir.string(), "-O2", "-o", binary.string()};
   if (REGION_SANITIZED) process.argv.push_back("-fsanitize=address,undefined");
   if (args.compile_only) process.argv.push_back("-c");
   else {
+    process.argv.push_back("--ld-path=" REGION_LINKER);
     process.argv.insert(process.argv.end(), {"-x", "none", "-Xlinker", "--whole-archive",
       installed.archive.string(), "-Xlinker", "--no-whole-archive", installed.runtime.string(),
       "-lm", "-pthread", "-Xlinker", "-rpath", "-Xlinker", installed.runtime.parent_path().string()});
@@ -205,7 +252,7 @@ int run(int argc, char **argv) {
   if (!linked.launched || linked.exit_code != 0) reject("ordinary Clang artifact compilation/link failed: " + linked.error);
   issued_ir.unchanged(); unchanged();
   const auto final = Artifact::capture(binary);
-  (void)final;
+  verifyOutput(final, args.compile_only);
   // Same filesystem, atomic no-clobber publication. An output racing into
   // existence is never overwritten; failed compiles leave no published file.
   fs::create_hard_link(binary, args.output);

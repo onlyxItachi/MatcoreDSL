@@ -129,6 +129,9 @@ mdslc_target_enable_precise_fp(matcore_runtime)
 target_compile_definitions(matcore_runtime PRIVATE MATCORE_RUNTIME_BUILD)
 target_link_libraries(matcore_runtime PRIVATE MatcoreDSL::CpuPlannerV1)
 if(MDSLC_HAS_OPENBLAS)
+  # Compiler-private artifact provenance; runtime candidate policy is unchanged.
+  set_property(TARGET matcore_cpu_backends_v1 PROPERTY
+    MDSLC_PROVIDER_LINK_INPUTS "${MDSLC_OPENBLAS_LINK_LIBRARIES}")
   target_link_libraries(matcore_cpu_backends_v1
     PRIVATE PkgConfig::MDSLC_OPENBLAS
   )
