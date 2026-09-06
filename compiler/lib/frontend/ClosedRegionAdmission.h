@@ -16,6 +16,8 @@ struct ClosedRegionAdmissionResult;
 // permission to execute. Only successful admission can construct its payload.
 class AuthenticatedClosedRegionEvidence {
 public:
+  // A moved-from seal has no authority: queries/pairing reject it and payload
+  // accessors throw logic_error rather than dereference an empty capability.
   const closed_region::Program &program() const;
   const std::string &sourceSnapshot() const;
   const std::string &regionName() const;
