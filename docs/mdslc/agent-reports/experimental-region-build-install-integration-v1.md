@@ -57,12 +57,12 @@ serial CTest execution. Build roots are under
 
 | Configuration and scope | Observed outcome |
 | --- | --- |
-| Release, feature ON, OpenBLAS OFF, `BUILD_TESTING=OFF`, `build-package-production` | Full 97-target build PASS; fresh installed Result 37 checks, candidate 121,215 checks, independent Value 85 checks plus 32,000 owning cycles; mixed Result 8,000 cycles, mixed Value, and actual installed revision/stale-COMDAT controls PASS |
-| Release, feature OFF, MLIR OFF, OpenBLAS OFF, `BUILD_TESTING=OFF`, `build-package-off` | Full 56-target build and fresh legacy-only installation PASS; no closed-region/test target required |
-| Release, feature ON, required OpenBLAS 0.3.32, `build-package-release` | Full 243-target build PASS; smallest package checks 2/2 PASS, 5.59 s; affected regression scope 38/38 PASS, 28.99 s |
+| Release, feature ON, OpenBLAS OFF, `BUILD_TESTING=OFF`, `build-package-production` | Full build (97 Ninja steps) PASS; fresh installed Result 37 checks, candidate 121,215 checks, independent Value 85 checks plus 32,000 owning cycles; mixed Result 8,000 cycles, mixed Value, and actual installed revision/stale-COMDAT controls PASS |
+| Release, feature OFF, MLIR OFF, OpenBLAS OFF, `BUILD_TESTING=OFF`, `build-package-off` | Full build (56 Ninja steps) and fresh legacy-only installation PASS; no closed-region/test target required |
+| Release, feature ON, required OpenBLAS 0.3.32, `build-package-release` | Full build (243 Ninja steps) PASS; smallest package checks 2/2 PASS, 5.59 s; affected regression scope 38/38 PASS, 28.99 s |
 | Same Release build, complete CTest registry | **116/116 PASS, 283.47 s** |
-| Debug ASan+UBSan, feature ON, OpenBLAS OFF, `build-package-asan` | Full 245-target build PASS; smallest installed package check 1/1 PASS, 4.22 s |
-| Same sanitizer build, independently enumerated exact affected scope | **63/63 PASS, 57.99 s**, including installed generated-leaf OOB refusal |
+| Debug ASan+UBSan, feature ON, OpenBLAS OFF, `build-package-asan` | Full build (245 Ninja steps) PASS; smallest installed package check 1/1 PASS, 4.22 s |
+| Same sanitizer build, independently enumerated exact affected scope | **63/63 PASS, 57.99 s**, including installed generated-leaf OOB detection |
 | Repository hygiene and `git diff --check` | PASS |
 
 Sanitizers use `-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer`
