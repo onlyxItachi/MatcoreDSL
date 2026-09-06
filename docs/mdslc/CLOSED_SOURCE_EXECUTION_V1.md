@@ -77,8 +77,18 @@ relocatable object and links it with the production adapter, not the injection
 variant. Release passed in 6.25 seconds; the corresponding ASan/UBSan/LSan scope
 passed in 8.08 seconds with flags propagated to both separately compiled child
 sources. Affected Release regression scope passed **5/5** in 20.60 seconds.
-These are implementation-lane results; integrated/hosted results must be recorded
-at their exact later checkpoint.
+These are implementation-lane results. The integrated checkpoint is recorded below.
+
+PR [#42](https://github.com/onlyxItachi/MatcoreDSL/pull/42) merged normally at
+`38e0c9368c65f399b0d8d6c9c39469e2836007c9` on 2026-09-06T19:59:30Z.
+Its parents are `3756f681126726fad08b90d7fe9c1c48106575ea` and reviewed head
+`38df446a8a9bcdc0c934ab943d2771066aa5a026`; the merged tree is
+`c99221aad6f252f8a54108abe788f74771e5fa66`, matching the pre-merge tree calculation.
+At the reviewed head, clean Release passed **91/91** (108.14 seconds), the exact
+affected Debug ASan/UBSan scope passed **40/40** (33.05 seconds), and hosted checks
+passed **19/19**. Independent review covered both the source implementation and
+the final union-only CMake/sanitizer integration. See the
+[exact-head merge gate](https://github.com/onlyxItachi/MatcoreDSL/pull/42#issuecomment-5561790804).
 
 Cases include lhs/rhs-carried rectangular GEMMs; saved values versus late aliased
 reads; overlapping/reused destinations; actual observations; second shape
