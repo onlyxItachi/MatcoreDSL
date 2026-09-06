@@ -185,7 +185,8 @@ closedRegionAdversarialSources() {
       "Value helper(Value lhs,Value rhs) { return gemm(lhs,rhs,Numerics::strict_f32); }",
       "auto c = helper(a,b); publish(c,C);",
       "Complete generic redeclaration traversal must see later helper attributes.");
-  cases.back().source += "[[gnu::const]] Value helper(Value,Value);\n";
+  cases.back().source +=
+      "[[clang::annotate(\"mdsl.private.forged_helper_authority\")]] Value helper(Value,Value);\n";
   add("purity_attribute_host_call", "[[gnu::const]] Shape host_shape();",
       "auto x = read(D,host_shape(),n);",
       "A host declaration's optimization attribute does not create semantic authority.");
