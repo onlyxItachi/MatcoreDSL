@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -34,6 +35,11 @@ void write(const fs::path &path, const std::string &bytes) {
   stream.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
   stream.close();
   if (!stream) throw std::runtime_error("could not write owned fixture: " + path.string());
+}
+std::string read(const fs::path &path) {
+  std::ifstream stream(path,std::ios::binary);
+  if(!stream) throw std::runtime_error("could not read generated artifact: "+path.string());
+  return {std::istreambuf_iterator<char>(stream),std::istreambuf_iterator<char>()};
 }
 std::string region(const std::string &body, const std::string &name="region",
                    const std::string &helpers="") {
@@ -71,12 +77,34 @@ const std::string childPrelude=R"child(
 #include <cfenv>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <vector>
+#if defined(MDSLC_SOURCE_TRUSTED_REGISTRY)
+#include "matcore/runtime_c.h"
+#endif
 namespace h=matcore::mdslc::runtime::closed_host_v1;
 static unsigned checks=0, failures=0;
 static void expect(bool c,const char *m) {
   ++checks; if(!c) {++failures; std::fprintf(stderr,"FAIL: %s\n",m);}
+}
+static h::Session makeSession() {
+#if defined(MDSLC_SOURCE_TRUSTED_REGISTRY)
+  return h::Session(h::Options{h::Candidate::generated_strict});
+#else
+  return h::Session();
+#endif
+}
+static void expectMathCandidate(const h::Session &session) {
+  const auto report=session.candidateReport();
+#if defined(MDSLC_SOURCE_TRUSTED_REGISTRY)
+  const auto expected=h::Implementation::generated_strict;
+#else
+  const auto expected=h::Implementation::native_strict;
+#endif
+  expect(report.actual==expected && report.invocation_attempted && report.value_issued &&
+         report.actual_threads==1 && report.code==h::Code::ok,
+         "compiled source actually executed the requested mathematical implementation");
 }
 static h::ResourceView view(float *p,std::uint64_t m,std::uint64_t n,std::uint64_t cap) {
   return {p,m,n,cap,h::Access::read_write};
@@ -139,6 +167,24 @@ int main(int argc,char **argv) {
   const std::string clang=argv[1], resource=argv[2];
   const fs::path compiler=fs::weakly_canonical(argv[3]);
   try {
+    std::string registry,runtimeLibrary,asanControl,kernel,asanKernel;
+    std::vector<std::string> childFlags;
+    for(int i=4;i<argc;++i) {
+      const std::string option=argv[i];
+      auto take=[&]() -> std::string {
+        if(++i==argc) throw std::runtime_error("missing value after "+option);
+        return argv[i];
+      };
+      if(option=="--registry") registry=take();
+      else if(option=="--runtime") runtimeLibrary=take();
+      else if(option=="--asan-control") asanControl=take();
+      else if(option=="--kernel") kernel=take();
+      else if(option=="--asan-kernel") asanKernel=take();
+      else childFlags.push_back(option);
+    }
+    const bool generated=!registry.empty();
+    if(generated && (runtimeLibrary.empty() || asanControl.empty() || kernel.empty() || asanKernel.empty()))
+      throw std::runtime_error("generated source test requires registry, runtime and kernel controls");
     const std::string lhs=
       "auto a=read(A,m,k); auto b=read(B,k,n); auto c=gemm(a,b,Numerics::strict_f32); "
       "publish(c,C); observe(C); auto d=read(D,n,p); "
@@ -153,7 +199,7 @@ int main(int argc,char **argv) {
     const std::vector<Example> examples={
       {"lhs_rectangular",region(lhs),R"child({
         std::vector<float>a{1,2,3,4,5,6},b{1,2,3,4,5,6},d{2,0,1,3,4,1};
-        std::vector<float>c(4,-1),e(6,-2); h::Session s;
+        std::vector<float>c(4,-1),e(6,-2); auto s=makeSession();
         auto status=@ENTRY@(s,view(a.data(),2,3,6),2,view(b.data(),3,2,6),3,
           view(c.data(),2,2,4),2,view(d.data(),2,3,6),3,view(e.data(),2,3,6),{});
         auto cexpected=oracle(a,b,2,3,2),eexpected=oracle(cexpected,d,2,2,3);
@@ -162,16 +208,18 @@ int main(int argc,char **argv) {
         expect(c==cexpected && e==eexpected,"lhs rectangular source matches independent oracle");
         expect(observed<4>(s,0)==std::array<float,4>{22,28,49,64},"first observation stores C");
         expect(s.observationFrontier(0)<s.observationFrontier(1),"observation order survives execution");
+        expectMathCandidate(s);
       })child"},
       {"rhs_rectangular",region(rhs),R"child({
         std::vector<float>a{1,2,3,4,5,6},b{1,2,3,4,5,6},d{2,0,1,3,4,1};
-        std::vector<float>c(4,-1),e(6,-2); h::Session s;
+        std::vector<float>c(4,-1),e(6,-2); auto s=makeSession();
         auto status=@ENTRY@(s,view(a.data(),2,3,6),2,view(b.data(),3,2,6),3,
           view(c.data(),2,2,4),2,view(d.data(),3,2,6),3,view(e.data(),3,2,6),{});
         expect(status && status.completed,"rhs source executes");
         expect(c==oracle(a,b,2,3,2) && e==oracle(d,c,3,2,2),
                "rhs rectangular source never commutes multiplication");
         expect(observed<6>(s,1)==std::array<float,6>{44,56,169,220,137,176},"rhs observation is exact");
+        expectMathCandidate(s);
       })child"},
       {"alias_old_late",region(
         "auto old=read(C,m,n); auto a=read(A,m,k); auto b=read(B,k,n); "
@@ -179,7 +227,7 @@ int main(int argc,char **argv) {
         "auto late=read(D,m,n); auto e=gemm(old,late,Numerics::strict_f32); "
         "publish(e,E); observe(C); publish(old,F);"),R"child({
         float a[4]{1,0,0,1},b[4]{5,6,7,8},storage[8]{1,2,3,4,5,6,7,8},saved[4]{};
-        h::Session s;
+        auto s=makeSession();
         auto status=@ENTRY@(s,view(a,2,2,4),2,view(b,2,2,4),2,
           view(storage,2,2,8),2,view(storage,2,2,8),0,view(storage+1,2,2,7),view(saved,2,2,4));
         expect(status && status.completed,"aliased source executes with owned snapshots");
@@ -190,10 +238,11 @@ int main(int argc,char **argv) {
         expect(observed<4>(s,0)==std::array<float,4>{5,6,7,8},"earlier observation immutable");
         expect(observed<4>(s,1)==std::array<float,4>{5,19,22,43},"later observation sees overlapping write");
         expect(storage[5]==6 && storage[7]==8,"out-of-footprint sentinels survive");
+        expectMathCandidate(s);
       })child"},
       {"late_shape_failure",region(lhs),R"child({
         float a[4]{1,2,3,4},b[4]{2,0,1,3},c[4]{-1,-1,-1,-1},d[6]{},e[4]{-2,-2,-2,-2};
-        h::Session s;
+        auto s=makeSession();
         auto status=@ENTRY@(s,view(a,2,2,4),2,view(b,2,2,4),2,
           view(c,2,2,4),2,view(d,3,2,6),2,view(e,2,2,4),{});
         expect(status.code==h::Code::shape_mismatch && status.publications==1 && status.observations==1,
@@ -201,11 +250,12 @@ int main(int argc,char **argv) {
         expect(std::array<float,4>{c[0],c[1],c[2],c[3]}==std::array<float,4>{4,6,10,12},
                "second-operation failure cannot suppress or roll back first output");
         expect(e[0]==-2 && e[3]==-2,"later output untouched after failure");
+        expectMathCandidate(s);
       })child"},
       {"dead_result_guard",region(
         "auto old=read(C,m,n); publish(old,E); auto a=read(A,m,k); auto b=read(B,p,n); "
         "auto dead=gemm(a,b,Numerics::strict_f32); observe(C);"),R"child({
-        float a[4]{1,2,3,4},b[6]{},c[4]{5,6,7,8},e[4]{}; h::Session s;
+        float a[4]{1,2,3,4},b[6]{},c[4]{5,6,7,8},e[4]{}; auto s=makeSession();
         auto status=@ENTRY@(s,view(a,2,2,4),2,view(b,3,2,6),2,
           view(c,2,2,4),2,{},3,view(e,2,2,4),{});
         expect(status.code==h::Code::shape_mismatch && status.publications==1 && status.observations==0,
@@ -216,40 +266,44 @@ int main(int argc,char **argv) {
         "if (p > m) { auto a=read(A,m,k); auto b=read(B,k,n); "
         "auto c=gemm(a,b,Numerics::strict_f32); publish(c,C); observe(C); } "
         "else { auto d=read(D,m,n); publish(d,E); }"),R"child({
-        float a[4]{1,2,3,4},b[4]{2,0,1,3},c[4]{},e[4]{-1,-1,-1,-1}; h::Session s;
+        float a[4]{1,2,3,4},b[4]{2,0,1,3},c[4]{},e[4]{-1,-1,-1,-1}; auto s=makeSession();
         auto invalid=view(nullptr,UINT64_MAX,UINT64_MAX,0);
         auto status=@ENTRY@(s,view(a,2,2,4),2,view(b,2,2,4),2,
           view(c,2,2,4),2,invalid,UINT64_MAX,view(e,2,2,4),{});
         expect(status && status.completed && status.publications==1,
                "unsigned high-bit shape compare takes correct branch without narrowing");
         expect(c[0]==4 && c[3]==12 && e[0]==-1,"untaken invalid resource never prevalidated/read");
-        h::Session other;
+        expectMathCandidate(s);
+        auto other=makeSession();
         status=@ENTRY@(other,view(a,2,2,4),2,view(b,2,2,4),2,
           view(c,2,2,4),2,view(e,2,2,4),0,view(c,2,2,4),{});
         expect(status && status.completed && c[0]==-1 && c[3]==-1,
                "opposite branch executes its own frontier IDs despite static gaps");
       })child"},
       {"zero_and_reuse",region(simple),R"child({
-        float c[6]{9,9,9,9,9,9}; h::Session s;
+        float c[6]{9,9,9,9,9,9}; auto s=makeSession();
         auto status=@ENTRY@(s,view(nullptr,2,0,0),2,view(nullptr,0,3,0),0,
           view(c,2,3,6),3,{},0,{},{});
         expect(status && status.completed && c[0]==0 && c[5]==0,"zero-K source initializes nonempty result");
+        expect(s.candidateReport().actual==h::Implementation::zero_reduction &&
+               !s.candidateReport().invocation_attempted,
+               "zero reduction reports local semantic realization, not generated invocation");
         c[0]=77;
         status=@ENTRY@(s,view(nullptr,2,0,0),2,view(nullptr,0,3,0),0,
           view(c,2,3,6),3,{},0,{},{});
         expect(!status && c[0]==77,"completed Session reuse rejected before effects");
-        h::Session failed; h::Value unused;
+        auto failed=makeSession(); h::Value unused;
         auto first=failed.read(1,view(nullptr,1,1,1),unused);
         status=@ENTRY@(failed,view(nullptr,2,0,0),2,view(nullptr,0,3,0),0,
           view(c,2,3,6),3,{},0,{},{});
         expect(status.code==first.code && status.failed_frontier==first.failed_frontier && c[0]==77,
                "failed Session preserves first error and cannot publish");
-        h::Session partial; float input[1]{1};
+        auto partial=makeSession(); float input[1]{1};
         partial.read(1,view(input,1,1,1),unused);
         status=@ENTRY@(partial,view(nullptr,2,0,0),2,view(nullptr,0,3,0),0,
           view(c,2,3,6),3,{},0,{},{});
         expect(!status && c[0]==77,"partially used Session rejected before effects");
-        h::Session empty;
+        auto empty=makeSession();
         status=@ENTRY@(empty,view(nullptr,0,0,0),0,view(nullptr,0,3,0),0,
           view(nullptr,0,3,0),3,{},0,{},{});
         expect(status && status.completed && status.publications==1 && status.observations==1,
@@ -259,11 +313,12 @@ int main(int argc,char **argv) {
         "auto a=read(A,m,k); auto b=read(B,k,n); auto c=product(a,b); "
         "Shape width=cols(c); auto d=read(D,width,p); auto e=product(c,d); publish(e,E); observe(E);",
         "region", "template<class T> T product(T a,T b) { auto c=gemm(a,b,Numerics::reassociate_f32); return c; }"),R"child({
-        float a[4]{1,2,3,4},b[4]{2,0,1,3},d[2]{1,2},e[2]{}; h::Session s;
+        float a[4]{1,2,3,4},b[4]{2,0,1,3},d[2]{1,2},e[2]{}; auto s=makeSession();
         auto status=@ENTRY@(s,view(a,2,2,4),2,view(b,2,2,4),2,{},2,
           view(d,2,1,2),1,view(e,2,1,2),{});
         expect(status && status.completed && e[0]==16 && e[1]==34,
                "admitted template helper and value-shape query execute without runtime interpretation");
+        expectMathCandidate(s);
       })child"},
       {"strict_numeric_environment",region(simple),R"child({
         float a[2]{-1.0f,0x1.000002p0f},b[2]{1.0f,0x1.fffffep-1f},c[1]{77};
@@ -272,7 +327,7 @@ int main(int argc,char **argv) {
                feclearexcept(FE_ALL_EXCEPT)==0 && feraiseexcept(FE_INVALID)==0,
                "construct nondefault caller FP state for generated entry");
         const auto flags=fetestexcept(FE_ALL_EXCEPT);
-        h::Session s;
+        auto s=makeSession();
         auto status=@ENTRY@(s,view(a,1,2,2),1,view(b,2,1,2),2,
           view(c,1,1,1),1,{},0,{},{});
         expect(status && std::bit_cast<std::uint32_t>(c[0])==0,
@@ -280,6 +335,7 @@ int main(int argc,char **argv) {
         expect(fegetround()==FE_DOWNWARD && fetestexcept(FE_ALL_EXCEPT)==flags,
                "generated orchestration restores complete caller FP state");
         expect(fesetenv(&saved)==0,"restore numerical fixture environment");
+        expectMathCandidate(s);
       })child"}
     };
 
@@ -322,14 +378,16 @@ int main(int argc,char **argv) {
       if(left && right && left.emission->symbol!=right.emission->symbol) {
         implementations+=left.emission->implementation+right.emission->implementation;
         mainBody+=invocation(R"child({
-          float a[1]{2},b[1]{3},c[1]{},e[1]{}; h::Session s;
+          float a[1]{2},b[1]{3},c[1]{},e[1]{}; auto s=makeSession();
           auto status=@ENTRY@(s,view(a,1,1,1),1,view(b,1,1,1),1,view(c,1,1,1),1,{},0,view(e,1,1,1),{});
           expect(status && c[0]==6 && e[0]==0,"same-TU alpha links and executes only its publication");
+          expectMathCandidate(s);
         })child",left.emission->symbol);
         mainBody+=invocation(R"child({
-          float a[1]{2},b[1]{3},c[1]{},e[1]{}; h::Session s;
+          float a[1]{2},b[1]{3},c[1]{},e[1]{}; auto s=makeSession();
           auto status=@ENTRY@(s,view(a,1,1,1),1,view(b,1,1,1),1,view(c,1,1,1),1,{},0,view(e,1,1,1),{});
           expect(status && c[0]==0 && e[0]==6,"same-TU beta links and executes distinct publication");
+          expectMathCandidate(s);
         })child",right.emission->symbol);
       }
     }
@@ -400,6 +458,55 @@ int main(int argc,char **argv) {
       check(!result,"unclosed host semantics cannot reach executable emitter");
     }
 
+    Fixture providerFailure(clang,resource,region(
+      "auto old=read(C,m,n); publish(old,E); observe(E); "
+      "auto a=read(A,m,k); auto b=read(B,k,n); "
+      "auto c=gemm(a,b,Numerics::strict_f32); publish(c,F);"));
+    auto providerSeal=providerFailure.admit();
+    auto providerEmission=providerSeal ? cg::emitClosedHostV1(*providerSeal.evidence) : cg::ClosedHostEmissionResult{};
+    check(static_cast<bool>(providerEmission),"source with late forced-provider numerical failure emits");
+    if(providerEmission) {
+      implementations+=providerEmission.emission->implementation;
+      mainBody+=invocation(R"child({
+        float a[1]{2},b[1]{3},old[1]{17},published[1]{},later[1]{-1};
+        h::Session s(h::Options{h::Candidate::authenticated_openblas});
+        auto status=@ENTRY@(s,view(a,1,1,1),1,view(b,1,1,1),1,view(old,1,1,1),1,
+                            {},0,view(published,1,1,1),view(later,1,1,1));
+        expect(status.code==h::Code::candidate_incompatible && status.publications==1 &&
+               status.observations==1 && status.failed_frontier==6 &&
+               status.completed_frontier==5 && status.completed_effect_frontier==3 &&
+               published[0]==17 && later[0]==-1,
+               "forced provider cannot execute strict profile or erase earlier source effects");
+        expect(!s.candidateReport().invocation_attempted && !s.candidateReport().provider_contract_checked &&
+               !s.candidateReport().value_issued,"incompatible provider rejected before probing or computing");
+        expect(observed<1>(s,0)[0]==17,"observation survives forced-provider failure");
+      })child",providerEmission.emission->symbol);
+    }
+    if(generated) {
+      mainBody+=R"child({
+        float a[1]{2},b[1]{3},c[1]{-1};
+        auto descriptor=[](float *p,bool writable) {
+          matcore_tensor_desc_v0 d{}; d.struct_size=sizeof(d); d.data=p;
+          d.dtype=MATCORE_DTYPE_F32_V0; d.rank=2; d.dims[0]=1; d.dims[1]=1;
+          d.strides[0]=1; d.strides[1]=1; d.memory_space=MATCORE_MEMORY_SPACE_HOST_V0;
+          d.mutability=writable?MATCORE_MUTABILITY_READ_WRITE_V0:MATCORE_MUTABILITY_READ_ONLY_V0;
+          return d;
+        };
+        auto lhs=descriptor(a,false),rhs=descriptor(b,false),out=descriptor(c,true);
+        matcore_policy_v0 policy{}; policy.struct_size=sizeof(policy);
+        policy.target=MATCORE_TARGET_CPU_V0; policy.fallback=MATCORE_FALLBACK_ERROR_V0;
+        matcore_cpu_gemm_execution_options_v1 options{};
+        options.abi_version=MATCORE_RUNTIME_EXECUTION_ABI_VERSION_V1;options.struct_size=sizeof(options);
+        options.requested_threads=1;options.request=MATCORE_CPU_GEMM_REQUEST_FORCE_REFERENCE_V2;
+        matcore_cpu_gemm_plan_report_v2 report{};
+        report.abi_version=MATCORE_RUNTIME_PLAN_ABI_VERSION_V2;report.struct_size=sizeof(report);
+        const auto status=matcore_runtime_gemm_f32_execute_v1(&out,&lhs,&rhs,&policy,&options,nullptr,0,&report);
+        expect(status.code==MATCORE_STATUS_OK_V0 && c[0]==6 && report.selected_stable_id &&
+               std::strcmp(report.selected_stable_id,"cpu.reference.f32.v1")==0,
+               "ordinary legacy C ABI coexists in the exact generated-source executable");
+      })child";
+    }
+
     if(failures) {
       std::cout<<"Closed source seam: "<<checks<<" checks, "<<failures<<" failures before child compilation\n";
       return 1;
@@ -415,15 +522,20 @@ int main(int argc,char **argv) {
     compile.environment=support::compiler_environment_sanitization_v1();
     compile.argv={clang,"-std=c++20","-O1","-g","-Wall","-Wextra","-Werror",
                   "-frounding-math","-ftrapping-math","-ffp-contract=off","-I",runtime};
-    for(int i=4;i<argc;++i) compile.argv.emplace_back(argv[i]);
+    compile.argv.insert(compile.argv.end(),childFlags.begin(),childFlags.end());
+    if(generated) compile.argv.insert(compile.argv.end(),{"-DMDSLC_SOURCE_TRUSTED_REGISTRY=1",
+                                                        "-I",(compiler/"include").string()});
     const auto base=compile.argv;
     compile.argv.insert(compile.argv.end(),{"-c",cpp.string(),"-o",object.string()});
     auto compiled=support::run_process_v1(compile);
     check(compiled.launched && compiled.exit_code==0,"ordinary generated object compile: "+compiled.error+compiled.stderr_text);
     if(compiled.launched && compiled.exit_code==0) {
       compile.argv=base;
-      compile.argv.insert(compile.argv.end(),{object.string(),(compiler/"lib/runtime/closed_host_v1.cpp").string(),
-                                            "-o",executable.string()});
+      compile.argv.push_back(object.string());
+      if(generated) {
+        compile.argv.insert(compile.argv.end(),{registry,runtimeLibrary,"-Wl,-rpath,"+fs::path(runtimeLibrary).parent_path().string()});
+      } else compile.argv.push_back((compiler/"lib/runtime/closed_host_v1.cpp").string());
+      compile.argv.insert(compile.argv.end(),{"-o",executable.string()});
       auto linked=support::run_process_v1(compile);
       check(linked.launched && linked.exit_code==0,"ordinary final link with production adapter: "+linked.error+linked.stderr_text);
       if(linked.launched && linked.exit_code==0) {
@@ -433,6 +545,27 @@ int main(int argc,char **argv) {
         check(ran.launched && ran.exit_code==0,"actual generated orchestration execution: "+ran.error+ran.stderr_text);
         check(ran.stdout_text.find("0 failures")!=std::string::npos,"child reports actual executed assertions");
         std::cout<<ran.stdout_text;
+      }
+    }
+    if(generated) {
+      support::ProcessRequestV1 negative;
+      negative.argv={asanControl,"--oob"}; negative.working_directory=output.path();
+      // Match the established kernel control: symbolization must stay local and
+      // the deliberately failing process must stop at its first memory error.
+      negative.environment={{"DEBUGINFOD_URLS",std::string()},
+                            {"ASAN_OPTIONS",std::string("halt_on_error=1:detect_leaks=0")}};
+      auto rejected=support::run_process_v1(negative);
+      check(rejected.launched && rejected.exit_code!=0 &&
+            rejected.stderr_text.find("AddressSanitizer: heap-buffer-overflow")!=std::string::npos &&
+            rejected.stderr_text.find("__matcore_strict_gemm_f32_v1")!=std::string::npos,
+            "negative control detects actual generated-kernel out-of-bounds memory access");
+      const bool instrumented=std::any_of(childFlags.begin(),childFlags.end(),[](const std::string &flag) {
+        return flag.starts_with("-fsanitize=") && flag.find("address")!=std::string::npos;
+      });
+      if(instrumented) {
+        const auto actual=read(kernel),control=read(asanKernel);
+        check(!actual.empty() && actual==control,
+              "source-linked LLVM object exactly matches the generated-memory ASan negative control object");
       }
     }
   } catch(const std::exception &error) { check(false,error.what()); }
