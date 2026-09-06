@@ -1,7 +1,7 @@
 # MDSLC current state
 
 Engineering checkpoint: canonical merge
-`3374ffbb2100dd68fdd34a46ee93495d1c3c4137`, [PR #52](https://github.com/onlyxItachi/MatcoreDSL/pull/52).
+`3a0f995d522bb3809c907ee68bc50e2a820d7ea6`, [PR #55](https://github.com/onlyxItachi/MatcoreDSL/pull/55).
 This identifies the latest engineering merge; documentation-only updates may follow.
 
 ## Architecture
@@ -26,26 +26,29 @@ Separate trusted registry -> native/generated strict or legal legacy/provider
 Shared provider adapter serializes Matcore-owned OpenBLAS policy lifetimes.
 Matcore owns legality/effects; MLIR transformations; LLVM/backends machine lowering.
 Legacy Python/JIT remains a separate compatibility surface.
-Named C++ region admission + opaque Result/Value ownership and private ABI gate.
+Opt-in production region package: opaque Result/Value and private ABI gate.
 ```
 
 ## Material change
 
-Private Value ownership no longer exposes a standard-library layout. Out-of-line
-retention preserves old values, failure prefixes and observations; Session
-construction remains allocation-free. Versioned private linkage rejects stale
-artifacts, including the reproduced weak-constructor bypass of a marker-only
-design. Exact-head Release passed 115/115, ASan/UBSan 62/62 and all 19 hosted
-checks passed. No mathematical or candidate-selection semantics changed.
-See [implementation and canonical evidence](agent-reports/closed-private-value-abi-v2.md#canonical-merge-checkpoint)
-and [independent review](agent-reports/private-value-abi-independent-v2.md).
+Region support now has one production build owner, independent of test targets.
+The default-OFF option installs matching experimental headers and private runtime
+artifacts; ordinary consumers do not inherit LLVM/MLIR dependencies. Actual
+tests-disabled ON/OFF builds and installed consumers passed. Implementation-head
+Release passed 116/116 and affected ASan/UBSan 63/63; final-head hosted checks
+passed 19/19. No mathematical or candidate-selection semantics changed.
+See [package contract](EXPERIMENTAL_REGION_BUILD_INSTALL_V1.md) and
+[integration evidence](agent-reports/experimental-region-build-install-integration-v1.md#canonical-merge-checkpoint).
 
 ## Unsupported or unproven
 
 Closed source is a private Linux 21.1.8 compiled native/generated consumer, not an
 installed frontend or a whole-host-TU replacement. The generated leaf accepts
 no user IR and grants no source authority. Experimental named-region syntax is
-not yet a shipped execution interface. No general
+not yet a shipped execution interface. The unmerged driver has a reproduced
+private weak-symbol cleanup ownership gap ([#56](https://github.com/onlyxItachi/MatcoreDSL/issues/56));
+installed private archives are not proof against host implementation replacement.
+No general
 tensor/view API, fusion, GPU/NPU or API/ABI stability claim. The new adapter
 requires valid exclusive host storage and a conforming trusted allocator; it
 does not cover arbitrary interposed host effects, exports or device transfers.
@@ -60,9 +63,9 @@ remain design-only.
 
 ## Exactly one next boundary
 
-**Promote opt-in region build/install support independently of test targets.**
-The ownership boundary is defended. A usable package must now build the reviewed
-runtime and generated leaf with `BUILD_TESTING=OFF`, install matching private
-artifacts, and validate installed consumers without leaking LLVM/MLIR dependencies.
-This is a packaging prerequisite, not the new source-driver execution boundary.
+**Defend compiler-private implementation ownership before admitting the installed driver.**
+The package now exists, but whole-archive linkage does not protect private weak
+cleanup functions on allocation failure. Isolate issued helper definitions and
+runtime internals, then falsify both boundaries with actual source/execution and
+sanitizer tests. Passing ordinary arithmetic alone is insufficient.
 Independent research branches are not canonical capabilities until integrated.
