@@ -401,10 +401,10 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1:check_initialization_order=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: |
-          sanitizer_tests='^(frontend\.closed_region_admission|frontend\.closed_region_host_context|frontend\.closed_source(_generated)?_execution_v1|mlir\.closed_region_semantics|frontend\.native\.two_gemm_region|ir\.v1\.core|mlir\.sanitizer\.allocator-protocol|mlir\.semantic\.(core|map-domain|recovered-gemm|two-gemm-region)|mlir\.cpu\.runtime_dispatch_lowering_v1|platform\.fp_environment\.v1|generated_cpu\..*|closed_candidates\..*|runtime\.closed_host\.(contract|production|independent|allocation|authority)_v1|runtime\.cpu\.(reference_types|packed_avx2|packed_avx512|execution_context\.v1|parallel_packed\.v1|planner_v3_resources|workspace_v1|openblas_adapter|variant_conformance\.v1|gemm_v0)|runtime\.c_abi\.(typed_reference_v1|compatibility_v1|fp_environment_v1|region_guard_oracles_v1|public_context_v1))$'
+          sanitizer_tests='^(frontend\.experimental_region_admission|frontend\.experimental_region\.ordinary_link_rejected|runtime\.experimental_region\.(owning_result|header_order|mixed_configuration_ownership|independent_retirement|independent_mixed_configuration)|frontend\.closed_region_admission|frontend\.closed_region_host_context|frontend\.closed_source(_generated)?_execution_v1|mlir\.closed_region_semantics|frontend\.native\.two_gemm_region|ir\.v1\.core|mlir\.sanitizer\.allocator-protocol|mlir\.semantic\.(core|map-domain|recovered-gemm|two-gemm-region)|mlir\.cpu\.runtime_dispatch_lowering_v1|platform\.fp_environment\.v1|generated_cpu\..*|closed_candidates\..*|runtime\.closed_host\.(contract|production|independent|allocation|authority)_v1|runtime\.cpu\.(reference_types|packed_avx2|packed_avx512|execution_context\.v1|parallel_packed\.v1|planner_v3_resources|workspace_v1|openblas_adapter|variant_conformance\.v1|gemm_v0)|runtime\.c_abi\.(typed_reference_v1|compatibility_v1|fp_environment_v1|region_guard_oracles_v1|public_context_v1))$'
           ctest --test-dir build-mdslc-asan-ubsan -N -R "${sanitizer_tests}" \
             | tee build-mdslc-asan-ubsan/focused-test-list.txt
-          grep -Fx "Total Tests: 51" \
+          grep -Fx "Total Tests: 58" \
             build-mdslc-asan-ubsan/focused-test-list.txt
           ctest --test-dir build-mdslc-asan-ubsan --output-on-failure -j1 \
             -R "${sanitizer_tests}"

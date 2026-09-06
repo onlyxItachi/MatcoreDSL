@@ -531,11 +531,10 @@ if(WIN32 AND MDSLC_ENABLE_NATIVE_FRONTEND)
     endif()
   endforeach()
 endif()
-install(
-  DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/matcore"
-  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
-  FILES_MATCHING PATTERN "*.h"
-)
+# Experimental region declarations are admitted only by private tests at this
+# checkpoint. Do not install an owning Result API without its runtime package.
+install(FILES include/matcore/mdsl.h include/matcore/runtime_c.h
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/matcore")
 
 set(MATCOREDSL_CMAKE_INSTALL_DIR
     "${CMAKE_INSTALL_LIBDIR}/cmake/MatcoreDSL")
@@ -571,6 +570,11 @@ if(WIN32)
 endif()
 
 if(BUILD_TESTING)
+  add_test(NAME package.experimental_region_headers_uninstalled
+    COMMAND "${CMAKE_COMMAND}"
+      "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
+      "-DINSTALL_INCLUDEDIR=${CMAKE_INSTALL_INCLUDEDIR}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/experimental_region/uninstalled_headers.cmake")
   add_test(
     NAME toolchain.version_token.contract
     COMMAND "${CMAKE_COMMAND}"
