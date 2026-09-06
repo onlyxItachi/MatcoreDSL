@@ -80,6 +80,11 @@ option(
   "Build the opt-in inspection-only MLIR Transform/Vector readiness seam"
   OFF
 )
+option(
+  MDSLC_ENABLE_EXPERIMENTAL_REGIONS
+  "Build and install the experimental closed-region compiler/runtime support"
+  OFF
+)
 mark_as_advanced(MDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS)
 set(
   MDSLC_DEFAULT_SEMANTIC_PIPELINE
@@ -154,6 +159,19 @@ endif()
 if(MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE AND NOT BUILD_TESTING)
   message(FATAL_ERROR
     "MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE is allowed only with BUILD_TESTING=ON")
+endif()
+
+if(MDSLC_ENABLE_EXPERIMENTAL_REGIONS)
+  if(NOT MDSLC_ENABLE_NATIVE_FRONTEND OR NOT MDSLC_ENABLE_MATCORE_MLIR OR
+     MDSLC_EXPERIMENTAL_TOOLCHAIN_ACTIVE OR
+     NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
+     NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" OR
+     NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR CMAKE_CROSSCOMPILING)
+    message(FATAL_ERROR
+      "MDSLC_ENABLE_EXPERIMENTAL_REGIONS=ON requires native Linux x86_64, "
+      "MDSLC_ENABLE_NATIVE_FRONTEND=ON, MDSLC_ENABLE_MATCORE_MLIR=ON and "
+      "the exact LLVM/Clang/MLIR 21.1.8 product tuple (no cross compilation)")
+  endif()
 endif()
 
 if(NOT MDSLC_ENABLE_NATIVE_FRONTEND AND NOT MDSLC_ENABLE_BOOTSTRAP_FRONTEND)
@@ -410,6 +428,25 @@ else()
   set(MDSLC_RUNTIME_CLANG_DRIVER "${MDSLC_CLANGXX_EXECUTABLE}")
 endif()
 
+if(MDSLC_ENABLE_EXPERIMENTAL_REGIONS)
+  if(NOT TARGET clang-cpp)
+    message(FATAL_ERROR
+      "Experimental regions require the authenticated shared clang-cpp runtime")
+  endif()
+  get_target_property(MDSLC_REGION_CLANG_CPP_TYPE clang-cpp TYPE)
+  if(NOT MDSLC_REGION_CLANG_CPP_TYPE STREQUAL "SHARED_LIBRARY")
+    message(FATAL_ERROR
+      "Experimental regions require the authenticated shared clang-cpp runtime")
+  endif()
+endif()
+set(MDSLC_EXPERIMENTAL_REGION_PRIVATE_LIBDIR
+  "${CMAKE_INSTALL_LIBDIR}/mdslc/experimental-regions")
+set(MDSLC_EXPERIMENTAL_REGION_PRIVATE_INCLUDEDIR
+  "${MDSLC_EXPERIMENTAL_REGION_PRIVATE_LIBDIR}/include")
+string(TOUPPER "${CMAKE_BUILD_TYPE}" MDSLC_REGION_BUILD_TYPE)
+set(MDSLC_CLOSED_REGION_CXX_FLAGS
+  "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${MDSLC_REGION_BUILD_TYPE}}")
+
 configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/mdslc_config.h.in"
   "${CMAKE_CURRENT_BINARY_DIR}/generated/mdslc_config.h"
@@ -427,6 +464,11 @@ configure_file(
   "${CMAKE_BINARY_DIR}/include/matcore/runtime_c.h"
   COPYONLY
 )
+if(MDSLC_ENABLE_EXPERIMENTAL_REGIONS)
+  configure_file(include/matcore/region.h include/matcore/region.h COPYONLY)
+  configure_file(include/matcore/detail/region_storage.h
+    include/matcore/detail/region_storage.h COPYONLY)
+endif()
 
 add_subdirectory(lib/support)
 add_subdirectory(lib/ir)
@@ -438,6 +480,14 @@ add_subdirectory(lib/codegen)
 add_subdirectory(lib/platform)
 add_subdirectory(tools/matcore-extract)
 add_subdirectory(lib/runtime)
+set(MDSLC_BUILD_CLOSED_REGION_TESTS OFF)
+if(BUILD_TESTING AND MDSLC_ENABLE_NATIVE_FRONTEND AND
+   MDSLC_ENABLE_MATCORE_MLIR AND NOT WIN32)
+  set(MDSLC_BUILD_CLOSED_REGION_TESTS ON)
+endif()
+if(MDSLC_ENABLE_EXPERIMENTAL_REGIONS OR MDSLC_BUILD_CLOSED_REGION_TESTS)
+  add_subdirectory(lib/regions)
+endif()
 if(BUILD_TESTING AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
    CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
   # Private host-storage conformance boundary. No installed API or connection
@@ -446,10 +496,7 @@ if(BUILD_TESTING AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
 endif()
 add_subdirectory(tools/matcore-plan)
 add_subdirectory(tools/matcore-bench)
-if(BUILD_TESTING AND MDSLC_ENABLE_NATIVE_FRONTEND AND
-   MDSLC_ENABLE_MATCORE_MLIR AND NOT WIN32)
-  # Private admission plus its explicitly bounded host execution consumer.
-  # No installed headers or driver option; compatibility targets are unchanged.
+if(MDSLC_BUILD_CLOSED_REGION_TESTS)
   add_subdirectory(tests/closed_region)
   add_subdirectory(tests/generated_cpu)
   add_subdirectory(tests/closed_candidates)
@@ -531,10 +578,16 @@ if(WIN32 AND MDSLC_ENABLE_NATIVE_FRONTEND)
     endif()
   endforeach()
 endif()
-# Experimental region declarations are admitted only by private tests at this
-# checkpoint. Do not install an owning Result API without its runtime package.
+# The legacy package stays unchanged. Experimental declarations are installed
+# only together with their explicit opt-in production runtime package.
 install(FILES include/matcore/mdsl.h include/matcore/runtime_c.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/matcore")
+if(MDSLC_ENABLE_EXPERIMENTAL_REGIONS)
+  install(FILES include/matcore/region.h
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/matcore")
+  install(FILES include/matcore/detail/region_storage.h
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/matcore/detail")
+endif()
 
 set(MATCOREDSL_CMAKE_INSTALL_DIR
     "${CMAKE_INSTALL_LIBDIR}/cmake/MatcoreDSL")
@@ -570,11 +623,34 @@ if(WIN32)
 endif()
 
 if(BUILD_TESTING)
-  add_test(NAME package.experimental_region_headers_uninstalled
+  if(NOT MDSLC_ENABLE_EXPERIMENTAL_REGIONS)
+    add_test(NAME package.experimental_region_headers_uninstalled
+      COMMAND "${CMAKE_COMMAND}"
+        "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
+        "-DINSTALL_INCLUDEDIR=${CMAKE_INSTALL_INCLUDEDIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/experimental_region/uninstalled_headers.cmake")
+  endif()
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND MDSLC_ENABLE_NATIVE_FRONTEND)
+    add_test(NAME package.experimental_regions.configuration_rejections
+      COMMAND "${CMAKE_COMMAND}"
+        "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DBINARY_DIR=${CMAKE_BINARY_DIR}"
+        "-DCC=${CMAKE_C_COMPILER}" "-DCXX=${CMAKE_CXX_COMPILER}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/experimental_regions_configuration.cmake")
+  endif()
+  add_test(NAME package.experimental_regions.install_contract
     COMMAND "${CMAKE_COMMAND}"
-      "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
+      "-DBINARY_DIR=${CMAKE_BINARY_DIR}"
+      "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+      "-DCXX=${MDSLC_CLANGXX_EXECUTABLE}"
+      "-DCXX_FLAGS=${MDSLC_CLOSED_REGION_CXX_FLAGS}"
+      "-DLINK_FLAGS=${CMAKE_EXE_LINKER_FLAGS}"
+      "-DINSTALL_LIBDIR=${CMAKE_INSTALL_LIBDIR}"
       "-DINSTALL_INCLUDEDIR=${CMAKE_INSTALL_INCLUDEDIR}"
-      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/experimental_region/uninstalled_headers.cmake")
+      "-DNM=${CMAKE_NM}"
+      "-DENABLED=${MDSLC_ENABLE_EXPERIMENTAL_REGIONS}"
+      "-DHAS_OPENBLAS=${MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/experimental_regions_install.cmake")
   add_test(
     NAME toolchain.version_token.contract
     COMMAND "${CMAKE_COMMAND}"
