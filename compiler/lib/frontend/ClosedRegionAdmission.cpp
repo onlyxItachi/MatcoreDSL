@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <map>
 #include <set>
+#include <stdexcept>
 #include <utility>
 
 namespace matcore::mdslc::frontend {
@@ -729,20 +730,23 @@ struct AuthenticatedClosedRegionEvidence::Payload {
 AuthenticatedClosedRegionEvidence::AuthenticatedClosedRegionEvidence(
     std::shared_ptr<const Payload> payload) : payload_(std::move(payload)) {}
 const cr::Program &AuthenticatedClosedRegionEvidence::program() const {
+  if (!payload_) throw std::logic_error("closed-region evidence is moved-from");
   return payload_->program;
 }
 const std::string &AuthenticatedClosedRegionEvidence::sourceSnapshot() const {
+  if (!payload_) throw std::logic_error("closed-region evidence is moved-from");
   return payload_->source;
 }
 const std::string &AuthenticatedClosedRegionEvidence::regionName() const {
+  if (!payload_) throw std::logic_error("closed-region evidence is moved-from");
   return payload_->region_name;
 }
 bool AuthenticatedClosedRegionEvidence::hasHostContext() const {
-  return static_cast<bool>(payload_->host);
+  return payload_ && static_cast<bool>(payload_->host);
 }
 const std::string &AuthenticatedClosedRegionEvidence::hostContextIdentity() const {
   static const std::string empty;
-  return payload_->host ? payload_->host->identity() : empty;
+  return payload_ && payload_->host ? payload_->host->identity() : empty;
 }
 
 namespace detail {
@@ -845,6 +849,10 @@ ClosedRegionAdmissionResult admitClosedRegionSource(
 bool verifyClosedRegionMatchesEvidence(
     const AuthenticatedClosedRegionEvidence &evidence, mlir::ModuleOp module,
     std::string &error) {
+  if (!evidence.payload_) {
+    error = "closed-region source pairing requires nonempty admission evidence";
+    return false;
+  }
   if (evidence.payload_->host) {
     cr::Program replay;
     // An issued seal authenticates historical immutable inputs. Live files
