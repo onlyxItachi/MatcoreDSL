@@ -1,0 +1,21 @@
+#include <matcore/region.h>
+namespace m = matcore::mdsl;
+
+MATCORE_REGION
+m::Result pipeline(m::Storage input, m::Storage output) noexcept {
+  auto a = m::read(input, 1, 1);
+  auto c = m::gemm(a, a, m::Numerics::strict_f32);
+  m::publish(c, output);
+  m::observe(output);
+  return m::complete();
+}
+
+int main() {
+  float input = 3, output = 0;
+  auto result = pipeline({&input, 1, 1, 1},
+                         {&output, 1, 1, 1, m::Access::read_write});
+  return result.ok() && output == 9 && result.observation_count() == 1 &&
+                 result.observation(0).data()[0] == 9
+             ? 0
+             : 1;
+}

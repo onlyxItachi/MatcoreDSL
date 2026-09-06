@@ -1,0 +1,51 @@
+// Must be rejected before publication. Before the ownership correction this
+// valid host TU replaced a weak private runtime cleanup function. Its normal
+// path passed, but the allocation-failure path executed source code instead of
+// the authenticated observation cleanup. The allocator itself remains ordinary
+// conforming malloc/free + bad_alloc and does not touch the FP environment.
+#include <matcore/region.h>
+#include <cstdlib>
+#include <new>
+namespace m = matcore::mdsl;
+
+static bool tracking = false;
+static unsigned calls = 0, fail_at = 0;
+void *operator new(__SIZE_TYPE__ size) {
+  if (tracking && ++calls == fail_at) throw std::bad_alloc();
+  if (auto *p = std::malloc(size ? size : 1)) return p;
+  throw std::bad_alloc();
+}
+void operator delete(void *p) noexcept { std::free(p); }
+void operator delete(void *p, __SIZE_TYPE__) noexcept { std::free(p); }
+
+#if defined(MDSLC_INDEPENDENT_NAMED_RUNTIME_DEFINITION)
+namespace matcore::mdslc::runtime::closed_host_v1 {
+struct ObservationAbiV2 { ~ObservationAbiV2(); };
+ObservationAbiV2::~ObservationAbiV2() { std::_Exit(72); }
+}
+#else
+extern "C" void forged_destructor(void *)
+    asm("_ZN7matcore5mdslc7runtime14closed_host_v116ObservationAbiV2D2Ev");
+extern "C" void forged_destructor(void *) { std::_Exit(71); }
+#endif
+
+MATCORE_REGION
+m::Result pipeline(m::Storage input, m::Storage output) noexcept {
+  auto a = m::read(input, 1, 1);
+  auto c = m::gemm(a, a, m::Numerics::strict_f32);
+  m::publish(c, output);
+  m::observe(output);
+  return m::complete();
+}
+
+int main() {
+  float input = 3, output = 0;
+  for (fail_at = 1; fail_at != 16; ++fail_at) {
+    calls = 0;
+    tracking = true;
+    auto result = pipeline({&input, 1, 1, 1},
+                           {&output, 1, 1, 1, m::Access::read_write});
+    tracking = false;
+  }
+  return 0;
+}
