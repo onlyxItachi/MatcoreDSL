@@ -18,8 +18,9 @@ namespace matcore::mdslc::codegen {
 namespace {
 
 // Names are deliberately absent: separate Clang modules have distinct
-// identified Type objects. Compare complete by-value structure before LLVM's
-// normal type remapping, then require exact remapped ABI attributes afterwards.
+// identified Type objects. Compare complete by-value structure before and after
+// LLVM's normal type remapping. Identified type pointer identity is not an ABI
+// property: LLVM can retain distinct isomorphic sret/byval types after linking.
 bool sameType(llvm::Type *a, llvm::Type *b, unsigned depth=0) {
   if(depth>64 || a->getTypeID()!=b->getTypeID()) return false;
   if(auto *i=llvm::dyn_cast<llvm::IntegerType>(a))
@@ -52,7 +53,7 @@ bool sameType(llvm::Type *a, llvm::Type *b, unsigned depth=0) {
   return a->isVoidTy() || a->isFloatTy() || a->isDoubleTy();
 }
 
-bool sameAttributes(llvm::AttributeSet a,llvm::AttributeSet b,bool remapped) {
+bool sameAttributes(llvm::AttributeSet a,llvm::AttributeSet b) {
   if(a.getNumAttributes()!=b.getNumAttributes()) return false;
   auto j=b.begin();
   for(auto i:a) {
@@ -60,20 +61,22 @@ bool sameAttributes(llvm::AttributeSet a,llvm::AttributeSet b,bool remapped) {
     if(i.cmpKind(other)!=0) return false;
     if(i.isTypeAttribute()) {
       if(!other.isTypeAttribute() || !sameType(i.getValueAsType(),other.getValueAsType())) return false;
-      if(remapped && i!=other) return false;
     } else if(i!=other) return false;
   }
   return true;
 }
 
 bool sameAbi(const llvm::Function &a,const llvm::Function &b,bool remapped) {
+  // Unlike an sret/byval memory type, the actual LLVM SSA call signature must
+  // have identical Type objects after linking: no aggregate value conversion
+  // is synthesized by this forwarding thunk.
   if(a.getCallingConv()!=b.getCallingConv() ||
      a.getAddressSpace()!=b.getAddressSpace() ||
      !sameType(a.getFunctionType(),b.getFunctionType()) ||
      (remapped && a.getFunctionType()!=b.getFunctionType()) ||
-     !sameAttributes(a.getAttributes().getRetAttrs(),b.getAttributes().getRetAttrs(),remapped)) return false;
+     !sameAttributes(a.getAttributes().getRetAttrs(),b.getAttributes().getRetAttrs())) return false;
   for(unsigned i=0;i<a.arg_size();++i)
-    if(!sameAttributes(a.getAttributes().getParamAttrs(i),b.getAttributes().getParamAttrs(i),remapped)) return false;
+    if(!sameAttributes(a.getAttributes().getParamAttrs(i),b.getAttributes().getParamAttrs(i))) return false;
   for(const auto *name:{"target-cpu","target-features","tune-cpu"})
     if(a.getFnAttribute(name)!=b.getFnAttribute(name)) return false;
   // A forwarding call cannot implement a missing noexcept boundary.
@@ -224,7 +227,7 @@ HostThunkResult linkAuthenticatedHostThunk(const llvm::Module &host,
   if(failed) return reject("LLVM module link failed: "+result.error);
   auto *target=linked->getFunction(request.host_symbol),*callee=linked->getFunction(request.helper_symbol);
   if(!target || !callee || !sameAbi(*target,*callee,true)) {
-    std::string diagnostic="host/helper exact ABI differs after LLVM type remapping";
+    std::string diagnostic="host/helper recursive ABI or LLVM call type differs after linking";
     if(target && callee) {
       llvm::raw_string_ostream out(diagnostic);
       out << "\nhost attributes: "; target->getAttributes().print(out);

@@ -64,11 +64,12 @@ struct Fixture {
     (void)argv;
 #endif
   }
-  std::unique_ptr<llvm::Module> compile(const std::string &name,const std::string &source) {
+  std::unique_ptr<llvm::Module> compile(const std::string &name,const std::string &source,bool debug=true) {
     const auto cpp=temporary.path()/(name+".cpp"),ir=temporary.path()/(name+".ll");
     write(cpp,source);
-    std::vector<std::string> argv={clang,"-std=c++20","-O0","-g","-Xclang","-disable-llvm-passes",
+    std::vector<std::string> argv={clang,"-std=c++20","-O0","-Xclang","-disable-llvm-passes",
       "-Wno-return-type-c-linkage","-S","-emit-llvm",cpp.string(),"-o",ir.string()};
+    if(debug) argv.push_back("-g");
     sanitizerFlags(argv);
     auto compiled=run(std::move(argv));
     check(compiled.launched && compiled.exit_code==0,"actual Clang fixture: "+name+compiled.stderr_text);
@@ -223,6 +224,77 @@ extern "C" Result __matcore_owned_helper(Storage storage,Shape shape) noexcept {
     auto prior=std::move(transformed);
     prior=cg::linkAuthenticatedHostThunk(*host,*helper,request);
     check(static_cast<bool>(prior),"populated result move assignment preserves owned context lifetime");
+    // An owning opaque result has no shared vector ODR implementation to
+    // incidentally force LLVM Linker's identified sret types to be uniqued.
+    // Compile the same real C++ record in two modules, including actual ASan
+    // and UBSan instrumentation in that build, and execute the linked result.
+    write(fixture.temporary.path()/"opaque.h",R"cpp(
+#pragma once
+#include <cstdint>
+struct OpaqueStorage {float *data; std::uint64_t rows,columns,capacity;};
+struct OpaqueShape {std::uint64_t value;};
+struct OpaqueStatus {
+  unsigned char code;
+  std::uint64_t failed,frontier,effect,publications,observations;
+  bool completed;
+};
+struct OpaqueLocation {const char *file; unsigned line,column;};
+class OpaqueResult {
+public:
+  OpaqueResult(std::uint64_t value,void *owner) noexcept;
+  OpaqueResult(const OpaqueResult &)=delete;
+  ~OpaqueResult() noexcept;
+  std::uint64_t value() const noexcept {return status_.frontier;}
+  void *owner() const noexcept {return owner_;}
+private:
+  OpaqueStatus status_;
+  void *owner_;
+  OpaqueLocation location_{};
+};
+)cpp");
+    auto opaqueHost=fixture.compile("opaque-host",R"cpp(
+#include "opaque.h"
+#include <cstdio>
+int opaque_destructors=0;
+OpaqueResult::OpaqueResult(std::uint64_t value,void *owner) noexcept
+    :status_{0,0,value,0,0,0,true},owner_(owner) {}
+OpaqueResult::~OpaqueResult() noexcept {++opaque_destructors;}
+namespace opaque_math {
+OpaqueResult region(OpaqueStorage storage,OpaqueShape shape) noexcept {
+  return OpaqueResult(shape.value,storage.data);
+}
+}
+int main() {
+  float source=4;
+  using Function=OpaqueResult(*)(OpaqueStorage,OpaqueShape) noexcept;
+  Function volatile pointer=&opaque_math::region;
+  {
+    auto value=pointer(OpaqueStorage{&source,1,1,1},OpaqueShape{7});
+    std::printf("opaque %llu %d\n",static_cast<unsigned long long>(value.value()),value.owner()==&source);
+  }
+  std::printf("destroyed %d\n",opaque_destructors);
+}
+)cpp",false);
+    auto opaqueHelper=fixture.compile("opaque-helper",R"cpp(
+#include "opaque.h"
+extern "C" OpaqueResult __matcore_opaque_helper(OpaqueStorage storage,OpaqueShape shape) noexcept {
+  return OpaqueResult(shape.value+static_cast<unsigned>(*storage.data),storage.data);
+}
+)cpp",false);
+    cg::HostThunkRequest opaqueRequest{
+      fixtureFunction(*opaqueHost,"6region")->getName().str(),"__matcore_opaque_helper",{}};
+    auto opaqueThunk=cg::linkAuthenticatedHostThunk(*opaqueHost,*opaqueHelper,opaqueRequest);
+    check(static_cast<bool>(opaqueThunk),"opaque real Clang sret ABI does not require identified-type uniquing: "+opaqueThunk.error);
+    if(opaqueThunk) {
+#ifdef MDSLC_ABI_THUNK_SANITIZE
+      auto *hostEntry=opaqueThunk.module->getFunction(opaqueRequest.host_symbol);
+      auto *helperEntry=opaqueThunk.module->getFunction(opaqueRequest.helper_symbol);
+      check(hostEntry->getParamStructRetType(0)!=helperEntry->getParamStructRetType(0),
+            "exact Clang21 ASan fixture retains distinct isomorphic sret type identities");
+#endif
+      check(fixture.execute(*opaqueThunk.module,"opaque-thunk")=="opaque 11 1\ndestroyed 1\n",
+            "opaque owning Result executes through preserved function pointer and destroys once");
+    }
     llvm::LLVMContext separateContext;llvm::SMDiagnostic separateDiagnostic;
     auto separate=llvm::parseIRFile((fixture.temporary.path()/"helper.ll").string(),separateDiagnostic,separateContext);
     check(separate && !cg::linkAuthenticatedHostThunk(*host,*separate,request),"different LLVM contexts rejected");

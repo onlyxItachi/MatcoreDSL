@@ -12,7 +12,9 @@ list of sealed Value-helper symbols to retire. The utility checks both modules,
 target triple/data layout, calling convention, scalar/aggregate function shape,
 all return/parameter attributes, recursively typed `sret`/`byval` layouts,
 target features and the required no-throw boundary. It checks structural layout
-before linking and exact ABI/type identity after normal LLVM type remapping.
+before and after linking, with exact non-type attributes and exact final LLVM
+function type. Typed memory attributes require recursive layout equivalence,
+not identified LLVM struct pointer identity (see the correction below).
 
 The result owns an isolated context: in-memory bitcode copies prevent LLVM
 Linker's context-owned type renaming from mutating either input module. It
@@ -69,6 +71,46 @@ normal LLVM linking renamed types shared with the helper input. Owned context
 isolation corrects that counterexample. Textual source-body replacement is not
 used: preserving source line numbers alone cannot preserve same-line column
 observations.
+
+## Correction: identified memory type identity is not ABI identity
+
+The first connected public-region ASan run was safely rejected after linking:
+the original and generated functions had the same recursive ABI and LLVM
+function type, but distinct identified `sret` type objects. A new independent
+fixture reproduces that failure using actual unmodified Clang C++ input modules:
+an opaque owning Result with nested status, owner pointer and source-location
+records. No synthetic IR or source/record substitution is needed. Simpler
+opaque records and the original vector-owning fixture did not expose it.
+
+Against the original utility, the new ASan fixture produced **58 checks, one
+failure**, exactly `host/helper exact ABI differs after LLVM type remapping`.
+This falsifies a linker-uniquing assumption, not the source/host architecture.
+The corrected comparison removes only typed Attribute object-identity equality.
+It still checks complete recursive structure before and after linking, all
+non-type attributes exactly, target triple/data layout/calling convention, and
+exact final LLVM FunctionType identity. The last restriction is necessary for
+ordinary SSA argument/return forwarding; no first-class aggregate conversion is
+generated. Original host ABI attributes stay on the original function; the new
+call carries the callee's own typed ABI attributes.
+
+LLVM 21's [structure-type contract](https://releases.llvm.org/21.1.0/docs/LangRef.html#structure-types)
+distinguishes identified identity from literal structural uniquing; its
+[parameter contract](https://releases.llvm.org/21.1.0/docs/LangRef.html#parameter-attributes)
+defines `sret`'s type as its in-memory type and requires call/callee ABI attributes
+to agree. The exact [llvmorg-21.1.8 linker implementation](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/llvm/lib/Linker/IRMover.cpp)
+performs isomorphic type mapping and opportunistic name/type reuse; Matcore must
+not assume that every compatible typed attribute becomes pointer-identical.
+
+After correction: **57 Release checks, zero failures (1/1, 0.79 seconds)**;
+**62 Debug ASan+UBSan checks, zero failures (1/1, 1.86 seconds)**. The latter
+explicitly asserts that the two isomorphic sret types remain pointer-distinct,
+then compiles and executes the real thunk, checks its result through the original
+function pointer and verifies one owning destructor. The preexisting direct and
+function-pointer controls, actual instrumented out-of-bounds negative control,
+wrong layouts (including same-size permutations), alignment, target, convention,
+noexcept and genuine debug-stdlib-layout refusals all remain in the same test.
+The sanitizer options remain the strict set described above. This focused
+utility result does not replace the integration owner's actual full driver test.
 
 ## Limits and ownership
 
