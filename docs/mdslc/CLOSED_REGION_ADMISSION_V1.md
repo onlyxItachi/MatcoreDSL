@@ -183,12 +183,35 @@ also set `DEBUGINFOD_URLS=` to avoid external symbolizer delays. No system
 toolchain packages were changed. OpenBLAS-enabled and native Windows regressions
 are hosted-CI gates, not locally executed claims; the private proof is Linux-only.
 
-Hosted-CI gates remain pending at this local integration checkpoint. Detailed evidence:
+At that local integration checkpoint hosted gates were pending. They subsequently
+passed as recorded below. Detailed evidence:
 [frontend lane](agent-reports/closed-region-admission-frontend-v1.md),
 [semantic lane](agent-reports/closed-region-semantic-model-v1.md), and
 [independent adversarial review](agent-reports/closed-region-adversarial-review-v1.md).
 The tests live in `compiler/tests/closed_region/` and
 `compiler/tests/mlir/matcore_closed_region_test.cpp`.
+
+## Canonical integration
+
+[PR #35](https://github.com/onlyxItachi/MatcoreDSL/pull/35) merged normally on
+2026-09-06 at **`e53f2c6302430f574473ba1a644cc42f1169384a`**. Its parents preserve
+canonical base `a94b01067d390f0b3f997cd09692dba38cdba455` and reviewed pre-merge
+head `638bedd1ee1d0339a6c6aef6845742cd9b6175e8`; the merge tree is identical to
+that reviewed head. No history rewrite, branch deletion or execution change.
+
+All **19/19** exact-head hosted checks succeeded before merge: Linux Release
+with OpenBLAS enabled/disabled and MLIR enabled/disabled, MLIR Debug, focused
+ASan/UBSan, TSan runtime, native Windows including its sanitizer scope, legacy
+CI and repository hygiene. Push and PR event checks were both retained:
+[native PR run](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34043556782),
+[native push run](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34043554440),
+[Windows PR run](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34043556897),
+[Windows push run](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34043554518).
+Windows validates the unchanged supported route; this private admission proof is
+not enabled there. Independent agent review accepted the exact implementation
+and integration diff. Copilot's quota-limited non-review was not counted as
+approval. The [merge gate](https://github.com/onlyxItachi/MatcoreDSL/pull/35#issuecomment-5560443581)
+records those distinctions. Issues #15 and #20 remain open.
 
 ## Next justified boundary
 
