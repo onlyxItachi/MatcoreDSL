@@ -14,6 +14,7 @@ if(NOT COMMAND mdslc_target_match_llvm_rtti)
   endfunction()
 endif()
 
+if(NOT TARGET matcore_authenticated_host_thunk)
 add_library(matcore_authenticated_host_thunk STATIC
   ../../lib/codegen/AuthenticatedHostThunk.cpp)
 target_compile_features(matcore_authenticated_host_thunk PUBLIC cxx_std_20)
@@ -23,13 +24,14 @@ target_link_libraries(matcore_authenticated_host_thunk PUBLIC LLVMCore
   PRIVATE LLVMLinker LLVMBitReader LLVMBitWriter)
 mdslc_target_enable_warnings(matcore_authenticated_host_thunk WERROR)
 mdslc_target_match_llvm_rtti(matcore_authenticated_host_thunk)
+endif()
 
 add_executable(matcore_authenticated_host_thunk_test authenticated_host_thunk_test.cpp)
 target_link_libraries(matcore_authenticated_host_thunk_test PRIVATE
   matcore_authenticated_host_thunk LLVMIRReader LLVMAsmParser LLVMTransformUtils MatcoreDSL::PlatformSupportV1)
 mdslc_target_enable_warnings(matcore_authenticated_host_thunk_test WERROR)
 mdslc_target_match_llvm_rtti(matcore_authenticated_host_thunk_test)
-if(CMAKE_CXX_FLAGS MATCHES "fsanitize=address")
+if("${CMAKE_CXX_FLAGS} ${MDSLC_CLOSED_REGION_CXX_FLAGS}" MATCHES "fsanitize=.*address")
   target_compile_definitions(matcore_authenticated_host_thunk_test PRIVATE MDSLC_ABI_THUNK_SANITIZE=1)
 endif()
 if(NOT MDSLC_CLANGXX_EXECUTABLE)

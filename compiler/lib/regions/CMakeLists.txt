@@ -151,6 +151,7 @@ function(mdslc_add_closed_candidate_runtime target)
   endif()
 endfunction()
 mdslc_add_closed_candidate_runtime(matcore_closed_candidates_production_v1)
+include(Driver.cmake)
 
 if(MDSLC_ENABLE_EXPERIMENTAL_REGIONS)
   install(TARGETS matcore_closed_candidates_production_v1

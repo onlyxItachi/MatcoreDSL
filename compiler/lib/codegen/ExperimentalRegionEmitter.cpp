@@ -85,6 +85,9 @@ ExperimentalRegionEmissionResult emitExperimentalRegion(
   std::ostringstream cpp;
   cpp << "#include <matcore/region.h>\n"
       << emission.contract.implementation
+      // C linkage supplies only the deterministic internal symbol. Both sides
+      // use the exact checked C++ return ABI; this is not a public C interface.
+      << "#pragma clang diagnostic ignored \"-Wreturn-type-c-linkage\"\n"
       << "extern \"C\" ::matcore::mdsl::Result " << emission.helper_symbol << '(';
   for (std::size_t index = 0; index < binding.parameters.size(); ++index) {
     if (index) cpp << ", ";
@@ -121,7 +124,7 @@ ExperimentalRegionEmissionResult emitExperimentalRegion(
       << source_path << ", " << binding.completion.line << ", "
       << binding.completion.column << "}; break;\n"
       << "  default: break;\n  }\n"
-      << "  return std::move(session).takeResult(location);\n}\n";
+      << "  return static_cast<mch::Session&&>(session).takeResult(location);\n}\n";
   emission.helper_cpp = cpp.str();
   result.emission = std::move(emission);
   return result;
