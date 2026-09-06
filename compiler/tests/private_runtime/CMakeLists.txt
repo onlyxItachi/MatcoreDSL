@@ -1,3 +1,10 @@
+add_test(NAME private_runtime.symbol_contract
+  COMMAND "${CMAKE_COMMAND}"
+    "-DLIBRARY=$<TARGET_FILE:matcore_closed_candidates_isolated_v1>"
+    "-DEXPORTS=${CMAKE_CURRENT_SOURCE_DIR}/../../lib/regions/private_runtime_v2.exports"
+    "-DNM=${CMAKE_NM}" "-DREADELF=${CMAKE_READELF}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/symbol_contract.cmake")
+
 foreach(kind IN ITEMS candidates values results)
   if(kind STREQUAL "candidates")
     set(source ../closed_candidates/candidate_test.cpp)
@@ -33,9 +40,18 @@ foreach(spelling IN ITEMS assembler named)
     else()
       target_link_libraries(${target} PRIVATE
         "$<LINK_LIBRARY:WHOLE_ARCHIVE,matcore_closed_candidates_production_v1>")
-      add_test(NAME private_runtime.archive_negative.${spelling}
+      set(required_reproduction ON)
+      set(control_name archive_negative)
+      if(MDSLC_CLOSED_REGION_CXX_FLAGS MATCHES "fsanitize=")
+        # The actual ASan lowering currently inlines the failure cleanup: the
+        # Release weak-symbol selection counterexample is not universal codegen.
+        set(required_reproduction OFF)
+        set(control_name archive_observation)
+      endif()
+      add_test(NAME private_runtime.${control_name}.${spelling}
         COMMAND "${CMAKE_COMMAND}" "-DPROGRAM=$<TARGET_FILE:${target}>"
-          "-DEXPECTED=${expected}" -P "${CMAKE_CURRENT_SOURCE_DIR}/archive_negative.cmake")
+          "-DEXPECTED=${expected}" "-DREQUIRED_REPRODUCTION=${required_reproduction}"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/archive_negative.cmake")
     endif()
   endforeach()
 endforeach()

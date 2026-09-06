@@ -6,7 +6,12 @@ set_property(TARGET matcore_closed_candidates_isolated_v1 APPEND PROPERTY
   LINK_DEPENDS "${region_private_exports}")
 target_link_options(matcore_closed_candidates_isolated_v1 PRIVATE
   "LINKER:--version-script=${region_private_exports}"
-  "LINKER:-Bsymbolic" "LINKER:--no-undefined")
+  "LINKER:-Bsymbolic")
+# Clang sanitizer runtimes are supplied by the final executable, not by each
+# instrumented shared object. --no-undefined is valid only without that contract.
+if(NOT MDSLC_CLOSED_REGION_CXX_FLAGS MATCHES "fsanitize=")
+  target_link_options(matcore_closed_candidates_isolated_v1 PRIVATE "LINKER:--no-undefined")
+endif()
 
 if(BUILD_TESTING)
   add_subdirectory("${region_compiler_dir}/tests/private_runtime" "private_runtime_tests")
