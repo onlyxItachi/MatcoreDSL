@@ -442,9 +442,10 @@ add_subdirectory(tools/matcore-plan)
 add_subdirectory(tools/matcore-bench)
 if(BUILD_TESTING AND MDSLC_ENABLE_NATIVE_FRONTEND AND
    MDSLC_ENABLE_MATCORE_MLIR AND NOT WIN32)
-  # Private feasibility instrument: no installed headers, driver option, or
-  # execution consumer. The supported runtime/frontend targets stay unchanged.
+  # Private admission plus its explicitly bounded host execution consumer.
+  # No installed headers or driver option; compatibility targets are unchanged.
   add_subdirectory(tests/closed_region)
+  add_subdirectory(tests/closed_source)
 endif()
 if(MDSLC_ENABLE_MATCORE_MLIR)
   add_subdirectory(tools/matcore-mlir)
