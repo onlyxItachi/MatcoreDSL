@@ -1,7 +1,7 @@
 # MDSLC current state
 
 Engineering checkpoint: canonical merge
-`e3defc9b699b33cc9f5d539f32f55044fef87ff8`, [PR #51](https://github.com/onlyxItachi/MatcoreDSL/pull/51).
+`3374ffbb2100dd68fdd34a46ee93495d1c3c4137`, [PR #52](https://github.com/onlyxItachi/MatcoreDSL/pull/52).
 This identifies the latest engineering merge; documentation-only updates may follow.
 
 ## Architecture
@@ -26,19 +26,19 @@ Separate trusted registry -> native/generated strict or legal legacy/provider
 Shared provider adapter serializes Matcore-owned OpenBLAS policy lifetimes.
 Matcore owns legality/effects; MLIR transformations; LLVM/backends machine lowering.
 Legacy Python/JIT remains a separate compatibility surface.
-Experimental named C++ region admission + opaque owning Result: now proven.
+Named C++ region admission + opaque Result/Value ownership and private ABI gate.
 ```
 
 ## Material change
 
-Named ordinary C++ functions can now target the closed semantic layer through
-experimental canonical declarations. Hidden member attributes, redeclarations,
-ownership overrides and forged completion are rejected. Opaque owning results
-preserve observations across return/destruction and mixed host STL configurations.
-Implementation-head Release passed 111/111, Debug 109/109, ASan/UBSan 58/58;
-all 19 final-head hosted checks passed. The headers deliberately remain uninstalled.
-See [frontend contract](EXPERIMENTAL_REGION_FRONTEND_V1.md) and
-[independent/integration evidence](agent-reports/experimental-region-integration-v1.md#canonical-merge-checkpoint).
+Private Value ownership no longer exposes a standard-library layout. Out-of-line
+retention preserves old values, failure prefixes and observations; Session
+construction remains allocation-free. Versioned private linkage rejects stale
+artifacts, including the reproduced weak-constructor bypass of a marker-only
+design. Exact-head Release passed 115/115, ASan/UBSan 62/62 and all 19 hosted
+checks passed. No mathematical or candidate-selection semantics changed.
+See [implementation and canonical evidence](agent-reports/closed-private-value-abi-v2.md#canonical-merge-checkpoint)
+and [independent review](agent-reports/private-value-abi-independent-v2.md).
 
 ## Unsupported or unproven
 
@@ -60,9 +60,9 @@ remain design-only.
 
 ## Exactly one next boundary
 
-**Make the private compiler/runtime Value boundary opaque and revision-checked.**
-Public owning results are now defended, but emitted orchestration must also avoid
-depending on private STL layouts or linking silently against a different Session
-layout. This closes a concrete packaging prerequisite without freezing an ABI or
-changing mathematical/effect semantics.
+**Promote opt-in region build/install support independently of test targets.**
+The ownership boundary is defended. A usable package must now build the reviewed
+runtime and generated leaf with `BUILD_TESTING=OFF`, install matching private
+artifacts, and validate installed consumers without leaking LLVM/MLIR dependencies.
+This is a packaging prerequisite, not the new source-driver execution boundary.
 Independent research branches are not canonical capabilities until integrated.
