@@ -223,8 +223,18 @@ HostThunkResult linkAuthenticatedHostThunk(const llvm::Module &host,
   }
   if(failed) return reject("LLVM module link failed: "+result.error);
   auto *target=linked->getFunction(request.host_symbol),*callee=linked->getFunction(request.helper_symbol);
-  if(!target || !callee || !sameAbi(*target,*callee,true))
-    return reject("host/helper exact ABI differs after LLVM type remapping");
+  if(!target || !callee || !sameAbi(*target,*callee,true)) {
+    std::string diagnostic="host/helper exact ABI differs after LLVM type remapping";
+    if(target && callee) {
+      llvm::raw_string_ostream out(diagnostic);
+      out << "\nhost attributes: "; target->getAttributes().print(out);
+      out << "\nhelper attributes: "; callee->getAttributes().print(out);
+      out << "\nhost function type: "; target->getFunctionType()->print(out);
+      out << "\nhelper function type: "; callee->getFunctionType()->print(out);
+      out << "\nstructural match: " << sameAbi(*target,*callee,false);
+    }
+    return reject(diagnostic);
+  }
   const auto attributes=withoutBodyFacts(context,target->getAttributes(),target->arg_size(),thunkPolicy(*target,*callee));
   const auto linkage=target->getLinkage();
   auto *debug=target->getSubprogram();
