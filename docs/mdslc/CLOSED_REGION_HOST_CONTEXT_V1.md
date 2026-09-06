@@ -154,14 +154,38 @@ canonical `7e64f20237329d6e129ef798615f85bb19dd5cee` at source commit
 all source/context counterexamples, build integration and unchanged execution
 boundary. Approval remained conditional on the local and exact-head hosted
 gates. The subsequent validation-record commit changes documentation only.
-Hosted evidence and the normal-merge checkpoint are recorded after those gates
-complete, not inferred from local success.
+The exact final head also passed all hosted gates before normal merge below.
 
 Independent evidence:
 [adversarial review](agent-reports/closed-region-host-adversarial-v1.md),
 [frontend implementation report](agent-reports/closed-region-host-frontend-v1.md),
 [input-layer implementation report](agent-reports/closed-region-host-context-review-v1.md).
 The input-layer author's implementation report is not independent approval.
+
+## Canonical engineering checkpoint
+
+[PR #37](https://github.com/onlyxItachi/MatcoreDSL/pull/37) merged normally on
+2026-09-06 at 17:10:27 UTC as
+`f6a5d9718a8c704231ad37d9e315f7d2d6912a39`. Its parents are canonical
+`7e64f20237329d6e129ef798615f85bb19dd5cee` and reviewed pre-merge head
+`3a8077c3123e88a05e9f1237cb28571e456c162b`. The merge tree equals the reviewed
+head tree. The implementation branch/worktree and all earlier checkpoints
+remain preserved; local main was clean and fast-forwarded normally.
+
+All **19/19 exact-head hosted checks passed**: push and PR Linux Release with
+OpenBLAS on/off and MLIR on/off, Debug, ASan/UBSan, TSan, native Windows,
+legacy CI and repository hygiene. Exact workflow records:
+[native PR](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34046940827),
+[native push](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34046938247),
+[Windows PR](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34046940838),
+[Windows push](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34046938253),
+[legacy](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34046940801),
+[hygiene PR](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34046940829),
+[hygiene push](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34046938227).
+The [merge-gate record](https://github.com/onlyxItachi/MatcoreDSL/pull/37#issuecomment-5560814902)
+binds that head, local evidence and independent review. Copilot's quota notice
+was not counted as approval. Windows results preserve the existing native
+runtime/driver route, not new closed-region Windows admission support.
 
 ## Unchanged architectural limits
 
