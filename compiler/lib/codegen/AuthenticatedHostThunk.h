@@ -39,6 +39,10 @@ struct HostThunkResult {
 // Both modules must be freshly produced by the trusted compiler, before LLVM
 // optimizations can consume facts about the old region body, in one context.
 // The caller authenticates source, ABI record semantics and the exact symbols.
+// All non-entry helper definitions are compiler-private and internalized before
+// linking; ordinary host weak/strong symbols never select their implementation.
+// This requires a compiler-issued implementation with no user-visible helper
+// definition identity contract. External runtime declarations stay external.
 // LLVM opaque-pointer layout equality cannot authenticate C++ record meaning.
 // Input modules remain unchanged on success/failure; the isolated result keeps
 // the original function symbol, linkage, visibility and all ordinary host uses.

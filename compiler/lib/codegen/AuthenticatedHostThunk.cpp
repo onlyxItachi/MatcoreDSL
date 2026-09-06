@@ -12,6 +12,7 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/Linker/Linker.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/IPO/Internalize.h"
 #include <set>
 
 namespace matcore::mdslc::codegen {
@@ -195,17 +196,6 @@ HostThunkResult linkAuthenticatedHostThunk(const llvm::Module &host,
   if(llvm::verifyModule(host,&diagnostics) || llvm::verifyModule(helper,&diagnostics))
     return reject("invalid input LLVM module: "+verify_error);
   if(!sameAbi(*original,*implementation,false)) return reject("host/helper recursive ABI contract differs before linking");
-  for(const auto &global:helper.global_values()) {
-    if(global.hasLocalLinkage()) continue;
-    const auto *existing=host.getNamedValue(global.getName());
-    const auto name=global.getName();
-    const bool llvmAppend=existing && existing->hasAppendingLinkage() && global.hasAppendingLinkage() &&
-      (name=="llvm.global_ctors" || name=="llvm.global_dtors" || name=="llvm.global.annotations" ||
-       name=="llvm.used" || name=="llvm.compiler.used");
-    if(existing && !existing->isDeclarationForLinker() && !global.isDeclarationForLinker() &&
-       !(existing->isWeakForLinker() && global.isWeakForLinker()) && !llvmAppend)
-      return reject("helper would replace an unrelated strong global: "+global.getName().str());
-  }
   result.context=std::make_unique<llvm::LLVMContext>();
   auto &context=*result.context;
   auto isolate=[&](const llvm::Module &input) -> std::unique_ptr<llvm::Module> {
@@ -219,6 +209,25 @@ HostThunkResult linkAuthenticatedHostThunk(const llvm::Module &host,
   };
   auto linked=isolate(host),addition=isolate(helper);
   if(!linked || !addition) return reject("internal module isolation failed: "+result.error);
+  // This module is compiler-owned implementation, not a second user TU whose
+  // weak definitions should be selected by ordinary host ODR/linker rules.
+  // Private inline constructors, cleanup and STL implementation must retain
+  // their issued bodies even when the host defines the same linker spelling.
+  auto appending=[](const llvm::GlobalValue &global) {
+    const auto name=global.getName();
+    return global.hasAppendingLinkage() &&
+      (name=="llvm.global_ctors" || name=="llvm.global_dtors" ||
+       name=="llvm.global.annotations" || name=="llvm.used" || name=="llvm.compiler.used");
+  };
+  llvm::internalizeModule(*addition,[&](const llvm::GlobalValue &global) {
+    return global.getName()==request.helper_symbol || appending(global);
+  });
+  for(const auto &global:addition->global_values())
+    if(!global.isDeclarationForLinker() && !global.hasLocalLinkage() &&
+       global.getName()!=request.helper_symbol && !appending(global))
+      return reject("compiler helper definition remains externally replaceable: "+global.getName().str());
+  if(llvm::verifyModule(*addition,&diagnostics))
+    return reject("invalid encapsulated helper LLVM module: "+verify_error);
   bool failed=false;
   {
     DiagnosticScope scope(context,result.error);

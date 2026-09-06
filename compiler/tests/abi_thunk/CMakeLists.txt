@@ -21,7 +21,7 @@ target_compile_features(matcore_authenticated_host_thunk PUBLIC cxx_std_20)
 target_include_directories(matcore_authenticated_host_thunk PUBLIC ../../lib/codegen)
 target_include_directories(matcore_authenticated_host_thunk SYSTEM PUBLIC ${LLVM_INCLUDE_DIRS})
 target_link_libraries(matcore_authenticated_host_thunk PUBLIC LLVMCore
-  PRIVATE LLVMLinker LLVMBitReader LLVMBitWriter)
+  PRIVATE LLVMLinker LLVMBitReader LLVMBitWriter LLVMipo)
 mdslc_target_enable_warnings(matcore_authenticated_host_thunk WERROR)
 mdslc_target_match_llvm_rtti(matcore_authenticated_host_thunk)
 endif()

@@ -331,7 +331,25 @@ extern "C" OpaqueResult __matcore_opaque_helper(OpaqueStorage storage,OpaqueShap
     for(auto *module:{collisionHost.get(),collisionHelper.get()})
       new llvm::GlobalVariable(*module,llvm::Type::getInt32Ty(fixture.context),false,
         llvm::GlobalValue::ExternalLinkage,llvm::ConstantInt::get(llvm::Type::getInt32Ty(fixture.context),1),"strong_collision");
-    check(!cg::linkAuthenticatedHostThunk(*collisionHost,*collisionHelper,request),"unrelated strong global cannot be overridden");
+    auto isolatedCollision=cg::linkAuthenticatedHostThunk(*collisionHost,*collisionHelper,request);
+    check(isolatedCollision &&
+          isolatedCollision.module->getNamedGlobal("strong_collision")->hasExternalLinkage(),
+          "unrelated strong host global survives isolated private helper definition");
+    auto weakHost=fixture.compile("weak-host",R"cpp(
+#include <cstdio>
+extern "C" __attribute__((weak)) int private_inline(){return 91;}
+extern "C" int region(int x) noexcept {return x;}
+int main(){std::printf("isolated %d host %d\n",region(3),private_inline());}
+)cpp",false);
+    auto weakHelper=fixture.compile("weak-helper",R"cpp(
+extern "C" __attribute__((weak)) int private_inline(){return 7;}
+extern "C" int owned_helper(int x) noexcept {return private_inline()+x;}
+)cpp",false);
+    auto weakResult=cg::linkAuthenticatedHostThunk(*weakHost,*weakHelper,
+                                                  {"region","owned_helper",{}});
+    check(weakResult && fixture.execute(*weakResult.module,"isolated-weak")==
+          "isolated 10 host 91\n",
+          "host weak definition cannot replace compiler-issued private inline body");
     auto missing=request;missing.retired_value_functions.push_back("not_a_sealed_helper");
     check(!cg::linkAuthenticatedHostThunk(*host,*helper,missing),"missing helper binding rejected");
     auto duplicate=request;duplicate.retired_value_functions.push_back(duplicate.retired_value_functions.front());
