@@ -94,8 +94,10 @@ int main(int argc, char **argv) {
   std::string error;
   auto sources = support::create_temp_directory_v1("mdslc-public-input", error);
   auto staging = support::create_temp_directory_v1("mdslc-public-helper", error);
+  auto substituted = support::create_temp_directory_v1("mdslc-public-substituted", error);
+  auto shadowed = support::create_temp_directory_v1("mdslc-public-shadowed", error);
   auto outputs = support::create_temp_directory_v1("mdslc-public-output", error);
-  if (!sources || !staging || !outputs) throw std::runtime_error(error);
+  if (!sources || !staging || !substituted || !shadowed || !outputs) throw std::runtime_error(error);
   const fs::path compiler = argv[3];
   const auto input = sources->path() / "program.mdsl";
   write(input, source);
@@ -114,6 +116,29 @@ int main(int argc, char **argv) {
   if (!admitted) return 1;
   cg::ExperimentalCompilerInputs inputs{argv[1], argv[2], compiler / "include",
       compiler / "lib/runtime/closed_host_v1.h", staging->path(), sanitized};
+  auto changed_inputs = inputs;
+  changed_inputs.staging_directory = substituted->path();
+  auto substitution = cg::compileExperimentalRegionToLLVMForTesting(*admitted.evidence,
+      changed_inputs, cg::ClosedCpuPolicy::GeneratedStrict, [&] {
+        const auto helper = changed_inputs.staging_directory / "region-helper.cpp";
+        std::ifstream input_file(helper, std::ios::binary);
+        std::string replacement((std::istreambuf_iterator<char>(input_file)), {});
+        const auto at = replacement.find("Candidate::generated_strict");
+        if (at == std::string::npos) throw std::runtime_error("missing issued candidate selection");
+        replacement.replace(at, std::string("Candidate::generated_strict").size(),
+                            "Candidate::native_strict");
+        write(helper, replacement);
+      });
+  check(!substitution && substitution.error.find("differs from compiler-issued bytes") != std::string::npos,
+        "a self-consistent staged helper cannot substitute its candidate policy");
+  auto shadow_inputs = inputs;
+  shadow_inputs.staging_directory = shadowed->path();
+  auto shadow = cg::compileExperimentalRegionToLLVMForTesting(*admitted.evidence,
+      shadow_inputs, cg::ClosedCpuPolicy::GeneratedStrict, [&] {
+        write(shadow_inputs.staging_directory / "closed_host_v1.h",
+              "#error mutable staging header must not define the runtime contract\n");
+      });
+  check(bool(shadow), "compiler-owned VFS headers exclude mutable helper-directory shadows: " + shadow.error);
   auto compiled = cg::compileExperimentalRegionToLLVM(*admitted.evidence, inputs,
                                                      cg::ClosedCpuPolicy::GeneratedStrict);
   check(bool(compiled), "connected original-host/helper ABI compilation: " + compiled.error);

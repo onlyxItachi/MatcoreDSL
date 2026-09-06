@@ -36,9 +36,10 @@ bool ExperimentalLLVMCompilation::inputsUnchanged(std::string &error) const {
   return host->unchanged(error) && helper->unchanged(error);
 }
 
-ExperimentalLLVMCompilationResult compileExperimentalRegionToLLVM(
+static ExperimentalLLVMCompilationResult compileRegion(
     const frontend::AuthenticatedClosedRegionEvidence &evidence,
-    const ExperimentalCompilerInputs &inputs, ClosedCpuPolicy policy) {
+    const ExperimentalCompilerInputs &inputs, ClosedCpuPolicy policy,
+    const std::function<void()> &after_staging) {
   ExperimentalLLVMCompilationResult result;
   auto emitted = emitExperimentalRegion(evidence, policy);
   if (!emitted) { result.error = emitted.error; return result; }
@@ -77,6 +78,7 @@ ExperimentalLLVMCompilationResult compileExperimentalRegionToLLVM(
     output.close();
     if (!output) { result.error = "cannot stage compiler-owned region implementation"; return result; }
   }
+  if (after_staging) after_staging();
 
   // Separate translation unit: never copy the host's macros/include paths or
   // other compilation options into private runtime orchestration. The adapter
@@ -85,15 +87,21 @@ ExperimentalLLVMCompilationResult compileExperimentalRegionToLLVM(
   helper_options.input_path = helper_path.string();
   helper_options.clang_path = inputs.clang_path;
   helper_options.clang_resource_directory = inputs.clang_resource_directory;
-  helper_options.compiler_arguments = {
-      "-I" + inputs.public_include_directory.string(),
-      "-I" + inputs.private_runtime_header.parent_path().string()};
+  helper_options.compiler_arguments = {"-I/__mdsl_private__"};
   if (inputs.address_undefined_sanitizers)
     helper_options.compiler_arguments.push_back("-fsanitize=address,undefined");
   auto capture = host::prepareHostInputs(helper_options,
       inputs.staging_directory.string(),
-      {{"/__mdsl_private__/fixture.h", "#pragma once\n"}}, result.error);
+      {{"/__mdsl_private__/fixture.h", "#pragma once\n"},
+       {"/__mdsl_private__/closed_host_v1.h", expectedPrivateRuntimeHeader},
+       {"/__mdsl_private__/matcore/region.h", frontend::detail::experimentalRegionHeaderSource()},
+       {"/__mdsl_private__/matcore/detail/region_storage.h", frontend::detail::experimentalRegionStorageHeaderSource()}},
+      result.error);
   if (!capture) return result;
+  if (capture->sourceSnapshot() != compilation.emission.helper_cpp) {
+    result.error = "staged region implementation differs from compiler-issued bytes";
+    return result;
+  }
   clang::FileSystemOptions file_options;
   file_options.WorkingDir = inputs.staging_directory.string();
   auto files = llvm::makeIntrusiveRefCnt<clang::FileManager>(
@@ -126,5 +134,18 @@ ExperimentalLLVMCompilationResult compileExperimentalRegionToLLVM(
   }
   result.compilation = std::move(compilation);
   return result;
+}
+
+ExperimentalLLVMCompilationResult compileExperimentalRegionToLLVM(
+    const frontend::AuthenticatedClosedRegionEvidence &evidence,
+    const ExperimentalCompilerInputs &inputs, ClosedCpuPolicy policy) {
+  return compileRegion(evidence, inputs, policy, {});
+}
+
+ExperimentalLLVMCompilationResult compileExperimentalRegionToLLVMForTesting(
+    const frontend::AuthenticatedClosedRegionEvidence &evidence,
+    const ExperimentalCompilerInputs &inputs, ClosedCpuPolicy policy,
+    const std::function<void()> &after_staging) {
+  return compileRegion(evidence, inputs, policy, after_staging);
 }
 } // namespace matcore::mdslc::codegen

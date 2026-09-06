@@ -695,12 +695,32 @@ bool addOwnedFiles(Records &records, const OwnedHostFiles &owned, std::string &e
     records.owned.insert(path);
     records.bytes += bytes.size();
   }
-  const std::string directory = "/__mdsl_private__";
-  const vfs::Status status(directory, llvm::sys::fs::UniqueID(std::numeric_limits<std::uint64_t>::max(), 0),
-                          llvm::sys::TimePoint<>(), 0, 0, 0,
-                          llvm::sys::fs::file_type::directory_file, llvm::sys::fs::perms::all_read);
-  records.status[directory] = StatusRecord{status, {}, {}, true, {}};
-  records.owned.insert(directory);
+  // Header-search directories for these compiler-owned files are virtual too;
+  // otherwise nested canonical includes could consult a mutable disk directory.
+  // The input count/bytes remain bounded above and all paths share this root.
+  for (const auto &[path, bytes] : owned) {
+    (void)bytes;
+    auto directory = fs::path(path).parent_path();
+    unsigned depth = 0;
+    while (directory != "/") {
+      if (++depth > 16) { error = "compiler-owned header nesting exceeds its bound"; return false; }
+      const auto name = directory.string();
+      if (records.owned.count(name)) {
+        if (!records.status.at(name).value->isDirectory()) {
+          error = "compiler-owned file/directory identity collision"; return false;
+        }
+      } else {
+        const vfs::Status status(name,
+            llvm::sys::fs::UniqueID(std::numeric_limits<std::uint64_t>::max(), ordinal++),
+            llvm::sys::TimePoint<>(), 0, 0, 0,
+            llvm::sys::fs::file_type::directory_file, llvm::sys::fs::perms::all_read);
+        records.status[name] = StatusRecord{status, {}, {}, true, {}};
+        records.owned.insert(name);
+      }
+      if (directory == "/__mdsl_private__") break;
+      directory = directory.parent_path();
+    }
+  }
   return true;
 }
 } // namespace

@@ -3,6 +3,7 @@
 #include "ExperimentalRegionEmitter.h"
 #include "../frontend/ClosedRegionHostInputs.h"
 #include <filesystem>
+#include <functional>
 
 namespace matcore::mdslc::codegen {
 
@@ -37,5 +38,12 @@ ExperimentalLLVMCompilationResult compileExperimentalRegionToLLVM(
     const frontend::AuthenticatedClosedRegionEvidence &,
     const ExperimentalCompilerInputs &,
     ClosedCpuPolicy policy = ClosedCpuPolicy::Automatic);
+
+// Noninstalled deterministic staging test seam. No runtime/source option or
+// driver argument exposes this callback; all issued-byte checks still apply.
+ExperimentalLLVMCompilationResult compileExperimentalRegionToLLVMForTesting(
+    const frontend::AuthenticatedClosedRegionEvidence &,
+    const ExperimentalCompilerInputs &, ClosedCpuPolicy,
+    const std::function<void()> &after_staging);
 
 } // namespace matcore::mdslc::codegen
