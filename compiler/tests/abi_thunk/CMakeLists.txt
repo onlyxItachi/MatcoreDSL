@@ -27,8 +27,15 @@ mdslc_target_match_llvm_rtti(matcore_authenticated_host_thunk)
 endif()
 
 add_executable(matcore_authenticated_host_thunk_test authenticated_host_thunk_test.cpp)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  set(thunk_test_llvm LLVMIRReader LLVMAsmParser LLVMTransformUtils)
+else()
+  # The integrated compiler owns one shared LLVM runtime with Clang. Do not
+  # resurrect a second static parser/command-line registry in its test binary.
+  set(thunk_test_llvm LLVM)
+endif()
 target_link_libraries(matcore_authenticated_host_thunk_test PRIVATE
-  matcore_authenticated_host_thunk LLVMIRReader LLVMAsmParser LLVMTransformUtils MatcoreDSL::PlatformSupportV1)
+  matcore_authenticated_host_thunk ${thunk_test_llvm} MatcoreDSL::PlatformSupportV1)
 mdslc_target_enable_warnings(matcore_authenticated_host_thunk_test WERROR)
 mdslc_target_match_llvm_rtti(matcore_authenticated_host_thunk_test)
 if("${CMAKE_CXX_FLAGS} ${MDSLC_CLOSED_REGION_CXX_FLAGS}" MATCHES "fsanitize=.*address")
