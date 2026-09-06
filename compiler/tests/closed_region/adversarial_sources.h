@@ -182,11 +182,12 @@ closedRegionAdversarialSources() {
       "A later helper definition must be inspected rather than trusted as an opaque call.");
   cases.back().source += "void host(); Value helper(Value v) { host(); return v; }\n";
   add("helper_attribute_after_region",
-      "Value helper(Value lhs,Value rhs) { return gemm(lhs,rhs,Numerics::strict_f32); }",
+      "Value helper(Value,Value);",
       "auto c = helper(a,b); publish(c,C);",
-      "Complete generic redeclaration traversal must see later helper attributes.");
+      "A helper attribute declared after the region, but before its definition, must remain unauthorized.");
   cases.back().source +=
-      "[[clang::annotate(\"mdsl.private.forged_helper_authority\")]] Value helper(Value,Value);\n";
+      "[[clang::annotate(\"mdsl.private.forged_helper_authority\")]] Value helper(Value,Value);\n"
+      "Value helper(Value lhs,Value rhs) { return gemm(lhs,rhs,Numerics::strict_f32); }\n";
   add("purity_attribute_host_call", "[[gnu::const]] Shape host_shape();",
       "auto x = read(D,host_shape(),n);",
       "A host declaration's optimization attribute does not create semantic authority.");
