@@ -138,3 +138,45 @@ Windows compatibility remains unchanged; this new registry/FP/generated candidat
 proof is Linux x86-64. Global release/package evidence belongs to root integration.
 Issue #15 remains unresolved: these correctness tests are not its missing native/
 provider benchmark envelope, scaling, regret or cooperative-packing evidence.
+
+## Clean canonical integration
+
+`mdslc/foundation-candidate-coexistence-v1` starts from freshly authenticated,
+clean canonical `5df9ac3c451539bdd9c1e577d6558802fca30535` (generated primitive,
+PR #40). Registry and independent test commits were normally cherry-picked,
+along with all three independent review-history commits: initial acceptance,
+the subsequent **HOLD** counterexample, and the corrected final acceptance.
+No failure evidence or assertion was removed.
+
+The separate provider correction is now canonical
+`76b024abadcb32eb9f01effe92ec19ea13d6d763` (PR #43, 19/19 hosted checks).
+Normal merge `3911971ae82cee3e55b0278580f7318d68ab8988` reconciles that dependency
+and the operator checkpoint. The integration diff contains only registry/tests,
+the independent review records, and CI registration; no source emitter, public
+frontend/API, or operator-checkpoint edit is included.
+
+Clean exact-21.1.8 Linux x86-64 builds used Clang 21, Ninja `-j1`, native and
+bootstrap frontends enabled, Matcore MLIR enabled, and its default semantic
+pipeline. The reviewed registry source hashes above remain unchanged.
+
+| Local configuration | Focused registry | Additional affected checks |
+| --- | --- | --- |
+| Release, OpenBLAS 0.3.32 required (`build-registry-release`) | 11/11, 0.10 s | runtime/C ABI/host/generated 32/32, 5.74 s |
+| Release, OpenBLAS disabled (`build-registry-off`) | 10/10, 0.04 s | runtime/C ABI/host/generated 31/31, 5.45 s |
+| Debug ASan+UBSan, OpenBLAS required (`build-registry-asan`) | 11/11, 0.30 s | expanded hosted sanitizer regex: 50/50, 25.49 s |
+
+The new integration repeats the preserved independent arithmetic/concurrency
+oracle in **100 fresh Release processes** (4.55 s) and **30 fresh ASan+UBSan
+processes** (3.70 s), all passing 47,638 checks per process. Sanitizer options
+enable leak detection, strict string checks, initialization-order checking and
+halt-on-error. The external provider binary is not instrumented; generated leaf
+ASan instrumentation and its deliberate out-of-bounds control are exercised.
+
+The only new implementation-adjacent integration change is CI registration:
+MLIR-enabled Release jobs require exactly 11 provider-ON / 10 provider-OFF
+registry tests; the provider-OFF sanitizer scope adds all ten registry tests,
+raising its exact expected total from 39 to 49. The local provider-ON equivalent
+has 50 because it additionally registers the independent real-provider oracle.
+The independent publication reviewer accepted this CI-only delta; no existing
+negative scope was removed. Full hosted platform/package results belong to the
+exact integration PR head and do not follow merely from these local passes.
