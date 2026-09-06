@@ -452,6 +452,7 @@ if(BUILD_TESTING AND MDSLC_ENABLE_NATIVE_FRONTEND AND
   # No installed headers or driver option; compatibility targets are unchanged.
   add_subdirectory(tests/closed_region)
   add_subdirectory(tests/generated_cpu)
+  add_subdirectory(tests/closed_candidates)
   add_subdirectory(tests/closed_source)
 endif()
 if(MDSLC_ENABLE_MATCORE_MLIR)
