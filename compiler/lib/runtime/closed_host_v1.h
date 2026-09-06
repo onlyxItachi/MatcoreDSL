@@ -1,39 +1,11 @@
 #ifndef MATCORE_MDSLC_RUNTIME_CLOSED_HOST_V1_H
 #define MATCORE_MDSLC_RUNTIME_CLOSED_HOST_V1_H
 
-#include <cstdint>
+#include <matcore/region.h>
 #include <memory>
 #include <vector>
 
 namespace matcore::mdslc::runtime::closed_host_v1 {
-
-// Private execution adapter, not a public source API or frozen ABI. This adapter
-// does not authenticate source, accept serialized authority, or interpret an AST.
-using Frontier = std::uint64_t;
-enum class Access : std::uint8_t { read_only, read_write };
-enum class Numeric : std::uint8_t { strict_f32, reassociate_f32 };
-enum class Code : std::uint8_t {
-  ok, invalid_frontier, invalid_value, invalid_view, shape_mismatch,
-  extent_overflow, insufficient_capacity, access_denied, allocation_failure,
-  candidate_failure, unsupported_fp_environment, reentrant_use, already_complete
-};
-struct Status {
-  Code code = Code::ok;
-  Frontier failed_frontier = 0;
-  Frontier completed_frontier = 0;
-  Frontier completed_effect_frontier = 0;
-  std::uint64_t publications = 0;
-  std::uint64_t observations = 0;
-  bool completed = false;
-  explicit operator bool() const noexcept { return code == Code::ok; }
-};
-struct ResourceView {
-  float *data = nullptr;
-  std::uint64_t rows = 0;
-  std::uint64_t columns = 0;
-  std::uint64_t capacity_elements = 0;
-  Access access = Access::read_only;
-};
 
 struct ValueStorage;
 class Value {
@@ -42,11 +14,15 @@ public:
   bool valid() const noexcept;
   std::uint64_t rows() const noexcept;
   std::uint64_t columns() const noexcept;
+  const float *data() const noexcept;
 private:
   friend class Session;
   std::shared_ptr<const ValueStorage> storage_;
 };
+struct Observation { Frontier frontier; Value value; };
 
+// Private execution adapter, not a public source API or frozen ABI. This adapter
+// does not authenticate source, accept serialized authority, or interpret an AST.
 // These shapes describe only the private test injection ABI. No production
 // method accepts a candidate function. A future generated candidate needs its
 // own compile-trusted registry and numerical/effect contract.
@@ -97,6 +73,7 @@ struct TestHooks {
 class Session {
 public:
   Session() noexcept = default;
+  ~Session() noexcept;
   Session(const Session &) = delete;
   Session &operator=(const Session &) = delete;
   Session(Session &&) = delete;
@@ -115,6 +92,11 @@ public:
   // Returns a stable immutable handle, not a pointer invalidated by record growth.
   Value observation(std::uint64_t index) const noexcept;
   Frontier observationFrontier(std::uint64_t index) const noexcept;
+  // Generated wrappers retire a completed/failed invocation exactly once.
+  // Moving already-owned observation records cannot allocate or fail after
+  // publication. Diagnostic strings have compiler-owned static lifetime.
+  matcore::mdsl::Result takeResult(
+      matcore::mdsl::SourceLocation failure = {}) && noexcept;
 
 #if defined(MDSLC_CLOSED_HOST_TESTING)
   // Only exported by the separately compiled test variant, never production.
@@ -125,7 +107,6 @@ public:
 #endif
 
 private:
-  struct Observation { Frontier frontier; Value value; };
   struct ActiveCall;
   bool begin(Frontier) noexcept;
   Status fail(Code, Frontier) noexcept;
@@ -136,8 +117,9 @@ private:
                 std::shared_ptr<ValueStorage> &) noexcept;
   Status status_;
   bool active_ = false;
+  bool result_taken_ = false;
   Frontier active_frontier_ = 0;
-  std::vector<Observation> observations_;
+  ObservationBlock *observations_ = nullptr;
   // Fixed layout across the production/test declarations; production has no
   // setter and compiles out every callback/injection use.
   [[maybe_unused]] std::uint64_t allocation_attempts_ = 0;

@@ -1,0 +1,5 @@
+// Generated from the exact owned public headers. Not an importable manifest.
+namespace matcore::mdslc::frontend::detail {
+inline constexpr char experimental_region_source[] = R"mdsl_region(@MDSLC_EXPERIMENTAL_REGION_SOURCE@)mdsl_region";
+inline constexpr char experimental_region_storage_source[] = R"mdsl_storage(@MDSLC_EXPERIMENTAL_REGION_STORAGE_SOURCE@)mdsl_storage";
+}

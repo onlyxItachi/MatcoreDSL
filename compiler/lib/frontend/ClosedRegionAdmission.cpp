@@ -1,4 +1,5 @@
 #include "ClosedRegionAdmissionInternal.h"
+#include "ExperimentalRegionHeaders.inc"
 
 #define MDSLC_INTERNAL_EMBED_CLOSED_REGION_FIXTURE
 #include "../../tests/closed_region/fixture_language.h"
@@ -9,6 +10,7 @@
 #include <clang/AST/DeclCXX.h>
 #include <clang/AST/DeclTemplate.h>
 #include <clang/AST/ExprCXX.h>
+#include <clang/AST/Mangle.h>
 #include <clang/AST/StmtCXX.h>
 #include <clang/AST/TypeLoc.h>
 #include <clang/Basic/Diagnostic.h>
@@ -20,6 +22,7 @@
 #include <clang/Tooling/Tooling.h>
 #include <llvm/ADT/StringExtras.h>
 #include <llvm/Support/SHA256.h>
+#include <llvm/Support/Path.h>
 #include <llvm/Support/VirtualFileSystem.h>
 
 #include <cstdint>
@@ -27,6 +30,7 @@
 #include <set>
 #include <stdexcept>
 #include <utility>
+#include <algorithm>
 
 namespace matcore::mdslc::frontend {
 namespace {
@@ -89,10 +93,12 @@ class Admission {
 public:
   Admission(clang::ASTContext &context, const clang::Decl *anchor,
             const std::string &selected, cr::Program &program,
-            const detail::ClosedRegionASTPolicy &policy, std::string &error)
+            const detail::ClosedRegionASTPolicy &policy, std::string &error,
+            ClosedRegionEntryBinding *entry_binding)
       : context_(context), anchor_(anchor), policy_(policy),
         sources_(context_.getSourceManager()),
-        selected_(selected), program_(program), error_(error) {}
+        selected_(selected), program_(program), error_(error),
+        entry_binding_(entry_binding) {}
 
   bool run() {
     if (!anchor_ || policy_.owned_header.isInvalid())
@@ -101,16 +107,21 @@ public:
     // including the injected header. ASTContext's inline TU getter would
     // instantiate lazy redeclaration allocation in the instrumented caller.
     for (const auto &event : policy_.events)
-      if (inHeader(sources_.getExpansionLoc(event.range.getBegin())))
+      if ((inHeader(sources_.getExpansionLoc(event.range.getBegin())) ||
+           (policy_.experimental && inOwnedStorage(sources_.getExpansionLoc(event.range.getBegin())))) &&
+          (!policy_.experimental || event.description.starts_with("macro expansion ")))
         return reject(event.range.getBegin(),
                       "preprocessing altered the compiler-owned declaration buffer");
     discover(anchor_->getTranslationUnitDecl());
-    if (!value_type_ || !storage_type_ || !numerics_type_ || ops_.size() != 6)
+    if (!value_type_ || !storage_type_ || !numerics_type_ ||
+        ops_.size() != (policy_.experimental ? 7 : 6) ||
+        (policy_.experimental && !result_type_))
       return reject({}, "tool-owned declaration set is incomplete");
     if (entries_.size() != 1 || selected_declarations_.size() != 1)
       return reject({}, "select exactly one non-overloaded region definition");
     const clang::FunctionDecl *entry = *entries_.begin();
     if (!validateFunction(entry, true)) return false;
+    if (policy_.experimental && !bindEntry(entry)) return false;
     cr::Region region;
     region.name = selected_;
     region.site = site(entry->getSourceRange());
@@ -153,6 +164,49 @@ private:
     return location.isValid() && !location.isMacroID() &&
            sources_.getFileID(location) == policy_.owned_header;
   }
+  bool inOwnedStorage(clang::SourceLocation location) const {
+    return location.isValid() && !location.isMacroID() &&
+           sources_.getFileID(location) == policy_.owned_storage_header;
+  }
+  std::string qualifiedName(const clang::NamedDecl *declaration) const {
+    clang::PrintingPolicy policy(context_.getLangOpts());
+    policy.SuppressInlineNamespace = clang::PrintingPolicy::None;
+    std::string result;
+    llvm::raw_string_ostream output(result);
+    declaration->printQualifiedName(output, policy);
+    return result;
+  }
+  std::string mangle(const clang::FunctionDecl *function) {
+    std::unique_ptr<clang::MangleContext> mangler(context_.createMangleContext());
+    std::string name;
+    llvm::raw_string_ostream output(name);
+    if (mangler->shouldMangleDeclName(function)) mangler->mangleName(function, output);
+    else output << function->getName();
+    return name;
+  }
+  bool bindEntry(const clang::FunctionDecl *function) {
+    if (!entry_binding_) return reject(function->getLocation(), "missing native entry binding sink");
+    *entry_binding_ = {};
+    entry_binding_->qualified_name = qualifiedName(function);
+    entry_binding_->mangled_name = mangle(function);
+    entry_binding_->signature_sha256 = digest(function->getType().getCanonicalType().getAsString());
+    entry_binding_->body = site(function->getBody()->getSourceRange());
+    const clang::DeclContext *parent = function->getDeclContext();
+    while (const auto *space = llvm::dyn_cast<clang::NamespaceDecl>(parent)) {
+      if (space->isAnonymousNamespace())
+        return reject(function->getLocation(), "anonymous-namespace entries are not yet supported");
+      entry_binding_->namespaces.push_back({space->getNameAsString(), space->isInline()});
+      parent = space->getParent();
+    }
+    if (!parent->isTranslationUnit())
+      return reject(function->getLocation(), "entry requires ordinary namespace linkage");
+    std::reverse(entry_binding_->namespaces.begin(), entry_binding_->namespaces.end());
+    for (const auto *parameter : function->parameters())
+      entry_binding_->parameters.push_back({parameter->getNameAsString(),
+          isShape(parameter->getType()) ? ClosedRegionParameterBinding::Kind::Shape
+                                       : ClosedRegionParameterBinding::Kind::Storage});
+    return error_.empty();
+  }
   bool reject(clang::SourceLocation location, const std::string &reason) {
     if (error_.empty()) {
       error_ = program_.source_identity;
@@ -165,13 +219,15 @@ private:
     }
     return false;
   }
-  cr::SourceSite site(clang::SourceRange range) {
+  cr::SourceSite site(clang::SourceRange range, bool main_required = true) {
     cr::SourceSite result;
     const auto begin = sources_.getSpellingLoc(range.getBegin());
     const auto end = clang::Lexer::getLocForEndOfToken(
         sources_.getSpellingLoc(range.getEnd()), 0, sources_,
         context_.getLangOpts());
-    if (!inMain(begin) || !inMain(end)) {
+    if (begin.isInvalid() || end.isInvalid() || begin.isMacroID() || end.isMacroID() ||
+        sources_.getFileID(begin) != sources_.getFileID(end) ||
+        (main_required && (!inMain(begin) || !inMain(end)))) {
       reject(range.getBegin(), "source range does not belong to the sealed main buffer");
       return {};
     }
@@ -180,7 +236,7 @@ private:
     // its ASan slow path can interpose on non-ASan prebuilt MLIR fast paths.
     // No sanitizer is disabled, and no line/column parser is duplicated.
     bool invalid_buffer = false, invalid_begin = false, invalid_end = false;
-    const auto buffer = sources_.getBufferData(sources_.getMainFileID(), &invalid_buffer);
+    const auto buffer = sources_.getBufferData(sources_.getFileID(begin), &invalid_buffer);
     const char *begin_data = sources_.getCharacterData(begin, &invalid_begin);
     const char *end_data = sources_.getCharacterData(end, &invalid_end);
     const auto base = reinterpret_cast<std::uintptr_t>(buffer.data());
@@ -201,19 +257,24 @@ private:
     result.column = sources_.getSpellingColumnNumber(begin);
     return result;
   }
-  bool closedSourceRange(clang::SourceRange range) {
-    if (!inMain(range.getBegin()) || !inMain(range.getEnd()))
+  bool closedSourceRange(clang::SourceRange range, bool allow_header = false) {
+    if (range.getBegin().isInvalid() || range.getEnd().isInvalid() ||
+        range.getBegin().isMacroID() || range.getEnd().isMacroID() ||
+        sources_.getFileID(range.getBegin()) != sources_.getFileID(range.getEnd()) ||
+        (!allow_header && (!inMain(range.getBegin()) || !inMain(range.getEnd()))))
       return reject(range.getBegin(), "closed declaration spelling is not main-source-owned");
-    const auto span = site(range);
+    const auto span = site(range, !allow_header);
     if (!error_.empty()) return false;
-    const auto bytes = sources_.getBufferData(sources_.getMainFileID());
+    const auto file = sources_.getFileID(range.getBegin());
+    const auto bytes = sources_.getBufferData(file);
     if (hasPreprocessing(bytes.substr(span.offset, span.length).str()))
       return reject(range.getBegin(), "preprocessing directive or escaped token inside closed source range");
     for (const auto &event : policy_.events) {
       const auto begin = sources_.getExpansionLoc(event.range.getBegin());
       const auto end = sources_.getExpansionLoc(event.range.getEnd());
-      if (!inMain(begin) || !inMain(end)) continue;
-      const auto event_span = site({begin, end});
+      if (begin.isInvalid() || end.isInvalid() || sources_.getFileID(begin) != file ||
+          sources_.getFileID(end) != file) continue;
+      const auto event_span = site({begin, end}, !allow_header);
       if (!error_.empty()) return false;
       if (event_span.offset < span.offset + span.length &&
           span.offset < event_span.offset + event_span.length)
@@ -221,32 +282,109 @@ private:
     }
     return true;
   }
+  bool authenticateOwnedFunction(const clang::FunctionDecl *function,
+                                 bool primitive = false) {
+    const auto owner = sources_.getFileID(function->getLocation());
+    const clang::Decl *canonical = function->getCanonicalDecl();
+    for (const clang::Decl *raw : canonical->redecls()) {
+      const auto *declaration = llvm::dyn_cast<clang::FunctionDecl>(raw);
+      if (!declaration || declaration->getLocation().isMacroID() ||
+          sources_.getFileID(declaration->getLocation()) != owner)
+        return reject(raw->getLocation(), "canonical ownership/function redeclaration is untrusted");
+      for (const auto *attribute : declaration->attrs()) {
+        const auto *annotation = llvm::dyn_cast<clang::AnnotateAttr>(attribute);
+        if (!(primitive && annotation && inHeader(annotation->getLocation()) &&
+              annotation->getAnnotation() == "matcore.experimental." +
+                  function->getNameAsString() + ".v1"))
+          return reject(declaration->getLocation(), "canonical function/member attribute is untrusted");
+      }
+      for (const auto *parameter : declaration->parameters())
+        if (parameter->hasAttrs())
+          return reject(parameter->getLocation(), "canonical function/member parameter attributes are untrusted");
+      if (declaration->doesThisDeclarationHaveABody()) {
+        const auto *body = declaration->getBody();
+        if (!body || body->getBeginLoc().isMacroID() || body->getEndLoc().isMacroID() ||
+            sources_.getFileID(body->getBeginLoc()) != owner ||
+            sources_.getFileID(body->getEndLoc()) != owner)
+          return reject(declaration->getLocation(), "canonical function/member body is untrusted");
+      }
+    }
+    return true;
+  }
+  bool authenticateOwnedTag(const clang::TagDecl *tag) {
+    const auto owner = sources_.getFileID(tag->getLocation());
+    const clang::Decl *canonical = tag->getCanonicalDecl();
+    for (const clang::Decl *declaration : canonical->redecls())
+      if (declaration->getLocation().isMacroID() ||
+          sources_.getFileID(declaration->getLocation()) != owner)
+        return reject(declaration->getLocation(),
+                      "canonical record/enum redeclaration or opaque definition is untrusted");
+    return true;
+  }
   void discover(const clang::DeclContext *context) {
+    const std::string prefix = policy_.experimental ? "matcore::mdsl::" : "mdsl_probe::";
     for (const clang::Decl *declaration : context->decls()) {
       if (const auto *space = llvm::dyn_cast<clang::NamespaceDecl>(declaration)) {
         discover(space);
       } else if (const auto *record =
                      llvm::dyn_cast<clang::CXXRecordDecl>(declaration)) {
+        if (policy_.experimental &&
+            (inHeader(record->getLocation()) || inOwnedStorage(record->getLocation()))) {
+          if (!authenticateOwnedTag(record)) return;
+          for (const auto *attribute : record->attrs())
+            if (!(llvm::isa<clang::WarnUnusedResultAttr>(attribute) &&
+                  record->getQualifiedNameAsString() == "matcore::mdsl::Result" &&
+                  inHeader(attribute->getLocation()))) {
+              reject(record->getLocation(), "ambient attributes cannot alter canonical record contract");
+              return;
+            }
+          // A pragma can target members without attributing their record.
+          // In particular a forged noreturn/calling convention on an owning
+          // destructor changes ordinary host semantics despite identical layout.
+          for (const auto *member : record->decls()) {
+            if (member->hasAttrs()) {
+              reject(member->getLocation(), "ambient attributes cannot alter canonical member contract");
+              return;
+            }
+            if (const auto *method = llvm::dyn_cast<clang::FunctionDecl>(member))
+              if (!authenticateOwnedFunction(method)) return;
+          }
+        }
         if (!inHeader(record->getLocation()) || !record->isThisDeclarationADefinition())
           continue;
         const std::string name = record->getQualifiedNameAsString();
-        if (name == "mdsl_probe::Value") value_type_ = record->getCanonicalDecl();
-        if (name == "mdsl_probe::Storage") storage_type_ = record->getCanonicalDecl();
+        if (name == prefix + "Value") value_type_ = record->getCanonicalDecl();
+        if (name == prefix + "Storage") storage_type_ = record->getCanonicalDecl();
+        if (policy_.experimental && name == prefix + "Result")
+          result_type_ = record->getCanonicalDecl();
       } else if (const auto *enumeration =
                      llvm::dyn_cast<clang::EnumDecl>(declaration)) {
+        if (policy_.experimental &&
+            (inHeader(enumeration->getLocation()) || inOwnedStorage(enumeration->getLocation()))) {
+          if (!authenticateOwnedTag(enumeration)) return;
+          if (enumeration->hasAttrs()) {
+            reject(enumeration->getLocation(), "ambient attributes cannot alter canonical enum contract");
+            return;
+          }
+        }
         if (inHeader(enumeration->getLocation()) &&
-            enumeration->getQualifiedNameAsString() == "mdsl_probe::Numerics")
+            enumeration->getQualifiedNameAsString() == prefix + "Numerics")
           numerics_type_ = enumeration->getCanonicalDecl();
       } else if (const auto *function =
                      llvm::dyn_cast<clang::FunctionDecl>(declaration)) {
+        if (policy_.experimental &&
+            (inHeader(function->getLocation()) || inOwnedStorage(function->getLocation())) &&
+            !authenticateOwnedFunction(function, inHeader(function->getLocation())))
+          return;
         if (inHeader(function->getLocation())) {
           const std::string name = function->getNameAsString();
           if (name == "read" || name == "gemm" || name == "publish" ||
-              name == "observe" || name == "rows" || name == "cols")
+              name == "observe" || name == "rows" || name == "cols" ||
+              (policy_.experimental && name == "complete"))
             ops_[function->getCanonicalDecl()] = name;
         }
         if (inMain(function->getLocation()) &&
-            function->getQualifiedNameAsString() == selected_) {
+            qualifiedName(function) == selected_) {
           selected_declarations_.insert(function->getCanonicalDecl());
           if (function->hasBody()) entries_.insert(function->getDefinition());
         }
@@ -267,13 +405,13 @@ private:
   bool admittedType(clang::QualType type) const {
     return isRecord(type, value_type_) || isRecord(type, storage_type_) || isShape(type);
   }
-  bool validateTypeLocation(const clang::TypeSourceInfo *information) {
+  bool validateTypeLocation(const clang::TypeSourceInfo *information, bool allow_header = false) {
     if (!information) return reject({}, "missing source type binding");
     for (clang::TypeLoc location = information->getTypeLoc(); !location.isNull();
          location = location.getNextTypeLoc()) {
-      if (!inMain(location.getBeginLoc()) || !inMain(location.getEndLoc()))
+      if (!allow_header && (!inMain(location.getBeginLoc()) || !inMain(location.getEndLoc())))
         return reject(location.getBeginLoc(), "macro or unowned source type spelling");
-      if (!closedSourceRange(location.getSourceRange())) return false;
+      if (!closedSourceRange(location.getSourceRange(), allow_header)) return false;
       if (!location.getAs<clang::DecltypeTypeLoc>().isNull() ||
           !location.getAs<clang::TypeOfExprTypeLoc>().isNull() ||
           !location.getAs<clang::TypeOfTypeLoc>().isNull() ||
@@ -286,8 +424,9 @@ private:
     // no type-expression callback is run by this admission implementation.
     return true;
   }
-  bool validateParameter(const clang::ParmVarDecl *parameter, bool require_name = true) {
-    if (!validateTypeLocation(parameter->getTypeSourceInfo())) return false;
+  bool validateParameter(const clang::ParmVarDecl *parameter, bool require_name = true,
+                         bool allow_header = false) {
+    if (!validateTypeLocation(parameter->getTypeSourceInfo(), allow_header)) return false;
     if (parameter->hasDefaultArg() || parameter->hasAttrs() ||
         !admittedType(parameter->getType()) ||
         (require_name && parameter->getName().empty()))
@@ -295,6 +434,19 @@ private:
                     "parameters require named, unqualified-effect-free value types; "
                     "references, pointers, attributes and defaults are unsupported");
     return true;
+  }
+  bool canonicalMarker(const clang::AnnotateAttr *annotation) {
+    if (!annotation || annotation->getAnnotation() !=
+        (policy_.experimental ? "matcore.experimental.region.v1" : region_annotation)) return false;
+    if (inMain(annotation->getLocation())) return closedSourceRange(annotation->getRange());
+    if (!policy_.experimental || !annotation->getLocation().isMacroID()) return false;
+    const auto expansion = sources_.getExpansionLoc(annotation->getLocation());
+    for (const auto &event : policy_.events)
+      if (event.description == "macro expansion MATCORE_REGION" &&
+          inMain(event.range.getBegin()) && inMain(event.range.getEnd()) &&
+          inHeader(event.definition) && event.range.getBegin() == expansion)
+        return true;
+    return false;
   }
   bool validateFunction(const clang::FunctionDecl *function, bool entry) {
     if (!inMain(function->getLocation()) || !function->hasBody() ||
@@ -313,30 +465,37 @@ private:
       const auto *declaration = llvm::dyn_cast<clang::FunctionDecl>(raw_declaration);
       if (!declaration)
         return reject(function->getLocation(), "unexpected non-function redeclaration");
-      if (!inMain(declaration->getLocation()))
+      const bool header_prototype = policy_.experimental && entry &&
+          !inMain(declaration->getLocation()) && !declaration->doesThisDeclarationHaveABody();
+      if (!inMain(declaration->getLocation()) && !header_prototype)
         return reject(declaration->getLocation(), "helper or region redeclaration is not source-owned");
-      if (!closedSourceRange(declaration->getSourceRange())) return false;
+      if (!closedSourceRange(declaration->getSourceRange(), header_prototype)) return false;
+      if (header_prototype && !validateTypeLocation(declaration->getTypeSourceInfo(), true)) return false;
       const auto *prototype = declaration->getType()->getAs<clang::FunctionProtoType>();
       if (!prototype || prototype->getCallConv() != clang::CC_C)
         return reject(declaration->getLocation(), "nonstandard calling convention is not admitted");
       for (const clang::Attr *attribute : declaration->attrs()) {
         const auto *annotation = llvm::dyn_cast<clang::AnnotateAttr>(attribute);
-        if (entry && annotation && annotation->getAnnotation() == region_annotation &&
-            inMain(annotation->getLocation()) && closedSourceRange(annotation->getRange())) {
+        if (entry && !header_prototype && canonicalMarker(annotation)) {
           if (declaration == function) ++markers;
         } else {
           return reject(declaration->getLocation(), "unadmitted function attribute");
         }
       }
       for (const clang::ParmVarDecl *parameter : declaration->parameters())
-        if (!validateParameter(parameter, declaration == function)) return false;
+        if (!validateParameter(parameter, declaration == function, header_prototype)) return false;
     }
+    const auto *entry_prototype = function->getType()->getAs<clang::FunctionProtoType>();
     if ((entry && markers != 1) ||
-        (entry && !function->getReturnType()->isVoidType()) ||
+        (entry && (policy_.experimental
+          ? !isRecord(function->getReturnType(), result_type_) ||
+            function->getReturnType().hasLocalQualifiers() || function->isConstexpr() ||
+            entry_prototype->getExceptionSpecType() != clang::EST_BasicNoexcept
+          : !function->getReturnType()->isVoidType())) ||
         (!entry && !isRecord(function->getReturnType(), value_type_) &&
          !isShape(function->getReturnType())))
       return reject(function->getLocation(),
-                    "region requires one private marker and void result; helper "
+                    "region requires its canonical marker/result/noexcept contract; helper "
                     "requires a Value or Shape result");
     for (const clang::ParmVarDecl *parameter : function->parameters())
       if (!validateParameter(parameter)) return false;
@@ -356,7 +515,7 @@ private:
       for (const clang::Attr *attribute : declaration->attrs()) {
         const auto *annotation = llvm::dyn_cast<clang::AnnotateAttr>(attribute);
         if (!annotation || annotation->getAnnotation() !=
-                               "mdsl.private." + name + ".v1")
+                               (policy_.experimental ? "matcore.experimental." : "mdsl.private.") + name + ".v1")
           return reject(declaration->getLocation(), "untrusted primitive attributes");
         ++annotations;
       }
@@ -504,6 +663,8 @@ private:
     if (found == ops_.end()) return helperCall(call, callee, environment, operations, result);
     const std::string &name = found->second;
     if (!authenticateOperation(callee, name)) return false;
+    if (name == "complete")
+      return reject(call->getExprLoc(), "completion is permitted only as the terminal region return");
     if (helper && (name == "read" || name == "publish" || name == "observe"))
       return reject(call->getExprLoc(), "pure helper cannot access external storage or effects");
     cr::Operation operation;
@@ -562,6 +723,20 @@ private:
     const clang::FunctionDecl *definition = callee->getDefinition();
     if (!definition || !validateFunction(definition, false))
       return reject(call->getExprLoc(), "unknown host call or unadmitted helper");
+    if (policy_.experimental && entry_binding_) {
+      bool source_value = isRecord(definition->getReturnType(), value_type_);
+      for (const auto *parameter : definition->parameters())
+        source_value = source_value || isRecord(parameter->getType(), value_type_);
+      if (source_value) {
+        const auto name = mangle(definition);
+        if (std::none_of(entry_binding_->value_helpers.begin(),
+                         entry_binding_->value_helpers.end(),
+                         [&](const auto &item) { return item.mangled_name == name; }))
+          entry_binding_->value_helpers.push_back(
+              {qualifiedName(definition), name,
+               site(definition->getBody()->getSourceRange())});
+      }
+    }
     if (active_helpers_.size() >= 16 ||
         active_helpers_.count(definition->getCanonicalDecl()))
       return reject(call->getExprLoc(), "recursive or excessive helper expansion");
@@ -674,6 +849,48 @@ private:
                   std::string("AST statement is outside the closed vocabulary: ") +
                       statement->getStmtClassName());
   }
+  bool completionReturn(const clang::ReturnStmt *returned) {
+    const clang::Expr *expression = returned->getRetValue();
+    if (!expression || !sourceNode(expression) ||
+        !isRecord(expression->getType(), result_type_))
+      return reject(returned->getReturnLoc(), "terminal return requires canonical completion Result");
+    if (const auto *cleanup = llvm::dyn_cast<clang::ExprWithCleanups>(expression)) {
+      if (cleanup->getNumObjects() != 0)
+        return reject(expression->getExprLoc(), "terminal completion has additional cleanup objects");
+      expression = cleanup->getSubExpr();
+    }
+    if (const auto *temporary = llvm::dyn_cast<clang::CXXBindTemporaryExpr>(expression)) {
+      const auto *destructor = temporary->getTemporary()->getDestructor();
+      if (!sourceNode(temporary) || !isRecord(temporary->getType(), result_type_) ||
+          !destructor || destructor->getParent()->getCanonicalDecl() != result_type_ ||
+          !inHeader(destructor->getLocation()))
+        return reject(expression->getExprLoc(), "terminal return has a noncanonical cleanup");
+      expression = temporary->getSubExpr();
+    }
+    const auto *invocation = llvm::dyn_cast<clang::CallExpr>(expression);
+    if (!invocation || !sourceNode(invocation) || invocation->getNumArgs() != 0 ||
+        !isRecord(invocation->getType(), result_type_) ||
+        llvm::isa<clang::CXXMemberCallExpr>(invocation) ||
+        llvm::isa<clang::CXXOperatorCallExpr>(invocation))
+      return reject(returned->getReturnLoc(), "only direct terminal completion is admitted");
+    const auto *callee = invocation->getDirectCallee();
+    const auto found = callee ? ops_.find(callee->getCanonicalDecl()) : ops_.end();
+    if (found == ops_.end() || found->second != "complete" ||
+        !authenticateOperation(callee, "complete"))
+      return reject(returned->getReturnLoc(), "terminal completion declaration is not authoritative");
+    const clang::Expr *target = invocation->getCallee();
+    if (const auto *cast = llvm::dyn_cast<clang::ImplicitCastExpr>(target)) {
+      if (cast->getCastKind() != clang::CK_FunctionToPointerDecay)
+        return reject(target->getExprLoc(), "completion callee conversion is not admitted");
+      target = cast->getSubExpr();
+    }
+    const auto *reference = llvm::dyn_cast<clang::DeclRefExpr>(target);
+    if (!reference || !sourceNode(reference) ||
+        reference->getDecl()->getCanonicalDecl() != callee->getCanonicalDecl())
+      return reject(returned->getReturnLoc(), "completion callee has hidden host evaluation");
+    entry_binding_->completion = site(returned->getSourceRange());
+    return error_.empty();
+  }
   bool body(const clang::FunctionDecl *function, Environment &environment,
             std::vector<cr::Operation> &operations, bool helper, Binding &result) {
     const auto *compound = llvm::dyn_cast<clang::CompoundStmt>(function->getBody());
@@ -685,6 +902,7 @@ private:
         if (!sourceNode(returned)) return false;
         if (std::next(iterator) != statements.end())
           return reject(returned->getReturnLoc(), "only a terminal helper return is admitted");
+        if (!helper && policy_.experimental) return completionReturn(returned);
         if (!helper)
           return !returned->getRetValue() ||
                  reject(returned->getReturnLoc(), "region must not return a host value");
@@ -698,7 +916,8 @@ private:
       }
       if (!statement(*iterator, environment, operations, helper)) return false;
     }
-    return !helper || reject(function->getLocation(), "helper requires one terminal return");
+    return (!helper && !policy_.experimental) ||
+           reject(function->getLocation(), "function requires one terminal semantic return");
   }
 
   clang::ASTContext &context_;
@@ -708,8 +927,10 @@ private:
   const std::string &selected_;
   cr::Program &program_;
   std::string &error_;
+  ClosedRegionEntryBinding *entry_binding_;
   const clang::CXXRecordDecl *value_type_ = nullptr;
   const clang::CXXRecordDecl *storage_type_ = nullptr;
+  const clang::CXXRecordDecl *result_type_ = nullptr;
   const clang::EnumDecl *numerics_type_ = nullptr;
   std::map<const clang::FunctionDecl *, std::string> ops_;
   std::set<const clang::FunctionDecl *> entries_;
@@ -726,6 +947,8 @@ struct AuthenticatedClosedRegionEvidence::Payload {
   std::string source;
   std::string region_name;
   std::shared_ptr<const closed_region_host::HostInputSnapshot> host;
+  std::optional<ClosedRegionEntryBinding> entry;
+  std::optional<ExperimentalRegionHeaders> headers;
 };
 AuthenticatedClosedRegionEvidence::AuthenticatedClosedRegionEvidence(
     std::shared_ptr<const Payload> payload) : payload_(std::move(payload)) {}
@@ -748,11 +971,70 @@ const std::string &AuthenticatedClosedRegionEvidence::hostContextIdentity() cons
   static const std::string empty;
   return payload_ && payload_->host ? payload_->host->identity() : empty;
 }
+const std::optional<ClosedRegionEntryBinding> &
+AuthenticatedClosedRegionEvidence::entryBinding() const {
+  static const std::optional<ClosedRegionEntryBinding> empty;
+  return payload_ ? payload_->entry : empty;
+}
 
 namespace detail {
+std::shared_ptr<const closed_region_host::HostInputSnapshot>
+ClosedRegionCompilationAccess::host(const AuthenticatedClosedRegionEvidence &evidence) {
+  return evidence.payload_ ? evidence.payload_->host : nullptr;
+}
 const char *closedRegionOwnedHeaderPath() { return header_path; }
 const char *closedRegionOwnedHeaderSource() { return closed_region_fixture_source; }
 std::string closedRegionDigest(const std::string &bytes) { return digest(bytes); }
+const char *experimentalRegionHeaderSource() { return experimental_region_source; }
+const char *experimentalRegionStorageHeaderSource() { return experimental_region_storage_source; }
+bool authenticateExperimentalRegionHeaders(
+    clang::ASTContext &context, clang::FileManager &files,
+    const ExperimentalRegionHeaders &headers, ClosedRegionASTPolicy &policy,
+    std::string &error) {
+  const auto authenticate = [&](const std::string &path, const char *expected,
+                                 clang::FileID &result) {
+    if (!llvm::sys::path::is_absolute(path) || path.size() > 4096 ||
+        path.find('\0') != std::string::npos) {
+      error = "experimental region requires bounded compiler-owned header paths";
+      return false;
+    }
+    auto file = files.getFileRef(path);
+    if (!file) {
+      llvm::consumeError(file.takeError());
+      error = "experimental canonical header is unavailable: " + path;
+      return false;
+    }
+    result = context.getSourceManager().translateFile(&file->getFileEntry());
+    bool invalid = false;
+    if (result.isInvalid() ||
+        context.getSourceManager().getBufferData(result, &invalid) != expected || invalid) {
+      error = "experimental canonical header physical FileID or exact bytes disagree: " + path;
+      return false;
+    }
+    return true;
+  };
+  policy.experimental = true;
+  return authenticate(headers.region_path, experimental_region_source, policy.owned_header) &&
+         authenticate(headers.storage_path, experimental_region_storage_source, policy.owned_storage_header);
+}
+bool sameClosedRegionEntryBinding(const ClosedRegionEntryBinding &a,
+                                 const ClosedRegionEntryBinding &b) {
+  const auto same_site = [](const cr::SourceSite &x, const cr::SourceSite &y) {
+    return x.offset == y.offset && x.length == y.length &&
+           x.line == y.line && x.column == y.column;
+  };
+  if (a.qualified_name != b.qualified_name || a.mangled_name != b.mangled_name ||
+      a.signature_sha256 != b.signature_sha256 || !same_site(a.body, b.body) ||
+      !same_site(a.completion, b.completion) || a.namespaces != b.namespaces ||
+      a.parameters != b.parameters || a.value_helpers.size() != b.value_helpers.size())
+    return false;
+  for (std::size_t i = 0; i < a.value_helpers.size(); ++i) {
+    const auto &x = a.value_helpers[i], &y = b.value_helpers[i];
+    if (x.qualified_name != y.qualified_name || x.mangled_name != y.mangled_name ||
+        !same_site(x.body, y.body)) return false;
+  }
+  return true;
+}
 clang::FileID authenticateClosedRegionHeader(clang::ASTContext &context,
                                              clang::FileManager &files,
                                              std::string &error) {
@@ -775,14 +1057,15 @@ bool admitClosedRegionParsedAST(clang::ASTContext &context,
                                const clang::Decl *anchor,
                                const std::string &selected, cr::Program &program,
                                const ClosedRegionASTPolicy &policy,
-                               std::string &error) {
-  Admission admission(context, anchor, selected, program, policy, error);
+                               std::string &error, ClosedRegionEntryBinding *entry) {
+  Admission admission(context, anchor, selected, program, policy, error, entry);
   return admission.run() && cr::verifyProgram(program, error);
 }
 ClosedRegionAdmissionResult ClosedRegionEvidenceIssuer::host(
     cr::Program program,
     std::shared_ptr<const closed_region_host::HostInputSnapshot> snapshot,
-    const std::string &region_name) {
+    const std::string &region_name, std::optional<ClosedRegionEntryBinding> entry,
+    std::optional<ExperimentalRegionHeaders> headers) {
   ClosedRegionAdmissionResult result;
   result.syntax_valid = true;
   auto payload = std::make_shared<AuthenticatedClosedRegionEvidence::Payload>();
@@ -790,6 +1073,8 @@ ClosedRegionAdmissionResult ClosedRegionEvidenceIssuer::host(
   payload->source = snapshot->sourceSnapshot();
   payload->region_name = region_name;
   payload->host = std::move(snapshot);
+  payload->entry = std::move(entry);
+  payload->headers = std::move(headers);
   result.evidence = AuthenticatedClosedRegionEvidence(std::move(payload));
   return result;
 }
@@ -855,10 +1140,18 @@ bool verifyClosedRegionMatchesEvidence(
   }
   if (evidence.payload_->host) {
     cr::Program replay;
+    ClosedRegionEntryBinding entry;
     // An issued seal authenticates historical immutable inputs. Live files
     // are checked before issuance, never substituted into later replay.
     if (!detail::replayClosedRegionHost(*evidence.payload_->host,
-                                      evidence.regionName(), replay, error)) return false;
+          evidence.regionName(), replay, error,
+          evidence.payload_->headers ? &*evidence.payload_->headers : nullptr,
+          evidence.payload_->entry ? &entry : nullptr)) return false;
+    if (evidence.payload_->entry &&
+        !detail::sameClosedRegionEntryBinding(*evidence.payload_->entry, entry)) {
+      error = "experimental function/signature/body/helper source binding disagrees with replay";
+      return false;
+    }
     return cr::verifyModuleMatchesProgram(replay, module, error);
   }
   const auto replay = admitClosedRegionSource(
