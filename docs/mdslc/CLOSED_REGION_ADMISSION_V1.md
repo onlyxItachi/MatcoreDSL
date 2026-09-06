@@ -140,6 +140,9 @@ tuple, with OpenBLAS disabled:
 | Release semantic executable | 71 checks, zero failures |
 | Release `ctest -R closed_region -j1` | 3/3 passed, 0.15 seconds |
 | Debug ASan+UBSan admission/model/ordinary-header/allocator protocol | 4/4 passed; independently repeated in 0.49 seconds |
+| Complete Release standalone suite at `e7d7140af842b0c6e367d116525a4b0a71c7f5a4` | 77/77 passed, 231.64 seconds |
+| Established focused Debug ASan+UBSan scope plus new admission/model | 26/26 passed, 6.15 seconds |
+| Repository hygiene and `git diff --check` | Passed |
 
 The sanitizer run initially failed at the pinned prebuilt Clang/MLIR allocator
 boundary. Inline upstream source/redeclaration queries instantiated instrumented
@@ -152,8 +155,35 @@ The frontend object retains ASan/UBSan instrumentation and no longer defines
 those upstream allocator templates. This is toolchain integration evidence, not
 a language-architecture counterexample.
 
-The full regression and hosted-CI gates are still pending at this focused
-checkpoint; these results alone do not authorize merging. Detailed evidence:
+The complete suite includes existing native/frontend contracts, per-call and
+two-GEMM semantics, structured/buffer/vector specimens, explicit CPU execution,
+runtime/planner and ABI tests, installed consumers, C17 ABI, source-inaccessible
+package installation and benchmark-evidence contract tests. It creates no new
+parity evidence. Issues #15 and #20 remain open.
+
+Reproduction uses the exact tuple in `AGENTS.md`, adding
+`-DMDSLC_ENABLE_MATCORE_MLIR=ON`,
+`-DMLIR_DIR=/home/hamza-usta/.local/toolchains/mlir-21.1.8-6ubuntu1/usr/lib/llvm-21/lib/cmake/mlir`,
+`-DMDSLC_ENABLE_OPENBLAS=OFF`, `-DCMAKE_BUILD_TYPE=Release`, and
+`-DMDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS=ON`.
+The source was committed and clean before reconfiguration, including the
+source-inaccessible package-test checkpoint:
+
+```sh
+cmake -S compiler -B build-closed-release
+cmake --build build-closed-release -- -j2
+ctest --test-dir build-closed-release --output-on-failure -j1
+```
+
+The separate Debug sanitizer build uses `-O1 -g -fsanitize=address,undefined
+-fno-omit-frame-pointer` in both language flags and `-fsanitize=address,undefined`
+at link, with vector-readiness disabled. Its exact 26-test selection and strict
+ASan/UBSan environment are in `.github/workflows/mdslc-native.yml`; local runs
+also set `DEBUGINFOD_URLS=` to avoid external symbolizer delays. No system
+toolchain packages were changed. OpenBLAS-enabled and native Windows regressions
+are hosted-CI gates, not locally executed claims; the private proof is Linux-only.
+
+Hosted-CI gates remain pending at this local integration checkpoint. Detailed evidence:
 [frontend lane](agent-reports/closed-region-admission-frontend-v1.md),
 [semantic lane](agent-reports/closed-region-semantic-model-v1.md), and
 [independent adversarial review](agent-reports/closed-region-adversarial-review-v1.md).
