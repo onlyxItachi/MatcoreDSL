@@ -102,6 +102,63 @@ coroutine bodies. An initial direct test invocation used the wrong build-tree
 subdirectory (status 127); rerunning the located `bin/` executable produced the
 271/271 result above. No benchmark or generated GEMM execution was performed.
 
+### Follow-up: fully instrumented prebuilt-library boundary
+
+The first combined frontend/MLIR ASan run failed before builtin dialect
+construction completed, with `AddressSanitizer: use-after-poison` and `f7`
+shadow bytes. Object-symbol inspection identified weak LLVM bump-allocator
+templates emitted by this instrumented frontend translation unit. They could
+interpose on the pinned non-ASan MLIR library's allocation fast paths, whose
+manual poisoning protocol differs. This was a real dependency-integration
+failure, not a language-semantic counterexample or a passed sanitizer run.
+
+Three Clang header paths instantiated those templates:
+
+1. `SourceManager::getFileOffset` through lazy loaded-source entries;
+2. `FunctionDecl::redecls` through lazy redeclaration-chain completion;
+3. `ASTContext::getTranslationUnitDecl` through the TU redeclaration chain.
+
+The final correction uses existing upstream interfaces with package-owned
+implementations: out-of-line buffer/character queries with same-FileID,
+invalid-result and integer-address range checks; the base `Decl::redecls`
+iterator with checked function casts; and a parsed top-level declaration's
+out-of-line TU query before traversing the same complete translation unit.
+No redeclarations, header declarations, source checks or semantic checks are
+dropped. No custom redeclaration chain or line/column parser is introduced.
+
+A narrowly unsanitized query adapter was considered, then discarded before
+integration because these upstream APIs preserve full frontend instrumentation.
+Fixing only the source-offset query was insufficient; the two remaining lazy
+redecl paths were identified and corrected as well. The final frontend object
+has no `BumpPtrAllocatorImpl` or `LazyGenerationalUpdatePtr` definitions and
+retains `__asan_init` and UBSan checks. There is **no new sanitizer exclusion**.
+
+Independent adversarial review also corrected a proposed late-attribute witness:
+Clang had ignored an attribute placed after a helper definition, so that
+fixture did not exercise retained AST attributes. Moving the attributed
+redeclaration after the region but before the helper definition supplied a
+genuine negative; the unchanged admission rule rejects it.
+
+Final direct validation used ASan+UBSan, with only symbolization disabled to
+avoid network debug-symbol lookup and UBSan set to halt on error:
+
+```sh
+ASAN_OPTIONS=symbolize=0 UBSAN_OPTIONS=halt_on_error=1 \
+  ctest --test-dir build-closed-asan --verbose -j1 \
+  -R 'closed_region|allocator-protocol'
+```
+
+**4/4 tests passed**: 486 admission checks, 71 semantic checks, ordinary-compiler
+rejection, and 4/4 allocator controls. Those controls require the deliberately
+mixed allocator protocol to fail, the matching protocol to pass, and live
+heap-overflow/manual-poison defects still to be caught. They would reject
+globally disabled poisoning rather than masking the integration failure.
+
+The retained detailed local log is
+`build-closed-asan/closed-region-asan-evidence-final.log`, SHA-256
+`62f86c68dc91ed88c7a0a854a8cd44d4d978b6fb85f250d7cb8506e0aa16239e`.
+The integration owner records subsequent full regression and hosted evidence.
+
 Verdict: **B remains viable for the demonstrated closed subset**, with genuine
 helper reuse and symbolic selection rather than a marker-only syntax proof.
 Imported-resource realization and publication/completion contracts remain

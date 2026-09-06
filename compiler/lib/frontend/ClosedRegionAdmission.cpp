@@ -21,6 +21,7 @@
 #include <llvm/Support/SHA256.h>
 #include <llvm/Support/VirtualFileSystem.h>
 
+#include <cstdint>
 #include <map>
 #include <set>
 #include <utility>
@@ -84,13 +85,19 @@ using Environment = std::map<const clang::ValueDecl *, Binding>;
 // constructs a user object, substitutes a template, or chooses a shape-if arm.
 class Admission {
 public:
-  Admission(clang::ASTContext &context, const std::string &selected,
+  Admission(clang::ASTUnit &ast, const std::string &selected,
             cr::Program &program, std::string &error)
-      : context_(context), sources_(context.getSourceManager()),
+      : ast_(ast), context_(ast.getASTContext()),
+        sources_(context_.getSourceManager()),
         selected_(selected), program_(program), error_(error) {}
 
   bool run() {
-    discover(context_.getTranslationUnitDecl());
+    if (ast_.isMainFileAST() || ast_.top_level_empty())
+      return reject({}, "inspection requires a fresh source AST with top-level declarations");
+    // Decl's out-of-line query retrieves the same complete translation unit,
+    // including the injected header. ASTContext's inline TU getter would
+    // instantiate lazy redeclaration allocation in the instrumented caller.
+    discover((*ast_.top_level_begin())->getTranslationUnitDecl());
     if (!value_type_ || !storage_type_ || !numerics_type_ || ops_.size() != 6)
       return reject({}, "tool-owned declaration set is incomplete");
     if (entries_.size() != 1 || selected_declarations_.size() != 1)
@@ -124,7 +131,8 @@ public:
       ++index;
     }
     Binding ignored;
-    if (!body(entry, environment, region.body, false, ignored)) return false;
+    if (!body(entry, environment, region.body, false, ignored) || !error_.empty())
+      return false;
     program_.regions.push_back(std::move(region));
     return true;
   }
@@ -150,14 +158,38 @@ private:
     }
     return false;
   }
-  cr::SourceSite site(clang::SourceRange range) const {
+  cr::SourceSite site(clang::SourceRange range) {
     cr::SourceSite result;
     const auto begin = sources_.getSpellingLoc(range.getBegin());
     const auto end = clang::Lexer::getLocForEndOfToken(
         sources_.getSpellingLoc(range.getEnd()), 0, sources_,
         context_.getLangOpts());
-    result.offset = sources_.getFileOffset(begin);
-    result.length = sources_.getFileOffset(end) - result.offset;
+    if (!inMain(begin) || !inMain(end)) {
+      reject(range.getBegin(), "source range does not belong to the sealed main buffer");
+      return {};
+    }
+    // Use upstream's out-of-line buffer queries. Inline getFileOffset would
+    // instantiate SourceManager's lazy-loaded-source BumpPtrAllocator here;
+    // its ASan slow path can interpose on non-ASan prebuilt MLIR fast paths.
+    // No sanitizer is disabled, and no line/column parser is duplicated.
+    bool invalid_buffer = false, invalid_begin = false, invalid_end = false;
+    const auto buffer = sources_.getBufferData(sources_.getMainFileID(), &invalid_buffer);
+    const char *begin_data = sources_.getCharacterData(begin, &invalid_begin);
+    const char *end_data = sources_.getCharacterData(end, &invalid_end);
+    const auto base = reinterpret_cast<std::uintptr_t>(buffer.data());
+    const auto first = reinterpret_cast<std::uintptr_t>(begin_data);
+    const auto last = reinterpret_cast<std::uintptr_t>(end_data);
+    // Integer address checks avoid relational comparison or subtraction of
+    // unrelated pointers if an upstream lookup unexpectedly reports a range
+    // outside the already authenticated same-FileID buffer.
+    if (invalid_buffer || invalid_begin || invalid_end || !buffer.data() ||
+        !begin_data || !end_data || first < base || last < first ||
+        last - base > buffer.size()) {
+      reject(range.getBegin(), "source range escapes the sealed main buffer");
+      return {};
+    }
+    result.offset = first - base;
+    result.length = last - first;
     result.line = sources_.getSpellingLineNumber(begin);
     result.column = sources_.getSpellingColumnNumber(begin);
     return result;
@@ -245,7 +277,14 @@ private:
                     "only source-owned free function definitions are admitted");
     if (!validateTypeLocation(function->getTypeSourceInfo())) return false;
     unsigned markers = 0;
-    for (const clang::FunctionDecl *declaration : function->getCanonicalDecl()->redecls()) {
+    // The base Decl iterator delegates lazy chain completion to Clang's
+    // virtual implementation. FunctionDecl's inline Redeclarable iterator
+    // would instantiate an incompatible instrumented upstream allocator here.
+    const clang::Decl *canonical_declaration = function->getCanonicalDecl();
+    for (const clang::Decl *raw_declaration : canonical_declaration->redecls()) {
+      const auto *declaration = llvm::dyn_cast<clang::FunctionDecl>(raw_declaration);
+      if (!declaration)
+        return reject(function->getLocation(), "unexpected non-function redeclaration");
       if (!inMain(declaration->getLocation()))
         return reject(declaration->getLocation(), "helper or region redeclaration is not source-owned");
       const auto *prototype = declaration->getType()->getAs<clang::FunctionProtoType>();
@@ -276,8 +315,11 @@ private:
   }
   bool authenticateOperation(const clang::FunctionDecl *function,
                              const std::string &name) {
-    const auto *canonical = function->getCanonicalDecl();
-    for (const clang::FunctionDecl *declaration : canonical->redecls()) {
+    const clang::Decl *canonical = function->getCanonicalDecl();
+    for (const clang::Decl *raw_declaration : canonical->redecls()) {
+      const auto *declaration = llvm::dyn_cast<clang::FunctionDecl>(raw_declaration);
+      if (!declaration)
+        return reject(function->getLocation(), "unexpected non-function primitive redeclaration");
       if (!inHeader(declaration->getLocation()) || declaration->hasBody())
         return reject(declaration->getLocation(),
                       "canonical primitive redeclaration or definition is untrusted");
@@ -623,6 +665,7 @@ private:
     return !helper || reject(function->getLocation(), "helper requires one terminal return");
   }
 
+  clang::ASTUnit &ast_;
   clang::ASTContext &context_;
   clang::SourceManager &sources_;
   const std::string &selected_;
@@ -692,7 +735,7 @@ ClosedRegionAdmissionResult admitClosedRegionSource(
   program.source_sha256 = digest(source);
   program.header_sha256 = digest(detail::closed_region_fixture_source);
   program.compiler_identity = clang::getClangFullVersion();
-  Admission admission(ast->getASTContext(), region_name, program, result.error);
+  Admission admission(*ast, region_name, program, result.error);
   if (!admission.run() || !cr::verifyProgram(program, result.error)) return result;
   auto payload = std::make_shared<AuthenticatedClosedRegionEvidence::Payload>();
   payload->program = std::move(program);
