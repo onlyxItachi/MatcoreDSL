@@ -453,6 +453,7 @@ if(BUILD_TESTING AND MDSLC_ENABLE_NATIVE_FRONTEND AND
   add_subdirectory(tests/closed_region)
   add_subdirectory(tests/closed_source)
   add_subdirectory(tests/closed_driver)
+  add_subdirectory(tests/abi_thunk)
 endif()
 if(MDSLC_ENABLE_MATCORE_MLIR)
   add_subdirectory(tools/matcore-mlir)
