@@ -181,6 +181,11 @@ closedRegionAdversarialSources() {
       "auto c = helper(a); publish(c,C);",
       "A later helper definition must be inspected rather than trusted as an opaque call.");
   cases.back().source += "void host(); Value helper(Value v) { host(); return v; }\n";
+  add("helper_attribute_after_region",
+      "Value helper(Value lhs,Value rhs) { return gemm(lhs,rhs,Numerics::strict_f32); }",
+      "auto c = helper(a,b); publish(c,C);",
+      "Complete generic redeclaration traversal must see later helper attributes.");
+  cases.back().source += "[[gnu::const]] Value helper(Value,Value);\n";
   add("purity_attribute_host_call", "[[gnu::const]] Shape host_shape();",
       "auto x = read(D,host_shape(),n);",
       "A host declaration's optimization attribute does not create semantic authority.");
