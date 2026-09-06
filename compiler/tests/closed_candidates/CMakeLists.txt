@@ -64,3 +64,14 @@ foreach(mode IN ITEMS wrong_numeric wrong_variant wrong_threads control_corrupti
   add_test(NAME closed_candidates.provider_negative.${mode}
     COMMAND matcore_closed_candidates_provider_negative ${mode})
 endforeach()
+
+if(closed_openblas)
+  find_package(Threads REQUIRED)
+  add_executable(matcore_closed_candidates_independent_test independent_arithmetic_test.cpp)
+  target_link_libraries(matcore_closed_candidates_independent_test PRIVATE
+    matcore_closed_candidates_production_v1 Threads::Threads)
+  target_compile_options(matcore_closed_candidates_independent_test PRIVATE
+    -fno-fast-math -ffp-contract=off -frounding-math)
+  add_test(NAME closed_candidates.independent_arithmetic_concurrency
+    COMMAND matcore_closed_candidates_independent_test)
+endif()

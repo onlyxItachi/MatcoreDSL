@@ -44,6 +44,11 @@ It reuses the existing C ABI, provider identity gate, local one-thread control,
 and execution report. It is not universal proof. The trusted-provider contract
 is IEEE f32 product/reduction with allowed FMA/reassociation, no finite-only or
 signed-zero elision; new versions/cores still require release execution evidence.
+The existing provider adapter serializes all Matcore-owned thread-policy scopes
+for its shared runtime instance. Its upstream "local" setter is not TLS; see the
+[retained concurrency counterexample and correction](../../../docs/mdslc/agent-reports/openblas-shared-policy-scope-v1.md).
+Uncoordinated direct provider calls/policy mutation and duplicate adapter instances
+do not inherit that exclusion contract.
 
 Tests separately exercise actual production linkage, native-only unavailability,
 all original adapter attacks, exact strict arithmetic, K1/K2 permitted-expression
@@ -55,3 +60,9 @@ The production archive has no injection setter. Instrumented builds cover the
 host and generated leaf; externally installed OpenBLAS internals are not ASan/
 UBSan-instrumented by these tests. Existing generated-leaf ASan OOB controls remain
 necessary; raw LLVM IR cannot obtain UBSan source checks merely from linker flags.
+
+With OpenBLAS linked, an independently authored oracle also enumerates all small
+K1..4 binary reduction trees/permutations and optional FMA placements, and exercises
+eight concurrent first-use Sessions. That test is retained with per-worker failure
+diagnostics because its initial passing run was later falsified in Release; it
+must not be accepted without the owning provider-policy correction.

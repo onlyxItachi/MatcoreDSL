@@ -111,6 +111,23 @@ correct values/reports, and exactly one invoked the closed-provider probe. The
 reviewer repeated all 10 registry CTests successfully and found no source blocker.
 Its detailed report and durable oracle are separate review artifacts.
 
+### Superseding concurrency counterexample
+
+Retaining that oracle uncovered a fresh-process Release failure despite the
+initial passing independent run: the provider's supposedly local thread policy
+was actually process-global. The preliminary concurrency acceptance above was
+withdrawn. See the [owning-layer correction and retained negative control](openblas-shared-policy-scope-v1.md).
+Registry integration requires that correction and renewed independent validation;
+passing arithmetic fixtures alone did not establish concurrent provider safety.
+
+The fix is independently reviewable commit
+`437bdcc1d15373634f6cacd5439566ea6cd3d689`; registry implementation is
+`78135023dfdd99bd2dd8c3323c2137f6041d64ac`. With that fix, Release ON **17/17**,
+Debug ASan+UBSan ON **20/20**, and Release OFF **10/10** passed. Independent review
+repeated the formerly failing original oracle in **100 fresh Release processes**
+without failure. The durable independent oracle is included in this follow-up
+test commit with its failure diagnostics; no mathematical assertion was relaxed.
+
 ## Deliberate limits
 
 No arbitrary generated-artifact/plugin registration, runtime autotuning, provider
