@@ -204,6 +204,16 @@ closedRegionAdversarialSources() {
       "Nonstructured source control must not bypass ordered checks or observations.");
   add("unevaluated_call", "void host();", "auto flag = noexcept(host());",
       "Unevaluated C++ introspection is not a mathematical shape expression.");
+  add("decltype_hidden_call", "void host();",
+      "decltype((host(),Shape{})) extent = m; auto x = read(D,extent,n);",
+      "Unevaluated type expressions require explicit staging, not incidental canonical-type acceptance.");
+  add("typeof_hidden_call", "void host();",
+      "__typeof__((host(),Shape{})) extent = m; auto x = read(D,extent,n);",
+      "GNU typeof inside the closed body is outside the declared type-spelling subset.");
+  add("helper_result_decltype", "void host(); "
+      "decltype((host(),Shape{})) helper(Shape n) { return n; }",
+      "auto extent = helper(m); auto x = read(D,extent,n);",
+      "Expression-bearing type spelling in helper signatures needs the same admission rule.");
   add("builtin_source_macro", "", "auto x = read(D,__LINE__,n);",
       "Compiler builtin macro expansion is not an unmarked mathematical shape literal.");
   add("digraph_directive", "%:define UNUSED 1", "publish(a,C);",
