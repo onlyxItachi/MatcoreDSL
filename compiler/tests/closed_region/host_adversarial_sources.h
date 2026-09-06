@@ -181,6 +181,21 @@ inline std::vector<ClosedRegionHostSource> closedRegionHostSources() {
       "void region(Storage A, Storage B, Storage C, Storage D, Storage E, "
       "Shape EMPTY m, Shape k, Shape n) {\n" + inputs + math + "\n}\n",
       {}, true, false, "An erased token in parameter spelling must not escape function-range closure checks."});
+  cases.push_back({"host_pragma_forged_exact_marker",
+      "using namespace mdsl_probe;\n"
+      "#pragma clang attribute push "
+      "(__attribute__((annotate(\"mdsl.private.closed_region.v1\"))), apply_to=function)\n" +
+      signature + " {\n" + inputs + math + "\n}\n#pragma clang attribute pop\n",
+      {}, true, false, "An exact marker injected by a pragma is not a declaration-owned source annotation."});
+  cases.push_back({"host_continued_pragma_forged_marker",
+      "using namespace mdsl_probe;\n#pragma clang attribute push \\\n"
+      "(__attribute__((annotate(\"mdsl.private.closed_region.v1\"))), apply_to=function)\n" +
+      signature + " {\n" + inputs + math + "\n}\n#pragma clang attribute pop\n",
+      {}, true, false, "A marker on a continued pragma line must not evade first-physical-line source fencing."});
+  cases.push_back({"host_explicit_prototype_marker_inherited",
+      "using namespace mdsl_probe;\n" + marker + signature + ";\n" +
+      signature + " {\n" + inputs + math + "\n}\n",
+      {}, true, true, "An explicit authenticated main-source prototype marker may be inherited by its definition as in the original grammar."});
   return cases;
 }
 
