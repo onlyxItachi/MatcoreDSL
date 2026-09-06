@@ -147,8 +147,10 @@ int run(int argc, char **argv) {
   }
   auto args = parse(argc, argv);
   const auto cwd = fs::current_path();
-  args.source = fs::absolute(args.source).lexically_normal();
-  args.output = fs::absolute(args.output).lexically_normal();
+  // Preserve OS traversal: symlink/../file is not equivalent to lexical ../
+  // cancellation. Admission already records each traversed path identity.
+  args.source = fs::absolute(args.source);
+  args.output = fs::absolute(args.output);
   std::string error;
   if (!support::prospective_output_path_supported_v1(args.output, error)) reject(error);
   if (!fs::is_directory(args.output.parent_path())) reject("output parent does not exist");
