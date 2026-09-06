@@ -14,7 +14,8 @@ unsigned checks=0,bad=0;
 void check(bool okay,const std::string &label){++checks;if(!okay){++bad;std::cerr<<label<<'\n';}}
 void write(const fs::path&p,const std::string&t){std::ofstream f(p);f<<t;f.close();if(!f)throw std::runtime_error("write");}
 s::ProcessResultV1 run(std::vector<std::string> args,const fs::path&cwd){s::ProcessRequestV1 p;p.argv=std::move(args);p.working_directory=cwd;p.environment=s::compiler_environment_sanitization_v1();return s::run_process_v1(p);}
-int main(){
+int main(int argc,char **argv){
+  if(argc!=3)return 2;
   std::string error;
   auto inputs=s::create_temp_directory_v1("mdslc-independent-frozen-input",error);
   auto outputs=s::create_temp_directory_v1("mdslc-independent-frozen-output",error);
@@ -29,8 +30,8 @@ int main(){
     "int effects; struct C{C(){effects=effects*10+1;}~C(){effects=effects*10+2;}};\n"
     "int region(int n){C c;try{if(n==1)throw 7;}catch(int x){effects+=x;}return wrapper(n);}\n"
     "int main(int argc,char**){auto fn=&region;auto x=fn(argc);std::printf(\"%d %d %u %u %s\\n\",x,effects,__builtin_LINE(),std::source_location::current().column(),__FILE__);}\n");
-  fe::Options options;options.input_path=src.string();options.clang_path="/usr/bin/clang++-21";
-  options.clang_resource_directory="/usr/lib/llvm-21/lib/clang/21";
+  fe::Options options;options.input_path=src.string();options.clang_path=argv[1];
+  options.clang_resource_directory=argv[2];
   options.compiler_arguments={"-I"+inputs->path().string()};
   auto capture=h::prepareHostInputs(options,inputs->path().string(),{{"/__mdsl_private__/fixture.h","#pragma once\n"}},error);
   check(bool(capture),"capture "+error);if(!capture)return 1;
