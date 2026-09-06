@@ -4,6 +4,18 @@ Base: canonical `fd64850a0c8cb7d2c0801a64dd94d515dd714130`.
 Implementation branch: `mdslc/generated-strict-cpu-candidate-v1`.
 This is the implementation owner's report, not independent approval.
 
+Canonical integration: **PR #40**, merge
+`5df9ac3c451539bdd9c1e577d6558802fca30535`, normally merged after independent
+review and **19/19 exact-head hosted checks**. Reviewed head:
+`ab73ed45b2133abe86e46c9dd4f2558a36cde737`; canonical pre-merge parent:
+`8db7590485823093de5c261ec9afaf2ddb654e51`. The merge tree is
+`e30112b44f883293f3e430662e4f63fd27b85bd2`, matching the independently composed
+parent/head tree. Full clean-configured local Release passed **90/90**
+(150.92 seconds); hosted validation includes the exact **39-test sanitizer
+scope**, Debug, OpenBLAS enabled/disabled and Windows compatibility. See the
+[validation record](https://github.com/onlyxItachi/MatcoreDSL/pull/40#issuecomment-5561428899)
+and [normal-merge gate](https://github.com/onlyxItachi/MatcoreDSL/pull/40#issuecomment-5561514833).
+
 ## Bounded result
 
 The private no-input issuer constructs a compiler-owned strict GEMM primitive
