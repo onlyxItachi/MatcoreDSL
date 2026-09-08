@@ -44,6 +44,11 @@ add_test(NAME generated_cpu.object_contract COMMAND "${CMAKE_COMMAND}"
   "-DSANITIZED=${MDSLC_CLOSED_REGION_CXX_FLAGS}" -P "${CMAKE_CURRENT_SOURCE_DIR}/object_contract.cmake")
 add_test(NAME generated_cpu.sanitizer_negative_control COMMAND "${CMAKE_COMMAND}"
   "-DEXECUTABLE=$<TARGET_FILE:matcore_generated_cpu_asan_test>" -P "${CMAKE_CURRENT_SOURCE_DIR}/expect_asan.cmake")
+if(MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE STREQUAL "row-contiguous")
+  add_test(NAME generated_cpu.simd_sanitizer_negative_control COMMAND "${CMAKE_COMMAND}"
+    "-DEXECUTABLE=$<TARGET_FILE:matcore_generated_cpu_asan_test>" "-DMODE=simd"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/expect_asan.cmake")
+endif()
 
 # Instrumented builds need not retain the same auto-vectorization decision.
 # Assert actual SIMD only on the unsanitized realization that claims it.

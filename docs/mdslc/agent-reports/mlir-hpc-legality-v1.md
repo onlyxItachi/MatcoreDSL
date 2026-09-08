@@ -159,8 +159,9 @@ candidate or its stage rejection controls. The sources were subsequently moved,
 without content changes, into durable test paths at the integration owner's
 request. Their new CMake runner is separate from those direct baseline runs.
 The runner rejects both a driver that exits nonzero (`/bin/false`) and one that
-exits zero without creating an executable (`/bin/true`). Its positive run is
-deferred until the owning lane's benchmark quiet window ends.
+exits zero without creating an executable (`/bin/true`). After the owning lane's
+benchmark quiet window ended, both positive runner invocations passed against
+the actual row-selected Release driver (4,140 and 1,503 checks).
 
 ## First live production delta review and transformed-source result
 
@@ -189,15 +190,88 @@ Both independent source fixtures passed the row-selected Release driver:
 These are exact local artifact identities from an uncommitted production delta,
 not an immutable implementation checkpoint or full integration acceptance.
 The independent review requested durable row-specific iterator and accumulator/
-add-fastmath mutations, plus a separate achieved-object SIMD assertion. Actual
-row-selected source ASan+UBSan execution and final committed-delta review remain
-pending the corresponding owning-lane build. A Release driver with an ASan host
-option is not a substitute for that instrumented implementation.
+add-fastmath mutations, plus a separate achieved-object SIMD assertion. These
+requests and instrumented source execution were subsequently closed below; the
+uncommitted-artifact chronology above is retained. A Release driver with an ASan
+host option is not a substitute for an instrumented implementation.
+
+## Generated SIMD-specific ASan negative control
+
+At the integration owner's request, this lane also owns the bounded extension
+of `compiler/tests/generated_cpu/execution_test.cpp` and `expect_asan.cmake`.
+The existing N=1 `--oob` control remains unchanged. The new `--oob-simd` uses
+M=1, K=1, N=16, one actual B element and a sufficiently large isolated C
+allocation. It checks disjoint integer address ranges before calling the leaf,
+so output/input alias versioning does not silently select the scalar path.
+Only B's intentionally false capacity is outside the private leaf contract;
+the caller does not itself perform an out-of-bounds load.
+
+Linked to the actual row-selected `strict-asan.o`, the new control reports
+`AddressSanitizer: heap-buffer-overflow`, **`READ of size 16`**, and generated
+`_mlir_ciface___matcore_strict_gemm_f32_v1` as frame #0. Both the SIMD-specific
+CMake classifier and the original scalar classifier pass their expected-failure
+checks. Crucially, linking the same new source to the unchanged scalar candidate
+produces only `READ of size 4`: the SIMD classifier **rejects** that result,
+despite its otherwise genuine ASan error. Scalar instrumentation cannot stand
+in for the new SIMD claim.
+
+Register the SIMD mode only for the row-contiguous selected schedule; default
+scalar builds retain their original control. The classifier requires a wide
+read and generated top frame, not merely nonzero exit or an ASan library symbol.
+This intentionally invalid leaf-only invocation does not weaken the public
+adapter's capacity checks or grant source programs permission to bypass them.
+
+## Committed implementation review and instrumented source closure
+
+Read-only production review at owning commit
+`9769dbafc18d4b8efd05c2e3519543eb57531604` confirms its implementation files match
+the initial reviewed artifacts' source, with the additional requested regression
+tests and object assertion. Their SHA-256 identities are:
+
+| Production file | SHA-256 |
+| --- | --- |
+| `MatcoreCpuGemmCandidate.cpp` | `3f73e00ab25ce857825ee962894d02cefc462ff3e39e3a7f87fa14d789c49c56` |
+| `MatcoreCpuGemmCandidate.h` | `394d90653073e9aae8b9680b7416eb0eee8941bbebeae9143576f9d95c15f263` |
+| `compiler/lib/regions/CMakeLists.txt` | `f28b1e093f1ea1544288cae3311a03b0ee02e65b69cb9051bb9e4b25cb0ab54c` |
+| `matcore-cpu-gemm-candidate/main.cpp` | `4ec15a8802ad291fb063a5e3053cb98dd5bfaab6da05e769f269e6feac49c7a3` |
+
+No concrete numerical, storage, source-authority or malformed-attribute bypass
+was found. The new fixed-schedule branch verifies exact maps, iterator kinds,
+body and destination; required properties cannot be traded for an extra
+`library_call` or other recognized optional property. Unknown discardable
+attributes remain rejected. Stage inspection helpers are not execution issuers.
+The CMake selector changes custom-command arguments, and the manifest records
+distinct Transform, scheduled and LLVM hashes without changing semantic identity.
+The added row Release lane verifies the selected manifest schedule, and the
+instrumented lane selects the same row schedule explicitly. These workflow
+definitions were inspected, not counted as successful hosted executions.
+
+The actual row-selected Debug ASan+UBSan driver was then exercised with both
+committed CMake source runners:
+
+- Driver SHA-256: `22bc230dbaa5781c1bb07866d6a1925c8c5ced88875f0466ac595f108badfb97`.
+- Production generated object SHA-256: `cb8cf8492e12b2b9afb95045be598a4bf579819821a882d08962730a8d3b43ed`.
+- `schedule_source_contract`: **4,140 PASS**, exact output and no stderr.
+- `schedule_same_value_contract`: **1,503 PASS**, exact output and no stderr.
+
+The build cache identifies Debug, `-O1 -g -fsanitize=address,undefined
+-fno-omit-frame-pointer`, and `row-contiguous`. This is actual instrumented
+source-route execution, not passing an extra host flag to a Release driver.
+Generated memory ASan is independently demonstrated above; raw LLVM computation
+does not acquire source-level UBSan checks merely from sanitizer linkage.
+
+The unchanged normal execution body of the leaf test also passed **174 checks**
+when separately linked with both row and scalar instrumented objects. The new
+SIMD expected-failure classifier deliberately rejects the scalar read report.
 
 ## Verdict at this stage
 
-**Architectural approach ACCEPT; transformed implementation acceptance PENDING.**
+**Independent implementation ACCEPT at `9769dbaf...`, conditional on full
+exact-head integration gates.**
 No new generic optimization abstraction is required for this bounded leaf, but
 Matcore's numerical/resource/source contracts and the new schedule-specific
 derivation checks are irreducible. Integrating the candidate must not weaken
 original pairing or falsely announce whole-region transformation/reuse.
+Complete Release/ASan package suites, hosted checks and normal integration of
+the final combined test/evidence head remain the owning lane's separate gates.
+This review does not announce campaign completion or a performance/parity claim.
