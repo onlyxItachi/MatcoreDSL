@@ -1,7 +1,10 @@
 #include "MatcoreCpuGemmCandidate.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include <iostream>
 
@@ -246,6 +249,163 @@ int main() {
   check(!candidate::issueStrictGemmArtifactV1(
       context, false, static_cast<candidate::StrictGemmScheduleV1>(99)),
       "unknown schedule cannot fall back or issue authority");
+
+  auto tiled = candidate::deriveStrictGemmCacheTiledV1(*stages.bufferized, error);
+  check(bool(tiled), "cache-tiled upstream derivation: " + error);
+  check(!candidate::verifyStrictGemmCacheTiledV1({}, error) && !error.empty(),
+        "null tiled evidence fails closed");
+  if (tiled) {
+    check(candidate::verifyStrictGemmCacheTiledV1(*tiled, error),
+          "exact cache-tiled structure verifies");
+    check(candidate::verifyStrictGemmBufferizedV1(*stages.bufferized, error),
+          "cache tiling leaves original buffer witness untouched");
+    check(!candidate::verifyStrictGemmBufferizedV1(*tiled, error) &&
+              !candidate::verifyStrictGemmRowContiguousV1(*tiled, error),
+          "tiled result cannot impersonate original or row witness");
+    auto rejectTiled = [&](auto mutate, const std::string &label) {
+      mlir::OwningOpRef<mlir::ModuleOp> bad = tiled->clone();
+      mutate(*bad);
+      check(!candidate::verifyStrictGemmCacheTiledV1(*bad, error) &&
+                !error.empty(), label);
+    };
+    auto kLoop = [](mlir::ModuleOp m) {
+      mlir::scf::ForOp result;
+      m.walk([&](mlir::scf::ForOp op) {
+        // Only the K loop directly contains the scheduled contraction.
+        if (!op.getBody()->getOps<mlir::linalg::GenericOp>().empty()) result = op;
+      });
+      return result;
+    };
+    rejectTiled([&](mlir::ModuleOp m) {
+      auto k = kLoop(m);
+      auto n = mlir::cast<mlir::scf::ForOp>(k->getParentOp());
+      k.setUpperBound(n.getUpperBound());
+    }, "cache tiling cannot replace K bound by N");
+    rejectTiled([&](mlir::ModuleOp m) {
+      auto k = kLoop(m);
+      mlir::OpBuilder b(k);
+      auto one = mlir::arith::ConstantOp::create(b, k.getLoc(), b.getIndexAttr(1));
+      k.setLowerBound(one);
+    }, "cache tiling cannot skip the first K element");
+    rejectTiled([&](mlir::ModuleOp m) {
+      auto k = kLoop(m);
+      mlir::OpBuilder b(k);
+      auto step = mlir::arith::ConstantOp::create(b, k.getLoc(), b.getIndexAttr(64));
+      k.setStep(step);
+    }, "cache tiling cannot skip K chunks through a different step");
+    rejectTiled([&](mlir::ModuleOp m) {
+      auto k = kLoop(m);
+      m.walk([&](mlir::affine::AffineMinOp op) {
+        if (op.getOperand(0) == k.getInductionVar()) {
+          auto d = mlir::getAffineDimExpr(0, &context);
+          auto s = mlir::getAffineSymbolExpr(0, &context);
+          op->setAttr("map", mlir::AffineMapAttr::get(
+              mlir::AffineMap::get(1, 1, {s - d, mlir::getAffineConstantExpr(31, &context)}, &context)));
+        }
+      });
+    }, "cache tiling cannot omit the last element of each K tile");
+    rejectTiled([&](mlir::ModuleOp m) {
+      auto fn = *m.getOps<mlir::func::FuncOp>().begin();
+      m.walk([&](mlir::memref::SubViewOp op) {
+        if (op.getSource() == fn.getArgument(2))
+          op->setOperand(0, fn.getArgument(0));
+      });
+    }, "cache tiling cannot update an input instead of private C");
+    rejectTiled([&](mlir::ModuleOp m) {
+      auto fn = *m.getOps<mlir::func::FuncOp>().begin();
+      auto k = kLoop(m);
+      m.walk([&](mlir::memref::SubViewOp op) {
+        if (op.getSource() == fn.getArgument(2))
+          op.getOffsetsMutable()[0].set(k.getInductionVar());
+      });
+    }, "cache tiling cannot use a K offset for C rows");
+    rejectTiled([&](mlir::ModuleOp m) {
+      auto fn = *m.getOps<mlir::func::FuncOp>().begin();
+      m.walk([&](mlir::memref::SubViewOp op) {
+        if (op.getSource() == fn.getArgument(2))
+          op.getSizesMutable()[0].set(op.getSizes()[1]);
+      });
+    }, "cache tiling cannot use the N tail size for C rows");
+    rejectTiled([&](mlir::ModuleOp m) {
+      mlir::linalg::FillOp fill;
+      mlir::linalg::GenericOp generic;
+      m.walk([&](mlir::linalg::FillOp op) { fill = op; });
+      m.walk([&](mlir::linalg::GenericOp op) { generic = op; });
+      fill->moveBefore(generic);
+    }, "cache tiling cannot re-zero C inside each K chunk");
+    rejectTiled([&](mlir::ModuleOp m) {
+      auto fn = *m.getOps<mlir::func::FuncOp>().begin();
+      mlir::OpBuilder b(&fn.getBody().front(), fn.getBody().front().begin());
+      mlir::memref::AllocaOp::create(b, fn.getLoc(),
+          mlir::MemRefType::get({4, 64}, b.getF32Type()));
+    }, "cache tiling cannot introduce private tensor allocation");
+    rejectTiled([&](mlir::ModuleOp m) {
+      auto fn = *m.getOps<mlir::func::FuncOp>().begin();
+      mlir::OpBuilder b(&fn.getBody().front(), fn.getBody().front().begin());
+      mlir::memref::CopyOp::create(b, fn.getLoc(), fn.getArgument(0), fn.getArgument(2));
+    }, "cache tiling cannot add a hidden copy");
+    rejectTiled([&](mlir::ModuleOp m) {
+      m.walk([&](mlir::arith::MulFOp op) {
+        op.setFastmath(mlir::arith::FastMathFlags::contract);
+      });
+    }, "cache tiling cannot acquire FMA permission");
+    rejectTiled([&](mlir::ModuleOp m) {
+      m.walk([&](mlir::arith::AddFOp op) {
+        op->setOperand(0, op->getOperand(1));
+      });
+    }, "cache tiling cannot replace prior rounded accumulator");
+    rejectTiled([&](mlir::ModuleOp m) {
+      m.walk([&](mlir::arith::AddFOp op) {
+        auto previous = op.getLhs();
+        op->setOperand(0, op.getRhs());
+        op->setOperand(1, previous);
+      });
+    }, "exact replay retains scalar accumulator operand order");
+    rejectTiled([&](mlir::ModuleOp m) {
+      m.walk([&](mlir::arith::MulFOp op) {
+        auto previous = op.getLhs();
+        op->setOperand(0, op.getRhs());
+        op->setOperand(1, previous);
+      });
+    }, "exact replay retains scalar multiplication operand order");
+    rejectTiled([&](mlir::ModuleOp m) {
+      m.walk([&](mlir::linalg::GenericOp op) {
+        auto maps = op.getIndexingMapsArray();
+        std::swap(maps[0], maps[1]);
+        op.setIndexingMapsAttr(mlir::Builder(&context).getAffineMapArrayAttr(maps));
+      });
+    }, "cache tiling cannot commute contraction indexing");
+    rejectTiled([&](mlir::ModuleOp m) {
+      m.walk([&](mlir::linalg::GenericOp op) {
+        op->setAttr("library_call", mlir::StringAttr::get(&context, "forged"));
+      });
+    }, "cache tiling cannot add a provider call");
+    rejectTiled([&](mlir::ModuleOp m) {
+      auto fn = *m.getOps<mlir::func::FuncOp>().begin();
+      mlir::cast<mlir::func::ReturnOp>(fn.getBody().front().back())
+          ->setOperand(0, fn.getArgument(0));
+    }, "cache tiling cannot change returned destination identity");
+  }
+  auto tiledArtifact = candidate::issueStrictGemmArtifactV1(
+      context, false, candidate::StrictGemmScheduleV1::CacheTiledMKN);
+  auto repeatedTiled = candidate::issueStrictGemmArtifactV1(
+      context, false, candidate::StrictGemmScheduleV1::CacheTiledMKN);
+  auto sanitizedTiled = candidate::issueStrictGemmArtifactV1(
+      context, true, candidate::StrictGemmScheduleV1::CacheTiledMKN);
+  check(bool(tiledArtifact), "cache-tiled artifact issuance: " + tiledArtifact.error);
+  check(tiledArtifact && repeatedTiled &&
+            tiledArtifact.manifest == repeatedTiled.manifest &&
+            tiledArtifact.llvm_ir == repeatedTiled.llvm_ir &&
+            tiledArtifact.semantic_ir == first.semantic_ir &&
+            tiledArtifact.structured_ir == first.structured_ir &&
+            tiledArtifact.bufferized_ir == first.bufferized_ir &&
+            tiledArtifact.llvm_ir != rowArtifact.llvm_ir &&
+            tiledArtifact.manifest.find("schedule=cache-tiled-4x64x32-mkn") != std::string::npos,
+        "tiled realization identity is deterministic without semantic drift");
+  check(sanitizedTiled &&
+            sanitizedTiled.llvm_ir.find("sanitize_address") != std::string::npos &&
+            sanitizedTiled.semantic_ir == first.semantic_ir,
+        "cache-tiled generated sanitizer attributes preserve semantic identity");
   std::cout << "strict CPU candidate: " << checks << " checks, " << failures
             << " failures\n";
   return failures != 0;

@@ -16,13 +16,16 @@ int main(int argc, char **argv) {
     else if (option == "--schedule=row-contiguous" && !has_schedule) {
       has_schedule = true;
       schedule = candidate::StrictGemmScheduleV1::RowContiguousMKN;
+    } else if (option == "--schedule=cache-tiled" && !has_schedule) {
+      has_schedule = true;
+      schedule = candidate::StrictGemmScheduleV1::CacheTiledMKN;
     } else
       valid = false;
   }
   if (!valid) {
     llvm::errs()
         << "private built-in candidate generator: --output FILE [--asan] "
-           "[--schedule=row-contiguous]\n"
+           "[--schedule=row-contiguous|cache-tiled]\n"
            "No source/MLIR input is accepted. This does not admit a program.\n";
     return 2;
   }

@@ -70,7 +70,7 @@ target_link_libraries(matcore_cpu_gemm_candidate PUBLIC matcore_closed_region_se
     MLIRAffineToStandard MLIRSCFToControlFlow MLIRMemRefToLLVM MLIRFuncToLLVM
     MLIRControlFlowToLLVM MLIRReconcileUnrealizedCasts MLIRBuiltinToLLVMIRTranslation
     MLIRLLVMToLLVMIRTranslation MLIRTargetLLVMIRExport MLIRLinalgTransformOps
-    MLIRTransformDialect MLIRTransformDialectTransforms MLIRParser)
+    MLIRTransformDialect MLIRTransformDialectTransforms MLIRMemRefTransforms MLIRParser)
 mdslc_target_enable_warnings(matcore_cpu_gemm_candidate)
 mdslc_target_match_llvm_rtti(matcore_cpu_gemm_candidate)
 add_executable(matcore-cpu-gemm-candidate
@@ -82,18 +82,18 @@ set(region_leaf_modes normal)
 set(MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE "scalar" CACHE STRING
   "Internal strict generated GEMM realization; not runtime cost policy")
 set_property(CACHE MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE PROPERTY STRINGS
-  scalar row-contiguous)
+  scalar row-contiguous cache-tiled)
 mark_as_advanced(MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE)
-if(NOT MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE MATCHES "^(scalar|row-contiguous)$")
-  message(FATAL_ERROR "Unknown MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE; expected scalar or row-contiguous")
+if(NOT MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE MATCHES "^(scalar|row-contiguous|cache-tiled)$")
+  message(FATAL_ERROR "Unknown MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE; expected scalar, row-contiguous or cache-tiled")
 endif()
 if(BUILD_TESTING)
   list(APPEND region_leaf_modes asan)
 endif()
 foreach(mode IN LISTS region_leaf_modes)
   set(issuer_args)
-  if(MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE STREQUAL "row-contiguous")
-    list(APPEND issuer_args --schedule=row-contiguous)
+  if(NOT MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE STREQUAL "scalar")
+    list(APPEND issuer_args "--schedule=${MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE}")
   endif()
   set(kernel_flags -O2)
   # A sanitized compiler build also instruments its production leaf; linking a

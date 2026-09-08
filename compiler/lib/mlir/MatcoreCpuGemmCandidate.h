@@ -41,14 +41,25 @@ bool verifyStrictGemmStructuredV1(mlir::ModuleOp module, std::string &error);
 bool verifyStrictGemmBufferizedV1(mlir::ModuleOp module, std::string &error);
 
 // Internal realization choice, not mathematical semantics or runtime policy.
-// Both retain increasing scalar K for every output and separate f32 arithmetic.
-enum class StrictGemmScheduleV1 { ScalarMNK, RowContiguousMKN };
+// All retain increasing scalar K for every output and separate f32 arithmetic.
+enum class StrictGemmScheduleV1 {
+  ScalarMNK, RowContiguousMKN, CacheTiledMKN
+};
 
 // Self-consistency/derivation only: callers cannot obtain execution authority
 // by submitting a serialized module to these inspection helpers.
 mlir::OwningOpRef<mlir::ModuleOp>
 deriveStrictGemmRowContiguousV1(mlir::ModuleOp bufferized, std::string &error);
 bool verifyStrictGemmRowContiguousV1(mlir::ModuleOp module, std::string &error);
+
+// Exact pinned Transform derivation: sequential outer MNK tiles [4,64,32],
+// inner MKN; one initial fill, never independently zeroed K partial sums.
+// Verification checks narrow operation/effect postconditions and structural
+// replay of the compiler-owned upstream schedule. Replay detects payload drift,
+// not an arbitrary-loop equivalence theorem or an independent proof of MLIR.
+mlir::OwningOpRef<mlir::ModuleOp>
+deriveStrictGemmCacheTiledV1(mlir::ModuleOp bufferized, std::string &error);
+bool verifyStrictGemmCacheTiledV1(mlir::ModuleOp module, std::string &error);
 
 struct StrictGemmArtifactV1 {
   std::string llvm_ir;

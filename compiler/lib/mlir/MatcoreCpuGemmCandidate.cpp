@@ -4,6 +4,7 @@
 #include "MatcoreContractionModel.h"
 
 #include "mlir/Conversion/Passes.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/Transforms/Bufferize.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
@@ -13,11 +14,15 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/Linalg/TransformOps/DialectExtension.h"
+#include "mlir/Dialect/Linalg/Transforms/TilingInterfaceImpl.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/MemRef/Transforms/Passes.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Transform/Transforms/TransformInterpreterUtils.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Parser/Parser.h"
@@ -26,6 +31,7 @@
 #include "mlir/Target/LLVMIR/Export.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/Verifier.h"
@@ -56,6 +62,21 @@ module attributes {transform.with_named_sequence} {
 }
 )mlir";
 
+// Tile boundaries are HOW, not mathematical metadata. For each fixed (m,n),
+// increasing outer K chunks and increasing inner K form the original ordered
+// fold, starting from the existing C accumulator. No partial sum is zeroed.
+constexpr llvm::StringLiteral cacheTiledTransform = R"mlir(
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%root: !transform.any_op {transform.readonly}) {
+    %matmul = transform.structured.match ops{["linalg.matmul"]} in %root : (!transform.any_op) -> !transform.any_op
+    %tiled, %m, %n, %k = transform.structured.tile_using_for %matmul tile_sizes [4, 64, 32] : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
+    %generic = transform.structured.generalize %tiled : (!transform.any_op) -> !transform.any_op
+    %scheduled = transform.structured.interchange %generic iterator_interchange = [0, 2, 1] : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+)mlir";
+
 std::string digest(llvm::StringRef value) {
   const auto bytes = llvm::SHA256::hash(llvm::arrayRefFromStringRef(value));
   constexpr char hex[] = "0123456789abcdef";
@@ -75,6 +96,36 @@ std::string print(mlir::ModuleOp module) {
 bool fail(std::string &error, llvm::StringRef message) {
   error = "strict CPU GEMM candidate: " + message.str();
   return false;
+}
+
+// This is compiler pass composition, not source admission or a proof issuer.
+// Failed/partially applied transforms are discarded with their isolated clone.
+mlir::OwningOpRef<mlir::ModuleOp>
+applyPinnedTransform(mlir::ModuleOp bufferized, llvm::StringRef source,
+                     std::string &error) {
+  auto *context = bufferized.getContext();
+  mlir::DialectRegistry registry;
+  mlir::linalg::registerTransformDialectExtension(registry);
+  mlir::linalg::registerTilingInterfaceExternalModels(registry);
+  context->appendDialectRegistry(registry);
+  context->getOrLoadDialect<mlir::transform::TransformDialect>();
+  auto transform = mlir::parseSourceString<mlir::ModuleOp>(
+      source, mlir::ParserConfig(context));
+  if (!transform) {
+    fail(error, "cannot parse pinned Transform schedule");
+    return {};
+  }
+  auto entry = transform->lookupSymbol<mlir::transform::NamedSequenceOp>(
+      mlir::transform::TransformDialect::kTransformEntryPointSymbolName);
+  mlir::OwningOpRef<mlir::ModuleOp> scheduled = bufferized.clone();
+  if (!entry || mlir::failed(mlir::transform::applyTransformNamedSequence(
+                    scheduled->getOperation(), entry.getOperation(), *transform,
+                    mlir::transform::TransformOptions().enableExpensiveChecks(true))) ||
+      mlir::failed(mlir::verify(*scheduled))) {
+    fail(error, "pinned Transform derivation failed");
+    return {};
+  }
+  return scheduled;
 }
 
 closed_region::Program primitive() {
@@ -307,30 +358,76 @@ mlir::OwningOpRef<mlir::ModuleOp>
 deriveStrictGemmRowContiguousV1(mlir::ModuleOp bufferized, std::string &error) {
   if (!verifyStrictGemmBufferizedV1(bufferized, error))
     return {};
-  auto *context = bufferized.getContext();
-  mlir::DialectRegistry registry;
-  mlir::linalg::registerTransformDialectExtension(registry);
-  context->appendDialectRegistry(registry);
-  context->getOrLoadDialect<mlir::transform::TransformDialect>();
-  auto transform = mlir::parseSourceString<mlir::ModuleOp>(
-      rowContiguousTransform, mlir::ParserConfig(context));
-  if (!transform) {
-    fail(error, "cannot parse pinned row-contiguous Transform schedule");
+  auto scheduled = applyPinnedTransform(bufferized, rowContiguousTransform, error);
+  if (!scheduled || !verifyStrictGemmRowContiguousV1(*scheduled, error))
     return {};
+  return scheduled;
+}
+
+bool verifyStrictGemmCacheTiledV1(mlir::ModuleOp module, std::string &error) {
+  error.clear();
+  if (!module || mlir::failed(mlir::verify(module)))
+    return fail(error, "invalid cache-tiled module");
+  // Independent narrow envelope: no allocation, copy, call, parallel reduction,
+  // extra arithmetic or hidden effect. Exact scalar/body/index relationships
+  // are checked below by replay, using upstream's SSA-aware equivalence.
+  unsigned fills = 0, generics = 0, loops = 0, views = 0, muls = 0, adds = 0;
+  bool invalid = false;
+  module.walk([&](mlir::Operation *op) {
+    invalid |= !op->getDiscardableAttrDictionary().empty();
+    invalid |= !mlir::isa<mlir::ModuleOp, mlir::func::FuncOp,
+        mlir::func::ReturnOp, mlir::arith::ConstantOp, mlir::memref::DimOp,
+        mlir::affine::AffineMinOp, mlir::affine::AffineApplyOp,
+        mlir::scf::ForOp, mlir::scf::YieldOp, mlir::memref::SubViewOp,
+        mlir::linalg::FillOp, mlir::linalg::GenericOp, mlir::linalg::YieldOp,
+        mlir::arith::MulFOp, mlir::arith::AddFOp>(op);
+    if (auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(op)) {
+      ++fills;
+      invalid |= !mlir::isa<mlir::func::FuncOp>(fill->getParentOp());
+    }
+    generics += mlir::isa<mlir::linalg::GenericOp>(op);
+    loops += mlir::isa<mlir::scf::ForOp>(op);
+    views += mlir::isa<mlir::memref::SubViewOp>(op);
+    if (auto mul = mlir::dyn_cast<mlir::arith::MulFOp>(op)) {
+      ++muls;
+      invalid |= !mul.getType().isF32() ||
+                 mul.getFastmath() != mlir::arith::FastMathFlags::none;
+    }
+    if (auto add = mlir::dyn_cast<mlir::arith::AddFOp>(op)) {
+      ++adds;
+      invalid |= !add.getType().isF32() ||
+                 add.getFastmath() != mlir::arith::FastMathFlags::none;
+    }
+  });
+  if (invalid || fills != 1 || generics != 1 || loops != 3 || views != 3 ||
+      muls != 1 || adds != 1)
+    return fail(error, "cache-tiled operation/effect/numerical envelope changed");
+
+  // Trust the pinned upstream tiler under the exact original preconditions,
+  // rather than implementing an overlapping affine-loop theorem checker.
+  // Replay binds all shapes, bounds/steps, tail minima, subview sources/offsets,
+  // iteration maps, scalar SSA, zeroing position and returned destination.
+  // It is drift detection, not independent validation of upstream semantics.
+  auto canonical = buildStrictGemmStagesV1(*module.getContext());
+  if (!canonical) {
+    error = canonical.error;
+    return false;
   }
-  auto entry = transform->lookupSymbol<mlir::transform::NamedSequenceOp>(
-      mlir::transform::TransformDialect::kTransformEntryPointSymbolName);
-  // Failed transforms may partially mutate payloads: never modify the verified
-  // input or reuse a failed candidate. Only this isolated clone can survive.
-  mlir::OwningOpRef<mlir::ModuleOp> scheduled = bufferized.clone();
-  if (!entry || mlir::failed(mlir::transform::applyTransformNamedSequence(
-                    scheduled->getOperation(), entry.getOperation(), *transform,
-                    mlir::transform::TransformOptions().enableExpensiveChecks(true))) ||
-      !verifyStrictGemmRowContiguousV1(*scheduled, error)) {
-    if (error.empty())
-      fail(error, "row-contiguous Transform derivation failed");
+  auto expected = applyPinnedTransform(*canonical.bufferized,
+                                       cacheTiledTransform, error);
+  if (!expected || !mlir::OperationEquivalence::isEquivalentTo(
+      module, *expected, mlir::OperationEquivalence::IgnoreLocations))
+    return fail(error, "cache-tiled payload differs from pinned structural derivation");
+  return true;
+}
+
+mlir::OwningOpRef<mlir::ModuleOp>
+deriveStrictGemmCacheTiledV1(mlir::ModuleOp bufferized, std::string &error) {
+  if (!verifyStrictGemmBufferizedV1(bufferized, error))
     return {};
-  }
+  auto scheduled = applyPinnedTransform(bufferized, cacheTiledTransform, error);
+  if (!scheduled || !verifyStrictGemmCacheTiledV1(*scheduled, error))
+    return {};
   return scheduled;
 }
 
@@ -377,7 +474,8 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
     bool address_sanitizer, StrictGemmScheduleV1 schedule) {
   StrictGemmArtifactV1 result;
   if (schedule != StrictGemmScheduleV1::ScalarMNK &&
-      schedule != StrictGemmScheduleV1::RowContiguousMKN) {
+      schedule != StrictGemmScheduleV1::RowContiguousMKN &&
+      schedule != StrictGemmScheduleV1::CacheTiledMKN) {
     fail(result.error, "unknown strict GEMM schedule");
     return result;
   }
@@ -395,6 +493,12 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
     if (!stages.bufferized)
       return result;
     result.transform_ir = rowContiguousTransform.str();
+  } else if (schedule == StrictGemmScheduleV1::CacheTiledMKN) {
+    stages.bufferized = deriveStrictGemmCacheTiledV1(
+        *stages.bufferized, result.error);
+    if (!stages.bufferized)
+      return result;
+    result.transform_ir = cacheTiledTransform.str();
   }
   result.scheduled_ir = print(*stages.bufferized);
   auto function = *stages.bufferized->getOps<mlir::func::FuncOp>().begin();
@@ -411,6 +515,8 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
   mlir::PassManager passes(&context);
   passes.addNestedPass<mlir::func::FuncOp>(
       mlir::createConvertLinalgToLoopsPass());
+  if (schedule == StrictGemmScheduleV1::CacheTiledMKN)
+    passes.addPass(mlir::memref::createExpandStridedMetadataPass());
   passes.addPass(mlir::createLowerAffinePass());
   passes.addPass(mlir::createSCFToControlFlowPass());
   passes.addPass(mlir::createArithToLLVMConversionPass());
@@ -430,8 +536,20 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
     fail(result.error, "LLVM translation/verification failed");
     return result;
   }
-  unsigned multiplies = 0, adds = 0, definitions = 0;
+  unsigned multiplies = 0, adds = 0, definitions = 0, tailMinima = 0;
+  auto isTailMinimum = [&](const llvm::Function &fn) {
+    return schedule == StrictGemmScheduleV1::CacheTiledMKN &&
+           fn.isDeclaration() && fn.getIntrinsicID() == llvm::Intrinsic::smin &&
+           fn.getName() == "llvm.smin.i64" && fn.arg_size() == 2 &&
+           !fn.isVarArg() && fn.getReturnType()->isIntegerTy(64) &&
+           fn.getArg(0)->getType()->isIntegerTy(64) &&
+           fn.getArg(1)->getType()->isIntegerTy(64);
+  };
   for (auto &fn : *lowered) {
+    // LowerAffine encodes each dynamic tile tail as the standard signed integer
+    // minimum intrinsic. This is LLVM machinery, not a fallible external call.
+    if (isTailMinimum(fn))
+      continue;
     if (fn.isDeclaration() || (fn.getName() != kStrictGemmSymbolV1 &&
                                fn.getName() != kStrictGemmCInterfaceV1)) {
       fail(result.error, "unexpected declaration or executable symbol");
@@ -450,17 +568,26 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
         multiplies += instruction.getOpcode() == llvm::Instruction::FMul;
         adds += instruction.getOpcode() == llvm::Instruction::FAdd;
         if (auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction)) {
+          if (fn.getName() == kStrictGemmSymbolV1 &&
+              call->getCalledFunction() &&
+              isTailMinimum(*call->getCalledFunction())) {
+            ++tailMinima;
+            continue;
+          }
           if (fn.getName() != kStrictGemmCInterfaceV1 ||
               !call->getCalledFunction() ||
               call->getCalledFunction()->getName() != kStrictGemmSymbolV1) {
             fail(result.error,
-                 "generated leaf contains allocation/provider/unknown call");
+                 "generated leaf contains allocation/provider/unknown call: " +
+                 (call->getCalledFunction() ? call->getCalledFunction()->getName().str()
+                                            : std::string("indirect")));
             return result;
           }
         }
       }
   }
-  if (definitions != 2 || multiplies != 1 || adds != 1) {
+  if (definitions != 2 || multiplies != 1 || adds != 1 ||
+      tailMinima != (schedule == StrictGemmScheduleV1::CacheTiledMKN ? 3U : 0U)) {
     fail(result.error, "LLVM strict scalar arithmetic footprint changed");
     return result;
   }
@@ -477,12 +604,19 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
       "tensor_allocations=0\ncopies=0\npublication=none\n"
       "pipeline=one-shot-bufferize," +
       (schedule == StrictGemmScheduleV1::ScalarMNK ? std::string{} :
-          "transform-generalize-interchange-mkn,") +
-      "linalg-loops,affine-scf-cf-llvm,llvm-translation\n"
+       schedule == StrictGemmScheduleV1::RowContiguousMKN ?
+          "transform-generalize-interchange-mkn," :
+          "transform-tile-4x64x32-generalize-interchange-mkn,") +
+      "linalg-loops," +
+      (schedule == StrictGemmScheduleV1::CacheTiledMKN ?
+          "expand-strided-metadata," : "") +
+      "affine-scf-cf-llvm,llvm-translation\n"
       "address_sanitizer=" +
       std::string(address_sanitizer ? "function_attributes" : "off") +
       "\nschedule=" +
-      (schedule == StrictGemmScheduleV1::ScalarMNK ? "scalar-mnk" : "row-contiguous-mkn") +
+      (schedule == StrictGemmScheduleV1::ScalarMNK ? "scalar-mnk" :
+       schedule == StrictGemmScheduleV1::RowContiguousMKN ? "row-contiguous-mkn" :
+          "cache-tiled-4x64x32-mkn") +
       "\nsemantic_sha256=" + digest(result.semantic_ir) +
       "\nstructured_sha256=" + digest(result.structured_ir) +
       "\nbufferized_sha256=" + digest(result.bufferized_ir) +
