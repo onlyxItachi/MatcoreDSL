@@ -29,8 +29,10 @@ retains the configured spelling, because its bound RUNPATH directory can differ
 from a symlink target's physical directory. It is cleared for provider-OFF.
 
 Within feature-ON manual-consumer testing, provider-ON requires a nonempty
-absolute existing file, rejects a directory, and resolves its canonical path
-before deriving arguments. The feature-OFF absence-only package path returns
+absolute existing file and rejects a directory. Its configured spelling is
+preserved for both the file argument and runtime search directory. Resolving a
+symlink does not authorize changing the directory containing its SONAME alias.
+The feature-OFF absence-only package path returns
 before this guard and requires no experimental-driver provider property.
 Provider-OFF returns
 empty provider identity/arguments even when a stale input path was supplied.
@@ -41,7 +43,7 @@ The ABI child takes a native-command string instead of an argument list. The
 script now serializes the exact common list by quoting every argument and
 escaping quotes/backslashes, then lets the existing child
 `separate_arguments(NATIVE_COMMAND)` restore the tokens. This preserves spaces
-and commas in canonical file/directory paths, without a separate ABI-only
+and commas in configured file/directory paths, without a separate ABI-only
 provider lookup or a manually assembled rpath string.
 
 Both the identity regression and the new link-argument regression now execute
@@ -53,14 +55,14 @@ test, before actual consumers. There is no new CTest name or count change.
 Executed with the existing CMake 4.3.2:
 
 ```sh
-cmake -DSCRATCH=/tmp/mdslc-provider-link-test-XGffM87L \
+cmake -DSCRATCH=/tmp/mdslc-provider-symlink-test-jyXke0wk \
   -P compiler/tests/cmake/experimental_regions_consumer_link_test.cmake
 cmake -P compiler/tests/cmake/experimental_regions_install_identity_test.cmake
 ```
 
 The link regression passed:
 
-- provider-ON canonicalization through a symlink;
+- provider-ON configured spelling through cross-directory symlinks;
 - exact file and separate rpath arguments for a path containing spaces/comma;
 - scoped no-as-needed arguments with immediate linker-state restoration;
 - provider-ON followed by provider-OFF using the same output variables, proving
@@ -75,6 +77,17 @@ OpenBLAS implementation, and no numerical/provider execution claim is derived
 from it. An initial negative-test diagnostic matcher was corrected to use a
 stable diagnostic token after CMake wrapped the human-readable error across
 lines; the provider guard itself had correctly rejected that input.
+
+Root review found and corrected a separate path-interpretation risk in the
+first version at `5c9e8401e868161b3fb2de63317ec701df738993`: canonicalizing
+`provider/libconfigured-provider.so` could select `blobstore/versioned.bin`,
+then put only the blob-store directory in RUNPATH even though the `.so.0`
+SONAME alias exists solely in the configured provider directory. The original
+argument test asserted canonicalization and therefore missed this case. The
+updated fixture creates both `.so` and `.so.0` cross-directory symlinks to a
+versioned blob, verifies that the blob directory has no SONAME alias, and
+requires the exact configured file/directory spelling. This is an argument and
+filesystem-layout regression, not an actual ELF-loader execution claim.
 
 The existing identity regression again passed the actual NEW-policy branch,
 documented OLD-lookup emulation, four positive output formats and six rejection

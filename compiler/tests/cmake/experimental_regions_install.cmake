@@ -43,13 +43,7 @@ if(NOT ENABLED)
   return()
 endif()
 matcore_installed_provider_link_flags("${HAS_OPENBLAS}" "${PROVIDER}"
-  provider_link_flags canonical_provider)
-# The driver is bound to the configured spelling, whose directory can differ
-# from a symlink's physical target used by the manual consumers.
-set(driver_provider)
-if(HAS_OPENBLAS)
-  set(driver_provider "${PROVIDER}")
-endif()
+  provider_link_flags driver_provider)
 set(archive "${private}/libmatcore_closed_candidates_production_v1.a")
 set(candidates "${private}/libmatcore_closed_candidates_isolated_v1.so")
 foreach(path IN ITEMS "${include}/matcore/region.h"

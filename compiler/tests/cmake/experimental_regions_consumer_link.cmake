@@ -10,13 +10,14 @@ function(matcore_installed_provider_link_flags enabled configured_provider outpu
     message(FATAL_ERROR
       "MDSLC_INSTALL_PROVIDER_FILE: provider-enabled consumers require an existing absolute provider file")
   endif()
-  file(REAL_PATH "${configured_provider}" canonical_provider)
-  get_filename_component(provider_directory "${canonical_provider}" DIRECTORY)
-  set(${output_provider} "${canonical_provider}" PARENT_SCOPE)
+  # Preserve the configured spelling: its directory can contain the SONAME
+  # alias while a cross-directory physical target has only a versioned blob.
+  get_filename_component(provider_directory "${configured_provider}" DIRECTORY)
+  set(${output_provider} "${configured_provider}" PARENT_SCOPE)
   # Executable RUNPATH is not used for Runtime's transitive dependencies. Keep
   # the provider direct under --as-needed, then restore the caller's link state.
   set(${output_flags} -Xlinker --push-state -Xlinker --no-as-needed
-    "${canonical_provider}" -Xlinker --pop-state
+    "${configured_provider}" -Xlinker --pop-state
     -Xlinker -rpath -Xlinker "${provider_directory}" PARENT_SCOPE)
 endfunction()
 
