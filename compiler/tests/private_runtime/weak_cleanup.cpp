@@ -41,7 +41,9 @@ int main(int argc, char **) {
   if (!success.ok() || output != 9 || success.publication_count() != 1 ||
       success.observation_count() != 1 || success.observation(0).data()[0] != 9)
     return 1;
-  if (argc > 1) return 0; // Archive success control does not traverse cleanup.
+  // Returning still destroys owning results. Optimized Release historically
+  // avoided the substituted cleanup here; uninstrumented Debug selects it.
+  if (argc > 1) return 0;
   bool saw_failure = false, saw_published_failure = false, saw_success = false;
   for (fail_at = 1; fail_at != 20; ++fail_at) {
     output = -1;
