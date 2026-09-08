@@ -1,0 +1,13 @@
+#include <matcore/region.h>
+namespace mdsl = matcore::mdsl;
+int host_counter = 0;
+MATCORE_REGION
+mdsl::Result pipeline(mdsl::Storage A, mdsl::Storage B, mdsl::Storage C,
+                      mdsl::Shape m, mdsl::Shape k, mdsl::Shape n) noexcept {
+  auto a = mdsl::read(A, m, k);
+  auto b = mdsl::read(B, k, n);
+  auto c = mdsl::gemm(a, b, mdsl::Numerics::strict_f32);
+  mdsl::publish(c, C);
+  ++host_counter;
+  return mdsl::complete();
+}

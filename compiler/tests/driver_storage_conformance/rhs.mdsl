@@ -1,0 +1,22 @@
+#include <matcore/region.h>
+namespace mdsl = matcore::mdsl;
+
+MATCORE_REGION
+mdsl::Result pipeline(mdsl::Storage A, mdsl::Storage B, mdsl::Storage D,
+                      mdsl::Storage C, mdsl::Storage E,
+                      mdsl::Shape m, mdsl::Shape n, mdsl::Shape k,
+                      mdsl::Shape p, mdsl::Shape q) noexcept {
+  auto a = mdsl::read(A, m, k);
+  auto b = mdsl::read(B, k, n);
+  auto c = mdsl::gemm(a, b, mdsl::Numerics::strict_f32);
+  mdsl::publish(c, C);
+  mdsl::observe(C);
+  auto d = mdsl::read(D, p, q);
+  auto e = mdsl::gemm(d, c, mdsl::Numerics::strict_f32);
+  mdsl::publish(e, E);
+  mdsl::observe(E);
+  return mdsl::complete();
+}
+
+constexpr bool lhs_carry = false;
+#include "storage_conformance_host.h"
