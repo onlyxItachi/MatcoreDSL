@@ -44,12 +44,14 @@ add_test(NAME frontend.experimental_source_generated_execution
 set_tests_properties(frontend.experimental_source_generated_execution PROPERTIES TIMEOUT 180)
 
 if(TARGET mdslc-region)
+  get_target_property(driver_provider mdslc-region MDSLC_REGION_PROVIDER_PATH)
   add_test(NAME driver.experimental_region_contract
     COMMAND "${CMAKE_COMMAND}"
       "-DDRIVER=$<TARGET_FILE:mdslc-region>"
       "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/../../examples/experimental/two_gemm.mdsl"
       "-DOUTPUT_ROOT=${CMAKE_CURRENT_BINARY_DIR}"
       "-DSANITIZED=${experimental_compiler_test_flags}"
+      "-DPROVIDER=${driver_provider}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/driver_contract.cmake")
   set_tests_properties(driver.experimental_region_contract PROPERTIES TIMEOUT 240)
   add_test(NAME driver.implementation_ownership

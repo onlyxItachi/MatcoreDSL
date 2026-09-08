@@ -34,6 +34,7 @@ if(region_provider_inputs)
   endif()
   set(region_provider_path "${region_provider_inputs}")
 endif()
+set_property(TARGET mdslc-region PROPERTY MDSLC_REGION_PROVIDER_PATH "${region_provider_path}")
 file(RELATIVE_PATH region_prefix_from_bin "/${CMAKE_INSTALL_BINDIR}" "/")
 configure_file(config.h.in region_driver_paths.h.in @ONLY)
 file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/region_driver_paths.h"

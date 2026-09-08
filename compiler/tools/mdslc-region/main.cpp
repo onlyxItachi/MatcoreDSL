@@ -259,6 +259,12 @@ int run(int argc, char **argv) {
       installed.candidates.string(), installed.runtime.string(),
       "-lm", "-pthread", "-Xlinker", "-rpath", "-Xlinker", installed.runtime.parent_path().string(),
       "-Xlinker", "-rpath", "-Xlinker", installed.candidates.parent_path().string()});
+    // Runtime's installed image has no RPATH. Bind its already-authenticated
+    // provider as a direct dependency too: executable RUNPATH does not cover
+    // a transitive Runtime -> provider lookup. Never rediscover it with -l.
+    if (provider)
+      process.argv.insert(process.argv.end(), {provider->path.string(),
+        "-Xlinker", "-rpath", "-Xlinker", provider->path.parent_path().string()});
   }
   auto linked = support::run_process_v1(process);
   std::cerr << linked.stderr_text;
