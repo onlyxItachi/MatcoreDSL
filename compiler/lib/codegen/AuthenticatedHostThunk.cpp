@@ -222,8 +222,11 @@ HostThunkResult linkAuthenticatedHostThunk(const llvm::Module &host,
   llvm::internalizeModule(*addition,[&](const llvm::GlobalValue &global) {
     return global.getName()==request.helper_symbol || appending(global);
   });
+  // LLVM deliberately leaves available_externally bodies alone. They are
+  // declarations to the linker, but still compiler-owned bodies here: accepting
+  // them would permit the original host to supply a different implementation.
   for(const auto &global:addition->global_values())
-    if(!global.isDeclarationForLinker() && !global.hasLocalLinkage() &&
+    if(!global.isDeclaration() && !global.hasLocalLinkage() &&
        global.getName()!=request.helper_symbol && !appending(global))
       return reject("compiler helper definition remains externally replaceable: "+global.getName().str());
   if(llvm::verifyModule(*addition,&diagnostics))

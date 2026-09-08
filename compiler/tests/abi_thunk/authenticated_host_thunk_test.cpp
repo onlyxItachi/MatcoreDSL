@@ -350,6 +350,13 @@ extern "C" int owned_helper(int x) noexcept {return private_inline()+x;}
     check(weakResult && fixture.execute(*weakResult.module,"isolated-weak")==
           "isolated 10 host 91\n",
           "host weak definition cannot replace compiler-issued private inline body");
+    auto availableHelper=llvm::CloneModule(*weakHelper);
+    availableHelper->getFunction("private_inline")->setLinkage(
+        llvm::GlobalValue::AvailableExternallyLinkage);
+    auto available=cg::linkAuthenticatedHostThunk(*weakHost,*availableHelper,
+                                                 {"region","owned_helper",{}});
+    check(!available && available.error.find("externally replaceable: private_inline")!=std::string::npos,
+          "available_externally helper body cannot be silently selected from original host");
     auto missing=request;missing.retired_value_functions.push_back("not_a_sealed_helper");
     check(!cg::linkAuthenticatedHostThunk(*host,*helper,missing),"missing helper binding rejected");
     auto duplicate=request;duplicate.retired_value_functions.push_back(duplicate.retired_value_functions.front());
