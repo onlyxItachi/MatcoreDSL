@@ -166,7 +166,13 @@ C++ synchronization and no conflicting storage access.
 
 Arbitrary host effects, exceptions, indirect calls and cleanup are rejected
 inside regions. Pure Value/Shape helpers and bounded shape-if/else are supported
-under the [admission grammar](EXPERIMENTAL_REGION_FRONTEND_V1.md). General loops,
+under the [admission grammar](EXPERIMENTAL_REGION_FRONTEND_V1.md). Pure helpers
+may be defined in ordinary included headers, with transitive source dependencies
+frozen and rechecked by the compiler. All helper bodies must remain visible to
+Clang and satisfy the same closed grammar; an external ABI declaration or object
+is not a mathematical definition. Physical file identities and the full helper
+call chain are retained without changing public caller-side failure attribution.
+General loops,
 strided views, public tensor containers, accelerator/device residency, and
 generated Windows execution are not provided here. Existing supported platforms
 retain their separate compatibility routes. No performance, zero-copy or Native

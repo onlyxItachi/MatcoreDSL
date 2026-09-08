@@ -14,11 +14,19 @@ namespace matcore::mdslc::closed_region {
 // execution/source authority. Only the frontend's immutable native seal can
 // authenticate their origin. No Clang objects cross this boundary.
 using Id = std::uint64_t;
+struct SourceFile {
+  Id id = 0;
+  std::string path;
+  std::string sha256;
+  std::uint64_t byte_size = 0;
+};
 struct SourceSite {
   std::uint64_t offset = 0;
   std::uint64_t length = 0;
   std::uint64_t line = 0;
   std::uint64_t column = 0;
+  // Mandatory nonzero reference, never an implicit main-file fallback.
+  Id file_id = 0;
 };
 struct Dimension {
   enum class Kind { Literal, ShapeParameter, ValueRows, ValueColumns };
@@ -70,6 +78,9 @@ struct Program {
   std::string source_sha256;
   std::string header_sha256;
   std::string compiler_identity;
+  // Semantic-bearing files only. Main is id 1; additional paths are sorted.
+  // The private host-context seal separately owns the complete input closure.
+  std::vector<SourceFile> source_files;
   std::vector<Region> regions;
 };
 struct Result {

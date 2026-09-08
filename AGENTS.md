@@ -64,6 +64,12 @@ in `context.md`.
   source-pair verification. Preserve the frozen original host, checked ABI thunk,
   issued-helper isolation and candidate DSO ownership. Arbitrary manual linking
   of `-c` output is outside the driver's complete execution-link contract.
+  Pure source-visible mathematical helpers may be defined in ordinary included
+  headers under the same closed grammar, including its existing bounded
+  Sema-resolved template instantiations. Each body is owned by its actual Clang
+  inclusion FileID; semantic sites carry explicit file identities bound to the
+  frozen host closure. This does not authorize opaque modules, arbitrary header
+  effects, presumed `#line` identities or ABI-compatible substitute definitions.
 - Preserve semantic information until the final optimization that can use it.
   Matcore semantic operations describe WHAT. Legality, planning, structured
   upstream dialects, scheduling, and library/generated-code selection describe
@@ -140,10 +146,12 @@ in `context.md`.
 - Do not delete, reset, broadly reformat, or mass-migrate legacy code. Treat the
   Python/JIT path as a compatibility and regression surface.
 - Unsupported contexts must fail with a nonzero status and an actionable
-  diagnostic tied to the original `.mdsl` file, line, and column when Clang
+  diagnostic tied to the original physical source file, line, and column when Clang
   provides them. Reject unsafe macro, template, lambda, header, indirect-call,
   unevaluated, side-effect, alias, layout, dtype, and residency cases before
   rewriting.
+  Source-visible pure region helpers are the explicit header exception above;
+  the compatibility per-call rewriter's main-file ownership rule is unchanged.
 - In the compatibility per-call rewriter, rewrite only the exact validated
   `CallExpr` source range. The experimental region driver does not text-rewrite
   the original host body. Never rewrite macro
