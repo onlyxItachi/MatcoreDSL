@@ -1,5 +1,8 @@
+cmake_minimum_required(VERSION 3.24)
+
 # Existing ordinary C++ consumers and the opt-in installed source driver have
 # separate oracles. An archive consumer alone does not authenticate source.
+include("${CMAKE_CURRENT_LIST_DIR}/experimental_regions_consumer_identity.cmake")
 foreach(required IN ITEMS BINARY_DIR SOURCE_DIR CXX INSTALL_LIBDIR INSTALL_INCLUDEDIR)
   if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
     message(FATAL_ERROR "Missing package-test input ${required}")
@@ -88,6 +91,7 @@ foreach(test IN ITEMS result candidates private_value)
   if(NOT status EQUAL 0)
     message(FATAL_ERROR "Installed ${test} consumer failed: ${output}\n${error}")
   endif()
+  matcore_expect_installed_consumer_output("${test}" "${output}")
   message(STATUS "Installed ${test}: ${output}")
 endforeach()
 # Exercise actual installed owning handles across differing host STL settings.
@@ -164,6 +168,7 @@ execute_process(COMMAND "${CMAKE_COMMAND}"
   "-DDRIVER=${driver}"
   "-DSOURCE=${SOURCE_DIR}/examples/experimental/two_gemm.mdsl"
   "-DOUTPUT_ROOT=${prefix}" "-DSANITIZED=${driver_sanitized}"
+  "-DPROVIDER=${PROVIDER}"
   -P "${SOURCE_DIR}/tests/closed_driver/driver_contract.cmake"
   RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
 if(NOT status EQUAL 0)
