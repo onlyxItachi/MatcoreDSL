@@ -1,5 +1,5 @@
-# Build/install contract only: these ordinary C++ consumers exercise the private
-# adapter and issued leaf, not a new source compiler or public execution syntax.
+# Existing ordinary C++ consumers and the opt-in installed source driver have
+# separate oracles. An archive consumer alone does not authenticate source.
 foreach(required IN ITEMS BINARY_DIR SOURCE_DIR CXX INSTALL_LIBDIR INSTALL_INCLUDEDIR)
   if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
     message(FATAL_ERROR "Missing package-test input ${required}")
@@ -15,6 +15,10 @@ endif()
 set(include "${prefix}/${INSTALL_INCLUDEDIR}")
 set(lib "${prefix}/${INSTALL_LIBDIR}")
 set(private "${lib}/mdslc/experimental-regions")
+if(NOT DEFINED INSTALL_BINDIR)
+  set(INSTALL_BINDIR bin)
+endif()
+set(driver "${prefix}/${INSTALL_BINDIR}/mdslc-region")
 foreach(header IN ITEMS mdsl.h runtime_c.h)
   if(NOT EXISTS "${include}/matcore/${header}")
     message(FATAL_ERROR "Missing legacy installed header ${header}")
@@ -26,7 +30,7 @@ if(exports MATCHES "MLIR|LLVM|matcore_closed_|matcore_cpu_gemm_candidate")
 endif()
 if(NOT ENABLED)
   foreach(path IN ITEMS "${include}/matcore/region.h"
-      "${include}/matcore/detail" "${private}")
+      "${include}/matcore/detail" "${private}" "${driver}")
     if(EXISTS "${path}")
       message(FATAL_ERROR "Feature-OFF package leaked experimental artifact ${path}")
     endif()
@@ -35,9 +39,10 @@ if(NOT ENABLED)
   return()
 endif()
 set(archive "${private}/libmatcore_closed_candidates_production_v1.a")
+set(candidates "${private}/libmatcore_closed_candidates_isolated_v1.so")
 foreach(path IN ITEMS "${include}/matcore/region.h"
     "${include}/matcore/detail/region_storage.h"
-    "${private}/include/closed_host_v1.h" "${archive}")
+    "${private}/include/closed_host_v1.h" "${archive}" "${candidates}" "${driver}")
   if(NOT EXISTS "${path}")
     message(FATAL_ERROR "Missing feature-ON artifact ${path}")
   endif()
@@ -151,4 +156,18 @@ if(CXX_FLAGS MATCHES "fsanitize=.*address")
   endif()
   message(STATUS "${output}")
 endif()
-message(STATUS "Feature-ON install: one issued leaf, no injection exports, no public LLVM/MLIR dependency")
+set(driver_sanitized OFF)
+if(CXX_FLAGS MATCHES "fsanitize=.*address")
+  set(driver_sanitized ON)
+endif()
+execute_process(COMMAND "${CMAKE_COMMAND}"
+  "-DDRIVER=${driver}"
+  "-DSOURCE=${SOURCE_DIR}/examples/experimental/two_gemm.mdsl"
+  "-DOUTPUT_ROOT=${prefix}" "-DSANITIZED=${driver_sanitized}"
+  -P "${SOURCE_DIR}/tests/closed_driver/driver_contract.cmake"
+  RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
+if(NOT status EQUAL 0)
+  message(FATAL_ERROR "Installed source compiler contract failed: ${output}\n${error}")
+endif()
+message(STATUS "${output}")
+message(STATUS "Feature-ON install: authenticated source-to-executable driver and isolated candidate DSO; separate archive consumers; no public LLVM/MLIR dependency")
