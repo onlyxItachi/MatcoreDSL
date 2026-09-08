@@ -64,7 +64,7 @@ struct Artifact {
 };
 
 struct Layout {
-  fs::path include, header, archive, runtime;
+  fs::path include, header, candidates, runtime;
   bool build_tree = false;
 };
 
@@ -100,12 +100,12 @@ Layout layout() {
   // Build-tree use is available only at the exact configured executable path.
   // A copied/installed driver must never fall back into the source checkout.
   if (support::paths_refer_to_same_location_v1(*executable, REGION_BUILD_DRIVER, error))
-    return {REGION_BUILD_INCLUDE, REGION_BUILD_PRIVATE_HEADER, REGION_BUILD_ARCHIVE, REGION_BUILD_RUNTIME, true};
+    return {REGION_BUILD_INCLUDE, REGION_BUILD_PRIVATE_HEADER, REGION_BUILD_CANDIDATES, REGION_BUILD_RUNTIME, true};
   if (!error.empty()) reject(error);
   const auto prefix = (executable->parent_path() / REGION_PREFIX_FROM_BIN).lexically_normal();
   const auto private_dir = prefix / REGION_INSTALL_PRIVATE;
   return {prefix / REGION_INSTALL_INCLUDE, private_dir / "include/closed_host_v1.h",
-          private_dir / REGION_ARCHIVE_FILENAME,
+          private_dir / REGION_CANDIDATES_FILENAME,
           prefix / REGION_INSTALL_LIB / REGION_RUNTIME_FILENAME};
 }
 
@@ -192,7 +192,8 @@ int run(int argc, char **argv) {
   const auto installed = layout();
   const auto clang = Artifact::capture(REGION_CLANG, REGION_CLANG_SHA);
   const auto linker = Artifact::capture(REGION_LINKER, REGION_LINKER_SHA);
-  const auto archive = Artifact::capture(installed.archive, REGION_ARCHIVE_SHA);
+  const auto candidates = Artifact::capture(installed.candidates,
+      installed.build_tree ? REGION_CANDIDATES_SHA : REGION_INSTALLED_CANDIDATES_SHA);
   const auto runtime = Artifact::capture(installed.runtime,
       installed.build_tree ? REGION_RUNTIME_SHA : REGION_INSTALLED_RUNTIME_SHA);
   std::optional<Artifact> provider;
@@ -200,7 +201,9 @@ int run(int argc, char **argv) {
     provider = Artifact::capture(REGION_PROVIDER_PATH, REGION_PROVIDER_SHA);
   std::vector<codegen::TrustedSymbolArtifact> symbol_artifacts{
       {codegen::SymbolArtifactOwner::MatcoreRuntime,
-       llvm::MemoryBufferRef(runtime.bytes, "canonical Matcore Runtime")}};
+       llvm::MemoryBufferRef(runtime.bytes, "canonical Matcore Runtime")},
+      {codegen::SymbolArtifactOwner::PrivateCandidates,
+       llvm::MemoryBufferRef(candidates.bytes, "isolated private candidates")}};
   if (provider) symbol_artifacts.push_back({codegen::SymbolArtifactOwner::ExternalProvider,
       llvm::MemoryBufferRef(provider->bytes, "canonical OpenBLAS provider")});
   const auto public_header = Artifact::capture(installed.include / "matcore/region.h");
@@ -222,7 +225,7 @@ int run(int argc, char **argv) {
   if (!compilation) reject(compilation.error);
   auto unchanged = [&] {
     if (!compilation.compilation->inputsUnchanged(error)) reject(error);
-    for (const auto *artifact : {&archive, &runtime, &public_header, &storage_header, &private_header, &clang, &linker})
+    for (const auto *artifact : {&candidates, &runtime, &public_header, &storage_header, &private_header, &clang, &linker})
       artifact->unchanged();
     if (provider) provider->unchanged();
   };
@@ -243,9 +246,12 @@ int run(int argc, char **argv) {
   if (args.compile_only) process.argv.push_back("-c");
   else {
     process.argv.push_back("--ld-path=" REGION_LINKER);
-    process.argv.insert(process.argv.end(), {"-x", "none", "-Xlinker", "--whole-archive",
-      installed.archive.string(), "-Xlinker", "--no-whole-archive", installed.runtime.string(),
-      "-lm", "-pthread", "-Xlinker", "-rpath", "-Xlinker", installed.runtime.parent_path().string()});
+    // Both owning DSOs are explicit dependencies. Runtime is not an indirect
+    // RUNPATH search through the private library's installation directory.
+    process.argv.insert(process.argv.end(), {"-x", "none", "-Xlinker", "--no-as-needed",
+      installed.candidates.string(), installed.runtime.string(),
+      "-lm", "-pthread", "-Xlinker", "-rpath", "-Xlinker", installed.runtime.parent_path().string(),
+      "-Xlinker", "-rpath", "-Xlinker", installed.candidates.parent_path().string()});
   }
   auto linked = support::run_process_v1(process);
   std::cerr << linked.stderr_text;

@@ -8,7 +8,7 @@
 
 namespace matcore::mdslc::codegen {
 
-enum class SymbolArtifactOwner { MatcoreRuntime, ExternalProvider };
+enum class SymbolArtifactOwner { MatcoreRuntime, ExternalProvider, PrivateCandidates };
 
 // Compiler-owned immutable bytes, already authenticated against the driver's
 // built-in artifact identity. This utility does not open source-selected paths,
@@ -22,11 +22,13 @@ struct TrustedSymbolArtifact {
 struct ArtifactSymbolOwnershipReport {
   std::size_t runtime_exports = 0;
   std::size_t provider_exports = 0;
+  std::size_t candidate_exports = 0;
 };
 
 // Inspect the ORIGINAL freshly Clang-produced host module before introducing
 // compiler-generated helper definitions. Exactly one trusted runtime ELF DSO is
-// required; zero or more explicitly selected provider ELF DSOs may follow.
+// required; an isolated private candidate DSO and explicitly selected provider
+// ELF DSOs may follow. The execution compiler requires its candidate DSO too.
 // Every defined nonlocal dynamic symbol in every trusted DSO is reserved,
 // uniformly, including weak/data/alias/IFUNC symbols. The canonical runtime
 // already hides its implementation/STL symbols. A future export leak must be
@@ -39,9 +41,9 @@ struct ArtifactSymbolOwnershipReport {
 // that symbol is not owned by a trusted artifact; no general assembler grammar
 // or header-path exemption is admitted.
 //
-// The private candidate archive must still be wholly linked by the driver: this
-// DSO check does not replace ordinary strong-definition collision diagnostics.
-// Nor does compile-time artifact pinning authenticate future dynamic loading.
+// Compiler helper definitions are separately internalized, while the candidate
+// DSO localizes implementation definitions. Archive whole-linking is not an
+// equivalent ownership proof. Pinning does not authenticate future loading.
 // Deployment requires stable trusted runtime/provider/standard-library loading,
 // conforming allocator hooks and no foreign interposition. No sandbox or
 // executable self-authentication claim follows from a successful check.

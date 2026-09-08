@@ -116,10 +116,12 @@ int main(int argc, char **argv) {
   check(bool(admitted) && admitted.syntax_valid, "real public source admission: " + admitted.error);
   if (!admitted) return 1;
   auto runtime_artifact = llvm::MemoryBuffer::getFile(argv[5]);
-  if (!runtime_artifact) throw std::runtime_error("missing trusted test runtime artifact");
+  auto candidate_artifact = llvm::MemoryBuffer::getFile(argv[4]);
+  if (!runtime_artifact || !candidate_artifact) throw std::runtime_error("missing trusted test runtime artifacts");
   cg::ExperimentalCompilerInputs inputs{argv[1], argv[2], compiler / "include",
       compiler / "lib/runtime/closed_host_v1.h", staging->path(), sanitized,
-      {{cg::SymbolArtifactOwner::MatcoreRuntime, (*runtime_artifact)->getMemBufferRef()}}};
+      {{cg::SymbolArtifactOwner::MatcoreRuntime, (*runtime_artifact)->getMemBufferRef()},
+       {cg::SymbolArtifactOwner::PrivateCandidates, (*candidate_artifact)->getMemBufferRef()}}};
   auto changed_inputs = inputs;
   changed_inputs.staging_directory = substituted->path();
   auto substitution = cg::compileExperimentalRegionToLLVMForTesting(*admitted.evidence,

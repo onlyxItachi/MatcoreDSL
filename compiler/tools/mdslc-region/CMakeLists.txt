@@ -16,6 +16,10 @@ get_target_property(region_runtime_install_rpath matcore_runtime INSTALL_RPATH)
 if(region_runtime_install_rpath)
   message(FATAL_ERROR "Experimental region driver requires the canonical empty Runtime INSTALL_RPATH")
 endif()
+get_target_property(region_candidates_install_rpath matcore_closed_candidates_isolated_v1 INSTALL_RPATH)
+if(region_candidates_install_rpath)
+  message(FATAL_ERROR "Experimental driver requires empty private candidate INSTALL_RPATH")
+endif()
 # No external configuration file or source option can choose the owning runtime.
 # Do not let the invocation environment select a linker behind pinned Clang.
 find_program(region_linker NAMES ld PATHS /usr/bin NO_DEFAULT_PATH REQUIRED)
@@ -36,15 +40,16 @@ file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/region_driver_paths.h"
   INPUT "${CMAKE_CURRENT_BINARY_DIR}/region_driver_paths.h.in")
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/region_driver_identity.h"
   BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/region_driver_identity.h.runtime-install-image"
+    "${CMAKE_CURRENT_BINARY_DIR}/region_driver_identity.h.candidates-install-image"
   COMMAND "${CMAKE_COMMAND}"
-    "-DARCHIVE=$<TARGET_FILE:matcore_closed_candidates_production_v1>"
+    "-DCANDIDATES=$<TARGET_FILE:matcore_closed_candidates_isolated_v1>"
     "-DRUNTIME=$<TARGET_FILE:matcore_runtime>"
     "-DPROVIDER=${region_provider_path}"
     "-DCLANG=${MDSLC_CLANGXX_EXECUTABLE}"
     "-DLINKER=${region_linker}"
     "-DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/region_driver_identity.h"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/installation_identity.cmake"
-  DEPENDS matcore_closed_candidates_production_v1 matcore_runtime
+  DEPENDS matcore_closed_candidates_isolated_v1 matcore_runtime
     ${region_provider_path}
     "${MDSLC_CLANGXX_EXECUTABLE}" "${region_linker}"
     "${CMAKE_CURRENT_SOURCE_DIR}/installation_identity.cmake" VERBATIM)

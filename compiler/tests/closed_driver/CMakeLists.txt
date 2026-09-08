@@ -30,7 +30,7 @@ target_link_libraries(matcore_experimental_compile_test PRIVATE
   matcore_experimental_region_compiler MatcoreDSL::PlatformSupportV1)
 mdslc_target_enable_warnings(matcore_experimental_compile_test WERROR)
 mdslc_target_match_llvm_rtti(matcore_experimental_compile_test)
-add_dependencies(matcore_experimental_compile_test matcore_closed_candidates_production_v1)
+add_dependencies(matcore_experimental_compile_test matcore_closed_candidates_isolated_v1)
 set(experimental_compiler_test_flags)
 if(MDSLC_CLOSED_REGION_CXX_FLAGS MATCHES "fsanitize=.*address")
   list(APPEND experimental_compiler_test_flags --asan)
@@ -39,7 +39,7 @@ add_test(NAME frontend.experimental_source_generated_execution
   COMMAND matcore_experimental_compile_test
   "${MDSLC_CLANGXX_EXECUTABLE}" "${closed_driver_resource_dir}"
   "${CMAKE_CURRENT_SOURCE_DIR}/../.."
-  "$<TARGET_FILE:matcore_closed_candidates_production_v1>"
+  "$<TARGET_FILE:matcore_closed_candidates_isolated_v1>"
   "$<TARGET_FILE:matcore_runtime>" ${experimental_compiler_test_flags})
 set_tests_properties(frontend.experimental_source_generated_execution PROPERTIES TIMEOUT 180)
 

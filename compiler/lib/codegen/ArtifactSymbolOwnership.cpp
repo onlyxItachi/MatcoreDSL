@@ -37,7 +37,8 @@ bool collect(const TrustedSymbolArtifact &artifact, ReservedSymbols &symbols,
     return false;
   }
   if (artifact.owner != SymbolArtifactOwner::MatcoreRuntime &&
-      artifact.owner != SymbolArtifactOwner::ExternalProvider) {
+      artifact.owner != SymbolArtifactOwner::ExternalProvider &&
+      artifact.owner != SymbolArtifactOwner::PrivateCandidates) {
     error = "unknown trusted symbol artifact owner";
     return false;
   }
@@ -65,7 +66,8 @@ bool collect(const TrustedSymbolArtifact &artifact, ReservedSymbols &symbols,
     return false;
   }
   if (artifact.owner == SymbolArtifactOwner::MatcoreRuntime) report.runtime_exports += count;
-  else report.provider_exports += count;
+  else if (artifact.owner == SymbolArtifactOwner::ExternalProvider) report.provider_exports += count;
+  else report.candidate_exports += count;
   return true;
 }
 
@@ -92,11 +94,13 @@ bool verifyHostArtifactSymbolOwnership(
               return false;
             }
 
-  std::size_t runtimes = 0;
-  for (const auto &artifact : artifacts)
+  std::size_t runtimes = 0, candidates = 0;
+  for (const auto &artifact : artifacts) {
     runtimes += artifact.owner == SymbolArtifactOwner::MatcoreRuntime;
-  if (runtimes != 1) {
-    error = "artifact ownership requires exactly one trusted Matcore runtime DSO";
+    candidates += artifact.owner == SymbolArtifactOwner::PrivateCandidates;
+  }
+  if (runtimes != 1 || candidates > 1) {
+    error = "artifact ownership requires exactly one Matcore runtime and at most one private candidate DSO";
     return false;
   }
 

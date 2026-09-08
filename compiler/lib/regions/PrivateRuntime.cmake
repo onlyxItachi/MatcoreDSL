@@ -16,3 +16,7 @@ endif()
 if(BUILD_TESTING)
   add_subdirectory("${region_compiler_dir}/tests/private_runtime" "private_runtime_tests")
 endif()
+if(MDSLC_ENABLE_EXPERIMENTAL_REGIONS)
+  install(TARGETS matcore_closed_candidates_isolated_v1
+    LIBRARY DESTINATION "${MDSLC_EXPERIMENTAL_REGION_PRIVATE_LIBDIR}")
+endif()

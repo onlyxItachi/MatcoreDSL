@@ -11,6 +11,7 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 #include <fstream>
+#include <algorithm>
 
 namespace matcore::mdslc::codegen {
 namespace {
@@ -41,6 +42,11 @@ static ExperimentalLLVMCompilationResult compileRegion(
     const ExperimentalCompilerInputs &inputs, ClosedCpuPolicy policy,
     const std::function<void()> &after_staging) {
   ExperimentalLLVMCompilationResult result;
+  if (std::count_if(inputs.symbol_artifacts.begin(), inputs.symbol_artifacts.end(),
+          [](const auto &artifact) { return artifact.owner == SymbolArtifactOwner::PrivateCandidates; }) != 1) {
+    result.error = "region execution compilation requires its isolated private candidate DSO";
+    return result;
+  }
   auto emitted = emitExperimentalRegion(evidence, policy);
   if (!emitted) { result.error = emitted.error; return result; }
   auto original = frontend::detail::ClosedRegionCompilationAccess::host(evidence);
