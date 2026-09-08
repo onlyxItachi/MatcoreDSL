@@ -1,5 +1,6 @@
-# Experimental intrinsic ownership prototype. The private archive remains the
-# existing test/package contract until the isolated driver integration is proven.
+# The experimental source driver uses this intrinsically bound implementation.
+# The private archive remains a separate internal test/package contract; it does
+# not establish the driver's protection against host implementation replacement.
 mdslc_add_closed_candidate_runtime(matcore_closed_candidates_isolated_v1 SHARED)
 set(region_private_exports "${CMAKE_CURRENT_LIST_DIR}/private_runtime_v2.exports")
 set_property(TARGET matcore_closed_candidates_isolated_v1 APPEND PROPERTY

@@ -1,5 +1,12 @@
 # Installed region driver: integration HOLD
 
+Historical checkpoint: the hold below records real failed alternatives and must
+not be read as the latest implementation state. The subsequent isolated-runtime
+and connected-driver work is documented in the
+[integration record](agent-reports/region-driver-integration-v1.md) and
+[compiler guide](REGION_COMPILER_V1.md). Canonical status remains in
+[CURRENT_STATE](CURRENT_STATE.md); research results alone do not establish it.
+
 2026-09-07. This is a research/integration checkpoint, not canonical capability
 or a completed foundational compiler claim. The driver must not merge yet.
 
