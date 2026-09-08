@@ -12,10 +12,15 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Passes.h"
+#include "mlir/Dialect/Linalg/TransformOps/DialectExtension.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Transform/IR/TransformDialect.h"
+#include "mlir/Dialect/Transform/IR/TransformOps.h"
+#include "mlir/Dialect/Transform/Transforms/TransformInterpreterUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Parser/Parser.h"
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
@@ -36,6 +41,20 @@ constexpr auto contract =
     "nonnegative-i64;increasing-k;positive-zero;separate-f32-mul-add;"
     "nearest-even;gradual-underflow;no-cross-op-reassociation;"
     "nan-payload-unspecified;no-finite-assumption;no-publication";
+
+// Change only the independent output traversal. For each (m,n), K remains
+// scalar, increasing and complete. No vector contraction, reduction tiling,
+// padding, arithmetic reassociation or new input/destination alias fact.
+constexpr llvm::StringLiteral rowContiguousTransform = R"mlir(
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%root: !transform.any_op {transform.readonly}) {
+    %matmul = transform.structured.match ops{["linalg.matmul"]} in %root : (!transform.any_op) -> !transform.any_op
+    %generic = transform.structured.generalize %matmul : (!transform.any_op) -> !transform.any_op
+    %scheduled = transform.structured.interchange %generic iterator_interchange = [0, 2, 1] : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
+}
+)mlir";
 
 std::string digest(llvm::StringRef value) {
   const auto bytes = llvm::SHA256::hash(llvm::arrayRefFromStringRef(value));
@@ -135,7 +154,8 @@ structuredFromPrimitive(mlir::ModuleOp semantic, std::string &error) {
   return module;
 }
 
-bool verifyStage(mlir::ModuleOp module, bool buffer, std::string &error) {
+bool verifyStage(mlir::ModuleOp module, bool buffer, std::string &error,
+                 bool rowContiguous = false) {
   error.clear();
   if (!module || mlir::failed(mlir::verify(module)) ||
       !module->getAttrs().empty() ||
@@ -183,7 +203,11 @@ bool verifyStage(mlir::ModuleOp module, bool buffer, std::string &error) {
   auto iterator = block.begin();
   auto zero = mlir::dyn_cast<mlir::arith::ConstantOp>(&*iterator++);
   auto fill = mlir::dyn_cast<mlir::linalg::FillOp>(&*iterator++);
-  auto matmul = mlir::dyn_cast<mlir::linalg::MatmulOp>(&*iterator++);
+  auto *contraction = &*iterator++;
+  auto matmul = mlir::dyn_cast<mlir::linalg::LinalgOp>(contraction);
+  if (rowContiguous ? !mlir::isa<mlir::linalg::GenericOp>(contraction)
+                    : !mlir::isa<mlir::linalg::MatmulOp>(contraction))
+    return fail(error, "candidate has the wrong scheduled contraction kind");
   auto ret = mlir::dyn_cast<mlir::func::ReturnOp>(&*iterator);
   auto value = zero ? mlir::dyn_cast<mlir::FloatAttr>(zero.getValue())
                     : mlir::FloatAttr{};
@@ -192,21 +216,22 @@ bool verifyStage(mlir::ModuleOp module, bool buffer, std::string &error) {
       fill.getInputs().size() != 1 || fill.getOutputs().size() != 1 ||
       fill.getInputs()[0] != zero ||
       fill.getOutputs()[0] != block.getArgument(2) ||
-      matmul.getInputs().size() != 2 || matmul.getOutputs().size() != 1 ||
-      matmul.getInputs()[0] != block.getArgument(0) ||
-      matmul.getInputs()[1] != block.getArgument(1))
+      matmul.getDpsInputs().size() != 2 || matmul.getDpsInits().size() != 1 ||
+      matmul.getDpsInputs()[0] != block.getArgument(0) ||
+      matmul.getDpsInputs()[1] != block.getArgument(1))
     return fail(error,
                 "candidate changed zero overwrite or ordered lhs/rhs dataflow");
   const auto destination = buffer ? block.getArgument(2) : fill.getResult(0);
-  const auto returned = buffer ? block.getArgument(2) : matmul.getResult(0);
-  if (matmul.getOutputs()[0] != destination || ret.getNumOperands() != 1 ||
+  const mlir::Value returned = buffer ? mlir::Value(block.getArgument(2))
+                                     : mlir::Value(matmul->getResult(0));
+  if (matmul.getDpsInits()[0] != destination || ret.getNumOperands() != 1 ||
       ret.getOperand(0) != returned ||
       fill.getNumResults() != (buffer ? 0U : 1U) ||
-      matmul.getNumResults() != (buffer ? 0U : 1U))
+      matmul->getNumResults() != (buffer ? 0U : 1U))
     return fail(error, "candidate lost exact original scratch destination");
   if (!buffer &&
       (fill.getResult(0).getType() != function.getResultTypes()[0] ||
-       matmul.getResult(0).getType() != function.getResultTypes()[0]))
+       matmul->getResult(0).getType() != function.getResultTypes()[0]))
     return fail(error, "structured intermediate acquired a foreign tensor type/encoding");
   auto topology = mlir_bridge::buildCanonicalContractionTopologyV1(
       *module.getContext(),
@@ -214,16 +239,36 @@ bool verifyStage(mlir::ModuleOp module, bool buffer, std::string &error) {
   llvm::SmallVector<mlir::AffineMap> maps;
   for (auto map : matmul.getIndexingMaps())
     maps.push_back(mlir::cast<mlir::AffineMapAttr>(map).getValue());
-  if (!topology ||
+  if (rowContiguous) {
+    auto m = mlir::getAffineDimExpr(0, module.getContext());
+    auto k = mlir::getAffineDimExpr(1, module.getContext());
+    auto n = mlir::getAffineDimExpr(2, module.getContext());
+    llvm::SmallVector<mlir::AffineMap> expected{
+        mlir::AffineMap::get(3, 0, {m, k}, module.getContext()),
+        mlir::AffineMap::get(3, 0, {k, n}, module.getContext()),
+        mlir::AffineMap::get(3, 0, {m, n}, module.getContext())};
+    const llvm::SmallVector<mlir::utils::IteratorType> iterators{
+        mlir::utils::IteratorType::parallel,
+        mlir::utils::IteratorType::reduction,
+        mlir::utils::IteratorType::parallel};
+    if (!buffer || maps != expected ||
+        matmul.getIteratorTypesArray() != iterators ||
+        matmul->getAttrs().size() != 3)
+      return fail(error, "row-contiguous schedule changed M/K/N indexing, "
+                         "scalar reduction order or attributes");
+  } else if (!topology ||
       !mlir_bridge::verifyStructuredIndexingAgainstContractionTopologyV1(
           topology.topology, maps, matmul.getIteratorTypesArray(), {2, 2, 2},
           error))
     return false;
-  if (matmul.hasUserDefinedMaps() ||
-      matmul.getCast() != mlir::linalg::TypeFn::cast_signed)
-    return fail(error,
-                "candidate changes canonical matmul cast/indexing properties");
-  auto &scalar = matmul.getRegion().front();
+  if (!rowContiguous) {
+    auto named = mlir::cast<mlir::linalg::MatmulOp>(contraction);
+    if (named.hasUserDefinedMaps() ||
+        named.getCast() != mlir::linalg::TypeFn::cast_signed)
+      return fail(error,
+                  "candidate changes canonical matmul cast/indexing properties");
+  }
+  auto &scalar = matmul->getRegion(0).front();
   if (scalar.getOperations().size() != 3)
     return fail(error, "noncanonical scalar contraction");
   auto mul = mlir::dyn_cast<mlir::arith::MulFOp>(scalar.front());
@@ -252,6 +297,41 @@ bool verifyStrictGemmStructuredV1(mlir::ModuleOp module, std::string &error) {
 }
 bool verifyStrictGemmBufferizedV1(mlir::ModuleOp module, std::string &error) {
   return verifyStage(module, true, error);
+}
+
+bool verifyStrictGemmRowContiguousV1(mlir::ModuleOp module, std::string &error) {
+  return verifyStage(module, true, error, true);
+}
+
+mlir::OwningOpRef<mlir::ModuleOp>
+deriveStrictGemmRowContiguousV1(mlir::ModuleOp bufferized, std::string &error) {
+  if (!verifyStrictGemmBufferizedV1(bufferized, error))
+    return {};
+  auto *context = bufferized.getContext();
+  mlir::DialectRegistry registry;
+  mlir::linalg::registerTransformDialectExtension(registry);
+  context->appendDialectRegistry(registry);
+  context->getOrLoadDialect<mlir::transform::TransformDialect>();
+  auto transform = mlir::parseSourceString<mlir::ModuleOp>(
+      rowContiguousTransform, mlir::ParserConfig(context));
+  if (!transform) {
+    fail(error, "cannot parse pinned row-contiguous Transform schedule");
+    return {};
+  }
+  auto entry = transform->lookupSymbol<mlir::transform::NamedSequenceOp>(
+      mlir::transform::TransformDialect::kTransformEntryPointSymbolName);
+  // Failed transforms may partially mutate payloads: never modify the verified
+  // input or reuse a failed candidate. Only this isolated clone can survive.
+  mlir::OwningOpRef<mlir::ModuleOp> scheduled = bufferized.clone();
+  if (!entry || mlir::failed(mlir::transform::applyTransformNamedSequence(
+                    scheduled->getOperation(), entry.getOperation(), *transform,
+                    mlir::transform::TransformOptions().enableExpensiveChecks(true))) ||
+      !verifyStrictGemmRowContiguousV1(*scheduled, error)) {
+    if (error.empty())
+      fail(error, "row-contiguous Transform derivation failed");
+    return {};
+  }
+  return scheduled;
 }
 
 StrictGemmStagesV1 buildStrictGemmStagesV1(mlir::MLIRContext &context) {
@@ -294,8 +374,13 @@ StrictGemmStagesV1 buildStrictGemmStagesV1(mlir::MLIRContext &context) {
 }
 
 StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
-                                               bool address_sanitizer) {
+    bool address_sanitizer, StrictGemmScheduleV1 schedule) {
   StrictGemmArtifactV1 result;
+  if (schedule != StrictGemmScheduleV1::ScalarMNK &&
+      schedule != StrictGemmScheduleV1::RowContiguousMKN) {
+    fail(result.error, "unknown strict GEMM schedule");
+    return result;
+  }
   auto stages = buildStrictGemmStagesV1(context);
   if (!stages) {
     result.error = stages.error;
@@ -304,6 +389,14 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
   result.semantic_ir = print(*stages.semantic);
   result.structured_ir = print(*stages.structured);
   result.bufferized_ir = print(*stages.bufferized);
+  if (schedule == StrictGemmScheduleV1::RowContiguousMKN) {
+    stages.bufferized = deriveStrictGemmRowContiguousV1(
+        *stages.bufferized, result.error);
+    if (!stages.bufferized)
+      return result;
+    result.transform_ir = rowContiguousTransform.str();
+  }
+  result.scheduled_ir = print(*stages.bufferized);
   auto function = *stages.bufferized->getOps<mlir::func::FuncOp>().begin();
   // The result descriptor is provably exactly argument 2; drop only that
   // redundant return to keep the private C wrapper a void three-pointer ABI.
@@ -382,13 +475,19 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
       "\nprofile=strict_f32\n"
       "shape=dynamic_nonnegative_M_N_K\ncaller_guards=retained_not_discharged\n"
       "tensor_allocations=0\ncopies=0\npublication=none\n"
-      "pipeline=one-shot-bufferize,linalg-loops,affine-scf-cf-llvm,llvm-"
-      "translation\n"
+      "pipeline=one-shot-bufferize," +
+      (schedule == StrictGemmScheduleV1::ScalarMNK ? std::string{} :
+          "transform-generalize-interchange-mkn,") +
+      "linalg-loops,affine-scf-cf-llvm,llvm-translation\n"
       "address_sanitizer=" +
       std::string(address_sanitizer ? "function_attributes" : "off") +
+      "\nschedule=" +
+      (schedule == StrictGemmScheduleV1::ScalarMNK ? "scalar-mnk" : "row-contiguous-mkn") +
       "\nsemantic_sha256=" + digest(result.semantic_ir) +
       "\nstructured_sha256=" + digest(result.structured_ir) +
       "\nbufferized_sha256=" + digest(result.bufferized_ir) +
+      "\ntransform_sha256=" + digest(result.transform_ir) +
+      "\nscheduled_sha256=" + digest(result.scheduled_ir) +
       "\nllvm_sha256=" + digest(result.llvm_ir) + "\n";
   return result;
 }

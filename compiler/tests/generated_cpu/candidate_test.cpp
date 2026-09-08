@@ -168,6 +168,84 @@ int main() {
             sanitized.llvm_ir.find("sanitize_address") != std::string::npos &&
             sanitized.manifest != first.manifest,
         "generated sanitizer attributes are bound into artifact");
+  auto row = candidate::deriveStrictGemmRowContiguousV1(*stages.bufferized, error);
+  check(bool(row), "row-contiguous upstream Transform derivation: " + error);
+  if (row) {
+    check(candidate::verifyStrictGemmRowContiguousV1(*row, error),
+          "exact row-contiguous structure verifies");
+    check(candidate::verifyStrictGemmBufferizedV1(*stages.bufferized, error),
+          "upstream schedule preserves its input witness");
+    check(!candidate::verifyStrictGemmBufferizedV1(*row, error),
+          "scheduled witness does not impersonate original pairing");
+    auto rejectRow = [&](auto mutate, const std::string &label) {
+      mlir::OwningOpRef<mlir::ModuleOp> bad = row->clone();
+      mutate(*bad);
+      check(!candidate::verifyStrictGemmRowContiguousV1(*bad, error) &&
+                !error.empty(), label);
+    };
+    rejectRow([&](mlir::ModuleOp m) {
+      m.walk([&](mlir::linalg::GenericOp op) {
+        op->setAttr("library_call", mlir::StringAttr::get(&context, "forged"));
+      });
+    }, "schedule cannot inject an external library call");
+    rejectRow([&](mlir::ModuleOp m) {
+      m.walk([&](mlir::arith::MulFOp op) {
+        op.setFastmath(mlir::arith::FastMathFlags::contract);
+      });
+    }, "schedule cannot grant FMA");
+    rejectRow([&](mlir::ModuleOp m) {
+      m.walk([&](mlir::arith::AddFOp op) {
+        op.setFastmath(mlir::arith::FastMathFlags::reassoc);
+      });
+    }, "row schedule cannot grant reduction reassociation");
+    rejectRow([&](mlir::ModuleOp m) {
+      m.walk([&](mlir::arith::AddFOp op) {
+        op->setOperand(0, op->getOperand(1));
+      });
+    }, "row schedule cannot replace the prior accumulator");
+    rejectRow([&](mlir::ModuleOp m) {
+      m.walk([&](mlir::linalg::GenericOp op) {
+        op.setIteratorTypesAttr(mlir::Builder(&context).getArrayAttr({
+            mlir::linalg::IteratorTypeAttr::get(&context, mlir::utils::IteratorType::parallel),
+            mlir::linalg::IteratorTypeAttr::get(&context, mlir::utils::IteratorType::parallel),
+            mlir::linalg::IteratorTypeAttr::get(&context, mlir::utils::IteratorType::reduction)}));
+      });
+    }, "row schedule cannot change the reduction iterator");
+    rejectRow([&](mlir::ModuleOp m) {
+      m.walk([&](mlir::linalg::GenericOp op) {
+        auto input = op->getOperand(0);
+        op->setOperand(0, op->getOperand(1));
+        op->setOperand(1, input);
+      });
+    }, "schedule cannot commute operands");
+    rejectRow([&](mlir::ModuleOp m) {
+      m.walk([&](mlir::linalg::GenericOp op) {
+        op->setOperand(2, op->getOperand(0));
+      });
+    }, "schedule cannot change isolated destination");
+    rejectRow([&](mlir::ModuleOp m) {
+      m.walk([&](mlir::linalg::GenericOp op) {
+        auto maps = op.getIndexingMapsArray();
+        std::swap(maps[0], maps[1]);
+        op.setIndexingMapsAttr(mlir::Builder(&context).getAffineMapArrayAttr(maps));
+      });
+    }, "schedule cannot change K or lane indexing");
+  }
+  auto rowArtifact = candidate::issueStrictGemmArtifactV1(
+      context, false, candidate::StrictGemmScheduleV1::RowContiguousMKN);
+  auto repeatedRow = candidate::issueStrictGemmArtifactV1(
+      context, false, candidate::StrictGemmScheduleV1::RowContiguousMKN);
+  check(bool(rowArtifact), "row-contiguous artifact issuance: " + rowArtifact.error);
+  check(rowArtifact && repeatedRow && rowArtifact.manifest == repeatedRow.manifest &&
+            rowArtifact.llvm_ir == repeatedRow.llvm_ir &&
+            rowArtifact.semantic_ir == first.semantic_ir &&
+            rowArtifact.llvm_ir != first.llvm_ir &&
+            rowArtifact.manifest != first.manifest &&
+            !rowArtifact.transform_ir.empty(),
+        "deterministic schedule identity changes realization, not semantics");
+  check(!candidate::issueStrictGemmArtifactV1(
+      context, false, static_cast<candidate::StrictGemmScheduleV1>(99)),
+      "unknown schedule cannot fall back or issue authority");
   std::cout << "strict CPU candidate: " << checks << " checks, " << failures
             << " failures\n";
   return failures != 0;
