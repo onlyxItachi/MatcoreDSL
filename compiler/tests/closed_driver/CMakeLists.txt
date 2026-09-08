@@ -52,4 +52,11 @@ if(TARGET mdslc-region)
       "-DSANITIZED=${experimental_compiler_test_flags}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/driver_contract.cmake")
   set_tests_properties(driver.experimental_region_contract PROPERTIES TIMEOUT 240)
+  add_test(NAME driver.implementation_ownership
+    COMMAND "${CMAKE_COMMAND}"
+      "-DDRIVER=$<TARGET_FILE:mdslc-region>"
+      "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/implementation_ownership.mdsl"
+      "-DOUTPUT_ROOT=${CMAKE_CURRENT_BINARY_DIR}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/implementation_ownership.cmake")
+  set_tests_properties(driver.implementation_ownership PROPERTIES TIMEOUT 240)
 endif()

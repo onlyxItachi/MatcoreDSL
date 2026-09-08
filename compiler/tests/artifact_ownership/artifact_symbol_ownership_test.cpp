@@ -165,6 +165,21 @@ int main(int argc, char **argv) {
     const cg::TrustedSymbolArtifact duplicates[] = {artifacts[0], artifacts[0]};
     check(!cg::verifyHostArtifactSymbolOwnership(*ordinary, duplicates, report, error), "duplicate runtime rejected");
     check(cg::verifyHostArtifactSymbolOwnership(*ordinary, llvm::ArrayRef(artifacts, 1), report, error), "provider OFF remains legal");
+    auto candidates = fixture.library("candidates", "extern \"C\" int private_candidate_entry() { return 7; }");
+    const cg::TrustedSymbolArtifact with_candidates[] = {artifacts[0],
+      {cg::SymbolArtifactOwner::PrivateCandidates, candidates->getMemBufferRef()}};
+    check(cg::verifyHostArtifactSymbolOwnership(*ordinary, with_candidates, report, error) &&
+          report.runtime_exports == 6 && report.candidate_exports == 1 && report.provider_exports == 0,
+          "candidate DSO has distinct counted ownership, independent of optional provider");
+    auto candidate_collision = fixture.host("candidate_collision",
+        "extern \"C\" int private_candidate_entry() { return 99; }");
+    check(!cg::verifyHostArtifactSymbolOwnership(*candidate_collision, with_candidates, report, error) &&
+          error.find("private_candidate_entry") != std::string::npos && report.candidate_exports == 0,
+          "private candidate export collision refuses success report");
+    const cg::TrustedSymbolArtifact duplicate_candidates[] = {
+      with_candidates[0], with_candidates[1], with_candidates[1]};
+    check(!cg::verifyHostArtifactSymbolOwnership(*ordinary, duplicate_candidates, report, error),
+          "duplicate candidate DSO rejected");
     auto no_exports = fixture.library("no_exports", "int hidden() { return 0; }", true, true);
     const cg::TrustedSymbolArtifact empty_dso{cg::SymbolArtifactOwner::MatcoreRuntime, no_exports->getMemBufferRef()};
     check(!cg::verifyHostArtifactSymbolOwnership(*ordinary, empty_dso, report, error), "empty export table rejected");

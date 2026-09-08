@@ -122,6 +122,18 @@ int main(int argc, char **argv) {
       compiler / "lib/runtime/closed_host_v1.h", staging->path(), sanitized,
       {{cg::SymbolArtifactOwner::MatcoreRuntime, (*runtime_artifact)->getMemBufferRef()},
        {cg::SymbolArtifactOwner::PrivateCandidates, (*candidate_artifact)->getMemBufferRef()}}};
+  auto missing_candidates = inputs;
+  missing_candidates.symbol_artifacts.pop_back();
+  auto missing = cg::compileExperimentalRegionToLLVM(*admitted.evidence,
+      missing_candidates, cg::ClosedCpuPolicy::GeneratedStrict);
+  check(!missing && missing.error.find("isolated private candidate DSO") != std::string::npos,
+        "execution compilation requires its private candidate artifact");
+  auto duplicate_candidates = inputs;
+  duplicate_candidates.symbol_artifacts.push_back(inputs.symbol_artifacts.back());
+  auto duplicate = cg::compileExperimentalRegionToLLVM(*admitted.evidence,
+      duplicate_candidates, cg::ClosedCpuPolicy::GeneratedStrict);
+  check(!duplicate && duplicate.error.find("isolated private candidate DSO") != std::string::npos,
+        "duplicate private candidate authority rejected");
   auto changed_inputs = inputs;
   changed_inputs.staging_directory = substituted->path();
   auto substitution = cg::compileExperimentalRegionToLLVMForTesting(*admitted.evidence,
