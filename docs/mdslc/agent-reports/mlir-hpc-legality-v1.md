@@ -275,3 +275,77 @@ original pairing or falsely announce whole-region transformation/reuse.
 Complete Release/ASan package suites, hosted checks and normal integration of
 the final combined test/evidence head remain the owning lane's separate gates.
 This review does not announce campaign completion or a performance/parity claim.
+
+## Independent cache-tiled source execution and verifier challenge
+
+This later, separate cache-schedule review does not change the row-only verdict
+above. The cache implementation was reviewed read-only at base
+`9769dbafc18d4b8efd05c2e3519543eb57531604` plus the owning lane's uncommitted
+five-file delta. Production `MatcoreCpuGemmCandidate.cpp` SHA-256 was
+`ac15b8fac8d21814879d06bf02b54e6e307fb2ec16820c51e50d8f645c432369`.
+
+**The closed replay architecture is appropriate, with an explicit trust limit.**
+Exact canonical prechecking, an isolated clone, the fixed upstream sequential
+MNK tiles `[4,64,32]` and inner MKN order, and whole-module structural replay
+are compiler-owned derivation/drift checks. They do not authenticate an arbitrary
+imported program or independently prove upstream MLIR correct. The pinned
+[OperationEquivalence implementation](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/mlir/lib/IR/OperationSupport.cpp#L651-L841)
+retains properties, attributes, nested structure and SSA mapping with only
+`IgnoreLocations`; it does not ignore arbitrary operand identity. The independent
+operation whitelist, one outer fill, exact scalar body and LLVM numerical/call
+postconditions remain valuable narrow assertions, not another optimizer IR.
+
+The reviewed schedule accesses A at `(m0+i,k0+q)`, B at `(k0+q,n0+j)`, and the
+same C at `(m0+i,n0+j)` across all increasing K chunks. Each tile dimension is
+bounded by `min(tile, extent-origin)`; the original fill remains outside the
+loops. Thus per-output arithmetic is the original rounded fold partitioned into
+contiguous intervals, not independently accumulated partial sums. Upstream's
+[bounded tile-size implementation](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/mlir/lib/Dialect/SCF/Transforms/TileUsingInterface.cpp#L216-L236)
+and [Linalg tiling implementation](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/mlir/lib/Dialect/Linalg/Transforms/TilingInterfaceImpl.cpp#L109-L135)
+were inspected; replaying those same passes would not itself detect a shared
+upstream mistake. No public index-overflow counterexample was found: positive
+generated calls retain pairwise byte-size bounds, and the adapter bypasses the
+leaf for empty output or zero K. Allowing only the exact signed-i64 min intrinsic
+for the three cache-tail minima adds pure integer arithmetic, not provider or
+external execution authority.
+
+The previous source fixtures had ordinary K at most 7 and N at most 33, so they
+could not validate the new K32/N64 tile boundaries. The independently authored
+[cache source fixture](../../../compiler/tests/generated_cpu/cache_schedule_source_contract.mdsl)
+and [runner](../../../compiler/tests/generated_cpu/cache_schedule_source_contract.cmake)
+close that specific gap with **225 cases / 563,296 checks**:
+
+- All 216 combinations of M `{3,4,5,7,8,9}`, K `{31,32,33,63,64,65}` and
+  N `{63,64,65,127,128,129}`, with lane-distinct dyadic data. A second strict GEMM
+  has N=65 and K equal to the first GEMM's N.
+- A K65 discriminator: ordered accumulation gives 3, while independently
+  zeroed 32-term partial sums and per-chunk destination reset both give 2.
+  The host counteroracles are themselves asserted before source execution.
+  Separate FMA discriminators straddle K32 and K64; special-value and gradual
+  underflow cases also reach the final K/N tails. Non-NaNs are compared bitwise;
+  NaN payload is intentionally unspecified.
+- Saved old values, three owning observations, late read and late publication
+  failures with the exact earlier effect prefix, bounded destination canaries,
+  and D=C+1 late overlap spanning multiple tiles. This preserves the existing
+  two-GEMM semantics; it does not claim transformed whole-region execution.
+
+All four actual driver lanes passed the exact count/output check with empty
+stderr. Live SHA-256 identities were:
+
+| Lane | Driver | Production generated object |
+| --- | --- | --- |
+| Scalar Release baseline | `eee73557f8769569f45b51e95a269237d2863fff5fb3b5146a69daa57fdc69e6` | Earlier scalar checkpoint, not rebuilt here |
+| Row Release baseline | `f183efd71903d7a48b2c98c72bb7e722707db21a17cdea7ce3d2acdfe2518832` | Earlier row checkpoint, not rebuilt here |
+| Cache Release | `18af6cab78d570980211ebcf671e146785a941625b845f58efe6120283c728ad` | `02a8657e898705e156c593a9771e4c69886390895027a256062944798f596fd8` |
+| Cache ASan/UBSan build profile | `85a7bc7e7e4d02b65ba54bcfb828023d54abc344906c5eb9a61823aa8b382ffd` | `0fac7af5fb462fbfe3d38f0898f25b695d91e567cffdf63b99b196ede28bd30f` |
+
+An initial parallel invocation shared a working directory: the compiler
+correctly rejected the ASan invocation because captured directory metadata
+changed. The runner was corrected to use a fresh per-invocation directory;
+all four lanes then passed. An initially mistyped scalar build path was rejected
+before compilation. `/bin/false` and success-without-artifact `/bin/true` are
+both rejected by the final runner. Only a fresh successful executable is removed;
+failed artifacts remain available. No benchmarks or production edits were made
+in this independent lane. These are local source-route results, not final-head
+hosted/package acceptance, a new UBSan claim for raw LLVM operations, or a
+performance result. Full cache integration remains the owning lane's gate.
