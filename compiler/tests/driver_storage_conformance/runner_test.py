@@ -16,6 +16,10 @@ class RunnerChecks(unittest.TestCase):
         self.assertNotIn("-fsanitize=address,undefined", plain)
         self.assertEqual(sanitized.count("-fsanitize=address,undefined"), 1)
         self.assertEqual([arg for arg in sanitized if arg != "-fsanitize=address,undefined"], plain)
+        spaced = run.ordinary_link_command("clang++-21", "source.o", [],
+                                           "/path with spaces,and-comma", "program", False)
+        self.assertEqual(spaced[spaced.index("-rpath") + 1:spaced.index("-o")],
+                         ["-Xlinker", "/path with spaces,and-comma"])
 
     def test_required_shared_dependencies(self):
         text = """

@@ -59,4 +59,24 @@ if(TARGET mdslc-region)
       "-DOUTPUT_ROOT=${CMAKE_CURRENT_BINARY_DIR}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/implementation_ownership.cmake")
   set_tests_properties(driver.implementation_ownership PROPERTIES TIMEOUT 240)
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  set(storage_conformance_flags)
+  if(experimental_compiler_test_flags)
+    list(APPEND storage_conformance_flags --sanitized)
+  endif()
+  if(MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS)
+    list(APPEND storage_conformance_flags --has-openblas)
+  endif()
+  add_test(NAME driver.storage_conformance
+    COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../driver_storage_conformance/run.py"
+      "$<TARGET_FILE:mdslc-region>"
+      --clangxx "${MDSLC_CLANGXX_EXECUTABLE}"
+      --library-directory "$<TARGET_FILE_DIR:matcore_runtime>"
+      ${storage_conformance_flags})
+  add_test(NAME driver.storage_conformance_runner
+    COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../driver_storage_conformance/runner_test.py")
+  set_tests_properties(driver.storage_conformance driver.storage_conformance_runner
+    PROPERTIES TIMEOUT 240 ENVIRONMENT "TMPDIR=${CMAKE_CURRENT_BINARY_DIR}")
 endif()

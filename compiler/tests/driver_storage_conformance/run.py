@@ -57,7 +57,7 @@ def reassociate_sources(source, target):
 def ordinary_link_command(clangxx, obj, libraries, library_dir, output, sanitized):
     sanitizer_flags = ["-fsanitize=address,undefined"] if sanitized else []
     return [clangxx, obj, *libraries, *sanitizer_flags, "-pthread",
-            f"-Wl,-rpath,{library_dir}", "-o", output]
+            "-Xlinker", "-rpath", "-Xlinker", library_dir, "-o", output]
 
 
 def main():
