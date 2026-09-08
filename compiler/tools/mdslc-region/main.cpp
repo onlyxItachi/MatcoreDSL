@@ -118,6 +118,7 @@ struct Staging {
     if (!created) reject("cannot create private output staging: " + std::string(std::strerror(errno)));
     path = created;
     fs::create_directory(path / "helper");
+    fs::create_directory(path / "tool-tmp");
   }
   ~Staging() { std::error_code ignored; fs::remove_all(path, ignored); }
   Staging(const Staging &) = delete;
@@ -235,6 +236,12 @@ int run(int argc, char **argv) {
   support::ProcessRequestV1 process;
   process.working_directory = staging.path;
   process.environment = support::compiler_environment_sanitization_v1();
+  // Clang may create/delete a temporary object when linking LLVM input. An
+  // inherited TMPDIR can be the captured host working/include directory; our
+  // own compilation would then invalidate its metadata. This pre-created
+  // private child is outside the source input set, without exempting any input
+  // directory from unchanged verification.
+  process.environment.push_back({"TMPDIR", (staging.path / "tool-tmp").string()});
   // These are tool/library search inputs, not source semantics. Only configured
   // system-toolchain paths and explicit Matcore artifacts may reach final link.
   for (const auto *name : {"COMPILER_PATH", "GCC_EXEC_PREFIX", "LIBRARY_PATH",
