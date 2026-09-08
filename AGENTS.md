@@ -11,7 +11,7 @@ in `context.md`.
   language.
 - Public matrix operations live only in `matcore::mdsl`. Never add declarations
   to `std` or `std::mdsl`.
-- Users opt in through the `.mdsl` extension, the `mdslc++` driver,
+- Per-call compatibility users opt in through the `.mdsl` extension, the `mdslc++` driver,
   `<matcore/mdsl.h>`, and annotated canonical declarations.
 - The supported frontend is the in-process Clang 21 LibTooling path. Recognize
   operations after Sema from `getDirectCallee()`, the canonical resolved
@@ -22,7 +22,7 @@ in `context.md`.
   identity, a stable physical/parsed content snapshot, and the expected public
   ABI semantics. A copied, shadowed, macro-altered, or signature-compatible
   lookalike is not a trusted declaration.
-- Output mutation is explicit through `matcore::mdsl::out(C)`. Preserve shape,
+- Per-call output mutation is explicit through `matcore::mdsl::out(C)`. Preserve shape,
   dtype, layout, memory-space, alias, effect, policy, and source-location
   information at compiler boundaries.
 - Existing per-call native and compatibility execution capture first produce
@@ -51,6 +51,19 @@ in `context.md`.
   The committed value may feed either second-call input without commuting
   operands. Preserve the other input's late read, including the existing
   `C*C` lhs-carry/rhs-read form. See `docs/mdslc/TWO_GEMM_RHS_V1.md`.
+- The separate experimental `mdslc-region` driver admits named closed regions
+  through `<matcore/region.h>`, not arbitrary C++ optimization regions. Source
+  Value is immutable and source-only; Storage is a separate all-MAY-alias host
+  descriptor. Read, publication, owning observation and checked completion have
+  ordered failure frontiers. Existing mutating GEMM keeps its own semantics.
+  See `docs/mdslc/REGION_COMPILER_V1.md` and the frontend/resource contracts it
+  links. The whole-region MLIR module is an exact untransformed paired witness;
+  orchestration is compiled from the sealed frontend-neutral Program. Only the
+  issued strict GEMM primitive presently traverses the generated MLIR/LLVM path.
+  Transformed region IR needs a new legality-preserving derivation, not relaxed
+  source-pair verification. Preserve the frozen original host, checked ABI thunk,
+  issued-helper isolation and candidate DSO ownership. Arbitrary manual linking
+  of `-c` output is outside the driver's complete execution-link contract.
 - Preserve semantic information until the final optimization that can use it.
   Matcore semantic operations describe WHAT. Legality, planning, structured
   upstream dialects, scheduling, and library/generated-code selection describe
@@ -131,7 +144,9 @@ in `context.md`.
   provides them. Reject unsafe macro, template, lambda, header, indirect-call,
   unevaluated, side-effect, alias, layout, dtype, and residency cases before
   rewriting.
-- Rewrite only the exact validated `CallExpr` source range. Never rewrite macro
+- In the compatibility per-call rewriter, rewrite only the exact validated
+  `CallExpr` source range. The experimental region driver does not text-rewrite
+  the original host body. Never rewrite macro
   expansions or source ranges not owned by the main `.mdsl` file.
 - Do not accept user-controlled VFS overlays, precompiled headers, or module
   injection in the v1 frontend. Freeze the main source and its dependency
@@ -140,10 +155,12 @@ in `context.md`.
 - Generated host, IR, site, stub, backend, object, and executable files belong
   in the build tree. Do not commit them. Commit deterministic golden fixtures
   only when a test intentionally reviews their complete contents.
-- Generated identifiers must be deterministic and collision-safe across call
+- Compatibility generated identifiers must be deterministic and collision-safe across call
   sites and translation units. Equivalent generated site wrappers/backends use
   weak definitions so deterministic IDs can safely co-link across independent
   source roots.
+  This weak-wrapper rule does not authorize replaceable compiler-private region
+  implementations; the region driver must preserve their intrinsic ownership.
 
 ## Toolchain and build discipline
 

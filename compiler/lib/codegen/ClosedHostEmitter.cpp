@@ -162,7 +162,7 @@ ClosedHostEmissionResult emitClosedHostV1(
   }
   signature += ") noexcept";
   const std::string prefix =
-      "#include \"closed_host_v1.h\"\n"
+      "#include <closed_host_v1.h>\n"
       "namespace matcore::mdslc::generated_closed_host_v1 {\n"
       "namespace mch = matcore::mdslc::runtime::closed_host_v1;\n";
   emission.declaration = prefix + signature + ";\n}\n";

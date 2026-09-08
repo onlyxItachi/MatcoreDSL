@@ -1,0 +1,45 @@
+// Experimental dense-f32 region syntax; no API/ABI stability promise.
+#include <matcore/region.h>
+#include <array>
+#include <iostream>
+namespace mdsl = matcore::mdsl;
+
+MATCORE_REGION
+mdsl::Result pipeline(mdsl::Storage A, mdsl::Storage B, mdsl::Storage D,
+                      mdsl::Storage C, mdsl::Storage E,
+                      mdsl::Shape m, mdsl::Shape n, mdsl::Shape k) noexcept {
+  auto a = mdsl::read(A, m, k);
+  auto b = mdsl::read(B, k, n);
+  auto c = mdsl::gemm(a, b, mdsl::Numerics::strict_f32);
+  mdsl::publish(c, C);
+  mdsl::observe(C);
+  auto d = mdsl::read(D, m, m);
+  auto e = mdsl::gemm(d, c, mdsl::Numerics::strict_f32);
+  mdsl::publish(e, E);
+  mdsl::observe(E);
+  return mdsl::complete();
+}
+
+int main(int argc, char **) {
+  std::array<float, 6> a{1, 2, 3, 4, 5, 6}, b{1, 2, 3, 4, 5, 6};
+  std::array<float, 4> d{1, 2, 0, 1}, c{-1, -1, -1, -1}, e{-9, -9, -9, -9};
+  auto function = &pipeline; // Ordinary C++ function identity survives lowering.
+  auto result = function({a.data(), 2, 3, 6}, {b.data(), 3, 2, 6},
+      {d.data(), 2, 2, argc > 1 ? 0ULL : 4ULL},
+      {c.data(), 2, 2, 4, mdsl::Access::read_write},
+      {e.data(), 2, 2, 4, mdsl::Access::read_write}, 2, 2, 3);
+  auto first = result.observation(0);
+  if (!first.valid() || first.data()[0] != 22 || c[0] != 22 || c[3] != 64) return 1;
+  c[0] = 999;
+  if (first.data()[0] != 22) return 2; // Logical observation is not live storage.
+  if (argc > 1) {
+    if (result.ok() || result.publication_count() != 1 || result.observation_count() != 1 ||
+        e[0] != -9 || !result.failure_location().file || result.failure_location().line == 0)
+      return 3;
+    std::cout << "checked failure; first publication and observation retained\n";
+  } else {
+    if (!result.ok() || result.publication_count() != 2 || result.observation_count() != 2 ||
+        e[0] != 120 || e[1] != 156 || e[2] != 49 || e[3] != 64) return 4;
+    std::cout << "22 28 49 64 -> 120 156 49 64\n";
+  }
+}

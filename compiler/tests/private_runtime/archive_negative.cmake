@@ -1,0 +1,26 @@
+cmake_minimum_required(VERSION 3.24)
+foreach(required IN ITEMS PROGRAM EXPECTED REQUIRED_REPRODUCTION)
+  if(NOT DEFINED ${required})
+    message(FATAL_ERROR "Missing archive observation input ${required}")
+  endif()
+endforeach()
+if(NOT EXPECTED MATCHES "^(71|72)$")
+  message(FATAL_ERROR "Archive fixture must declare its exact private-cleanup exit")
+endif()
+include("${CMAKE_CURRENT_LIST_DIR}/archive_observation.cmake")
+
+execute_process(COMMAND "${PROGRAM}" success
+  RESULT_VARIABLE success OUTPUT_VARIABLE success_output ERROR_VARIABLE success_error)
+execute_process(COMMAND "${PROGRAM}"
+  RESULT_VARIABLE failed OUTPUT_VARIABLE failure_output ERROR_VARIABLE failure_error)
+classify_archive_observation("${success}" "${failed}" "${EXPECTED}"
+  "${REQUIRED_REPRODUCTION}" observation)
+if(observation STREQUAL "not-reproduced")
+  message(STATUS "Instrumented archive completed the failure sweep without exposing the Release weak cleanup seam; this is not an intrinsic ownership proof")
+elseif(observation STREQUAL "failure-only")
+  message(STATUS "Ordinary math passed, but archive weak cleanup selected host exit ${EXPECTED}")
+elseif(observation STREQUAL "ordinary-path")
+  message(STATUS "Archive weak cleanup selected host exit ${EXPECTED} on both ordinary and failure-sweep invocations; this is stronger ordinary-path interposition, not an ordinary-success or OOM-sweep pass")
+else()
+  message(FATAL_ERROR "Unexpected archive results: ordinary=${success}, sweep=${failed}, expected cleanup=${EXPECTED}; ordinary stderr: ${success_error}; sweep stderr: ${failure_error}")
+endif()

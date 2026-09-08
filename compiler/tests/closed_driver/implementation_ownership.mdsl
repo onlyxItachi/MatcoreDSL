@@ -1,0 +1,112 @@
+// Compiler integration conformance. Private implementation spellings in the
+// original host must neither replace issued helper code nor runtime cleanup.
+// They are deliberately not definitions of a public Matcore interface.
+#include <matcore/region.h>
+#include <cstdlib>
+#include <new>
+namespace m = matcore::mdsl;
+static bool tracking = false;
+static unsigned calls = 0, fail_at = 0;
+void *operator new(__SIZE_TYPE__ size) {
+  if (tracking && ++calls == fail_at) throw std::bad_alloc();
+  if (auto *p = std::malloc(size ? size : 1)) return p;
+  throw std::bad_alloc();
+}
+void operator delete(void *p) noexcept { std::free(p); }
+void operator delete(void *p, __SIZE_TYPE__) noexcept { std::free(p); }
+
+#if defined(PRIVATE_CLEANUP_NAMED)
+namespace matcore::mdslc::runtime::closed_host_v1 {
+struct ObservationAbiV2 { ~ObservationAbiV2(); };
+ObservationAbiV2::~ObservationAbiV2() { std::_Exit(72); }
+}
+#elif defined(PRIVATE_CLEANUP_ASM)
+extern "C" void source_cleanup(void *)
+    asm("_ZN7matcore5mdslc7runtime14closed_host_v116ObservationAbiV2D2Ev");
+extern "C" void source_cleanup(void *) { std::_Exit(71); }
+#elif defined(PRIVATE_HELPER_NAMED)
+static int source_constructors = 0;
+namespace matcore::mdslc::runtime::closed_host_v1 {
+struct Options {};
+class SessionAbiV2 {
+public:
+  __attribute__((noinline)) SessionAbiV2(Options) noexcept {
+    ++source_constructors;
+  }
+};
+}
+#elif defined(PRIVATE_HELPER)
+static int source_constructors = 0;
+extern "C" void source_constructor(void *, unsigned char)
+    asm("_ZN7matcore5mdslc7runtime14closed_host_v112SessionAbiV2C2ENS2_7OptionsE");
+extern "C" void source_constructor(void *, unsigned char) { ++source_constructors; }
+#elif defined(EXPORTED_FUNCTION)
+extern "C" void matcore_closed_host_private_value_abi_v2() noexcept {}
+#elif defined(EXPORTED_WEAK)
+extern "C" __attribute__((weak)) void matcore_closed_host_private_value_abi_v2() noexcept {}
+#elif defined(EXPORTED_DATA)
+extern "C" { unsigned matcore_closed_host_private_value_abi_v2 = 0; }
+#elif defined(EXPORTED_ASM)
+extern "C" void different_name() asm("matcore_closed_host_private_value_abi_v2");
+extern "C" void different_name() {}
+#elif defined(EXPORTED_ALIAS)
+extern "C" void source_implementation() {}
+extern "C" void matcore_closed_host_private_value_abi_v2()
+    __attribute__((alias("source_implementation")));
+#endif
+
+MATCORE_REGION
+m::Result pipeline(m::Storage input, m::Storage output) noexcept {
+  auto a = m::read(input, 1, 1);
+  auto c = m::gemm(a, a, m::Numerics::strict_f32);
+  m::publish(c, output);
+  m::observe(output);
+  return m::complete();
+}
+
+int main() {
+#if defined(PRIVATE_HELPER)
+  source_constructor(nullptr, 0);
+  if (source_constructors != 1) return 20;
+#endif
+  float input = 3, output = -1;
+  auto run = [&] {
+    return pipeline({&input, 1, 1, 1},
+                    {&output, 1, 1, 1, m::Access::read_write});
+  };
+  auto control = run();
+  if (!control || output != 9 || control.publication_count() != 1 ||
+      control.observation_count() != 1 || control.observation(0).data()[0] != 9)
+    return 1;
+  bool failed = false, published_failure = false, succeeded = false;
+  for (fail_at = 1; fail_at != 24; ++fail_at) {
+    output = -1;
+    calls = 0;
+    tracking = true;
+    auto result = run();
+    tracking = false;
+    if (result) {
+      succeeded = true;
+      if (output != 9 || result.publication_count() != 1 ||
+          result.observation_count() != 1 || result.observation(0).data()[0] != 9 ||
+          result.completed_frontier() != 5 || result.completed_effect_frontier() != 4)
+        return 2;
+    } else {
+      failed = true;
+      if (result.error() != m::Error::allocation_failure ||
+          result.observation_count() != 0 || result.publication_count() > 1 ||
+          !result.failure_location().file || !result.failure_location().line)
+        return 3;
+      if (result.publication_count()) {
+        published_failure = true;
+        if (output != 9 || result.failed_frontier() != 4 ||
+            result.completed_frontier() != 3 || result.completed_effect_frontier() != 3)
+          return 4;
+      } else if (output != -1 || result.completed_effect_frontier() != 0) return 5;
+    }
+  }
+#if defined(PRIVATE_HELPER)
+  if (source_constructors != 1) return 21;
+#endif
+  return failed && published_failure && succeeded ? 0 : 6;
+}

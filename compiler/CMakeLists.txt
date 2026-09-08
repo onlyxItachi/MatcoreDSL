@@ -501,6 +501,9 @@ if(MDSLC_BUILD_CLOSED_REGION_TESTS)
   add_subdirectory(tests/generated_cpu)
   add_subdirectory(tests/closed_candidates)
   add_subdirectory(tests/closed_source)
+  add_subdirectory(tests/closed_driver)
+  add_subdirectory(tests/artifact_ownership)
+  add_subdirectory(tests/abi_thunk)
 endif()
 if(MDSLC_ENABLE_MATCORE_MLIR)
   add_subdirectory(tools/matcore-mlir)
@@ -638,6 +641,10 @@ if(BUILD_TESTING)
         "-DCC=${CMAKE_C_COMPILER}" "-DCXX=${CMAKE_CXX_COMPILER}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/experimental_regions_configuration.cmake")
   endif()
+  set(region_package_provider "")
+  if(TARGET mdslc-region)
+    get_target_property(region_package_provider mdslc-region MDSLC_REGION_PROVIDER_PATH)
+  endif()
   add_test(NAME package.experimental_regions.install_contract
     COMMAND "${CMAKE_COMMAND}"
       "-DBINARY_DIR=${CMAKE_BINARY_DIR}"
@@ -649,8 +656,10 @@ if(BUILD_TESTING)
       "-DINSTALL_INCLUDEDIR=${CMAKE_INSTALL_INCLUDEDIR}"
       "-DNM=${CMAKE_NM}"
       "-DOBJCOPY=${CMAKE_OBJCOPY}"
+      "-DINSTALL_BINDIR=${CMAKE_INSTALL_BINDIR}"
       "-DENABLED=${MDSLC_ENABLE_EXPERIMENTAL_REGIONS}"
       "-DHAS_OPENBLAS=${MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS}"
+      "-DPROVIDER=${region_package_provider}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/experimental_regions_install.cmake")
   add_test(
     NAME toolchain.version_token.contract

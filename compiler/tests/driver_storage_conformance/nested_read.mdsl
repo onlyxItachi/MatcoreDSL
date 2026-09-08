@@ -1,0 +1,10 @@
+#include <matcore/region.h>
+namespace mdsl = matcore::mdsl;
+MATCORE_REGION
+mdsl::Result pipeline(mdsl::Storage A, mdsl::Storage B, mdsl::Storage C,
+                      mdsl::Shape m, mdsl::Shape k, mdsl::Shape n) noexcept {
+  auto b = mdsl::read(B, k, n);
+  auto c = mdsl::gemm(mdsl::read(A, m, k), b, mdsl::Numerics::strict_f32);
+  mdsl::publish(c, C);
+  return mdsl::complete();
+}
