@@ -185,3 +185,63 @@ Next bounded research question: upstream non-unit K cache tiling with a single
 initial fill and strictly increasing inner-K accumulation into the current C,
 using inner MKN plus LLVM auto-vectorization. Independent partial sums or zeros
 at each K tile would be a different numerical operation and must be rejected.
+
+## Follow-up: non-unit K cache tiling, not yet performance-selected
+
+The preceding experiment was committed at
+`5a8577211b46c028fff390a5d82124d9c30a7683` before this follow-up began.
+`tiled_mkn.mlir` now demonstrates that exact next research question:
+
+```text
+fill C once with +0
+Transform tile matmul [M=4,N=64,K=32] using sequential scf.for
+generalize the inner tiled matmul
+interchange only its iteration order to M,K,N
+standard Linalg-to-loops, metadata, affine/SCF, LLVM lowering
+LLVM -O3 auto-vectorizes independent N outputs
+```
+
+**OBSERVED:** no explicit vector reduction is required. Scheduled IR has one
+fill outside the tile loops, sequential M/N/K chunk loops, and an inner generic
+with parallel/reduction/parallel iterators whose accumulator is the existing C
+subview. The scalar body is separate f32 multiply/add without fastmath. The
+object executes ordinary SSE `mulps` and `addps`; `memset` is its only undefined
+symbol, implementing the zero fill. It contains 2510 text bytes. This is neither
+a new private tiler nor an added provider/candidate registration.
+
+The bounded mathematical justification is direct: for each fixed output (i,j),
+K chunks are visited in increasing order; each chunk visits its actual K extent
+in increasing order and starts with the previous rounded C(i,j). Changing the
+relative order of different outputs cannot affect immutable A/B or disjoint C.
+This argument depends on the checked private-output contract and on the actual
+sequential lowering; a generic reduction label alone is not the proof.
+
+The research oracle now explicitly straddles K=32 and K=64 boundaries with
+7x13 outputs: initial `2^24`, then `1`, then `-2^24`. Required sequential
+accumulation is +0; independently summing the later tile then combining gives 1.
+Both counteroracles really distinguish the contracts. Systematic tails now
+include K=31/32/33 and K=63/64/65, with exactly allocated input sizes.
+
+Final follow-up reproduction:
+`MDSLC_RESEARCH_RUN_V3=1 bash compiler/experiments/mlir_hpc_v1/run.sh /tmp/mdslc-mlir-hpc.kr7V2m/cache-final`.
+All three schedules passed **77,985 checks each in ordinary execution and each
+with generated ASan plus harness ASan/UBSan** (six runs). All three malformed
+capacity controls diagnosed an actual generated-load heap-buffer-overflow. The
+prior FMA alternative still returned the exact expected rejecting result.
+The first two optimized object hashes remained unchanged; this is expanded
+validation, not a retrospective change to their original 59,869-check evidence.
+
+| Follow-up identity | SHA-256 |
+| --- | --- |
+| Schedule | `257d15b35ebd0be290526bc09792c88d53692f0067cf22f573b96cc3bc4b116b` |
+| LLVM IR | `78edbeafc74b4dd45a9c47360f6b533533a2a93117a20515533fc62dcf736e8c` |
+| Ordinary object | `2096d76115c45fbf0bba91fa2776ddf19e71a8311982a6f3689ee28dc1dad556` |
+| Instrumented object | `85707a3d2d1cc3af2f482d581c92b9046aef0a36e8467b156c9275d3738524ee` |
+| Expanded oracle | `2a05acb227798c3a4cc222a108cabea3e696d1add6194387d6368d2374e5ef9e` |
+
+**UNRESOLVED:** this non-unit-K schedule has no independent timing result yet.
+The earlier table describes the explicit-vector object, not this new object.
+An independent execution/performance comparison must precede any selection;
+4/64/32 are a research specimen, not a planner recommendation. The owning
+integration lane retains the simpler row-contiguous candidate and unchanged
+source/effect orchestration while it reviews and tests that bounded change.

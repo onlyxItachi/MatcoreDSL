@@ -116,10 +116,27 @@ int main(int argc, char **argv) {
   check(bits(strict[0]) == 0, "FMA discriminator must produce positive zero");
   check(bits(std::fma(fma_a[1], fma_b[1], -1.0f)) != 0,
         "FMA counteroracle actually distinguishes the source contract");
+  // A non-unit K tile must carry the previous rounded accumulator. Computing
+  // independent tile sums and adding them is not the same strict operation.
+  for (int boundary : {32, 64}) {
+    const int m = 7, n = 13, k = boundary + 2;
+    std::vector<float> x(static_cast<std::size_t>(m) * k, 1.0f),
+                       y(static_cast<std::size_t>(k) * n, 0.0f);
+    for (int j = 0; j < n; ++j) {
+      y[j] = 16777216.0f;
+      y[boundary * n + j] = 1.0f;
+      y[(boundary + 1) * n + j] = -16777216.0f;
+    }
+    auto actual = execute(x, y, m, n, k);
+    for (float v : actual) check(bits(v) == 0, "K tile carries rounded prior accumulator");
+    volatile float wrong_partial = 1.0f + -16777216.0f;
+    volatile float wrong_total = 16777216.0f + wrong_partial;
+    check(bits(wrong_total) != 0, "independent partial-sum counteroracle differs");
+  }
   // Full tails exercise allocated exact sizes under sanitizer, not padding.
   for (int m : {0, 1, 3, 4, 5, 7, 8, 9})
     for (int n : {0, 1, 7, 8, 9, 15, 16, 17})
-      for (int k : {0, 1, 2, 3, 17}) {
+      for (int k : {0, 1, 2, 3, 17, 31, 32, 33, 63, 64, 65}) {
         std::vector<float> x(static_cast<std::size_t>(m) * k, 1.5f),
                            y(static_cast<std::size_t>(k) * n, -0.25f);
         execute(x, y, m, n, k);

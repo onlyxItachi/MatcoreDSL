@@ -20,7 +20,7 @@ lower=(--canonicalize --lower-vector-multi-reduction --lower-vector-mask
        --convert-arith-to-llvm --convert-ub-to-llvm --finalize-memref-to-llvm
        --convert-func-to-llvm --convert-cf-to-llvm --reconcile-unrealized-casts)
 strict=(-ffp-contract=off -frounding-math -ftrapping-math)
-for variant in tiled_vector tiled_interchange_vector; do
+for variant in tiled_vector tiled_interchange_vector tiled_mkn; do
   mkdir -p -- "$out/$variant"
   "$mlir_bin/mlir-opt" "$experiment_dir/$variant.mlir" \
     --transform-interpreter --test-transform-dialect-erase-schedule \
