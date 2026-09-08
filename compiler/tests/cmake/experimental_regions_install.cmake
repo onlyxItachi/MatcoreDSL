@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.24)
 # Existing ordinary C++ consumers and the opt-in installed source driver have
 # separate oracles. An archive consumer alone does not authenticate source.
 include("${CMAKE_CURRENT_LIST_DIR}/experimental_regions_consumer_identity.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/experimental_regions_consumer_link.cmake")
 foreach(required IN ITEMS BINARY_DIR SOURCE_DIR CXX INSTALL_LIBDIR INSTALL_INCLUDEDIR)
   if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
     message(FATAL_ERROR "Missing package-test input ${required}")
@@ -41,6 +42,14 @@ if(NOT ENABLED)
   message(STATUS "Feature-OFF install preserves legacy headers and excludes experimental artifacts")
   return()
 endif()
+matcore_installed_provider_link_flags("${HAS_OPENBLAS}" "${PROVIDER}"
+  provider_link_flags canonical_provider)
+# The driver is bound to the configured spelling, whose directory can differ
+# from a symlink's physical target used by the manual consumers.
+set(driver_provider)
+if(HAS_OPENBLAS)
+  set(driver_provider "${PROVIDER}")
+endif()
 set(archive "${private}/libmatcore_closed_candidates_production_v1.a")
 set(candidates "${private}/libmatcore_closed_candidates_isolated_v1.so")
 foreach(path IN ITEMS "${include}/matcore/region.h"
@@ -49,6 +58,19 @@ foreach(path IN ITEMS "${include}/matcore/region.h"
   if(NOT EXISTS "${path}")
     message(FATAL_ERROR "Missing feature-ON artifact ${path}")
   endif()
+endforeach()
+# Run the small falsification controls in the existing feature-ON CTest lane;
+# they must not depend on a separately registered test or generated test binary.
+set(link_regression_scratch "${prefix}/consumer-link-regression")
+file(MAKE_DIRECTORY "${link_regression_scratch}")
+foreach(regression IN ITEMS experimental_regions_install_identity_test experimental_regions_consumer_link_test)
+  execute_process(COMMAND "${CMAKE_COMMAND}" "-DSCRATCH=${link_regression_scratch}"
+    -P "${CMAKE_CURRENT_LIST_DIR}/${regression}.cmake"
+    RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
+  if(NOT status EQUAL 0)
+    message(FATAL_ERROR "Installed-consumer regression ${regression} failed: ${output}\n${error}")
+  endif()
+  message(STATUS "${output}")
 endforeach()
 execute_process(COMMAND "${NM}" --defined-only --extern-only "${archive}"
   RESULT_VARIABLE status OUTPUT_VARIABLE symbols ERROR_VARIABLE error)
@@ -64,6 +86,8 @@ if(NOT definition_count EQUAL 1 OR symbols MATCHES
 endif()
 separate_arguments(compile_flags NATIVE_COMMAND "${CXX_FLAGS}")
 separate_arguments(link_flags NATIVE_COMMAND "${LINK_FLAGS}")
+set(consumer_link_flags "-L${lib}" -lmatcore_runtime ${provider_link_flags}
+  -lm -pthread -Xlinker -rpath -Xlinker "${lib}" ${link_flags})
 set(provider_flag)
 if(HAS_OPENBLAS)
   set(provider_flag -DEXPECT_OPENBLAS)
@@ -80,8 +104,7 @@ foreach(test IN ITEMS result candidates private_value)
   execute_process(COMMAND "${CXX}" -std=c++20 ${compile_flags}
     -ffp-contract=off -frounding-math ${provider_flag}
     "-I${include}" "-I${private}/include" "${source}" "${archive}"
-    "-L${lib}" -lmatcore_runtime -lm -pthread "-Wl,-rpath,${lib}"
-    ${link_flags} -o "${executable}"
+    ${consumer_link_flags} -o "${executable}"
     RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
   if(NOT status EQUAL 0)
     message(FATAL_ERROR "Installed ${test} consumer failed without LLVM/MLIR: ${output}\n${error}")
@@ -116,8 +139,7 @@ foreach(kind IN ITEMS result value)
   execute_process(COMMAND "${CXX}" -std=c++20 ${compile_flags}
     -D_GLIBCXX_DEBUG=1 -D_GLIBCXX_USE_CXX11_ABI=0
     "-I${include}" "-I${private}/include" "${test_dir}/${stem}_consumer.cpp"
-    "${object}" "${archive}" "-L${lib}" -lmatcore_runtime -lm -pthread
-    "-Wl,-rpath,${lib}" ${link_flags} -o "${executable}"
+    "${object}" "${archive}" ${consumer_link_flags} -o "${executable}"
     RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
   if(NOT status EQUAL 0)
     message(FATAL_ERROR "Installed mixed ${kind} consumer failed to link: ${output}\n${error}")
@@ -129,7 +151,7 @@ foreach(kind IN ITEMS result value)
   endif()
   message(STATUS "Installed mixed ${kind} ownership: PASS ${output}")
 endforeach()
-set(abi_link_flags "${LINK_FLAGS} -L\"${lib}\" -lmatcore_runtime -lm -pthread -Wl,-rpath,\"${lib}\"")
+matcore_serialize_installed_link_flags(abi_link_flags ${consumer_link_flags})
 execute_process(COMMAND "${CMAKE_COMMAND}"
   "-DCXX=${CXX}" "-DNM=${NM}" "-DOBJCOPY=${OBJCOPY}"
   "-DSOURCE_DIR=${SOURCE_DIR}/tests/closed_host"
@@ -146,8 +168,7 @@ if(CXX_FLAGS MATCHES "fsanitize=.*address")
   set(executable "${prefix}/installed-leaf-asan-control")
   execute_process(COMMAND "${CXX}" -std=c++20 ${compile_flags}
     -ffp-contract=off "${SOURCE_DIR}/tests/generated_cpu/execution_test.cpp"
-    "${archive}" "-L${lib}" -lmatcore_runtime -lm -pthread
-    "-Wl,-rpath,${lib}" ${link_flags} -o "${executable}"
+    "${archive}" ${consumer_link_flags} -o "${executable}"
     RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
   if(NOT status EQUAL 0)
     message(FATAL_ERROR "Installed leaf ASan control did not link: ${output}\n${error}")
@@ -168,7 +189,7 @@ execute_process(COMMAND "${CMAKE_COMMAND}"
   "-DDRIVER=${driver}"
   "-DSOURCE=${SOURCE_DIR}/examples/experimental/two_gemm.mdsl"
   "-DOUTPUT_ROOT=${prefix}" "-DSANITIZED=${driver_sanitized}"
-  "-DPROVIDER=${PROVIDER}"
+  "-DPROVIDER=${driver_provider}"
   -P "${SOURCE_DIR}/tests/closed_driver/driver_contract.cmake"
   RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
 if(NOT status EQUAL 0)
