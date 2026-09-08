@@ -138,6 +138,69 @@ The initial sandbox setup made Clang's ordinary temporary directory read-only;
 it failed without an output. The successful pre-`470d709` run allowed `/tmp`
 writes. Neither setup result is a claim of unrestricted sandbox compatibility.
 
+## Hosted falsifiers at `c3ffafb`: not an accepted merge head
+
+The next clean candidate, `c3ffafb556d7a693430e2648088b922b8fa18ac3`, passed
+local Release **133/133**, 324.01 s, and affected ASan+UBSan **80/80**, 186.29 s.
+Its installed driver also compiled/executed with source/build hidden and only
+the output root writable. Nevertheless final hosted CI had **15/19 successful
+checks, four failed checks** (two distinct failures duplicated across push/PR).
+It was not merged. The [hold comment](https://github.com/onlyxItachi/MatcoreDSL/pull/58#issuecomment-5587794880)
+preserves that disposition. Local success did not substitute for these gates.
+
+1. The [Release/OpenBLAS ON job](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34243275177/job/102118643505)
+   failed `package.experimental_regions.install_contract`: installed Runtime
+   has an empty RPATH, and the driver did not pass the already-authenticated
+   nonstandard provider path to the final linker. The local system-library
+   installation masked this. `30ce146` makes that exact provider a direct
+   dependency under the existing `--no-as-needed`, with its own RUNPATH entry;
+   it does not search with `-lopenblas`, accept loader environment authority,
+   or duplicate the provider-policy adapter. A permanent exact SONAME/RUNPATH
+   test rejected the old installed driver and passed the corrected driver
+   (**1/1**, 13.83 s). Provider-OFF checks absence instead.
+2. The same log exposed unset CMake CMP0054 in the install test: the quoted
+   `candidates` label was dereferenced as an existing variable, so the private
+   Value oracle ran under the candidate label. The independent test fix sets
+   the intended CMake 3.24 policy and requires each executed oracle's own output
+   identity. Local CMake 4.3.2 had not reproduced OLD behavior; the actual hosted
+   warning/output is the evidence. No earlier passing label is promoted into
+   proof that the intended candidate oracle ran there.
+3. Both hosted Debug jobs failed only the deliberately vulnerable archive
+   controls: unoptimized cleanup substitution selected exits 71/72 even in the
+   ordinary-success case. Isolated DSO positives still passed. The earlier
+   negative control had incorrectly required the optimized Release pattern
+   (success first, interception only during the failure sweep) in every profile.
+   The correction must distinguish these exact observations while retaining
+   strict zero-exit requirements for the real isolated implementation.
+
+The provider correction was additionally exercised in the existing tests-disabled
+production build with the exact OpenBLAS bytes copied to
+`/tmp/mdslc-installed-isolated-driver.CNNyTh/provider outside system` and selected
+through its private pkg-config-resolved CMake cache entry. Source, build and the
+entire original system OpenBLAS directory were hidden by bwrap. Both the generated
+program and a separate forced-OpenBLAS/reassociation two-GEMM program compiled
+and executed rectangular arithmetic and retained-prefix late failure. Dynamic
+dependencies contained one direct `libopenblas.so.0`; loader inspection resolved
+it from that configured private provider directory. This is observed bounded
+execution, not authentication of arbitrary future dynamic-loader choices.
+
+Wrong ELF bytes bound over that configured provider caused the compiled-identity
+refusal; hiding its directory caused the missing-artifact refusal. Both left no
+output, even with the original system provider still present. No real provider
+or system file was changed. Tested installed driver SHA256:
+`95caf655d6544058bea0ed609d0015c3cfd0660f4043bfa66dd68eccb77d9b8e`;
+provider: `be2e7d119279836105e0361be92c78dbcd8a6e7357e74339bdbb32a5195ee35e`.
+These executions used the uncommitted six-line production correction before its
+`30ce146` commit, not an invented final-head full build.
+
+A separate attempted provider **build-dependency** prefix containing a comma
+failed in CMake-generated `-Wl,-rpath,...` linkage before producing Runtime.
+The successful nondefault provider prefix retained spaces but no comma. The
+installed product prefix still contained spaces and a comma. This records a
+build-path limitation, not new general path support or a reason to replace
+upstream build/link machinery. Fresh final-head regression, independent review
+and hosted gates remain required after all corrections.
+
 ## Reconciliation and remaining claims
 
 **PROVEN WITHIN A BOUNDED CONTRACT:** the inspected architecture supports a real
