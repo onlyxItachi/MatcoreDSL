@@ -159,8 +159,9 @@ candidate or its stage rejection controls. The sources were subsequently moved,
 without content changes, into durable test paths at the integration owner's
 request. Their new CMake runner is separate from those direct baseline runs.
 The runner rejects both a driver that exits nonzero (`/bin/false`) and one that
-exits zero without creating an executable (`/bin/true`). Its positive run is
-deferred until the owning lane's benchmark quiet window ends.
+exits zero without creating an executable (`/bin/true`). After the owning lane's
+benchmark quiet window ended, both positive runner invocations passed against
+the actual row-selected Release driver (4,140 and 1,503 checks).
 
 ## First live production delta review and transformed-source result
 
@@ -193,6 +194,32 @@ add-fastmath mutations, plus a separate achieved-object SIMD assertion. Actual
 row-selected source ASan+UBSan execution and final committed-delta review remain
 pending the corresponding owning-lane build. A Release driver with an ASan host
 option is not a substitute for that instrumented implementation.
+
+## Generated SIMD-specific ASan negative control
+
+At the integration owner's request, this lane also owns the bounded extension
+of `compiler/tests/generated_cpu/execution_test.cpp` and `expect_asan.cmake`.
+The existing N=1 `--oob` control remains unchanged. The new `--oob-simd` uses
+M=1, K=1, N=16, one actual B element and a sufficiently large isolated C
+allocation. It checks disjoint integer address ranges before calling the leaf,
+so output/input alias versioning does not silently select the scalar path.
+Only B's intentionally false capacity is outside the private leaf contract;
+the caller does not itself perform an out-of-bounds load.
+
+Linked to the actual row-selected `strict-asan.o`, the new control reports
+`AddressSanitizer: heap-buffer-overflow`, **`READ of size 16`**, and generated
+`_mlir_ciface___matcore_strict_gemm_f32_v1` as frame #0. Both the SIMD-specific
+CMake classifier and the original scalar classifier pass their expected-failure
+checks. Crucially, linking the same new source to the unchanged scalar candidate
+produces only `READ of size 4`: the SIMD classifier **rejects** that result,
+despite its otherwise genuine ASan error. Scalar instrumentation cannot stand
+in for the new SIMD claim.
+
+Register the SIMD mode only for the row-contiguous selected schedule; default
+scalar builds retain their original control. The classifier requires a wide
+read and generated top frame, not merely nonzero exit or an ASan library symbol.
+This intentionally invalid leaf-only invocation does not weaken the public
+adapter's capacity checks or grant source programs permission to bypass them.
 
 ## Verdict at this stage
 
