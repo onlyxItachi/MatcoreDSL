@@ -1,0 +1,175 @@
+// Compile this whole source using mdslc-region --region contract_region.
+// It is an independent execution oracle, not a performance measurement.
+#include <matcore/region.h>
+#include <bit>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <limits>
+#include <vector>
+
+namespace md = matcore::mdsl;
+
+MATCORE_REGION md::Result contract_region(
+    md::Storage A, md::Storage B, md::Storage C, md::Storage D,
+    md::Storage E, md::Shape M, md::Shape K, md::Shape N,
+    md::Shape P) noexcept {
+  auto a = md::read(A, M, K);
+  auto b = md::read(B, K, N);
+  auto old = md::read(C, M, N);
+  auto first = md::gemm(a, b, md::Numerics::strict_f32);
+  md::publish(first, C);
+  md::observe(C);
+  auto late = md::read(D, N, P);
+  auto second = md::gemm(first, late, md::Numerics::strict_f32);
+  md::publish(second, E);
+  md::observe(E);
+  md::publish(old, C);
+  md::observe(C);
+  return md::complete();
+}
+
+static int failures = 0, checks = 0;
+static void check(bool condition, const char *label) {
+  ++checks;
+  if (!condition) { ++failures; std::fprintf(stderr, "FAIL %s\n", label); }
+}
+static bool equal(float a, float b) {
+  return (std::isnan(a) && std::isnan(b)) ||
+      std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b);
+}
+static void values(const float *actual, const std::vector<float> &expected,
+                   const char *label) {
+  for (std::size_t i = 0; i < expected.size(); ++i) check(equal(actual[i], expected[i]), label);
+}
+static std::vector<float> product(const float *a, const float *b,
+                                  std::size_t m, std::size_t k, std::size_t n) {
+  std::vector<float> c(m * n);
+  for (std::size_t i = 0; i < m; ++i)
+    for (std::size_t j = 0; j < n; ++j) {
+      volatile float acc = 0.0f;
+      for (std::size_t p = 0; p < k; ++p) {
+        volatile float term = a[i * k + p] * b[p * n + j];
+        acc = acc + term;
+      }
+      c[i * n + j] = acc;
+    }
+  return c;
+}
+static md::Storage storage(std::vector<float> &v, md::Shape rows,
+                           md::Shape columns, md::Access access) {
+  return {v.data(), rows, columns, static_cast<md::Shape>(v.size()), access};
+}
+static void observation(const md::Result &r, md::Shape index,
+                        md::Shape rows, md::Shape columns,
+                        const std::vector<float> &expected) {
+  auto item = r.observation(index);
+  check(item.valid() && item.rows() == rows && item.columns() == columns,
+        "owning observation identity and shape");
+  if (item.valid()) values(item.data(), expected, "owning observation contents");
+}
+
+static void run(std::size_t m, std::size_t k, std::size_t n,
+                std::size_t p, std::vector<float> a, std::vector<float> b,
+                int failure = 0) {
+  std::vector<float> c(m * n, 17.0f), d(n * p), e(m * p, -29.0f);
+  for (std::size_t i = 0; i < d.size(); ++i) d[i] = float(int(i % 5) - 2);
+  const auto old = c, untouched = e;
+  const auto first = product(a.data(), b.data(), m, k, n);
+  const auto second = product(first.data(), d.data(), m, n, p);
+  auto late = storage(d, n, p, md::Access::read_only);
+  if (failure == 1) --late.capacity_elements;
+  auto destination = storage(e, m, p, failure == 2 ? md::Access::read_only : md::Access::read_write);
+  auto result = contract_region(storage(a, m, k, md::Access::read_only),
+      storage(b, k, n, md::Access::read_only), storage(c, m, n, md::Access::read_write),
+      late, destination, m, k, n, p);
+  if (failure) {
+    check(!result && result.error() == (failure == 1 ? md::Error::insufficient_capacity : md::Error::access_denied),
+          "late failure identity");
+    check(result.publication_count() == 1 && result.observation_count() == 1,
+          "late failure preserves exactly earlier effect prefix");
+    check(result.failure_location().line != 0 && result.failed_frontier() > result.completed_effect_frontier(),
+          "failure remains source-bound after earlier effects");
+    values(c.data(), first, "earlier publication survives late failure");
+    values(e.data(), untouched, "failed or unreached publication leaves E unchanged");
+    observation(result, 0, m, n, first);
+    return;
+  }
+  check(result.ok() && result.publication_count() == 3 && result.observation_count() == 3,
+        "successful complete effect trace");
+  values(c.data(), old, "old immutable Value survives C overwrite and is republished");
+  values(e.data(), second, "second strict GEMM result");
+  // Observations must own their contents, not reflect subsequent host writes.
+  for (auto &x : c) x = 101.0f;
+  for (auto &x : e) x = 103.0f;
+  observation(result, 0, m, n, first);
+  observation(result, 1, m, p, second);
+  observation(result, 2, m, n, old);
+}
+
+static void partial_alias() {
+  std::vector<float> a{1, 2, 3, 4}, b{2, 0, 1, 3}, backing{11, 12, 13, 14, 15}, e(4, -29);
+  const std::vector<float> old(backing.begin(), backing.begin() + 4);
+  const auto first = product(a.data(), b.data(), 2, 2, 2);
+  const std::vector<float> late{first[1], first[2], first[3], backing[4]};
+  const auto second = product(first.data(), late.data(), 2, 2, 2);
+  auto result = contract_region(storage(a, 2, 2, md::Access::read_only),
+      storage(b, 2, 2, md::Access::read_only),
+      {backing.data(), 2, 2, 4, md::Access::read_write},
+      {backing.data() + 1, 2, 2, 4, md::Access::read_only},
+      storage(e, 2, 2, md::Access::read_write), 2, 2, 2, 2);
+  check(result.ok(), "partially overlapping descriptors are supported MAY-alias resources");
+  values(backing.data(), old, "saved old value remains live across partial alias publication");
+  values(e.data(), second, "late alias read sees publication, not region-entry bytes");
+  check(backing[4] == 15.0f, "publication touches only its bounded destination");
+  observation(result, 0, 2, 2, first);
+  observation(result, 1, 2, 2, second);
+  observation(result, 2, 2, 2, old);
+}
+
+int main() {
+  // Non-symmetric dimensions and lane-distinct data reject operand, stride,
+  // transpose and output-lane mapping mistakes, including both sides of tails.
+  for (std::size_t n : {1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33}) {
+    const std::size_t m = n % 5 + 1, k = n % 7 + 1, p = n % 3 + 1;
+    std::vector<float> a(m * k), b(k * n);
+    for (std::size_t i = 0; i < a.size(); ++i) a[i] = float(int(i % 11) - 5);
+    for (std::size_t i = 0; i < b.size(); ++i) b[i] = float(int((3 * i + 1) % 13) - 6);
+    run(m, k, n, p, a, b);
+  }
+  run(1, 2, 1, 1, {-1.0f, 0x1.000002p0f}, {1.0f, 0x1.fffffcp-1f});
+  run(1, 4, 1, 1, {0x1p25f, 1, -0x1p25f, 1}, {1, 1, 1, 1});
+  // Repeat numerical discriminators in full output tiles and their tails:
+  // passing the scalar N=1 remainder is not proof about the SIMD main body.
+  std::vector<float> fma_a(10), fma_b(66), split_a(20), split_b(132, 1.0f);
+  for (std::size_t row = 0; row < 5; ++row) {
+    fma_a[2 * row] = -1.0f; fma_a[2 * row + 1] = 0x1.000002p0f;
+    split_a[4 * row] = 0x1p25f; split_a[4 * row + 1] = 1.0f;
+    split_a[4 * row + 2] = -0x1p25f; split_a[4 * row + 3] = 1.0f;
+  }
+  for (std::size_t column = 0; column < 33; ++column) {
+    fma_b[column] = 1.0f; fma_b[33 + column] = 0x1.fffffcp-1f;
+  }
+  run(5, 2, 33, 3, fma_a, fma_b);
+  run(5, 4, 33, 3, split_a, split_b);
+  // Quiet NaN payload is unspecified, but NaN/Inf/zero/subnormal classification
+  // and every non-NaN result bit must follow strict arithmetic.
+  const float inf = std::numeric_limits<float>::infinity();
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  run(1, 1, 5, 3, {0.0f}, {inf, -inf, nan, -0.0f, 1.0f});
+  run(1, 1, 5, 1, {0x1p-126f}, {0.5f, -0.5f, 1.0f, -1.0f, 0.0f});
+  std::vector<float> special(33), tiny(33);
+  const float specials[] = {inf, -inf, nan, -0.0f, 1.0f};
+  const float factors[] = {0.5f, -0.5f, 1.0f, -1.0f, 0.0f};
+  for (std::size_t i = 0; i < 33; ++i) { special[i] = specials[i % 5]; tiny[i] = factors[i % 5]; }
+  run(5, 1, 33, 3, std::vector<float>(5, 0.0f), special);
+  run(5, 1, 33, 3, std::vector<float>(5, 0x1p-126f), tiny);
+  run(2, 0, 5, 3, {}, {});
+  run(0, 3, 5, 2, {}, std::vector<float>(15, 1));
+  run(2, 3, 0, 2, std::vector<float>(6, 1), {});
+  run(2, 3, 5, 2, std::vector<float>(6, 1), std::vector<float>(15, 2), 1);
+  run(2, 3, 5, 2, std::vector<float>(6, 1), std::vector<float>(15, 2), 2);
+  partial_alias();
+  if (!failures) std::printf("PASS hpc_source_contract %d checks\n", checks);
+  return failures ? 1 : 0;
+}

@@ -33,6 +33,34 @@ bool equal(float a, float b) {
                              std::bit_cast<std::uint32_t>(b);
 }
 int main(int argc, char **argv) {
+  if (argc == 2 && std::string_view(argv[1]) == "--oob-simd") {
+    // Deliberately violate only B's private leaf capacity precondition. N=16
+    // reaches the row-contiguous SIMD main loop, unlike the scalar N=1 probe.
+    // A larger actual C allocation keeps the generated alias-versioning ranges
+    // disjoint; only the descriptor's first 16 output elements are accessed.
+    auto *a = new float[1]{1};
+    auto *b = new float[1]{1};
+    auto *c = new float[64]{};
+    const auto ap = reinterpret_cast<std::uintptr_t>(a);
+    const auto bp = reinterpret_cast<std::uintptr_t>(b);
+    const auto cp = reinterpret_cast<std::uintptr_t>(c);
+    auto disjoint = [](std::uintptr_t x, std::uintptr_t y, std::uintptr_t length) {
+      return x < y ? y - x >= length : x - y >= length;
+    };
+    if (!disjoint(ap, cp, 16 * sizeof(float)) ||
+        !disjoint(bp, cp, 16 * sizeof(float))) {
+      // A failed setup is NOT an accepted sanitizer result. No caller OOB is
+      // performed while checking these integer address ranges.
+      std::fputs("SIMD OOB control could not establish disjoint versioning ranges\n", stderr);
+      delete[] a; delete[] b; delete[] c;
+      return 3;
+    }
+    run(a, b, c, 1, 16, 1);
+    delete[] a;
+    delete[] b;
+    delete[] c;
+    return 0;
+  }
   if (argc == 2 && std::string_view(argv[1]) == "--oob") {
     // Deliberately violates the private leaf capacity precondition. This
     // negative control must fail inside generated code, not in its caller.

@@ -69,7 +69,8 @@ target_link_libraries(matcore_cpu_gemm_candidate PUBLIC matcore_closed_region_se
   PRIVATE matcore_mlir_bufferized_handoff MLIRLinalgTransforms MLIRArithToLLVM
     MLIRAffineToStandard MLIRSCFToControlFlow MLIRMemRefToLLVM MLIRFuncToLLVM
     MLIRControlFlowToLLVM MLIRReconcileUnrealizedCasts MLIRBuiltinToLLVMIRTranslation
-    MLIRLLVMToLLVMIRTranslation MLIRTargetLLVMIRExport)
+    MLIRLLVMToLLVMIRTranslation MLIRTargetLLVMIRExport MLIRLinalgTransformOps
+    MLIRTransformDialect MLIRTransformDialectTransforms MLIRParser)
 mdslc_target_enable_warnings(matcore_cpu_gemm_candidate)
 mdslc_target_match_llvm_rtti(matcore_cpu_gemm_candidate)
 add_executable(matcore-cpu-gemm-candidate
@@ -78,11 +79,22 @@ target_link_libraries(matcore-cpu-gemm-candidate PRIVATE matcore_cpu_gemm_candid
 mdslc_target_match_llvm_rtti(matcore-cpu-gemm-candidate)
 
 set(region_leaf_modes normal)
+set(MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE "scalar" CACHE STRING
+  "Internal strict generated GEMM realization; not runtime cost policy")
+set_property(CACHE MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE PROPERTY STRINGS
+  scalar row-contiguous)
+mark_as_advanced(MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE)
+if(NOT MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE MATCHES "^(scalar|row-contiguous)$")
+  message(FATAL_ERROR "Unknown MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE; expected scalar or row-contiguous")
+endif()
 if(BUILD_TESTING)
   list(APPEND region_leaf_modes asan)
 endif()
 foreach(mode IN LISTS region_leaf_modes)
   set(issuer_args)
+  if(MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE STREQUAL "row-contiguous")
+    list(APPEND issuer_args --schedule=row-contiguous)
+  endif()
   set(kernel_flags -O2)
   # A sanitized compiler build also instruments its production leaf; linking a
   # sanitized wrapper alone is not instrumentation of the emitted computation.
@@ -94,6 +106,7 @@ foreach(mode IN LISTS region_leaf_modes)
   set(object "${CMAKE_CURRENT_BINARY_DIR}/strict-${mode}.o")
   add_custom_command(OUTPUT "${ir}"
     BYPRODUCTS "${ir}.manifest" "${ir}.semantic.mlir" "${ir}.structured.mlir" "${ir}.bufferized.mlir"
+      "${ir}.scheduled.mlir" "${ir}.transform.mlir"
     COMMAND matcore-cpu-gemm-candidate --output "${ir}" ${issuer_args}
     DEPENDS matcore-cpu-gemm-candidate VERBATIM)
   add_custom_command(OUTPUT "${object}"
