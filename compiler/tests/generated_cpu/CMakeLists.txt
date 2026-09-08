@@ -2,6 +2,14 @@
 if(NOT TARGET matcore-cpu-gemm-candidate)
   return()
 endif()
+
+if(TARGET mdslc-region)
+  foreach(case IN ITEMS source same_value)
+    add_test(NAME generated_cpu.source_schedule.${case} COMMAND "${CMAKE_COMMAND}"
+      "-DDRIVER=$<TARGET_FILE:mdslc-region>" "-DCASE=${case}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/schedule_source_contract.cmake")
+  endforeach()
+endif()
 add_executable(matcore_cpu_gemm_candidate_test candidate_test.cpp)
 target_link_libraries(matcore_cpu_gemm_candidate_test PRIVATE matcore_cpu_gemm_candidate MLIRLinalgDialect)
 mdslc_target_match_llvm_rtti(matcore_cpu_gemm_candidate_test)
@@ -36,3 +44,16 @@ add_test(NAME generated_cpu.object_contract COMMAND "${CMAKE_COMMAND}"
   "-DSANITIZED=${MDSLC_CLOSED_REGION_CXX_FLAGS}" -P "${CMAKE_CURRENT_SOURCE_DIR}/object_contract.cmake")
 add_test(NAME generated_cpu.sanitizer_negative_control COMMAND "${CMAKE_COMMAND}"
   "-DEXECUTABLE=$<TARGET_FILE:matcore_generated_cpu_asan_test>" -P "${CMAKE_CURRENT_SOURCE_DIR}/expect_asan.cmake")
+
+# Instrumented builds need not retain the same auto-vectorization decision.
+# Assert actual SIMD only on the unsanitized realization that claims it.
+if(MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE STREQUAL "row-contiguous" AND
+   NOT MDSLC_CLOSED_REGION_CXX_FLAGS MATCHES "fsanitize=")
+  string(REGEX REPLACE "\\.o$" ".ll.manifest" row_manifest
+    "${MDSLC_CLOSED_GEMM_NORMAL_OBJECT}")
+  add_test(NAME generated_cpu.row_contiguous_simd COMMAND "${CMAKE_COMMAND}"
+    "-DOBJDUMP=${MDSLC_CANDIDATE_OBJDUMP}"
+    "-DOBJECT=${MDSLC_CLOSED_GEMM_NORMAL_OBJECT}"
+    "-DMANIFEST=${row_manifest}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/row_contiguous_object.cmake")
+endif()

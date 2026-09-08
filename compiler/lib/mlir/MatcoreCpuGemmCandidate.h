@@ -35,26 +35,39 @@ struct StrictGemmStagesV1 {
 StrictGemmStagesV1 buildStrictGemmStagesV1(mlir::MLIRContext &context);
 // Self-consistency checks only; none grants source/execution authority. Linalg
 // reduction iterator identity does not itself encode increasing-K order. Only
-// the issuer's fixed scalar loop pipeline is defended here; arbitrary tiling,
+// the issuer's fixed loop pipelines are defended here; arbitrary tiling,
 // vectorization or reassociation needs a separate numerical-order proof.
 bool verifyStrictGemmStructuredV1(mlir::ModuleOp module, std::string &error);
 bool verifyStrictGemmBufferizedV1(mlir::ModuleOp module, std::string &error);
+
+// Internal realization choice, not mathematical semantics or runtime policy.
+// Both retain increasing scalar K for every output and separate f32 arithmetic.
+enum class StrictGemmScheduleV1 { ScalarMNK, RowContiguousMKN };
+
+// Self-consistency/derivation only: callers cannot obtain execution authority
+// by submitting a serialized module to these inspection helpers.
+mlir::OwningOpRef<mlir::ModuleOp>
+deriveStrictGemmRowContiguousV1(mlir::ModuleOp bufferized, std::string &error);
+bool verifyStrictGemmRowContiguousV1(mlir::ModuleOp module, std::string &error);
 
 struct StrictGemmArtifactV1 {
   std::string llvm_ir;
   std::string semantic_ir;
   std::string structured_ir;
   std::string bufferized_ir;
+  std::string scheduled_ir;
+  std::string transform_ir;
   std::string manifest;
   std::string error;
   explicit operator bool() const { return !llvm_ir.empty(); }
 };
 
 // Closed issuer: only the built-in verified strict primitive, exact 21.1.8
-// pipeline and baseline Linux x86-64 target. Address instrumentation is carried
+// schedules and baseline Linux x86-64 target. Address instrumentation is carried
 // as LLVM function attributes, not presumed from the host link command.
 StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
-                                               bool address_sanitizer);
+    bool address_sanitizer,
+    StrictGemmScheduleV1 schedule = StrictGemmScheduleV1::ScalarMNK);
 
 } // namespace matcore::mdslc::cpu_candidate
 #endif

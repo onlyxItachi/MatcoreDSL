@@ -50,6 +50,14 @@ jobs:
           - openblas_label: OpenBLAS explicitly disabled
             openblas_enable: "OFF"
             openblas_require: "OFF"
+            mlir_label: Matcore MLIR row-contiguous schedule
+            mlir_enable: "ON"
+            vector_readiness_enable: "OFF"
+            default_semantic_pipeline: matcore-mlir
+            cpu_schedule: row-contiguous
+          - openblas_label: OpenBLAS explicitly disabled
+            openblas_enable: "OFF"
+            openblas_require: "OFF"
             mlir_label: Matcore MLIR disabled
             mlir_enable: "OFF"
             vector_readiness_enable: "OFF"
@@ -158,6 +166,7 @@ jobs:
           if [[ "${{ matrix.mlir_enable }}" == "ON" ]]; then
             mlir_options+=(
               -DMLIR_DIR=/usr/lib/llvm-21/lib/cmake/mlir
+              -DMDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE=${{ matrix.cpu_schedule || 'scalar' }}
             )
           fi
           cmake -S compiler -B build-mdslc -G Ninja \
@@ -191,6 +200,15 @@ jobs:
 
       - name: Build standalone MDSLC
         run: cmake --build build-mdslc --parallel 2
+
+      - name: Verify the selected generated schedule
+        if: matrix.mlir_enable == 'ON'
+        run: |
+          expected=scalar-mnk
+          if [[ "${{ matrix.cpu_schedule }}" == "row-contiguous" ]]; then
+            expected=row-contiguous-mkn
+          fi
+          grep -Fx "schedule=${expected}" build-mdslc/lib/regions/strict-normal.ll.manifest
 
       - name: Authenticate the MLIR link boundary
         if: matrix.mlir_enable == 'ON'
@@ -259,6 +277,7 @@ jobs:
             -DMDSLC_ENABLE_OPENBLAS=OFF -DMDSLC_REQUIRE_OPENBLAS=OFF \
             -DMDSLC_ENABLE_MATCORE_MLIR=ON \
             -DMDSLC_ENABLE_EXPERIMENTAL_REGIONS=ON \
+            -DMDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE=${{ matrix.cpu_schedule || 'scalar' }} \
             -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
             -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang \
             -DMLIR_DIR=/usr/lib/llvm-21/lib/cmake/mlir
@@ -322,6 +341,7 @@ jobs:
             -DMDSLC_REQUIRE_OPENBLAS=OFF \
             -DMDSLC_ENABLE_MATCORE_MLIR=ON \
             -DMDSLC_ENABLE_EXPERIMENTAL_REGIONS=ON \
+            -DMDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE=row-contiguous \
             -DMDSLC_DEFAULT_SEMANTIC_PIPELINE=matcore-mlir \
             -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
             -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang \
@@ -412,6 +432,7 @@ jobs:
             -DMDSLC_REQUIRE_OPENBLAS=OFF \
             -DMDSLC_ENABLE_MATCORE_MLIR=ON \
             -DMDSLC_ENABLE_EXPERIMENTAL_REGIONS=ON \
+            -DMDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE=row-contiguous \
             -DMDSLC_DEFAULT_SEMANTIC_PIPELINE=matcore-mlir \
             -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
             -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang \
@@ -445,7 +466,7 @@ jobs:
           sanitizer_tests="${sanitizer_tests}|${region_tests}"
           ctest --test-dir build-mdslc-asan-ubsan -N -R "${sanitizer_tests}" \
             | tee build-mdslc-asan-ubsan/focused-test-list.txt
-          grep -Fx "Total Tests: 80" \
+          grep -Fx "Total Tests: 82" \
             build-mdslc-asan-ubsan/focused-test-list.txt
           ctest --test-dir build-mdslc-asan-ubsan --output-on-failure -j1 \
             -R "${sanitizer_tests}"
