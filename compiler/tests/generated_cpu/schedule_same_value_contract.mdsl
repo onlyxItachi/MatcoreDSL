@@ -1,0 +1,50 @@
+// Both candidate inputs are the SAME immutable Value, not disjoint snapshots.
+#include <matcore/region.h>
+#include <bit>
+#include <cstdint>
+#include <cstdio>
+#include <vector>
+
+namespace md = matcore::mdsl;
+MATCORE_REGION md::Result same_value_region(md::Storage A, md::Storage C,
+                                           md::Shape N) noexcept {
+  auto shared = md::read(A, N, N);
+  auto result = md::gemm(shared, shared, md::Numerics::strict_f32);
+  md::publish(result, C);
+  md::observe(C);
+  return md::complete();
+}
+int main() {
+  int checks = 0;
+  for (md::Shape n : {3, 5, 9, 17, 33}) {
+    std::vector<float> a(n * n), c(n * n, -101.0f), expected(n * n);
+    for (std::size_t i = 0; i < a.size(); ++i) a[i] = float(int((7 * i + 3) % 11) - 5);
+    const auto original = a;
+    for (md::Shape i = 0; i < n; ++i)
+      for (md::Shape j = 0; j < n; ++j) {
+        volatile float sum = 0.0f;
+        for (md::Shape k = 0; k < n; ++k) {
+          volatile float term = a[i * n + k] * a[k * n + j];
+          sum = sum + term;
+        }
+        expected[i * n + j] = sum;
+      }
+    auto result = same_value_region({a.data(), n, n, n * n, md::Access::read_only},
+        {c.data(), n, n, n * n, md::Access::read_write}, n);
+    if (!result || result.publication_count() != 1 || result.observation_count() != 1) return 1;
+    ++checks;
+    auto observed = result.observation(0);
+    if (!observed.valid()) return 2;
+    ++checks;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      if (a[i] != original[i] ||
+          std::bit_cast<std::uint32_t>(c[i]) != std::bit_cast<std::uint32_t>(expected[i]) ||
+          std::bit_cast<std::uint32_t>(observed.data()[i]) != std::bit_cast<std::uint32_t>(expected[i])) {
+        std::fprintf(stderr, "FAIL same immutable input n=%llu index=%zu\n", n, i);
+        return 3;
+      }
+      ++checks;
+    }
+  }
+  std::printf("PASS hpc_same_value_contract %d checks\n", checks);
+}
