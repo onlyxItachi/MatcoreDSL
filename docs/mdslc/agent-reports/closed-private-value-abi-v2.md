@@ -137,3 +137,31 @@ install/relocation/consumer execution is required before claiming this public
 source route is packaged. Runtime promotion is the integration owner's separate
 lane. This change adds no public tensor API, new target, fusion, scheduling policy,
 performance result or BLAS-parity completion claim.
+
+## Canonical merge checkpoint
+
+PR [#52](https://github.com/onlyxItachi/MatcoreDSL/pull/52) merged normally as
+`3374ffbb2100dd68fdd34a46ee93495d1c3c4137`. Parents are canonical
+`6ea93ee11780e800a3d3ffb9ab0da1e3d61b9f65` and reviewed integration head
+`fd360cd0c4f1c2bae886d4d9e4b2a05055d6e4e7`. Merged tree
+`d38fc3db2db298be56467acc2d8d9bfb583e0224` matched the pre-merge tree check.
+
+The integration retains implementation `cf8548efe033e9ec3ec8858d83790efd953a582c`
+through normal merges. Runtime/public-header bytes are unchanged from independent
+review. At the exact final integration head, full Release with required OpenBLAS
+0.3.32 passed **115/115, 254.82 s**; Debug ASan+UBSan with OpenBLAS disabled
+passed the complete selected **62/62, 54.05 s** scope. The latter is the affected
+sanitizer contract, not every registered subprocess test. The full Release suite
+includes installed/C17/source-inaccessible consumers, native/provider execution,
+both admitted-source execution variants and generated-kernel sanitizer controls.
+Repository hygiene and `git diff --check` passed with a clean tree.
+
+All **19/19 final-head hosted checks** succeeded, including the existing Windows
+platform lane. This does not claim Windows closed-region execution. The
+[normal-merge gate](https://github.com/onlyxItachi/MatcoreDSL/pull/52#issuecomment-5562379910)
+records source/ownership and root integration/CI acceptance; the
+[exact local gate](https://github.com/onlyxItachi/MatcoreDSL/pull/52#issuecomment-5562319447)
+preserves tested-head provenance. The canonical package still deliberately omits
+experimental headers: opt-in production build/install promotion is next, not
+already implemented by this checkpoint. No installed named-region driver,
+performance/parity result or stable API/ABI follows from this merge.

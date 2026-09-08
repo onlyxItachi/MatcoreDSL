@@ -121,3 +121,18 @@ run coherent full regressions, and retain the prior dependency reviews. The next
 usable-product boundary is a deliberately designed frontend/tooling surface over
 this now-connected private contract, not another execution-authority flag on an
 inspection representation.
+
+## Canonical merge checkpoint
+
+PR [#48](https://github.com/onlyxItachi/MatcoreDSL/pull/48) merged normally at
+`322af8d43799304cc289748a5b0c803cf3a0f697` on 2026-09-06 at 20:45:30 UTC.
+Parents: canonical `6ecf5c4eb63908ee5dce52feb92642f2523b3499` and reviewed
+head `63f3bccc7ad38d4fc7092c4c86b8ccd799e80c08`. Merged tree
+`0922e1a3b4e70332f6385cf91bcd766d9c23e930` matched the pre-merge tree check.
+The implementation/test identity retained its independent ACCEPT review.
+
+At the final head, a fresh local Release run passed **102/102** tests in 112.72 s;
+ASan/UBSan passed **51/51** in 41.90 s. All **19/19** hosted checks passed.
+The [exact-head integration gate](https://github.com/onlyxItachi/MatcoreDSL/pull/48#issuecomment-5562058151)
+records independent review and validation. This supersedes the isolated branch's
+earlier absence of full-suite/hosted evidence, without broadening its contract.

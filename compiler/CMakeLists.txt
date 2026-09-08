@@ -581,6 +581,8 @@ if(WIN32 AND MDSLC_ENABLE_NATIVE_FRONTEND)
     endif()
   endforeach()
 endif()
+# The legacy package stays unchanged. Experimental declarations are installed
+# only together with their explicit opt-in production runtime package.
 install(FILES include/matcore/mdsl.h include/matcore/runtime_c.h
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/matcore")
 if(MDSLC_ENABLE_EXPERIMENTAL_REGIONS)
@@ -624,6 +626,13 @@ if(WIN32)
 endif()
 
 if(BUILD_TESTING)
+  if(NOT MDSLC_ENABLE_EXPERIMENTAL_REGIONS)
+    add_test(NAME package.experimental_region_headers_uninstalled
+      COMMAND "${CMAKE_COMMAND}"
+        "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
+        "-DINSTALL_INCLUDEDIR=${CMAKE_INSTALL_INCLUDEDIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/experimental_region/uninstalled_headers.cmake")
+  endif()
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND MDSLC_ENABLE_NATIVE_FRONTEND)
     add_test(NAME package.experimental_regions.configuration_rejections
       COMMAND "${CMAKE_COMMAND}"
@@ -638,10 +647,11 @@ if(BUILD_TESTING)
       "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
       "-DCXX=${MDSLC_CLANGXX_EXECUTABLE}"
       "-DCXX_FLAGS=${MDSLC_CLOSED_REGION_CXX_FLAGS}"
-      "-DLINK_FLAGS=${CMAKE_EXE_LINKER_FLAGS}"
+      "-DLINK_FLAGS=${CMAKE_EXE_LINKER_FLAGS} ${CMAKE_EXE_LINKER_FLAGS_${MDSLC_REGION_BUILD_TYPE}}"
       "-DINSTALL_LIBDIR=${CMAKE_INSTALL_LIBDIR}"
       "-DINSTALL_INCLUDEDIR=${CMAKE_INSTALL_INCLUDEDIR}"
       "-DNM=${CMAKE_NM}"
+      "-DOBJCOPY=${CMAKE_OBJCOPY}"
       "-DENABLED=${MDSLC_ENABLE_EXPERIMENTAL_REGIONS}"
       "-DHAS_OPENBLAS=${MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/experimental_regions_install.cmake")

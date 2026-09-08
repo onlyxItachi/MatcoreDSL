@@ -1,5 +1,16 @@
 # OpenBLAS shared policy scope correction
 
+Normally merged in [PR #43](https://github.com/onlyxItachi/MatcoreDSL/pull/43)
+at **`76b024abadcb32eb9f01effe92ec19ea13d6d763`**, 2026-09-06T19:37:42Z.
+Reviewed head: `3a85a14ba478129ffd4c8fca8691b978e4335c8a`;
+canonical pre-merge parent: `5ab85faac305862681817a5cec7e9ecfc912bf22`.
+Merge tree `76b49d9241bcfe07a404eaf8e4d8ef20a36b6597` matches the independently
+composed parent/head tree. Two independent reviews accepted the exact adapter
+correction and all **19/19 exact-head hosted checks succeeded**. The hosted
+required-provider lane executed the new concurrent-policy oracle against the
+separately built OpenBLAS 0.3.32 GENERIC provider; this is distinct from local
+Cooperlake validation. See the [normal-merge gate](https://github.com/onlyxItachi/MatcoreDSL/pull/43#issuecomment-5561663407).
+
 ## Falsified hypothesis
 
 **OBSERVED:** retaining an independently authored concurrent first-use test

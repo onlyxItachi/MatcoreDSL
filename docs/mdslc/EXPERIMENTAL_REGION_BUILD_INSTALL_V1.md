@@ -106,6 +106,16 @@ or embedded-provider exports, then compiles/runs existing owning-result and
 candidate tests using only installed headers/archive/DSO. It is also runnable
 directly with `cmake -P` against a `BUILD_TESTING=OFF` build.
 
+The composed opaque-Value boundary adds installed independent ownership/OOM
+checks, separately compiled normal producers and mixed-STL Result/Value
+consumers, and the real installed archive's revision/stale-constructor link
+controls. Direct feature-ON script invocations must provide `NM` and `OBJCOPY`
+in addition to the compiler, source/build roots and installation directories.
+Sanitized installs run the intentional out-of-bounds generated-leaf control;
+success of a sanitized wrapper alone is insufficient.
+
 This is bounded installed runtime/primitive execution evidence, not an
 installed source-language compiler claim. Exact build/test outcomes are recorded
-in the implementation handoff; no performance or BLAS-parity claim follows.
+in the [implementation handoff](agent-reports/experimental-region-build-install-v1.md)
+and [opaque-Value integration](agent-reports/experimental-region-build-install-integration-v1.md);
+no performance or BLAS-parity claim follows.

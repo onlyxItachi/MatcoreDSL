@@ -1,7 +1,7 @@
 # MDSLC current state
 
 Engineering checkpoint: canonical merge
-`5df9ac3c451539bdd9c1e577d6558802fca30535`, [PR #40](https://github.com/onlyxItachi/MatcoreDSL/pull/40).
+`3a0f995d522bb3809c907ee68bc50e2a820d7ea6`, [PR #55](https://github.com/onlyxItachi/MatcoreDSL/pull/55).
 This identifies the latest engineering merge; documentation-only updates may follow.
 
 ## Architecture
@@ -16,36 +16,44 @@ Private closed regions in real host C++ -> authenticated Clang/Sema AST
   -> frontend-neutral immutable values + separate all-MAY-alias resources
   -> symbolic shapes, checked math, publication/observation/failure ordering
   -> private registered MLIR + structural and sealed-source paired verification
-  -> still no connected execution or public syntax on canonical main
-Independent private Linux x64 host adapter, now executed and tested:
+  -> authenticated compiled C++ orchestration + checked host adapter:
   immutable snapshots + all-MAY-alias dense resource views
-  -> strict native math, ordered host publication and owning observation
+  -> strict native/generated math, ordered host publication and owning observation
   -> sticky failure prefix + full per-candidate FP environment restoration
 Private strict GEMM -> verified Linalg/buffer path -> LLVM -> tested x64 object
-Matcore owns semantic legality, provenance and observable ordering.
-MLIR owns structured transformations; LLVM/backends own machine lowering.
+Separate trusted registry -> native/generated strict or legal legacy/provider
+  -> isolated candidate output, verified completion, then immutable value issuance
+Shared provider adapter serializes Matcore-owned OpenBLAS policy lifetimes.
+Matcore owns legality/effects; MLIR transformations; LLVM/backends machine lowering.
 Legacy Python/JIT remains a separate compatibility surface.
+Opt-in production region package: opaque Result/Value and private ABI gate.
 ```
 
 ## Material change
 
-The compiler can now issue a fixed strict GEMM implementation through upstream
-MLIR/LLVM and execute its object on Linux x64. Structural checks, independent
-numerical oracles and a real generated-load ASan negative control defend this
-leaf. Validation: 90/90 Release and 19/19 hosted checks, including the 39-test
-sanitizer scope; independent review ACCEPT. See the
-[implementation evidence](agent-reports/generated-strict-cpu-candidate-v1.md),
-[independent review](agent-reports/generated-strict-cpu-independent-review-v1.md)
-and [host contract](FOUNDATION_RESOURCE_DECISION_V1.md).
+Region support now has one production build owner, independent of test targets.
+The default-OFF option installs matching experimental headers and private runtime
+artifacts; ordinary consumers do not inherit LLVM/MLIR dependencies. Actual
+tests-disabled ON/OFF builds and installed consumers passed. Implementation-head
+Release passed 116/116 and affected ASan/UBSan 63/63; final-head hosted checks
+passed 19/19. No mathematical or candidate-selection semantics changed.
+See [package contract](EXPERIMENTAL_REGION_BUILD_INSTALL_V1.md) and
+[integration evidence](agent-reports/experimental-region-build-install-integration-v1.md#canonical-merge-checkpoint).
 
 ## Unsupported or unproven
 
-Closed source is still a private Linux 21.1.8 admission proof, not an installed
-frontend or connected source-to-generated execution. The generated leaf accepts
-no user IR and grants no source authority. No public region syntax, general
+Closed source is a private Linux 21.1.8 compiled native/generated consumer, not an
+installed frontend or a whole-host-TU replacement. The generated leaf accepts
+no user IR and grants no source authority. Experimental named-region syntax is
+not yet a shipped execution interface. The unmerged driver has a reproduced
+private weak-symbol cleanup ownership gap ([#56](https://github.com/onlyxItachi/MatcoreDSL/issues/56));
+installed private archives are not proof against host implementation replacement.
+No general
 tensor/view API, fusion, GPU/NPU or API/ABI stability claim. The new adapter
 requires valid exclusive host storage and a conforming trusted allocator; it
 does not cover arbitrary interposed host effects, exports or device transfers.
+Uncoordinated external OpenBLAS calls or duplicate adapter instances are not protected.
+Provider admission is bounded evidence, not proof for every provider/version/core.
 Snapshots are conservative realization, not a zero-copy or performance claim.
 Resource/descriptor inequality never proves noalias; recovered C++ grants no
 execution authority. Existing mutating GEMM has not been reinterpreted as pure.
@@ -55,9 +63,9 @@ remain design-only.
 
 ## Exactly one next boundary
 
-**Connect authenticated closed regions to the generated CPU candidate through
-the checked host adapter and trusted candidate registry.** Both the host
-storage/failure boundary and generated leaf are now defended independently;
-source orchestration and candidate selection must compose before claiming the
-connected source-to-generated path.
+**Defend compiler-private implementation ownership before admitting the installed driver.**
+The package now exists, but whole-archive linkage does not protect private weak
+cleanup functions on allocation failure. Isolate issued helper definitions and
+runtime internals, then falsify both boundaries with actual source/execution and
+sanitizer tests. Passing ordinary arithmetic alone is insufficient.
 Independent research branches are not canonical capabilities until integrated.

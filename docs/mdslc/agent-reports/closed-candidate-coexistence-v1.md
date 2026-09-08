@@ -180,3 +180,54 @@ has 50 because it additionally registers the independent real-provider oracle.
 The independent publication reviewer accepted this CI-only delta; no existing
 negative scope was removed. Full hosted platform/package results belong to the
 exact integration PR head and do not follow merely from these local passes.
+
+## Canonical merge checkpoint
+
+PR [#45](https://github.com/onlyxItachi/MatcoreDSL/pull/45) merged normally at
+`2201ef9154655406c6241bd6fd2d49889f1cbdba` on 2026-09-06T20:19:48Z.
+Its parents are canonical `5fb6903d6178953f58b54b9354f47ace5921bb2a` and reviewed
+head `f7c6279a9d43450cc80b18bce394679c2f7c4045`; merged tree
+`08bb60af4dcebce8bca5729d74ba136b0576fb24` matches the pre-merge tree calculation.
+See the [exact-head merge gate](https://github.com/onlyxItachi/MatcoreDSL/pull/45#issuecomment-5561910596).
+
+The earlier reviewed integration head
+`e09aa2556c34489155697f423b9aea2ad4f78018` had 19/19 hosted successes before
+canonical source orchestration PR #42 landed. The final head normally merged
+that new canonical checkpoint `38e0c9368c65f399b0d8d6c9c39469e2836007c9`;
+its only conflict resolutions preserved both CMake test subdirectories and the
+union of sanitizer scopes. No candidate, runtime, emitter or admission
+implementation changed in that reconciliation. Exact hosted sanitizer scope
+therefore became **50**: the prior provider-OFF candidate scope of 49 plus the
+native source-execution test. Source-to-generated candidate execution was not
+added by this PR.
+
+Fresh final-head local union validation passed Release provider-ON **12/12**
+(6.56 seconds), Release OFF **11/11** (6.63 seconds), and Debug ASan+UBSan ON
+**51/51** (35.00 seconds). The ON sanitizer count includes the additional real
+provider arithmetic/concurrency oracle, explaining its difference from hosted
+OFF 50. All original registry source hashes and independent reviews above remain
+applicable.
+
+All **19/19** hosted checks passed at final head. Native workflow
+[34056686220](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34056686220)
+reported:
+
+| Hosted configuration | Exact result |
+| --- | --- |
+| Release, OpenBLAS required, MLIR ON | **102/102 PASS** |
+| Release, OpenBLAS OFF, MLIR ON | **101/101 PASS** |
+| Release, OpenBLAS required, MLIR OFF | **69/69 PASS** |
+| Release, OpenBLAS OFF, MLIR OFF | **68/68 PASS** |
+| Debug, MLIR ON, provider OFF | **100/100 PASS** |
+| Exact ASan+UBSan union, provider OFF | **50/50 PASS** |
+| Existing TSan runtime scope | **4/4 PASS** |
+
+Required-provider jobs actually built authenticated OpenBLAS **0.3.32,
+TARGET=GENERIC**, and passed the independent arithmetic/concurrency test. That
+is additional bounded provider evidence, distinct from the local dynamic
+Cooperlake implementation; it is not an all-provider theorem. Both Windows
+checks, legacy build and repository hygiene also passed. Windows results retain
+the existing compatibility scope, not support for the new Linux-only registry.
+The [final integration comment](https://github.com/onlyxItachi/MatcoreDSL/pull/45#issuecomment-5561907620)
+records these exact-head gates. No performance, parity or public frontend claim
+is added by this merge.
