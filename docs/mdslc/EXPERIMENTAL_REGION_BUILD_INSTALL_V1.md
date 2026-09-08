@@ -1,5 +1,9 @@
 # Experimental region build and installation boundary
 
+Historical package checkpoint: for the subsequently connected installed driver,
+see the [region compiler guide](REGION_COMPILER_V1.md). The evidence below retains
+its original archive/package-only scope.
+
 This checkpoint promotes existing, reviewed compiler/runtime definitions out of
 test-directory ownership. It does **not** add a source-driver option, authorize
 imported IR, freeze a public/private ABI, or claim installed source-to-executable

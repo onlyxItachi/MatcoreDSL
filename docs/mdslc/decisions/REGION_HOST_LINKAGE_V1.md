@@ -1,5 +1,9 @@
 # Experimental region host linkage
 
+Historical design checkpoint: the subsequently connected implementation is
+described in the [region compiler guide](../REGION_COMPILER_V1.md); retain the
+original pending-evidence statements below as decision provenance.
+
 Status: selected implementation direction; connected installed-driver proof is
 still pending. This record does not claim a released frontend or stable ABI.
 
