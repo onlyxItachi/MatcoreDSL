@@ -25,6 +25,7 @@ target_link_libraries(matcore_cpu_reassociate_candidate_test PRIVATE matcore_cpu
   MLIRLinalgDialect MLIRVectorDialect LLVM)
 mdslc_target_match_llvm_rtti(matcore_cpu_reassociate_candidate_test)
 add_test(NAME generated_cpu.reassociate_candidate COMMAND matcore_cpu_reassociate_candidate_test)
+add_subdirectory(reassociate_independent)
 add_test(NAME generated_cpu.reassociate_cli_contract COMMAND "${CMAKE_COMMAND}"
   "-DISSUER=$<TARGET_FILE:matcore-cpu-gemm-candidate>"
   -P "${CMAKE_CURRENT_SOURCE_DIR}/reassociate_cli_contract.cmake")

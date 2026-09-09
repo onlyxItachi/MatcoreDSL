@@ -1,4 +1,5 @@
 #include "MatcoreCpuReassociateGemmCandidate.h"
+#include "MatcoreClosedRegion.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -38,6 +39,29 @@ int main() {
   check(bool(stages) && bool(strict), "separate verified semantic primitives");
   if (!stages || !strict) return 1;
   std::string error;
+  // Header-library provenance and the separately issued numerical contracts
+  // must compose: neither builtin may borrow the other's source-file table.
+  for (auto module : {*stages.semantic, *strict.semantic}) {
+    auto files = module->getAttrOfType<mlir::ArrayAttr>("mdsl_admission.source_files");
+    check(files && files.size() == 1, "builtin has one explicit source identity");
+    if (!files || files.size() != 1) return 1;
+    auto file = mlir::cast<mlir::DictionaryAttr>(files[0]);
+    check(file.getAs<mlir::IntegerAttr>("id").getInt() == 1 &&
+          file.getAs<mlir::IntegerAttr>("byte_size").getInt() > 0 &&
+          file.get("path") == module->getAttr("mdsl_admission.source_identity") &&
+          file.get("sha256") == module->getAttr("mdsl_admission.source_sha256"),
+          "builtin table binds the chosen numerical contract");
+  }
+  check((*stages.semantic)->getAttr("mdsl_admission.source_sha256") !=
+        (*strict.semantic)->getAttr("mdsl_admission.source_sha256"),
+        "strict and reassociate source contracts have distinct fingerprints");
+  {
+    mlir::OwningOpRef<mlir::ModuleOp> bad = stages.semantic->clone();
+    (*bad)->setAttr("mdsl_admission.source_files",
+                   (*strict.semantic)->getAttr("mdsl_admission.source_files"));
+    check(!matcore::mdslc::closed_region::verifyModule(*bad, error),
+          "reassociate cannot borrow strict source-file provenance");
+  }
   check(cc::verifyReassociateGemmStructuredV1(*stages.structured, error), "reassociate structured");
   check(cc::verifyReassociateGemmBufferizedV1(*stages.bufferized, error), "reassociate buffer");
   check(!cc::verifyStrictGemmStructuredV1(*stages.structured, error), "reassociate is not strict identity");
