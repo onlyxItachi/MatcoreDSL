@@ -66,6 +66,13 @@ can parse this valid C++, but the mathematical intrinsics have no runtime
 fallback: ordinary linking is not a replacement for authenticated compilation.
 Select the function with `--region qualified::name`.
 
+For real programs spanning files, the [multi-source driver contract](MULTI_SOURCE_PROGRAMS_V1.md)
+documents `--program`, `--host` and per-source `--region` selection. One invocation
+authenticates and links 2–8 original translation units, preserving each region's
+effects and numerical policy. This is ordinary host-program composition, not
+opaque mathematical imports or cross-region optimization; mathematical helper
+bodies must still be source-visible, typically in included headers.
+
 ## Values, storage and ordered effects
 
 `Storage` describes external host memory: pointer, rows, columns, capacity in
