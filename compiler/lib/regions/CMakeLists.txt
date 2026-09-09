@@ -61,7 +61,8 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
    NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
   return()
 endif()
-add_library(matcore_cpu_gemm_candidate STATIC ../mlir/MatcoreCpuGemmCandidate.cpp)
+add_library(matcore_cpu_gemm_candidate STATIC ../mlir/MatcoreCpuGemmCandidate.cpp
+  ../mlir/MatcoreCpuReassociateGemmCandidate.cpp)
 target_include_directories(matcore_cpu_gemm_candidate PUBLIC ../mlir)
 target_include_directories(matcore_cpu_gemm_candidate SYSTEM PRIVATE
   ${LLVM_INCLUDE_DIRS} ${MLIR_INCLUDE_DIRS})
@@ -70,7 +71,9 @@ target_link_libraries(matcore_cpu_gemm_candidate PUBLIC matcore_closed_region_se
     MLIRAffineToStandard MLIRSCFToControlFlow MLIRMemRefToLLVM MLIRFuncToLLVM
     MLIRControlFlowToLLVM MLIRReconcileUnrealizedCasts MLIRBuiltinToLLVMIRTranslation
     MLIRLLVMToLLVMIRTranslation MLIRTargetLLVMIRExport MLIRLinalgTransformOps
-    MLIRTransformDialect MLIRTransformDialectTransforms MLIRParser)
+    MLIRTransformDialect MLIRTransformDialectTransforms MLIRParser
+    MLIRSCFTransformOps MLIRVectorTransformOps MLIRVectorToLLVM MLIRVectorToLLVMPass MLIRVectorToSCF
+    MLIRMemRefTransforms MLIRUBToLLVM)
 mdslc_target_enable_warnings(matcore_cpu_gemm_candidate)
 mdslc_target_match_llvm_rtti(matcore_cpu_gemm_candidate)
 add_executable(matcore-cpu-gemm-candidate
@@ -119,9 +122,33 @@ foreach(mode IN LISTS region_leaf_modes)
   string(TOUPPER "${mode}" mode_upper)
   set(MDSLC_CLOSED_GEMM_${mode_upper}_OBJECT "${object}" PARENT_SCOPE)
 endforeach()
+foreach(mode IN LISTS region_leaf_modes)
+  set(issuer_args --candidate=reassociate-register)
+  set(kernel_flags -O3 -march=x86-64 -mavx2 -mfma -ffp-contract=off)
+  if(mode STREQUAL "asan" OR MDSLC_CLOSED_REGION_CXX_FLAGS MATCHES "fsanitize=.*address")
+    list(APPEND issuer_args --asan)
+    list(APPEND kernel_flags -O1 -g -fsanitize=address)
+  endif()
+  set(ir "${CMAKE_CURRENT_BINARY_DIR}/reassociate-${mode}.ll")
+  set(object "${CMAKE_CURRENT_BINARY_DIR}/reassociate-${mode}.o")
+  add_custom_command(OUTPUT "${ir}"
+    BYPRODUCTS "${ir}.manifest" "${ir}.semantic.mlir" "${ir}.structured.mlir" "${ir}.bufferized.mlir"
+      "${ir}.scheduled.mlir" "${ir}.transform.mlir"
+    COMMAND matcore-cpu-gemm-candidate --output "${ir}" ${issuer_args}
+    DEPENDS matcore-cpu-gemm-candidate VERBATIM)
+  add_custom_command(OUTPUT "${object}"
+    COMMAND "${MDSLC_CLANGXX_EXECUTABLE}" -c -x ir "${ir}" ${kernel_flags} -o "${object}"
+    DEPENDS "${ir}" VERBATIM)
+  set_source_files_properties("${object}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+  add_custom_target(matcore_generated_reassociate_${mode}_object DEPENDS "${object}")
+  string(TOUPPER "${mode}" mode_upper)
+  set(MDSLC_CLOSED_REASSOCIATE_${mode_upper}_OBJECT "${object}" PARENT_SCOPE)
+endforeach()
 set(MDSLC_CLOSED_GEMM_NORMAL_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/strict-normal.o")
+set(MDSLC_CLOSED_REASSOCIATE_NORMAL_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/reassociate-normal.o")
 add_custom_target(matcore_closed_candidates_leaf)
-add_dependencies(matcore_closed_candidates_leaf matcore_generated_cpu_normal_object)
+add_dependencies(matcore_closed_candidates_leaf matcore_generated_cpu_normal_object
+  matcore_generated_reassociate_normal_object)
 
 get_target_property(backend_definitions matcore_cpu_backends_v1 INTERFACE_COMPILE_DEFINITIONS)
 set(MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS OFF)
@@ -151,13 +178,18 @@ function(mdslc_add_closed_candidate_runtime target)
   mdslc_target_enable_warnings(${target})
   if(NOT REGION_NATIVE_ONLY)
     target_compile_definitions(${target} PRIVATE
-      MDSLC_CLOSED_HOST_GENERATED_STRICT MDSLC_CLOSED_HOST_LEGACY_CANDIDATES)
+      MDSLC_CLOSED_HOST_GENERATED_STRICT MDSLC_CLOSED_HOST_LEGACY_CANDIDATES
+      MDSLC_CLOSED_HOST_GENERATED_REASSOCIATE)
     if(MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS)
       target_compile_definitions(${target} PRIVATE MDSLC_CLOSED_HOST_OPENBLAS)
     endif()
     set_source_files_properties("${MDSLC_CLOSED_GEMM_NORMAL_OBJECT}" PROPERTIES
       GENERATED TRUE EXTERNAL_OBJECT TRUE)
     target_sources(${target} PRIVATE "${MDSLC_CLOSED_GEMM_NORMAL_OBJECT}")
+    target_sources(${target} PRIVATE "${MDSLC_CLOSED_REASSOCIATE_NORMAL_OBJECT}"
+      "${compiler_dir}/lib/platform/cpu_capability_v2.cpp"
+      "${compiler_dir}/lib/platform/platform.cpp")
+    target_include_directories(${target} PRIVATE "${compiler_dir}/lib")
     add_dependencies(${target} matcore_closed_candidates_leaf)
     # The shared legacy runtime remains the sole OpenBLAS policy-state owner.
     # Never embed the private CPU backend archive into this archive.

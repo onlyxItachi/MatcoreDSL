@@ -240,9 +240,11 @@ jobs:
             | tee build-mdslc/experimental-package-test-list.txt
           grep -Fx "Total Tests: 2" build-mdslc/experimental-package-test-list.txt
           if [[ "${{ matrix.mlir_enable }}" == "ON" ]]; then
-            expected_candidates=10
+            expected_candidates=11
+            expected_region_tests=31
             if [[ "${{ matrix.openblas_require }}" == "ON" ]]; then
-              expected_candidates=11
+              expected_candidates=12
+              expected_region_tests=32
             fi
             ctest --test-dir build-mdslc -N -R '^closed_candidates\.' \
               | tee build-mdslc/closed-candidate-test-list.txt
@@ -252,10 +254,10 @@ jobs:
               -R '^runtime\.closed_host\.private_value(_independent|_mixed_configuration|_abi)?_v2$' \
               | tee build-mdslc/private-value-test-list.txt
             grep -Fx "Total Tests: 4" build-mdslc/private-value-test-list.txt
-            region_tests='^(private_runtime\..*|frontend\.frozen_host_(codegen|independent)|frontend\.experimental_source_generated_execution|driver\.(experimental_region_contract|implementation_ownership|storage_conformance(_runner)?|source_library_(repeated_include|escaped_address|escaped_wrapper|template_(specialization|macro_type|macro_body|hidden_effect|escaped_specialization|split_body)))|codegen\.(artifact_symbol_ownership_v1|authenticated_host_thunk_v1))$'
+            region_tests='^(private_runtime\..*|frontend\.frozen_host_(codegen|independent)|frontend\.experimental_source_generated_execution|driver\.(experimental_region_contract|implementation_ownership|generated_reassociate\..*|storage_conformance(_runner)?|source_library_(repeated_include|escaped_address|escaped_wrapper|template_(specialization|macro_type|macro_body|hidden_effect|escaped_specialization|split_body)))|codegen\.(artifact_symbol_ownership_v1|authenticated_host_thunk_v1))$'
             ctest --test-dir build-mdslc -N -R "${region_tests}" \
               | tee build-mdslc/region-driver-test-list.txt
-            grep -Fx "Total Tests: 26" build-mdslc/region-driver-test-list.txt
+            grep -Fx "Total Tests: ${expected_region_tests}" build-mdslc/region-driver-test-list.txt
           fi
           if [[ "${{ matrix.vector_readiness_enable }}" == "ON" ]]; then
             ctest --test-dir build-mdslc --output-on-failure -j1 \
@@ -462,11 +464,11 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: |
           sanitizer_tests='^(package\.experimental_regions\.install_contract|frontend\.experimental_region_admission|frontend\.experimental_region\.ordinary_link_rejected|runtime\.experimental_region\.(owning_result|header_order|mixed_configuration_ownership|independent_retirement|independent_mixed_configuration)|frontend\.closed_region_admission|frontend\.closed_region_host_context|frontend\.closed_source(_generated)?_execution_v1|mlir\.closed_region_semantics|frontend\.native\.two_gemm_region|ir\.v1\.core|mlir\.sanitizer\.allocator-protocol|mlir\.semantic\.(core|map-domain|recovered-gemm|two-gemm-region)|mlir\.cpu\.runtime_dispatch_lowering_v1|platform\.fp_environment\.v1|generated_cpu\..*|closed_candidates\..*|runtime\.closed_host\.((contract|production|independent|allocation|authority)_v1|private_value(_independent|_mixed_configuration|_abi)?_v2)|runtime\.cpu\.(reference_types|packed_avx2|packed_avx512|execution_context\.v1|parallel_packed\.v1|planner_v3_resources|workspace_v1|openblas_adapter|variant_conformance\.v1|gemm_v0)|runtime\.c_abi\.(typed_reference_v1|compatibility_v1|fp_environment_v1|region_guard_oracles_v1|public_context_v1))$'
-          region_tests='^(private_runtime\..*|frontend\.frozen_host_(codegen|independent)|frontend\.experimental_source_generated_execution|driver\.(experimental_region_contract|implementation_ownership|storage_conformance(_runner)?|source_library_(repeated_include|escaped_address|escaped_wrapper|template_(specialization|macro_type|macro_body|hidden_effect|escaped_specialization|split_body)))|codegen\.(artifact_symbol_ownership_v1|authenticated_host_thunk_v1))$'
+          region_tests='^(private_runtime\..*|frontend\.frozen_host_(codegen|independent)|frontend\.experimental_source_generated_execution|driver\.(experimental_region_contract|implementation_ownership|generated_reassociate\..*|storage_conformance(_runner)?|source_library_(repeated_include|escaped_address|escaped_wrapper|template_(specialization|macro_type|macro_body|hidden_effect|escaped_specialization|split_body)))|codegen\.(artifact_symbol_ownership_v1|authenticated_host_thunk_v1))$'
           sanitizer_tests="${sanitizer_tests}|${region_tests}"
           ctest --test-dir build-mdslc-asan-ubsan -N -R "${sanitizer_tests}" \
             | tee build-mdslc-asan-ubsan/focused-test-list.txt
-          grep -Fx "Total Tests: 97" \
+          grep -Fx "Total Tests: 119" \
             build-mdslc-asan-ubsan/focused-test-list.txt
           ctest --test-dir build-mdslc-asan-ubsan --output-on-failure -j1 \
             -R "${sanitizer_tests}"
