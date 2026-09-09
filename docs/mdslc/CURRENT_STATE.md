@@ -1,7 +1,7 @@
 # MDSLC current state
 
 Engineering checkpoint: canonical merge
-`917b5ecf1d325e525bc24e3c94764d2958980a93`, [PR #63](https://github.com/onlyxItachi/MatcoreDSL/pull/63).
+`c3b7b0b9a05e11d1b8d8cd3eff1c7ef3551a8280`, [PR #66](https://github.com/onlyxItachi/MatcoreDSL/pull/66).
 This identifies the latest engineering merge; documentation-only updates may follow.
 
 ## Architecture
@@ -15,7 +15,8 @@ Ordinary C++ host + explicit closed mathematical regions
   -> static orchestration from the sealed semantic Program (no interpreter)
 Original Clang host -> sealed ABI-checked entry thunk + isolated helper LLVM
 Strict GEMM primitive -> verified Linalg/One-Shot -> optional Transform M/K/N
-  -> LLVM (private output-data isolation; optional column SIMD) -> generated x64
+Permitted GEMM -> separate Transform/Linalg/Vector register-retained AVX2/FMA
+  -> LLVM (fresh output-data noalias, not input disjointness) -> generated x64
 Trusted registry -> generated/native strict or numerically legal legacy/provider
   -> private candidate output, checked completion/FP state, immutable value
   -> ordered host publication, owning observation, sticky failure prefix
@@ -23,7 +24,6 @@ Reads snapshot at their frontier; snapshots are realization, not value identity.
 Private candidate DSO owns implementation; canonical Runtime owns provider policy.
 Installed mdslc-region pins artifacts; coherent dynamic loading remains trusted.
 Matcore owns meaning/legality; MLIR transformations; LLVM machine lowering.
-Runtime checks dynamic legality/capability and preserves selected effect contracts.
 Legacy mutating GEMM -> IR v1/MLIR -> existing CPU/runtime route is unchanged.
 Older recovered/structured/buffer/vector/two-GEMM specimens stay inspection-only.
 Linux region execution, standalone Windows and Linux Python/JIT are separate lanes.
@@ -31,15 +31,14 @@ Linux region execution, standalone Windows and Linux Python/JIT are separate lan
 
 ## Material change
 
-Mathematical Value/Shape helpers can now live in source-visible headers, including
-bounded selected template specializations. Physical file identity and selected
-body provenance remain bound through admission, MLIR verification and execution;
-hidden effects and escaped Value helpers still fail closed.
-Pre-merge head `75c78f586801a108ec3cc49b4003b83c34a9cb26`: Release **151/151**,
-affected ASan/UBSan **97/97**, independent review and **21/21 hosted checks**.
-No numerical, runtime, schedule or provider policy changed.
-See [library evidence](agent-reports/source-visible-math-libraries-v1.md),
-[frontend contract](EXPERIMENTAL_REGION_FRONTEND_V1.md) and [user guide](REGION_COMPILER_V1.md).
+Forced `generated-reassociate` now reaches a separately authenticated generated
+CPU implementation; it requires per-GEMM permission and AVX2/FMA hardware/OS legality.
+Strict/default selection and provider policy are unchanged. Full local Release
+**172/172**, affected ASan/UBSan **117/117**, then two added installed/adversarial
+gates passed in both profiles; reviewed head `76bcf62183712544b202ce58290f04fef7502e48`
+passed **21/21 hosted checks**. [Contract and exact evidence](GENERATED_REASSOCIATE_CPU_V1.md).
+One same-permission, six-shape study measured 27.28–57.62% lower latency than our
+previous generated candidate; OpenBLAS still won five. [Audited measurements](agent-reports/generated-reassociate-source-evidence-v1.md).
 
 ## Unsupported or unproven
 
@@ -58,8 +57,9 @@ remains partial/open; [#20](https://github.com/onlyxItachi/MatcoreDSL/issues/20)
 ## Exactly one next boundary
 
 **Authenticate and link a bounded multi-source program in one driver invocation.**
-Header helpers now preserve their semantic source identity; independent regions
-can next share an ordinary C++ host program without inventing opaque mathematical
-imports. Freeze every translation unit, authenticate cross-file declarations and
-global symbol ownership before linking, and retain per-region effects/failures.
-This does not authorize cross-region optimization or new candidate execution.
+Source-visible helpers and separately legal candidates are established; independent
+regions can next share an ordinary C++ program with every translation unit and
+cross-file interface authenticated before linking. [PR #67](https://github.com/onlyxItachi/MatcoreDSL/pull/67)
+is the unmerged implementation under combined validation, not canonical capability.
+Preserve per-region effects/failures and the new candidate's numerical refusal;
+this does not authorize cross-region optimization or opaque mathematical imports.

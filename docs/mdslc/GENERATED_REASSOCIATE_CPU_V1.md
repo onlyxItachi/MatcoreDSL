@@ -130,3 +130,27 @@ target features and optimization level, not a causal FMA-only improvement.
 [Independent audit](agent-reports/generated-reassociate-source-measurement-independent-v1.md)
 recomputed every sample and median and rechecked all frozen paths. No threshold,
 universal performance or BLAS-parity claim follows; Issue #15 remains partial.
+
+## Canonical merge gate
+
+Normally merged as `c3b7b0b9a05e11d1b8d8cd3eff1c7ef3551a8280`,
+[PR #66](https://github.com/onlyxItachi/MatcoreDSL/pull/66), after all **21/21**
+exact-head hosted checks succeeded at `76bcf62183712544b202ce58290f04fef7502e48`.
+Parents are previous canonical `b7e6cc03bd492ba9d0b2983dd1ce54611ef971fd` and that
+reviewed head. Verified merge tree: `7048558b485d2e06eab87923d219502f47f75dca`.
+Production, AGENTS and workflow files exactly match the reviewed head; the only
+additional content is the pre-existing PR #65 documentation checkpoint.
+[Independent review](https://github.com/onlyxItachi/MatcoreDSL/pull/66#issuecomment-5594984560)
+and [final acceptance](https://github.com/onlyxItachi/MatcoreDSL/pull/66#issuecomment-5595189963)
+record the gates; agent reviews are not separate human GitHub approvals.
+
+The [PR native matrix](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34304414307)
+recorded zero failures: Release MLIR/provider ON 172 registered; OFF 170;
+OFF/row-contiguous 171; Debug 171; affected ASan+UBSan 119; focused runtime TSan
+4. The three Release MLIR selections and affected ASan selection each skipped
+one hardware-dependent packed-AVX512 test; those skips are not execution proof.
+The [existing Windows lane](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34304414299)
+recorded Release 49 and Debug 32 registered, each with one AVX512 skip, and
+focused ASan 1/1. This is not generated-region Windows validation. Hosted counts
+depend on their exact configured scopes and do not replace the local counts
+above. The 21 checks include duplicate push/PR triggers, not 21 configurations.
