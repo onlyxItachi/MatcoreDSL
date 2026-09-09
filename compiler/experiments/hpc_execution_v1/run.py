@@ -65,6 +65,24 @@ def oracle_profile(profile):
     raise ValueError("unknown numerical evidence profile: " + profile)
 
 
+def source_selections(provider, connected):
+    result = [("strict", "generated-strict"), ("strict", "native-strict"),
+              ("strict", "automatic"), ("reassociate", "existing-native")]
+    if provider:
+        result.append(("reassociate", "openblas"))
+    if connected:
+        # Compare the SAME source/per-operation permission, not just a relaxed
+        # generated leaf against a strict source contract with different costs.
+        result.extend(("reassociate", candidate) for candidate in
+                      ("generated-reassociate", "generated-strict", "native-strict"))
+    return result
+
+
+def strict_refusal_policies(provider, connected):
+    return (["existing-native"] + (["openblas"] if provider else []) +
+            (["generated-reassociate"] if connected else []))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--driver", required=True, type=Path)
@@ -73,6 +91,8 @@ def main():
     parser.add_argument("--primitive-object", required=True, type=Path)
     parser.add_argument("--library-directory", type=Path)
     parser.add_argument("--provider", type=Path, help="configured exact provider; omission means OFF lane not exercised")
+    parser.add_argument("--generated-reassociate-source", action="store_true",
+                        help="requires a source-connected issuer; compare same-permission source policies")
     parser.add_argument("--clangxx", type=Path, default=Path("/usr/bin/clang++-21"))
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--extra-primitive", nargs=3, action="append", default=[], metavar=("LABEL", "OBJECT", "ENTRY"))
@@ -210,10 +230,7 @@ def main():
                     report["cpu_policy"][key] = "unavailable"
         inspect(args.primitive_object, obj=True)
         lanes = []
-        selections = [("strict", "generated-strict"), ("strict", "native-strict"),
-                      ("strict", "automatic"), ("reassociate", "existing-native")]
-        if args.provider:
-            selections.append(("reassociate", "openblas"))
+        selections = source_selections(bool(args.provider), args.generated_reassociate_source)
         drivers = [("", driver, selections)]
         report["extra_drivers"] = []
         for label, path, expected, source_root in args.extra_driver:
@@ -268,7 +285,7 @@ def main():
             print(f"{lane['name']}: {len(records)} oracle cases and negative control passed", flush=True)
             report["lanes"].append(lane)
             save()
-        for candidate in ["existing-native", *(["openblas"] if args.provider else [])]:
+        for candidate in strict_refusal_policies(bool(args.provider), args.generated_reassociate_source):
             binary = output / ("strict-refusal-" + candidate)
             run([driver, source / "strict.mdsl", "--region", "hpc_region", "--candidate", candidate,
                  "-o", binary])

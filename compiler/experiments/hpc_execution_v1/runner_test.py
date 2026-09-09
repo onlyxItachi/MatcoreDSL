@@ -48,6 +48,25 @@ class EvidenceControls(unittest.TestCase):
             with self.assertRaises(ValueError):
                 runner.primitive_specs("baseline.o", [], [(label, "b.o", entry)])
 
+    def test_connected_source_lanes_are_opt_in(self):
+        for provider in (False, True):
+            before = runner.source_selections(provider, False)
+            after = runner.source_selections(provider, True)
+            self.assertEqual(after[:len(before)], before)
+            self.assertEqual(len(after), len(set(after)))
+            self.assertEqual(after[len(before):], [
+                ("reassociate", "generated-reassociate"),
+                ("reassociate", "generated-strict"),
+                ("reassociate", "native-strict")])
+            self.assertNotIn(("strict", "generated-reassociate"), after)
+
+    def test_connected_candidate_still_has_full_strict_refusal_control(self):
+        for provider in (False, True):
+            before = runner.strict_refusal_policies(provider, False)
+            self.assertEqual(runner.strict_refusal_policies(provider, True),
+                             before + ["generated-reassociate"])
+        self.assertEqual(runner.oracle_profile("strict")[1], 24)
+
 
 if __name__ == "__main__":
     unittest.main()

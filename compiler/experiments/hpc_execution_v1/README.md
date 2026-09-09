@@ -53,6 +53,14 @@ an independently reviewed numerical study remains necessary. Existing extra
 primitives remain strict and the baseline cannot be relabeled. Duplicate primitive labels
 are rejected before they can overwrite an earlier compared binary.
 
+`--generated-reassociate-source` adds the actually integrated forced generated
+reassociate policy plus generated-strict/native-strict controls compiled from
+the **same** reassociated source file. The pre-existing strict-source lanes are
+retained. The new candidate also runs the complete 24-case strict-refusal matrix.
+No source candidate is inferred from a separately linked primitive. This option
+requires a real driver with that candidate, independently validated hardware and
+the original source execution authority; an older driver must fail, not fallback.
+
 The runner freezes driver, compiler, candidate/runtime/provider and primitive
 hashes, records fixture hashes and complete commands, and checks ELF64 x86-64
 object/executable kinds, primitive entry definitions and direct region dependencies.
