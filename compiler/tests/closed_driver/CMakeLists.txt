@@ -44,6 +44,23 @@ add_test(NAME frontend.experimental_source_generated_execution
 set_tests_properties(frontend.experimental_source_generated_execution PROPERTIES TIMEOUT 180)
 
 if(TARGET mdslc-region)
+  foreach(library_case repeated_include escaped_address escaped_wrapper)
+    add_test(NAME driver.source_library_${library_case}
+      COMMAND "${CMAKE_COMMAND}"
+        "-DDRIVER=$<TARGET_FILE:mdslc-region>"
+        "-DCASE=${library_case}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/../experimental_region/library_adversary/run.cmake")
+    set_tests_properties(driver.source_library_${library_case} PROPERTIES TIMEOUT 200)
+  endforeach()
+  foreach(library_case template_specialization template_macro_type template_macro_body
+          template_hidden_effect template_escaped_specialization template_split_body)
+    add_test(NAME driver.source_library_${library_case}
+      COMMAND "${CMAKE_COMMAND}"
+        "-DDRIVER=$<TARGET_FILE:mdslc-region>"
+        "-DCASE=${library_case}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/../experimental_region/library_adversary/template_run.cmake")
+    set_tests_properties(driver.source_library_${library_case} PROPERTIES TIMEOUT 200)
+  endforeach()
   get_target_property(driver_provider mdslc-region MDSLC_REGION_PROVIDER_PATH)
   add_test(NAME driver.experimental_region_contract
     COMMAND "${CMAKE_COMMAND}"

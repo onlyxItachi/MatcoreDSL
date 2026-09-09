@@ -31,10 +31,30 @@ bool digest(const std::string &value) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
   });
 }
-bool siteValid(const SourceSite &site) {
+bool filesValid(const std::vector<SourceFile> &files, const std::string &main_path,
+                const std::string &main_digest) {
+  if (files.empty() || files.size() > 4096 || files.front().path != main_path ||
+      files.front().sha256 != main_digest) return false;
+  std::set<std::string> paths;
+  std::uint64_t bytes = 0;
+  for (std::size_t index = 0; index < files.size(); ++index) {
+    const auto &file = files[index];
+    if (file.id != index + 1 || file.path.empty() || file.path.size() > 4096 ||
+        file.path.find('\0') != std::string::npos || !digest(file.sha256) ||
+        !file.byte_size || file.byte_size > 16U * 1024U * 1024U ||
+        !paths.insert(file.path).second ||
+        (index > 1 && files[index - 1].path >= file.path)) return false;
+    bytes += file.byte_size;
+  }
+  return bytes <= 64U * 1024U * 1024U;
+}
+bool siteValid(const SourceSite &site, const std::vector<SourceFile> &files) {
+  if (!site.file_id || site.file_id > files.size()) return false;
+  const auto size = files[site.file_id - 1].byte_size;
   return site.length && site.line && site.column && site.offset <= maximum &&
          site.length <= static_cast<std::uint64_t>(maximum) - site.offset &&
-         site.line <= maximum && site.column <= maximum;
+         site.line <= maximum && site.column <= maximum && site.offset <= size &&
+         site.length <= size - site.offset;
 }
 bool emptyDimension(const Dimension &dim) {
   return dim.kind == Dimension::Kind::Literal && !dim.literal && !dim.reference;
@@ -80,12 +100,13 @@ bool extentProduct(Shape shape, std::string &error) {
 bool verifyBody(const std::vector<Operation> &body,
                 const std::set<Id> &resources, const std::set<Id> &parameters,
                 std::map<Id, Shape> values, std::set<Id> &allValues,
-                unsigned depth, std::string &error) {
+                const std::vector<SourceFile> &files, unsigned depth, std::string &error) {
   if (depth > 16)
     return fail(error, "shape-control nesting exceeds the bounded admission depth");
   for (const auto &op : body) {
-    if (!siteValid(op.site) ||
-        !std::all_of(op.helper_calls.begin(), op.helper_calls.end(), siteValid))
+    if (!siteValid(op.site, files) ||
+        !std::all_of(op.helper_calls.begin(), op.helper_calls.end(),
+                     [&](const SourceSite &site) { return siteValid(site, files); }))
       return fail(error, "invalid source or helper-call site");
     if (!profileValid(op.numerical_profile) || !comparisonValid(op.comparison))
       return fail(error, "unknown numerical profile or shape comparison");
@@ -142,9 +163,9 @@ bool verifyBody(const std::vector<Operation> &body,
         return fail(error, "shape-if cannot export branch-local values or resources");
       if (!dimension(op.condition_lhs, parameters, values, ignored, error) ||
           !dimension(op.condition_rhs, parameters, values, ignored, error) ||
-          !verifyBody(op.then_body, resources, parameters, values, allValues,
+          !verifyBody(op.then_body, resources, parameters, values, allValues, files,
                       depth + 1, error) ||
-          !verifyBody(op.else_body, resources, parameters, values, allValues,
+          !verifyBody(op.else_body, resources, parameters, values, allValues, files,
                       depth + 1, error))
         return false;
       break;
@@ -204,7 +225,8 @@ public:
 };
 
 mlir::DictionaryAttr sourceAttr(mlir::Builder &b, SourceSite site) {
-  return b.getDictionaryAttr({b.getNamedAttr("offset", b.getI64IntegerAttr(site.offset)),
+  return b.getDictionaryAttr({b.getNamedAttr("file_id", b.getI64IntegerAttr(site.file_id)),
+                             b.getNamedAttr("offset", b.getI64IntegerAttr(site.offset)),
                              b.getNamedAttr("length", b.getI64IntegerAttr(site.length)),
                              b.getNamedAttr("line", b.getI64IntegerAttr(site.line)),
                              b.getNamedAttr("column", b.getI64IntegerAttr(site.column))});
@@ -398,13 +420,17 @@ bool i64(mlir::Attribute attr, std::int64_t &value) {
   value = integer.getInt();
   return true;
 }
-bool sourceValid(mlir::Attribute attr) {
+bool sourceValid(mlir::Attribute attr, const std::vector<SourceFile> &files) {
   auto dict = mlir::dyn_cast_or_null<mlir::DictionaryAttr>(attr);
-  std::int64_t offset, length, line, column;
-  return dict && dict.size() == 4 && i64(dict.get("offset"), offset) &&
+  std::int64_t file, offset, length, line, column;
+  return dict && dict.size() == 5 && i64(dict.get("file_id"), file) && file > 0 &&
+         i64(dict.get("offset"), offset) &&
          i64(dict.get("length"), length) && i64(dict.get("line"), line) &&
          i64(dict.get("column"), column) && offset >= 0 && length > 0 &&
-         line > 0 && column > 0 && length <= maximum - offset;
+         line > 0 && column > 0 && length <= maximum - offset &&
+         siteValid({static_cast<std::uint64_t>(offset), static_cast<std::uint64_t>(length),
+                    static_cast<std::uint64_t>(line), static_cast<std::uint64_t>(column),
+                    static_cast<Id>(file)}, files);
 }
 bool tensor(mlir::Type type) {
   auto ranked = mlir::dyn_cast<mlir::RankedTensorType>(type);
@@ -430,6 +456,7 @@ bool attrsAre(mlir::Operation *op, llvm::ArrayRef<llvm::StringRef> allowed,
   return true;
 }
 struct VerifyState {
+  const std::vector<SourceFile> *source_files = nullptr;
   mlir::Value order;
   std::string epoch = "entry";
   std::map<Id, mlir::Value> resources;
@@ -512,8 +539,10 @@ bool verifyBlock(mlir::Block &block, VerifyState &state, std::set<Id> &ids,
       return fail(error, "checked GEMM frontier is separated from its computation");
     auto calls = op->getAttrOfType<mlir::ArrayAttr>("helper_calls");
     auto frontier = op->getAttrOfType<mlir::StringAttr>("frontier");
-    if (!sourceValid(op->getAttr("source")) || !calls || !frontier || frontier.getValue().empty() ||
-        !std::all_of(calls.begin(), calls.end(), sourceValid))
+    if (!sourceValid(op->getAttr("source"), *state.source_files) || !calls || !frontier || frontier.getValue().empty() ||
+        !std::all_of(calls.begin(), calls.end(), [&](mlir::Attribute site) {
+          return sourceValid(site, *state.source_files);
+        }))
       return fail(error, "missing source/frontier identity");
     if (!frontiers.insert(frontier.getValue().str()).second)
       return fail(error, "duplicate source-effect frontier identity");
@@ -655,9 +684,12 @@ bool verifyProgram(const Program &program, std::string &error) {
   if (program.source_identity.empty() || !digest(program.source_sha256) ||
       !digest(program.header_sha256) || program.compiler_identity.empty() || program.regions.empty())
     return fail(error, "missing source/header/compiler identity or region");
+  if (!filesValid(program.source_files, program.source_identity, program.source_sha256))
+    return fail(error, "missing, invalid or nondeterministic semantic source-file table");
   std::set<std::string> names;
   for (const auto &region : program.regions) {
-    if (region.name.empty() || !names.insert(region.name).second || !siteValid(region.site))
+    if (region.name.empty() || !names.insert(region.name).second ||
+        region.site.file_id != 1 || !siteValid(region.site, program.source_files))
       return fail(error, "duplicate region name or invalid region source site");
     std::set<Id> resources, parameters, allValues, parameterIndices;
     for (const auto &resource : region.resources)
@@ -670,7 +702,7 @@ bool verifyProgram(const Program &program, std::string &error) {
           !parameters.insert(parameter.id).second || parameter.parameter_index > maximum ||
           !parameterIndices.insert(parameter.parameter_index).second)
         return fail(error, "duplicate or invalid shape parameter");
-    if (!verifyBody(region.body, resources, parameters, {}, allValues, 0, error))
+    if (!verifyBody(region.body, resources, parameters, {}, allValues, program.source_files, 0, error))
       return false;
   }
   return true;
@@ -697,6 +729,14 @@ Result buildModule(const Program &program, mlir::MLIRContext &context) {
   module->setAttr("mdsl_admission.source_sha256", b.getStringAttr(program.source_sha256));
   module->setAttr("mdsl_admission.header_sha256", b.getStringAttr(program.header_sha256));
   module->setAttr("mdsl_admission.compiler_identity", b.getStringAttr(program.compiler_identity));
+  llvm::SmallVector<mlir::Attribute> files;
+  for (const auto &file : program.source_files)
+    files.push_back(b.getDictionaryAttr({
+        b.getNamedAttr("id", b.getI64IntegerAttr(file.id)),
+        b.getNamedAttr("path", b.getStringAttr(file.path)),
+        b.getNamedAttr("sha256", b.getStringAttr(file.sha256)),
+        b.getNamedAttr("byte_size", b.getI64IntegerAttr(file.byte_size))}));
+  module->setAttr("mdsl_admission.source_files", b.getArrayAttr(files));
   for (std::size_t i = 0; i < program.regions.size(); ++i) {
     const auto &region = program.regions[i];
     llvm::SmallVector<mlir::Type> inputs(region.resources.size(), mdsl::RegionDescriptorType::get(&context));
@@ -742,7 +782,7 @@ bool verifyModule(mlir::ModuleOp module, std::string &error) {
       !attrsAre(module, {"mdsl_admission.schema", "mdsl_admission.authority", "mdsl_admission.aliasing",
                         "mdsl_admission.shape_scalar",
                         "mdsl_admission.source_identity", "mdsl_admission.source_sha256", "mdsl_admission.header_sha256",
-                        "mdsl_admission.compiler_identity"}, error))
+                        "mdsl_admission.compiler_identity", "mdsl_admission.source_files"}, error))
     return fail(error, "module changes private inspection authority or alias contract");
   for (auto name : {"mdsl_admission.source_identity", "mdsl_admission.compiler_identity"}) {
     auto value = module->getAttrOfType<mlir::StringAttr>(name);
@@ -754,6 +794,23 @@ bool verifyModule(mlir::ModuleOp module, std::string &error) {
     if (!value || !digest(value.str()))
       return fail(error, "invalid source/header digest");
   }
+  std::vector<SourceFile> files;
+  auto table = module->getAttrOfType<mlir::ArrayAttr>("mdsl_admission.source_files");
+  if (!table || table.empty() || table.size() > 4096)
+    return fail(error, "missing or excessive semantic source-file table");
+  for (auto item : table) {
+    auto row = mlir::dyn_cast<mlir::DictionaryAttr>(item);
+    auto path = row ? row.getAs<mlir::StringAttr>("path") : mlir::StringAttr{};
+    auto hash = row ? row.getAs<mlir::StringAttr>("sha256") : mlir::StringAttr{};
+    std::int64_t id, size;
+    if (!row || row.size() != 4 || !path || !hash || !i64(row.get("id"), id) ||
+        !i64(row.get("byte_size"), size) || id <= 0 || size <= 0)
+      return fail(error, "invalid semantic source-file record");
+    files.push_back({static_cast<Id>(id), path.str(), hash.str(), static_cast<std::uint64_t>(size)});
+  }
+  if (!filesValid(files, module->getAttrOfType<mlir::StringAttr>("mdsl_admission.source_identity").str(),
+                  module->getAttrOfType<mlir::StringAttr>("mdsl_admission.source_sha256").str()))
+    return fail(error, "semantic source-file table disagrees with entry or deterministic identity");
   if (module.getBody()->empty())
     return fail(error, "empty admission module");
   for (auto &operation : *module.getBody()) {
@@ -761,12 +818,16 @@ bool verifyModule(mlir::ModuleOp module, std::string &error) {
     if (!function || function.isExternal() || !function.isPrivate() ||
         !function.getBody().hasOneBlock() || function.getNumResults() != 1 ||
         function.getResultTypes()[0] != mdsl::RegionOrderType::get(module.getContext()) ||
-        !sourceValid(function->getAttr("mdsl_admission.source")) ||
+        !sourceValid(function->getAttr("mdsl_admission.source"), files) ||
         !textIs(function, "mdsl_admission.aliasing", "all_resources_may_alias") ||
         !attrsAre(function, {"sym_name", "sym_visibility", "function_type", "arg_attrs",
                             "mdsl_admission.source", "mdsl_admission.aliasing"}, error))
       return fail(error, "invalid private region function");
     VerifyState state;
+    state.source_files = &files;
+    if (function->getAttrOfType<mlir::DictionaryAttr>("mdsl_admission.source")
+            .getAs<mlir::IntegerAttr>("file_id").getInt() != 1)
+      return fail(error, "region definition must remain main-file-owned");
     std::set<Id> ids, shapeIds, parameterIds;
     for (unsigned i = 0; i < function.getNumArguments(); ++i) {
       auto attrs = function.getArgAttrDict(i);

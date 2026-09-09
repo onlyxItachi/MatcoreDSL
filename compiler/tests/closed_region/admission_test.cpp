@@ -43,7 +43,7 @@ struct Positive {
 };
 void checkSourceSpan(const std::string &source, const cr::SourceSite &site,
                      const std::string &prefix) {
-  const bool bounded = site.offset <= source.size() && site.length &&
+  const bool bounded = site.file_id == 1 && site.offset <= source.size() && site.length &&
                        site.length <= source.size() - site.offset;
   check(bounded, "source span is within the independently supplied bytes");
   if (!bounded) return;

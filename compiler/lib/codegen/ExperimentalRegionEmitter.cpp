@@ -117,7 +117,8 @@ ExperimentalRegionEmissionResult emitExperimentalRegion(
   for (const auto &frontier : emission.contract.frontiers) {
     const auto &site = frontier.helper_calls.empty() ? frontier.source
                                                     : frontier.helper_calls.front();
-    cpp << "  case " << frontier.id << ": location = {" << source_path << ", "
+    const auto file = literal(evidence.program().source_files.at(site.file_id - 1).path);
+    cpp << "  case " << frontier.id << ": location = {" << file << ", "
         << site.line << ", " << site.column << "}; break;\n";
   }
   cpp << "  case " << emission.contract.completion_frontier << ": location = {"

@@ -43,6 +43,12 @@ shape obligations, bounded shape-if with an explicit else, and pure reusable
 Value/Shape helpers (including bounded concrete template instantiations).
 Nested helper calls in intrinsic arguments remain unsupported: name the result
 first. Helpers are statically expanded by existing admission, not interpreted.
+Fully source-visible helpers may live in ordinary included headers, including
+transitive includes. Their definitions and redeclarations must be captured by
+the same frozen Clang host context. The entry definition stays in the main
+translation unit. Unknown external bodies, PCH/modules, macro-generated bodies
+and hidden header effects remain unsupported; this is source reuse, not an
+opaque semantic-module import format.
 
 The only Result cleanup admitted inside the closed body is the exact final
 `return complete();`: canonical direct callee, zero arguments, canonical Result
@@ -76,16 +82,40 @@ The in-process entry seal additionally binds:
 
 - original qualified and mangled function names and canonical signature digest;
 - named/inline namespace chain and ordered named Storage/Shape parameters;
-- exact body and completion source spans;
+- exact body and completion source spans with explicit source-file identities;
 - each statically expanded source-Value helper's concrete mangled symbol and
-  source body span (Shape-only helpers remain ordinary host code).
+  source body span/file identity (Shape-only helpers remain ordinary host code).
+
+The frontend-neutral Program has a mandatory table of semantic-bearing files:
+nonzero dense ids, resolved paths, content digests and byte sizes. Main is id 1
+and must match the explicit main-source identity/digest; additional paths have
+deterministic ordering. Every semantic origin and helper-call site references a
+file explicitly; zero or missing file ids never mean "main". This table is not
+the full dependency closure: the existing private host-context seal separately
+owns all consumed includes, lookup results, flags and compiler context.
+The same table and complete cross-file origin/call chains participate in exact
+MLIR witness and frozen entry/helper replay equality. Serialized attributes do
+not independently authenticate any source.
+
+Admission uses actual physical spelling locations, not user `#line` presumed
+locations. During helper expansion, argument binding remains in the caller's
+body owner, then the callee's actual inclusion FileID owns its body traversal.
+Repeated inclusions may share a semantic file record without sharing an AST
+body owner. Diagnostics retain the physical helper file; public runtime failure
+locations preserve the existing outermost helper-callsite attribution policy.
+For a Clang-synthesized nondefining explicit-specialization stub, the name can
+belong to the selected specialization while lexical spelling belongs to the
+primary template. Only exact primary-template declaration, type and parameter
+source-range agreement admits that separate lexical owner; the selected concrete
+definition and body retain their own physical owner and all existing checks.
 
 These C++-specific witnesses are absent from the frontend-neutral semantic
 Program. Pairing replays frozen inputs and compares both the complete semantic
 graph and the entry witness. A private compiler accessor gives read-only access
 to that same snapshot; it does not authorize arbitrary rewritten bytes or LLVM.
-Header declaration-only prototypes are admitted, but unowned helper definitions,
-unknown linkage contexts and overloaded selected entries remain unsupported.
+Captured declaration-only prototypes are admitted. Uncaptured/opaque helper
+definitions, unknown linkage contexts and overloaded selected entries remain
+unsupported.
 
 A later LLVM thunk consumer must prove exact host/helper ABI compatibility and
 that erasing source-Value helper functions cannot affect remaining host uses.

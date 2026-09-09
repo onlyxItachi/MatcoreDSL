@@ -103,6 +103,8 @@ public:
   bool run() {
     if (!anchor_ || policy_.owned_header.isInvalid())
       return reject({}, "inspection requires a fresh source AST with top-level declarations");
+    active_file_ = sources_.getMainFileID();
+    if (!sourceFile(active_file_)) return false;
     // Decl's out-of-line query retrieves the same complete translation unit,
     // including the injected header. ASTContext's inline TU getter would
     // instantiate lazy redeclaration allocation in the instrumented caller.
@@ -152,13 +154,108 @@ public:
     if (!body(entry, environment, region.body, false, ignored) || !error_.empty())
       return false;
     program_.regions.push_back(std::move(region));
-    return true;
+    return normalizeSourceFiles();
   }
 
 private:
   bool inMain(clang::SourceLocation location) const {
     return location.isValid() && !location.isMacroID() &&
            sources_.getFileID(location) == sources_.getMainFileID();
+  }
+  bool inFile(clang::SourceLocation location, clang::FileID owner) const {
+    return location.isValid() && !location.isMacroID() && owner.isValid() &&
+           sources_.getFileID(location) == owner;
+  }
+  bool inBody(clang::SourceLocation location) const { return inFile(location, active_file_); }
+  cr::Id sourceFile(clang::FileID file) {
+    if (file.isInvalid()) { reject({}, "semantic source has no physical file"); return 0; }
+    const auto known = source_files_.find(file.getHashValue());
+    if (known != source_files_.end()) return known->second;
+    const bool main = file == sources_.getMainFileID();
+    if (!main && !policy_.experimental) {
+      reject({}, "inspection helper must remain main-source-owned"); return 0;
+    }
+    bool invalid = false;
+    const auto bytes = sources_.getBufferData(file, &invalid);
+    if (invalid || bytes.empty() || bytes.size() > 16U * 1024U * 1024U) {
+      reject({}, "semantic source buffer is missing or excessive"); return 0;
+    }
+    std::string path = program_.source_identity;
+    if (!main) {
+      // Use an out-of-line SourceManager query, not presumed #line paths or a
+      // new live filesystem lookup. It rejects built-in/scratch buffers.
+      const auto filename = sources_.getNonBuiltinFilenameForID(file);
+      if (!filename || filename->empty()) {
+        reject({}, "helper requires a captured source file, not a virtual buffer"); return 0;
+      }
+      auto &manager = sources_.getFileManager();
+      auto entry = manager.getFileRef(*filename);
+      if (!entry) {
+        llvm::consumeError(entry.takeError());
+        reject({}, "helper source FileEntry was not captured"); return 0;
+      }
+      llvm::SmallString<256> absolute(entry->getName());
+      manager.makeAbsolutePath(absolute);
+      if (!llvm::sys::path::is_absolute(absolute) || entry->getSize() < 0 ||
+          static_cast<std::uint64_t>(entry->getSize()) != bytes.size()) {
+        reject({}, "helper source path or parsed buffer size disagrees with FileEntry"); return 0;
+      }
+      path = absolute.str().str();
+    }
+    const auto hash = digest(bytes.str());
+    if (main && hash != program_.source_sha256) {
+      reject({}, "semantic main buffer disagrees with explicit source identity"); return 0;
+    }
+    // Multiple inclusions of one FileEntry have DIFFERENT Clang FileIDs.
+    // Deduplicate only the semantic file record; never the active body owner.
+    for (const auto &record : program_.source_files) {
+      if (record.path != path) continue;
+      if (record.sha256 != hash || record.byte_size != bytes.size()) {
+        reject({}, "one source path has conflicting parsed contents"); return 0;
+      }
+      source_files_.emplace(file.getHashValue(), record.id);
+      return record.id;
+    }
+    if (program_.source_files.size() >= 4096) {
+      reject({}, "semantic source-file budget exceeded"); return 0;
+    }
+    const cr::Id id = program_.source_files.size() + 1;
+    program_.source_files.push_back({id, path, hash, bytes.size()});
+    source_files_.emplace(file.getHashValue(), id);
+    return id;
+  }
+  bool normalizeSourceFiles() {
+    auto &files = program_.source_files;
+    if (files.empty()) return reject({}, "missing semantic source-file table");
+    std::sort(files.begin() + 1, files.end(),
+              [](const auto &a, const auto &b) { return a.path < b.path; });
+    std::vector<cr::Id> remap(files.size() + 1);
+    for (std::size_t index = 0; index < files.size(); ++index) {
+      remap.at(files[index].id) = index + 1;
+      files[index].id = index + 1;
+    }
+    const auto remap_site = [&](cr::SourceSite &site) {
+      if (!site.file_id || site.file_id >= remap.size())
+        return reject({}, "source site has no explicit file identity");
+      site.file_id = remap[site.file_id];
+      return true;
+    };
+    std::function<bool(std::vector<cr::Operation> &)> remap_body = [&](auto &body) {
+      for (auto &op : body) {
+        if (!remap_site(op.site)) return false;
+        for (auto &call : op.helper_calls) if (!remap_site(call)) return false;
+        if (!remap_body(op.then_body) || !remap_body(op.else_body)) return false;
+      }
+      return true;
+    };
+    for (auto &region : program_.regions)
+      if (!remap_site(region.site) || !remap_body(region.body)) return false;
+    if (entry_binding_) {
+      if (!remap_site(entry_binding_->body) || !remap_site(entry_binding_->completion)) return false;
+      for (auto &helper : entry_binding_->value_helpers)
+        if (!remap_site(helper.body)) return false;
+    }
+    return true;
   }
   bool inHeader(clang::SourceLocation location) const {
     return location.isValid() && !location.isMacroID() &&
@@ -212,6 +309,9 @@ private:
       error_ = program_.source_identity;
       if (location.isValid()) {
         const auto spelling = sources_.getSpellingLoc(location);
+        if (sources_.getFileID(spelling) != sources_.getMainFileID())
+          if (auto file = sources_.getNonBuiltinFilenameForID(sources_.getFileID(spelling)))
+            error_ = file->str();
         error_ += ":" + std::to_string(sources_.getSpellingLineNumber(spelling)) +
                   ":" + std::to_string(sources_.getSpellingColumnNumber(spelling));
       }
@@ -219,16 +319,21 @@ private:
     }
     return false;
   }
-  cr::SourceSite site(clang::SourceRange range, bool main_required = true) {
+  cr::SourceSite site(clang::SourceRange range, clang::FileID owner = {}) {
     cr::SourceSite result;
+    if (owner.isInvalid()) owner = active_file_;
+    if (range.getBegin().isInvalid() || range.getEnd().isInvalid() ||
+        range.getBegin().isMacroID() || range.getEnd().isMacroID()) {
+      reject(range.getBegin(), "macro or missing semantic source range"); return {};
+    }
     const auto begin = sources_.getSpellingLoc(range.getBegin());
     const auto end = clang::Lexer::getLocForEndOfToken(
         sources_.getSpellingLoc(range.getEnd()), 0, sources_,
         context_.getLangOpts());
     if (begin.isInvalid() || end.isInvalid() || begin.isMacroID() || end.isMacroID() ||
         sources_.getFileID(begin) != sources_.getFileID(end) ||
-        (main_required && (!inMain(begin) || !inMain(end)))) {
-      reject(range.getBegin(), "source range does not belong to the sealed main buffer");
+        (!inFile(begin, owner) || !inFile(end, owner))) {
+      reject(range.getBegin(), "source range does not belong to its admitted physical body");
       return {};
     }
     // Use upstream's out-of-line buffer queries. Inline getFileOffset would
@@ -255,15 +360,17 @@ private:
     result.length = last - first;
     result.line = sources_.getSpellingLineNumber(begin);
     result.column = sources_.getSpellingColumnNumber(begin);
+    result.file_id = sourceFile(owner);
     return result;
   }
-  bool closedSourceRange(clang::SourceRange range, bool allow_header = false) {
+  bool closedSourceRange(clang::SourceRange range, clang::FileID owner = {}) {
+    if (owner.isInvalid()) owner = active_file_;
     if (range.getBegin().isInvalid() || range.getEnd().isInvalid() ||
         range.getBegin().isMacroID() || range.getEnd().isMacroID() ||
         sources_.getFileID(range.getBegin()) != sources_.getFileID(range.getEnd()) ||
-        (!allow_header && (!inMain(range.getBegin()) || !inMain(range.getEnd()))))
-      return reject(range.getBegin(), "closed declaration spelling is not main-source-owned");
-    const auto span = site(range, !allow_header);
+        (!inFile(range.getBegin(), owner) || !inFile(range.getEnd(), owner)))
+      return reject(range.getBegin(), "closed declaration spelling is not body-source-owned");
+    const auto span = site(range, owner);
     if (!error_.empty()) return false;
     const auto file = sources_.getFileID(range.getBegin());
     const auto bytes = sources_.getBufferData(file);
@@ -274,7 +381,7 @@ private:
       const auto end = sources_.getExpansionLoc(event.range.getEnd());
       if (begin.isInvalid() || end.isInvalid() || sources_.getFileID(begin) != file ||
           sources_.getFileID(end) != file) continue;
-      const auto event_span = site({begin, end}, !allow_header);
+      const auto event_span = site({begin, end}, owner);
       if (!error_.empty()) return false;
       if (event_span.offset < span.offset + span.length &&
           span.offset < event_span.offset + event_span.length)
@@ -405,13 +512,14 @@ private:
   bool admittedType(clang::QualType type) const {
     return isRecord(type, value_type_) || isRecord(type, storage_type_) || isShape(type);
   }
-  bool validateTypeLocation(const clang::TypeSourceInfo *information, bool allow_header = false) {
+  bool validateTypeLocation(const clang::TypeSourceInfo *information, clang::FileID owner = {}) {
+    if (owner.isInvalid()) owner = active_file_;
     if (!information) return reject({}, "missing source type binding");
     for (clang::TypeLoc location = information->getTypeLoc(); !location.isNull();
          location = location.getNextTypeLoc()) {
-      if (!allow_header && (!inMain(location.getBeginLoc()) || !inMain(location.getEndLoc())))
+      if (!inFile(location.getBeginLoc(), owner) || !inFile(location.getEndLoc(), owner))
         return reject(location.getBeginLoc(), "macro or unowned source type spelling");
-      if (!closedSourceRange(location.getSourceRange(), allow_header)) return false;
+      if (!closedSourceRange(location.getSourceRange(), owner)) return false;
       if (!location.getAs<clang::DecltypeTypeLoc>().isNull() ||
           !location.getAs<clang::TypeOfExprTypeLoc>().isNull() ||
           !location.getAs<clang::TypeOfTypeLoc>().isNull() ||
@@ -425,8 +533,8 @@ private:
     return true;
   }
   bool validateParameter(const clang::ParmVarDecl *parameter, bool require_name = true,
-                         bool allow_header = false) {
-    if (!validateTypeLocation(parameter->getTypeSourceInfo(), allow_header)) return false;
+                         clang::FileID owner = {}) {
+    if (!validateTypeLocation(parameter->getTypeSourceInfo(), owner)) return false;
     if (parameter->hasDefaultArg() || parameter->hasAttrs() ||
         !admittedType(parameter->getType()) ||
         (require_name && parameter->getName().empty()))
@@ -449,13 +557,17 @@ private:
     return false;
   }
   bool validateFunction(const clang::FunctionDecl *function, bool entry) {
-    if (!inMain(function->getLocation()) || !function->hasBody() ||
+    if ((entry && !inMain(function->getLocation())) || !function->hasBody() ||
         llvm::isa<clang::CXXMethodDecl>(function) || function->isVariadic() ||
         function->isDeleted() ||
         function->getDescribedFunctionTemplate())
       return reject(function->getLocation(),
                     "only source-owned free function definitions are admitted");
-    if (!validateTypeLocation(function->getTypeSourceInfo())) return false;
+    const auto owner = sources_.getFileID(function->getBody()->getBeginLoc());
+    if (!inFile(function->getLocation(), owner))
+      return reject(function->getLocation(), "function definition and body must share a physical source owner");
+    if (!sourceFile(owner) ||
+        !validateTypeLocation(function->getTypeSourceInfo(), owner)) return false;
     unsigned markers = 0;
     // The base Decl iterator delegates lazy chain completion to Clang's
     // virtual implementation. FunctionDecl's inline Redeclarable iterator
@@ -467,10 +579,13 @@ private:
         return reject(function->getLocation(), "unexpected non-function redeclaration");
       const bool header_prototype = policy_.experimental && entry &&
           !inMain(declaration->getLocation()) && !declaration->doesThisDeclarationHaveABody();
-      if (!inMain(declaration->getLocation()) && !header_prototype)
+      if (entry && !inMain(declaration->getLocation()) && !header_prototype)
         return reject(declaration->getLocation(), "helper or region redeclaration is not source-owned");
-      if (!closedSourceRange(declaration->getSourceRange(), header_prototype)) return false;
-      if (header_prototype && !validateTypeLocation(declaration->getTypeSourceInfo(), true)) return false;
+      auto declaration_owner = sources_.getFileID(declaration->getLocation());
+      if (!redeclarationOwner(declaration, function, entry, declaration_owner)) return false;
+      if (!sourceFile(declaration_owner) ||
+          !closedSourceRange(declaration->getSourceRange(), declaration_owner) ||
+          !validateTypeLocation(declaration->getTypeSourceInfo(), declaration_owner)) return false;
       const auto *prototype = declaration->getType()->getAs<clang::FunctionProtoType>();
       if (!prototype || prototype->getCallConv() != clang::CC_C)
         return reject(declaration->getLocation(), "nonstandard calling convention is not admitted");
@@ -483,7 +598,7 @@ private:
         }
       }
       for (const clang::ParmVarDecl *parameter : declaration->parameters())
-        if (!validateParameter(parameter, declaration == function, header_prototype)) return false;
+        if (!validateParameter(parameter, declaration == function, declaration_owner)) return false;
     }
     const auto *entry_prototype = function->getType()->getAs<clang::FunctionProtoType>();
     if ((entry && markers != 1) ||
@@ -498,7 +613,56 @@ private:
                     "region requires its canonical marker/result/noexcept contract; helper "
                     "requires a Value or Shape result");
     for (const clang::ParmVarDecl *parameter : function->parameters())
-      if (!validateParameter(parameter)) return false;
+      if (!validateParameter(parameter, true, owner)) return false;
+    return true;
+  }
+  bool sameTypeSpelling(const clang::TypeSourceInfo *a,
+                        const clang::TypeSourceInfo *b) const {
+    if (!a || !b) return false;
+    auto left = a->getTypeLoc(), right = b->getTypeLoc();
+    for (; !left.isNull() && !right.isNull();
+         left = left.getNextTypeLoc(), right = right.getNextTypeLoc())
+      if (left.getSourceRange() != right.getSourceRange()) return false;
+    return left.isNull() && right.isNull();
+  }
+  bool redeclarationOwner(const clang::FunctionDecl *declaration,
+                          const clang::FunctionDecl *definition, bool entry,
+                          clang::FileID &owner) {
+    const auto lexical_owner = sources_.getFileID(declaration->getBeginLoc());
+    if (lexical_owner == owner) return true;
+    // Clang can synthesize the canonical explicit-specialization stub with a
+    // name in the selected specialization but its entire lexical spelling in
+    // the primary template. Authenticate that exact upstream provenance; this
+    // is not permission for arbitrary cross-file declaration/body ranges.
+    const auto *primary = declaration->getPrimaryTemplate();
+    const auto *pattern = primary ? primary->getTemplatedDecl() : nullptr;
+    if (entry || !policy_.experimental || !pattern || declaration == definition ||
+        declaration != declaration->getCanonicalDecl() ||
+        declaration->doesThisDeclarationHaveABody() ||
+        declaration->getTemplateSpecializationKind() != clang::TSK_ExplicitSpecialization ||
+        declaration->getDefinition() != definition ||
+        declaration->getNumTemplateParameterLists() != 0 ||
+        !inFile(declaration->getLocation(), sources_.getFileID(definition->getBody()->getBeginLoc())) ||
+        !inFile(pattern->getLocation(), lexical_owner) ||
+        declaration->getInnerLocStart() != pattern->getInnerLocStart() ||
+        declaration->getSourceRange() != pattern->getSourceRange() ||
+        declaration->getNumParams() != pattern->getNumParams() ||
+        !sameTypeSpelling(declaration->getTypeSourceInfo(), pattern->getTypeSourceInfo()))
+      return reject(declaration->getLocation(),
+                    "synthesized specialization redeclaration lacks exact primary-template source provenance");
+    for (unsigned index = 0; index < declaration->getNumParams(); ++index) {
+      const auto *parameter = declaration->getParamDecl(index);
+      const auto *original = pattern->getParamDecl(index);
+      if (parameter->getLocation() != original->getLocation() ||
+          parameter->getSourceRange() != original->getSourceRange() ||
+          !sameTypeSpelling(parameter->getTypeSourceInfo(), original->getTypeSourceInfo()))
+        return reject(parameter->getLocation(),
+                      "synthesized specialization parameter lacks exact primary-template source provenance");
+    }
+    // Existing closed-range, macro, concrete type and attribute validation now
+    // checks this spelling in its captured owner. The selected body is never
+    // rebound: helperCall still enters the actual definition's inclusion FileID.
+    owner = lexical_owner;
     return true;
   }
   bool authenticateOperation(const clang::FunctionDecl *function,
@@ -528,10 +692,10 @@ private:
     if (++visited_nodes_ > 16384)
       return reject(statement ? statement->getBeginLoc() : clang::SourceLocation(),
                     "bounded admission AST expansion budget exceeded");
-    if (!statement || !inMain(statement->getBeginLoc()) ||
-        !inMain(statement->getEndLoc()))
+    if (!statement || !inBody(statement->getBeginLoc()) ||
+        !inBody(statement->getEndLoc()))
       return reject(statement ? statement->getBeginLoc() : clang::SourceLocation(),
-                    "macro or non-main-source AST node is unsupported");
+                    "macro or AST node outside the admitted physical body is unsupported");
     const clang::FPOptions baseline(context_.getLangOpts());
     if (const auto *expression = llvm::dyn_cast<clang::Expr>(statement))
       if (!(expression->getFPFeaturesInEffect(context_.getLangOpts()) == baseline))
@@ -734,7 +898,8 @@ private:
                          [&](const auto &item) { return item.mangled_name == name; }))
           entry_binding_->value_helpers.push_back(
               {qualifiedName(definition), name,
-               site(definition->getBody()->getSourceRange())});
+               site(definition->getBody()->getSourceRange(),
+                    sources_.getFileID(definition->getBody()->getBeginLoc()))});
       }
     }
     if (active_helpers_.size() >= 16 ||
@@ -757,7 +922,10 @@ private:
     }
     active_helpers_.insert(definition->getCanonicalDecl());
     helper_sites_.push_back(site(call->getSourceRange()));
+    const auto caller_file = active_file_;
+    active_file_ = sources_.getFileID(definition->getBody()->getBeginLoc());
     const bool okay = body(definition, helper_environment, operations, true, result);
+    active_file_ = caller_file;
     helper_sites_.pop_back();
     active_helpers_.erase(definition->getCanonicalDecl());
     return okay;
@@ -808,7 +976,7 @@ private:
       if (!declarations->isSingleDecl())
         return reject(statement->getBeginLoc(), "one immutable local binding per declaration required");
       const auto *variable = llvm::dyn_cast<clang::VarDecl>(declarations->getSingleDecl());
-      if (!variable || !inMain(variable->getLocation()) || variable->hasAttrs() ||
+      if (!variable || !inBody(variable->getLocation()) || variable->hasAttrs() ||
           variable->hasGlobalStorage() || !variable->hasInit() ||
           !admittedType(variable->getType()))
         return reject(statement->getBeginLoc(),
@@ -937,6 +1105,8 @@ private:
   std::set<const clang::FunctionDecl *> selected_declarations_;
   std::set<const clang::FunctionDecl *> active_helpers_;
   std::vector<cr::SourceSite> helper_sites_;
+  clang::FileID active_file_;
+  std::map<unsigned, cr::Id> source_files_;
   cr::Id next_resource_ = 1, next_shape_ = 1, next_value_ = 1;
   std::size_t visited_nodes_ = 0;
 };
@@ -1020,7 +1190,7 @@ bool authenticateExperimentalRegionHeaders(
 bool sameClosedRegionEntryBinding(const ClosedRegionEntryBinding &a,
                                  const ClosedRegionEntryBinding &b) {
   const auto same_site = [](const cr::SourceSite &x, const cr::SourceSite &y) {
-    return x.offset == y.offset && x.length == y.length &&
+    return x.file_id == y.file_id && x.offset == y.offset && x.length == y.length &&
            x.line == y.line && x.column == y.column;
   };
   if (a.qualified_name != b.qualified_name || a.mangled_name != b.mangled_name ||

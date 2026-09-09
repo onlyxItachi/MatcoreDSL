@@ -1,0 +1,97 @@
+#include <matcore/region.h>
+#include <cstdio>
+#include <cstring>
+namespace md = matcore::mdsl;
+#include "template_primary.h"
+#include "template_selected.h"
+
+static constexpr unsigned failure_line = __LINE__ + 10;
+MATCORE_REGION md::Result library_region(
+    md::Storage A, md::Storage B, md::Storage C, md::Storage D,
+    md::Shape M, md::Shape K, md::Shape N) noexcept {
+  auto a = md::read(A, M, K);
+  auto b = md::read(B, K, N);
+  auto first = library::product<int>(a, b);
+  md::publish(first, C);
+  md::observe(C);
+  // The long instantiation must use the reversed primary body, not the int body.
+  auto second = library::product<long>(a, b);
+  md::publish(second, D);
+  md::observe(D);
+  return md::complete();
+}
+
+static unsigned checks = 0, failures = 0;
+static void check(bool good, const char *label) {
+  ++checks;
+  if (!good) { ++failures; std::fprintf(stderr, "FAIL: %s\n", label); }
+}
+static void success() {
+  float a[] = {1, 2, 3, 4}, b[] = {0, 1, 2, 0}, c[4] = {}, d[4] = {};
+  const float ab[] = {4, 1, 8, 3}, ba[] = {3, 4, 2, 4};
+  auto result = library_region({a, 2, 2, 4, md::Access::read_only},
+      {b, 2, 2, 4, md::Access::read_only},
+      {c, 2, 2, 4, md::Access::read_write},
+      {d, 2, 2, 4, md::Access::read_write}, 2, 2, 2);
+  check(result.ok(), "both concrete bodies execute");
+  check(result.publication_count() == 2 && result.observation_count() == 2,
+        "both effect pairs execute");
+  auto first = result.observation(0), second = result.observation(1);
+  check(first.valid() && first.rows() == 2 && first.columns() == 2, "first observation");
+  check(second.valid() && second.rows() == 2 && second.columns() == 2, "second observation");
+  for (unsigned i = 0; i < 4; ++i) {
+    check(c[i] == ab[i], "int specialization normal product");
+    check(d[i] == ba[i], "long primary reversed product");
+    if (first.valid()) check(first.data()[i] == ab[i], "normal observation");
+    if (second.valid()) check(second.data()[i] == ba[i], "reversed observation");
+    c[i] = d[i] = -71;
+  }
+  for (unsigned i = 0; i < 4; ++i) {
+    if (first.valid()) check(first.data()[i] == ab[i], "first observation owns storage");
+    if (second.valid()) check(second.data()[i] == ba[i], "second observation owns storage");
+  }
+}
+static void late_failure() {
+  float a[] = {1, 2, 3, 4, 5, 6};
+  float b[] = {0, 1, 2, 0, 3, 4, 5, 6, 7, 8, 9, 10};
+  float c[8] = {}, d[9];
+  for (float &item : d) item = -91;
+  float expected[8] = {};
+  for (unsigned i = 0; i < 2; ++i)
+    for (unsigned j = 0; j < 4; ++j) {
+      volatile float sum = 0.0f;
+      for (unsigned k = 0; k < 3; ++k) {
+        volatile float term = a[3 * i + k] * b[4 * k + j];
+        sum = sum + term;
+      }
+      expected[4 * i + j] = sum;
+    }
+  auto result = library_region({a, 2, 3, 6, md::Access::read_only},
+      {b, 3, 4, 12, md::Access::read_only},
+      {c, 2, 4, 8, md::Access::read_write},
+      {d, 3, 3, 9, md::Access::read_write}, 2, 3, 4);
+  check(!result && result.error() == md::Error::shape_mismatch,
+        "only reversed primary has a late shape mismatch");
+  check(result.publication_count() == 1 && result.observation_count() == 1,
+        "failed primary preserves the first effect pair");
+  auto first = result.observation(0);
+  check(first.valid() && first.rows() == 2 && first.columns() == 4, "retained observation shape");
+  for (unsigned i = 0; i < 8; ++i) {
+    check(c[i] == expected[i], "first publication survives");
+    if (first.valid()) check(first.data()[i] == expected[i], "first observation survives");
+  }
+  for (float item : d) check(item == -91, "no second publication on failure");
+  check(result.failed_frontier() == 6 && result.completed_effect_frontier() == 5,
+        "failure preserves lexical ordering");
+  const auto location = result.failure_location();
+  check(location.file && std::strcmp(location.file, __FILE__) == 0,
+        "failure selects outer physical caller file");
+  check(location.line == failure_line && location.column == 17,
+        "failure selects outer template call coordinates");
+}
+int main() {
+  success();
+  late_failure();
+  if (!failures) std::printf("PASS library_template_specialization %u checks\n", checks);
+  return failures ? 1 : 0;
+}

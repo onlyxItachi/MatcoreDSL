@@ -1,0 +1,19 @@
+#include <matcore/region.h>
+namespace md = matcore::mdsl;
+namespace library {
+#include "shared_body.h"
+}
+
+// External storage makes this an actual LLVM escape, not an unused local.
+auto escaped_value_helper = &library::product;
+
+MATCORE_REGION md::Result library_region(
+    md::Storage A, md::Storage B, md::Storage C,
+    md::Shape M, md::Shape K, md::Shape N) noexcept {
+  auto a = md::read(A, M, K);
+  auto b = md::read(B, K, N);
+  auto c = library::product(a, b);
+  md::publish(c, C);
+  return md::complete();
+}
+int main() { return escaped_value_helper ? 0 : 1; }

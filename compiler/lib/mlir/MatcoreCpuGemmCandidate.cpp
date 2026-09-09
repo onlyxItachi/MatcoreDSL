@@ -82,29 +82,31 @@ closed_region::Program primitive() {
   cr::Program program;
   program.source_identity = "matcore-builtin:strict-gemm-f32-v1";
   program.source_sha256 = digest(contract);
+  program.source_files = {{1, program.source_identity, program.source_sha256,
+                           llvm::StringRef(contract).size()}};
   // This is a compiler-owned primitive identity, explicitly not a C++ header.
   program.header_sha256 = digest("no-source-header:compiler-owned-primitive");
   program.compiler_identity = "matcore-cpu-candidate:LLVM-" LLVM_VERSION_STRING;
   cr::Region region;
   region.name = "strict_gemm_primitive";
-  region.site = {0, 1, 1, 1};
+  region.site = {0, 1, 1, 1, 1};
   region.resources = {{1, "lhs", 0}, {2, "rhs", 1}};
   region.shape_parameters = {{1, "M", 2}, {2, "K", 3}, {3, "N", 4}};
   auto shape = [](cr::Id id) {
     return cr::Dimension{cr::Dimension::Kind::ShapeParameter, 0, id};
   };
   cr::Operation lhs, rhs, gemm;
-  lhs.site = {0, 1, 1, 1};
+  lhs.site = {0, 1, 1, 1, 1};
   lhs.result = 1;
   lhs.resource = 1;
   lhs.rows = shape(1);
   lhs.columns = shape(2);
-  rhs.site = {1, 1, 1, 2};
+  rhs.site = {1, 1, 1, 2, 1};
   rhs.result = 2;
   rhs.resource = 2;
   rhs.rows = shape(2);
   rhs.columns = shape(3);
-  gemm.site = {2, 1, 1, 3};
+  gemm.site = {2, 1, 1, 3, 1};
   gemm.kind = cr::Operation::Kind::Gemm;
   gemm.result = 3;
   gemm.lhs = 1;

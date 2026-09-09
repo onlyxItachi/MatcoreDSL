@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <tuple>
 
 namespace fe = matcore::mdslc::frontend;
 namespace cr = matcore::mdslc::closed_region;
@@ -198,6 +199,135 @@ int main(int argc, char **argv) {
           write(race.options.input_path, program(math + "return (observe(C),complete());"));
         });
     check(!raced, "source change between admission and freeze cannot issue evidence");
+
+    const std::string leaf =
+        "inline Value leaf(Value a,Value b){return gemm(a,b,Numerics::strict_f32);}\n"
+        "inline Shape dimension(Shape n){return n;}\n";
+    const std::string chain =
+        "#include \"a_leaf.h\"\n"
+        "inline Value two_gemm(Value a,Value b,Value d){auto c=leaf(a,b);return leaf(c,d);}\n";
+    const std::string library_source = preamble + "#include \"z_chain.h\"\n"
+        "MATCORE_REGION Result region(Storage A,Storage B,Storage D,Storage E,"
+        "Shape m,Shape k,Shape n,Shape p) noexcept {"
+        "auto width=dimension(n);auto a=read(A,m,k);auto b=read(B,k,width);"
+        "auto d=read(D,width,p);auto e=two_gemm(a,b,d);publish(e,E);observe(E);return complete();}\n";
+    Fixture library(argv[1], argv[2], include, library_source);
+    write(library.temporary.path() / "a_leaf.h", leaf);
+    write(library.temporary.path() / "z_chain.h", chain);
+    auto imported = library.admit();
+    check(imported.syntax_valid && bool(imported), "transitive source-visible pure math library: " + imported.error);
+    paired(imported, "source-visible library");
+    if (imported) {
+      const auto &program = imported.evidence->program();
+      check(program.source_files.size() == 3 && program.source_files[0].id == 1 &&
+            program.source_files[0].path == program.source_identity &&
+            program.source_files[0].sha256 == program.source_sha256 &&
+            program.source_files[1].path == (library.temporary.path()/"a_leaf.h").string() &&
+            program.source_files[2].path == (library.temporary.path()/"z_chain.h").string(),
+            "explicit main plus deterministic path-sorted semantic file table");
+      check(program.source_files[1].sha256 == fe::detail::closedRegionDigest(leaf) &&
+            program.source_files[1].byte_size == leaf.size() &&
+            program.source_files[2].sha256 == fe::detail::closedRegionDigest(chain),
+            "library file digests and byte bounds match independently supplied bytes");
+      const auto &ops = program.regions[0].body;
+      check(ops.size() == 7 && ops[3].site.file_id == 2 && ops[4].site.file_id == 2 &&
+            ops[3].helper_calls.size() == 2 && ops[4].helper_calls.size() == 2 &&
+            ops[3].helper_calls[0].file_id == 1 && ops[3].helper_calls[1].file_id == 3,
+            "transitive expansion retains leaf origin and outermost-first cross-file call chain");
+      const auto &helpers = imported.evidence->entryBinding()->value_helpers;
+      check(helpers.size() == 2 && helpers[0].body.file_id == 3 && helpers[1].body.file_id == 2,
+            "retired Value helpers retain exact definition files; Shape-only helper is not retired");
+      auto inputs = fe::detail::ClosedRegionCompilationAccess::host(*imported.evidence);
+      std::string error;
+      check(inputs->unchanged(error), "library closure initially fresh: " + error);
+      write(library.temporary.path()/"a_leaf.h", leaf + "// replaced after sealing\n");
+      check(!inputs->unchanged(error), "changed transitive math header rejects live freshness");
+      paired(imported, "historical library replay after live replacement");
+    }
+    Fixture library_race(argv[1], argv[2], include, library_source);
+    write(library_race.temporary.path()/"a_leaf.h", leaf);
+    write(library_race.temporary.path()/"z_chain.h", chain);
+    auto header_raced = fe::detail::admitExperimentalRegionHostForTesting(
+        library_race.options, library_race.temporary.path().string(), library_race.headers, "region", [&] {
+          write(library_race.temporary.path()/"a_leaf.h", leaf + "// changed during admission\n");
+        });
+    check(!header_raced, "math-header parse/freeze replacement cannot issue evidence");
+    Fixture helper_prototype(argv[1], argv[2], include,
+        preamble + "#include \"helper.h\"\n"
+        "Value product(Value a,Value b){return gemm(a,b,Numerics::strict_f32);}\n" +
+        signature + "{auto a=read(A,m,k);auto b=read(B,k,n);auto c=product(a,b);publish(c,C);return complete();}");
+    write(helper_prototype.temporary.path()/"helper.h", "Value product(Value,Value);\n");
+    auto helper_decl = helper_prototype.admit();
+    check(bool(helper_decl), "captured header redeclaration with main helper definition: " + helper_decl.error);
+    paired(helper_decl, "helper redeclaration");
+    const std::string primary_template =
+        "template<class Tag,class T> T select_product(T a,T b){"
+        "return gemm(b,a,Numerics::strict_f32);}\n";
+    const std::string explicit_specialization =
+        "template<> Value select_product<int,Value>(Value a,Value b){"
+        "return gemm(a,b,Numerics::strict_f32);}\n";
+    const std::string specialized_source = preamble +
+        "#include \"a_primary.h\"\n#include \"z_specialization.h\"\n" + signature +
+        "{auto a=read(A,m,k);auto b=read(B,k,n);"
+        "auto first=select_product<int>(a,b);auto second=select_product<long>(a,b);"
+        "publish(first,C);publish(second,C);return complete();}";
+    Fixture specialized(argv[1], argv[2], include, specialized_source);
+    write(specialized.temporary.path()/"a_primary.h", primary_template);
+    write(specialized.temporary.path()/"z_specialization.h", explicit_specialization);
+    auto selected = specialized.admit();
+    check(selected.syntax_valid && bool(selected),
+          "cross-header explicit specialization and generic primary instantiation: " + selected.error);
+    paired(selected, "cross-header concrete template bodies");
+    if (selected) {
+      const auto &program = selected.evidence->program();
+      const auto &ops = program.regions[0].body;
+      const auto &helpers = selected.evidence->entryBinding()->value_helpers;
+      check(program.source_files.size() == 3 &&
+            program.source_files[1].sha256 == fe::detail::closedRegionDigest(primary_template) &&
+            program.source_files[2].sha256 == fe::detail::closedRegionDigest(explicit_specialization),
+            "synthetic redeclaration and selected definition retain both exact source identities");
+      check(ops.size() == 6 && ops[2].site.file_id == 3 && ops[3].site.file_id == 2 &&
+            ops[2].lhs == ops[3].rhs && ops[2].rhs == ops[3].lhs &&
+            ops[2].helper_calls.size() == 1 && ops[2].helper_calls[0].file_id == 1 &&
+            ops[3].helper_calls.size() == 1 && ops[3].helper_calls[0].file_id == 1,
+            "selected specialization and generic primary preserve distinct bodies, operand order and callers");
+      check(helpers.size() == 2 && helpers[0].body.file_id == 3 && helpers[1].body.file_id == 2 &&
+            helpers[0].mangled_name != helpers[1].mangled_name,
+            "both concrete template symbols retire with their actual definition owners");
+    }
+    Fixture impure_specialization(argv[1], argv[2], include, specialized_source);
+    write(impure_specialization.temporary.path()/"a_primary.h", primary_template);
+    write(impure_specialization.temporary.path()/"z_specialization.h",
+          "Storage hidden;\ntemplate<> Value select_product<int,Value>(Value a,Value b){"
+          "observe(hidden);return a;}\n");
+    auto impure_selected = impure_specialization.admit();
+    check(impure_selected.syntax_valid && !impure_selected &&
+          impure_selected.error.find("pure helper cannot") != std::string::npos &&
+          impure_selected.error.find("z_specialization.h:2:") != std::string::npos,
+          "selected cross-header specialization rejects its actual hidden effect: " + impure_selected.error);
+    const std::string one_product = preamble + "#include \"helper.h\"\n" + signature +
+        "{auto a=read(A,m,k);auto b=read(B,k,n);auto c=product(a,b);publish(c,C);return complete();}";
+    for (const auto &[name, bytes, reason] : std::vector<std::tuple<std::string,std::string,std::string>>{
+        {"hidden observation", "Storage hidden;\nValue product(Value a,Value b){observe(hidden);return a;}\n", "pure helper cannot"},
+        {"unknown body", "Value product(Value,Value);\n", "unknown host call"},
+        {"inherited FP", "#pragma clang fp reassociate(on)\nValue product(Value a,Value b){return gemm(a,b,Numerics::strict_f32);}\n", "floating-point policy"},
+        {"macro body", "#define BODY return gemm(a,b,Numerics::strict_f32)\nValue product(Value a,Value b){BODY;}\n", "preprocessing"},
+        {"nested call", "Value product(Value a,Value b){return gemm(gemm(a,b,Numerics::strict_f32),b,Numerics::strict_f32);}\n", "nested calls"}}) {
+      Fixture hostile(argv[1], argv[2], include, one_product);
+      write(hostile.temporary.path()/"helper.h", bytes);
+      auto result = hostile.admit();
+      check(result.syntax_valid && !result && result.error.find(reason) != std::string::npos,
+            "header " + name + " rejects its actual closed grammar: " + result.error);
+    }
+    Fixture spoof(argv[1], argv[2], include, one_product);
+    write(spoof.temporary.path()/"helper.h",
+        "#line 900 \"forged-main.mdsl\"\nStorage hidden;\n"
+        "Value product(Value a,Value b){observe(hidden);return a;}\n");
+    auto spoofed = spoof.admit();
+    check(spoofed.syntax_valid && !spoofed &&
+          spoofed.error.find((spoof.temporary.path()/"helper.h").string()+":3:") != std::string::npos &&
+          spoofed.error.find("pure helper cannot") != std::string::npos,
+          "header diagnostic uses physical spelling file/line, never presumed #line identity: " + spoofed.error);
   } catch (const std::exception &error) {
     std::cerr << "EXCEPTION: " << error.what() << '\n';
     return 2;

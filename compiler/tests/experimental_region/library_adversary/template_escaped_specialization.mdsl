@@ -1,0 +1,13 @@
+#include <matcore/region.h>
+namespace md = matcore::mdsl;
+#include "template_primary.h"
+#include "template_selected.h"
+md::Value (*escaped_specialization)(md::Value, md::Value) = &library::product<int, md::Value>;
+MATCORE_REGION md::Result library_region(md::Storage A, md::Storage B, md::Storage C) noexcept {
+  auto a = md::read(A, 2, 2);
+  auto b = md::read(B, 2, 2);
+  auto c = library::product<int>(a, b);
+  md::publish(c, C);
+  return md::complete();
+}
+int main() { return 0; }

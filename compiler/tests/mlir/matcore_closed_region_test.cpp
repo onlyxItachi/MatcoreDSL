@@ -25,7 +25,7 @@ cr::Dimension literal(std::uint64_t value) {
 cr::Operation operation(cr::Operation::Kind kind, unsigned offset) {
   cr::Operation op;
   op.kind = kind;
-  op.site = {offset, 1, offset + 1, 1};
+  op.site = {offset, 1, offset + 1, 1, 1};
   return op;
 }
 cr::Operation read(cr::Id result, cr::Id resource, unsigned rows, unsigned columns) {
@@ -53,11 +53,12 @@ cr::Program program() {
   cr::Program p;
   p.source_identity = "synthetic_semantic_unit_test_not_source_authenticated";
   p.source_sha256 = std::string(64, 'a');
+  p.source_files = {{1, p.source_identity, p.source_sha256, 100}};
   p.header_sha256 = std::string(64, 'b');
   p.compiler_identity = "synthetic_model_test";
   cr::Region r;
   r.name = "region";
-  r.site = {0, 100, 1, 1};
+  r.site = {0, 100, 1, 1, 1};
   r.resources = {{1, "A", 0}, {2, "B", 1}, {3, "C", 2}, {4, "D", 3}, {5, "E", 4}};
   r.shape_parameters = {{1, "m", 5}, {2, "n", 6}, {3, "k", 7}};
   r.body = {read(1, 1, 2, 3), read(2, 2, 3, 2), gemm(3, 1, 2), publish(3, 3),
@@ -194,6 +195,47 @@ int main() {
     m->setAttr("mdsl_admission.aliasing", mlir::StringAttr::get(m.getContext(), "noalias"));
   }, "unproved resource disjointness");
   reject(p, *built.module, [](mlir::ModuleOp m) {
+    m->removeAttr("mdsl_admission.source_files");
+  }, "missing source-file table");
+  reject(p, *built.module, [](mlir::ModuleOp m) {
+    auto *op = all(m, "read")[0];
+    mlir::NamedAttrList source(op->getAttrOfType<mlir::DictionaryAttr>("source"));
+    source.erase("file_id");
+    op->setAttr("source", source.getDictionary(m.getContext()));
+  }, "missing site file identity cannot fall back to main");
+  for (const auto id : {0, 2})
+    reject(p, *built.module, [=](mlir::ModuleOp m) {
+      auto *op = all(m, "read")[0];
+      mlir::NamedAttrList source(op->getAttrOfType<mlir::DictionaryAttr>("source"));
+      source.set("file_id", mlir::IntegerAttr::get(mlir::IntegerType::get(m.getContext(), 64), id));
+      op->setAttr("source", source.getDictionary(m.getContext()));
+    }, "zero/unknown site file identity");
+  reject(p, *built.module, [](mlir::ModuleOp m) {
+    auto *op = all(m, "read")[0];
+    mlir::NamedAttrList source(op->getAttrOfType<mlir::DictionaryAttr>("source"));
+    source.set("offset", mlir::IntegerAttr::get(mlir::IntegerType::get(m.getContext(), 64), 100));
+    op->setAttr("source", source.getDictionary(m.getContext()));
+  }, "site range outside its indexed file");
+  auto multiple_files = p;
+  multiple_files.source_files.push_back({2, "a_math.h", std::string(64, 'c'), 100});
+  multiple_files.source_files.push_back({3, "b_math.h", std::string(64, 'd'), 100});
+  multiple_files.regions[0].body[2].site.file_id = 2;
+  multiple_files.regions[0].body[2].helper_calls = {{20, 5, 2, 1, 1}};
+  auto multiple_module = cr::buildModule(multiple_files, context);
+  check(multiple_module && cr::verifyModuleMatchesProgram(multiple_files, *multiple_module.module, error),
+        "explicit multi-file synthetic provenance builds without authenticating source");
+  if (multiple_module) {
+    mlir::OwningOpRef<mlir::ModuleOp> swapped = multiple_module.module->clone();
+    for (auto *op : {all(*swapped, "check_gemm")[0], all(*swapped, "gemm")[0]}) {
+      mlir::NamedAttrList source(op->getAttrOfType<mlir::DictionaryAttr>("source"));
+      source.set("file_id", mlir::IntegerAttr::get(mlir::IntegerType::get(&context, 64), 3));
+      op->setAttr("source", source.getDictionary(&context));
+    }
+    check(cr::verifyModule(*swapped, error), "same-offset different file is structurally representable");
+    check(!cr::verifyModuleMatchesProgram(multiple_files, *swapped, error),
+          "same-offset different-file origin cannot match the paired definition");
+  }
+  reject(p, *built.module, [](mlir::ModuleOp m) {
     all(m, "read")[2]->setAttr("resource_epoch", mlir::StringAttr::get(m.getContext(), "entry"));
   }, "stale late-read epoch");
   reject(p, *built.module, [](mlir::ModuleOp m) {
@@ -269,6 +311,21 @@ int main() {
   }, "memory-free division UB cannot enter the closed vocabulary");
 
   modelReject(p, [](cr::Program &v) { v.regions[0].body[5].rhs = 999; }, "unknown value rejects");
+  modelReject(p, [](cr::Program &v) { v.source_files.clear(); }, "missing source table rejects");
+  modelReject(p, [](cr::Program &v) { v.source_files[0].id = 0; }, "zero file identity rejects");
+  modelReject(p, [](cr::Program &v) { v.source_files[0].path = "different_main"; }, "main path cross-check rejects");
+  modelReject(p, [](cr::Program &v) { v.source_files[0].sha256 = std::string(64, 'c'); }, "main digest cross-check rejects");
+  modelReject(p, [](cr::Program &v) { v.regions[0].body[0].site.file_id = 0; }, "source site has no implicit main fallback");
+  modelReject(p, [](cr::Program &v) { v.regions[0].body[0].site.file_id = 2; }, "unknown source file rejects");
+  modelReject(p, [](cr::Program &v) { v.regions[0].body[0].site.offset = 100; }, "site beyond its actual file size rejects");
+  modelReject(p, [](cr::Program &v) {
+    v.source_files.push_back({2, "header", std::string(64, 'c'), 100});
+    v.source_files.push_back({3, "header", std::string(64, 'c'), 100});
+  }, "duplicate source file path rejects");
+  modelReject(p, [](cr::Program &v) {
+    v.source_files.push_back({2, "z.h", std::string(64, 'c'), 100});
+    v.source_files.push_back({3, "a.h", std::string(64, 'd'), 100});
+  }, "nondeterministic extra-file ordering rejects");
   modelReject(p, [](cr::Program &v) { v.regions[0].body[0].resource = 999; }, "unknown resource rejects");
   modelReject(p, [](cr::Program &v) { v.regions[0].body[4].result = 1; }, "duplicate value identity rejects");
   modelReject(p, [](cr::Program &v) { v.regions[0].body[0].columns = literal(4); }, "static contraction mismatch rejects");

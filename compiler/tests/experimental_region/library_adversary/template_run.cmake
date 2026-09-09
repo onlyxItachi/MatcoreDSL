@@ -1,0 +1,51 @@
+cmake_minimum_required(VERSION 3.20)
+if(NOT DEFINED DRIVER OR NOT IS_ABSOLUTE "${DRIVER}" OR NOT EXISTS "${DRIVER}")
+  message(FATAL_ERROR "An actual built mdslc-region DRIVER is required")
+endif()
+if(CASE STREQUAL "template_specialization")
+  set(expected "PASS library_template_specialization 59 checks")
+elseif(CASE STREQUAL "template_macro_type")
+  set(rejection "closed-region admission rejected: synthesized specialization redeclaration lacks exact primary-template source provenance")
+elseif(CASE STREQUAL "template_macro_body")
+  set(rejection "closed-region admission rejected: preprocessing inside closed source range: macro expansion LIBRARY_BODY")
+elseif(CASE STREQUAL "template_hidden_effect")
+  set(rejection "closed-region admission rejected: pure helper cannot access external storage or effects")
+elseif(CASE STREQUAL "template_escaped_specialization")
+  set(rejection "retired Value helper has a remaining nonhelper use:")
+elseif(CASE STREQUAL "template_split_body")
+  set(rejection "closed-region admission rejected: function definition and body must share a physical source owner")
+else()
+  message(FATAL_ERROR "Unknown template provenance CASE")
+endif()
+string(RANDOM LENGTH 16 ALPHABET 0123456789abcdef identity)
+set(work "${CMAKE_CURRENT_BINARY_DIR}/library-adversary/${CASE}-${identity}")
+file(MAKE_DIRECTORY "${work}")
+set(executable "${work}/generated")
+execute_process(
+  COMMAND "${DRIVER}" "${CMAKE_CURRENT_LIST_DIR}/${CASE}.mdsl" --region library_region
+    --candidate generated-strict -o "${executable}"
+  WORKING_DIRECTORY "${work}"
+  RESULT_VARIABLE compile_status OUTPUT_VARIABLE compile_output
+  ERROR_VARIABLE compile_error TIMEOUT 120)
+if(DEFINED rejection)
+  string(FIND "${compile_error}" "${rejection}" found)
+  if(NOT "${compile_status}" MATCHES "^[1-9][0-9]*$" OR
+     EXISTS "${executable}" OR found EQUAL -1)
+    message(FATAL_ERROR "Expected exact template-provenance rejection '${rejection}', got ${compile_status}:\n${compile_output}\n${compile_error}")
+  endif()
+  message(STATUS "PASS library_${CASE} exact rejection")
+  return()
+endif()
+if(NOT "${compile_status}" STREQUAL "0" OR NOT EXISTS "${executable}")
+  message(FATAL_ERROR "Template source compilation failed (${compile_status}):\n${compile_output}\n${compile_error}")
+endif()
+execute_process(COMMAND "${executable}" WORKING_DIRECTORY "${work}"
+  RESULT_VARIABLE run_status OUTPUT_VARIABLE run_output
+  ERROR_VARIABLE run_error TIMEOUT 60)
+string(STRIP "${run_output}" run_output)
+if(NOT "${run_status}" STREQUAL "0" OR NOT "${run_output}" STREQUAL "${expected}" OR
+   NOT "${run_error}" STREQUAL "")
+  message(FATAL_ERROR "Template source oracle failed (${run_status}): expected '${expected}', got:\n${run_output}\n${run_error}\nExecutable retained: ${executable}")
+endif()
+file(REMOVE "${executable}")
+message(STATUS "${run_output}")
