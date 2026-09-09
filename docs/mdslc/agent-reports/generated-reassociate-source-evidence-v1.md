@@ -102,5 +102,7 @@ ever be useful.
 
 No automatic thresholds, source numerical defaults, provider selection policy,
 GPU/NPU capability, fused region execution or Issue #15 closure follows.
-Independent measurement audit is a separate pending gate from the passing runs;
-preserve any corrections and negative observations in normal history.
+The [separate independent audit](generated-reassociate-source-measurement-independent-v1.md)
+accepted the record after rehashing all frozen paths and recomputing all 540
+samples and 60 medians. Its acceptance retains every comparison caveat above;
+it is not a canonical merge or hosted CI result.
