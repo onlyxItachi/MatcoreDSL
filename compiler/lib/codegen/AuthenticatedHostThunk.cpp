@@ -185,6 +185,7 @@ bool sameAuthenticatedHostFunctionAttributes(const llvm::Function &a,
 }
 bool sameAuthenticatedHostCallInterface(const llvm::CallBase &a, const llvm::CallBase &b) {
   if (a.getCallingConv() != b.getCallingConv() || a.arg_size() != b.arg_size() ||
+      !sameType(a.getCalledOperand()->getType(), b.getCalledOperand()->getType()) ||
       !sameType(a.getFunctionType(), b.getFunctionType()) ||
       !sameAttributes(a.getAttributes().getRetAttrs(), b.getAttributes().getRetAttrs()) ||
       !sameAttributes(a.getAttributes().getFnAttrs(), b.getAttributes().getFnAttrs())) return false;
