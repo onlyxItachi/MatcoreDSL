@@ -3,7 +3,14 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/Builders.h"
+#include "llvm/AsmParser/Parser.h"
+#include "llvm/IR/Attributes.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
+#include "llvm/Support/SourceMgr.h"
 #include <iostream>
+#include <vector>
 
 namespace candidate = matcore::mdslc::cpu_candidate;
 int checks = 0, failures = 0;
@@ -246,6 +253,114 @@ int main() {
   check(!candidate::issueStrictGemmArtifactV1(
       context, false, static_cast<candidate::StrictGemmScheduleV1>(99)),
       "unknown schedule cannot fall back or issue authority");
+  llvm::LLVMContext llvmContext;
+  auto parse = [&](const std::string &ir) {
+    llvm::SMDiagnostic diagnostic;
+    return llvm::parseAssemblyString(ir, diagnostic, llvmContext);
+  };
+  for (const auto *artifact : {&first, &sanitized, &rowArtifact}) {
+    auto module = parse(artifact->llvm_ir);
+    check(bool(module), "issued LLVM parses for independent alias inspection");
+    if (!module) continue;
+    auto *leaf = module->getFunction(candidate::kStrictGemmSymbolV1);
+    auto *wrapper = module->getFunction(candidate::kStrictGemmCInterfaceV1);
+    unsigned aliasCount = 0;
+    for (auto &function : *module)
+      for (auto &argument : function.args())
+        aliasCount += function.hasParamAttribute(argument.getArgNo(), llvm::Attribute::NoAlias);
+    check(leaf && wrapper && aliasCount == 1 &&
+              leaf->hasParamAttribute(15, llvm::Attribute::NoAlias) &&
+              !leaf->hasParamAttribute(15, llvm::Attribute::NonNull) &&
+              artifact->manifest.find("input_input_alias=permitted") != std::string::npos,
+          "only output data has noalias, never input/allocated/descriptor pointers");
+  }
+  auto unbound = [&]() {
+    auto module = parse(first.llvm_ir);
+    if (module)
+      module->getFunction(candidate::kStrictGemmSymbolV1)
+          ->removeParamAttr(15, llvm::Attribute::NoAlias);
+    return module;
+  };
+  auto validBinding = unbound();
+  check(validBinding && candidate::preserveStrictGemmOutputStorageV1(*validBinding, error),
+        "exact preoptimization private ABI accepts existing output fact");
+  auto rejectBinding = [&](auto mutate, const std::string &label) {
+    auto module = unbound();
+    if (!module) { check(false, "cannot construct alias negative"); return; }
+    mutate(*module);
+    std::string before;
+    llvm::raw_string_ostream beforeStream(before);
+    module->print(beforeStream, nullptr);
+    check(!candidate::preserveStrictGemmOutputStorageV1(*module, error) && !error.empty(), label);
+    std::string after;
+    llvm::raw_string_ostream afterStream(after);
+    module->print(afterStream, nullptr);
+    check(before == after, "rejected binding leaves every LLVM attribute unchanged");
+  };
+  for (unsigned index : {0U, 1U, 7U, 8U, 14U, 15U})
+    rejectBinding([&](llvm::Module &module) {
+      module.getFunction(candidate::kStrictGemmSymbolV1)
+          ->addParamAttr(index, llvm::Attribute::NoAlias);
+    }, "unexpected existing data/allocated/input alias assertion fails closed");
+  rejectBinding([&](llvm::Module &module) {
+    module.getFunction(candidate::kStrictGemmCInterfaceV1)
+        ->addParamAttr(2, llvm::Attribute::NoAlias);
+  }, "wrapper descriptor noalias is not the output-data fact");
+  rejectBinding([&](llvm::Module &module) {
+    module.getFunction(candidate::kStrictGemmSymbolV1)->setName("forged_leaf");
+  }, "wrong private symbol refuses positional alias binding");
+  rejectBinding([&](llvm::Module &module) {
+    module.getFunction(candidate::kStrictGemmSymbolV1)
+        ->addParamAttr(15, llvm::Attribute::NonNull);
+  }, "empty data cannot acquire an implicit nonnull precondition");
+  rejectBinding([&](llvm::Module &module) {
+    module.getFunction(candidate::kStrictGemmSymbolV1)->setCallingConv(llvm::CallingConv::Fast);
+  }, "foreign calling convention cannot receive positional alias binding");
+  rejectBinding([&](llvm::Module &module) {
+    module.getFunction(candidate::kStrictGemmCInterfaceV1)->setCallingConv(llvm::CallingConv::Fast);
+  }, "foreign wrapper calling convention fails closed");
+  rejectBinding([&](llvm::Module &module) {
+    module.getFunction(candidate::kStrictGemmCInterfaceV1)->eraseFromParent();
+  }, "missing descriptor wrapper fails closed");
+  for (const auto *symbol : {candidate::kStrictGemmSymbolV1, candidate::kStrictGemmCInterfaceV1})
+    rejectBinding([&](llvm::Module &module) { module.getFunction(symbol)->deleteBody(); },
+                  "declaration-only private function fails closed");
+  rejectBinding([&](llvm::Module &module) {
+    llvm::Function::Create(llvm::FunctionType::get(llvm::Type::getVoidTy(llvmContext), false),
+                          llvm::GlobalValue::ExternalLinkage, "unexpected_function", module);
+  }, "extra function changes the private module boundary");
+  // Independently construct malformed signatures, not malformed MLIR. This is
+  // a binding guard test; it deliberately does not claim to verify LLVM bodies.
+  for (unsigned mutation = 0; mutation != 10; ++mutation) {
+    llvm::Module malformed("wrong_private_abi", llvmContext);
+    std::vector<llvm::Type *> args;
+    for (unsigned index = 0; index != 21; ++index)
+      args.push_back(index % 7 < 2 ? static_cast<llvm::Type *>(llvm::PointerType::getUnqual(llvmContext))
+                                  : llvm::Type::getInt64Ty(llvmContext));
+    std::vector<llvm::Type *> wrappers(3, llvm::PointerType::getUnqual(llvmContext));
+    if (mutation == 0) args.pop_back();
+    if (mutation == 1) args[15] = llvm::Type::getInt64Ty(llvmContext);
+    if (mutation == 2) args[15] = llvm::PointerType::get(llvmContext, 1);
+    if (mutation == 3) wrappers.pop_back();
+    if (mutation == 4) wrappers[2] = llvm::Type::getInt64Ty(llvmContext);
+    if (mutation == 5) wrappers[2] = llvm::PointerType::get(llvmContext, 1);
+    for (bool wrapper : {false, true}) {
+      const bool valueReturn = mutation == (wrapper ? 9U : 8U);
+      auto *result = valueReturn ? llvm::Type::getInt64Ty(llvmContext)
+                                 : llvm::Type::getVoidTy(llvmContext);
+      auto *function = llvm::Function::Create(
+          llvm::FunctionType::get(result, wrapper ? wrappers : args,
+                                 mutation == (wrapper ? 7U : 6U)),
+          llvm::GlobalValue::ExternalLinkage,
+          wrapper ? candidate::kStrictGemmCInterfaceV1 : candidate::kStrictGemmSymbolV1,
+          malformed);
+      llvm::IRBuilder<> builder(llvm::BasicBlock::Create(llvmContext, "entry", function));
+      if (valueReturn) builder.CreateRet(builder.getInt64(0));
+      else builder.CreateRetVoid();
+    }
+    check(!candidate::preserveStrictGemmOutputStorageV1(malformed, error) && !error.empty(),
+          "malformed private descriptor arity/type/address-space rejected");
+  }
   std::cout << "strict CPU candidate: " << checks << " checks, " << failures
             << " failures\n";
   return failures != 0;

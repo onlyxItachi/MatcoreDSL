@@ -9,9 +9,15 @@ if(TARGET mdslc-region)
       "-DDRIVER=$<TARGET_FILE:mdslc-region>" "-DCASE=${case}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/schedule_source_contract.cmake")
   endforeach()
+  # Retained from the rejected cache schedule: these are source-level shape,
+  # numerical and ordered-effect oracles, valid for every issued schedule.
+  add_test(NAME generated_cpu.source_schedule.boundary_matrix COMMAND "${CMAKE_COMMAND}"
+    "-DDRIVER=$<TARGET_FILE:mdslc-region>"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cache_schedule_source_contract.cmake")
 endif()
 add_executable(matcore_cpu_gemm_candidate_test candidate_test.cpp)
-target_link_libraries(matcore_cpu_gemm_candidate_test PRIVATE matcore_cpu_gemm_candidate MLIRLinalgDialect)
+# Match the integrated compiler's one shared LLVM registry, including its parser.
+target_link_libraries(matcore_cpu_gemm_candidate_test PRIVATE matcore_cpu_gemm_candidate MLIRLinalgDialect LLVM)
 mdslc_target_match_llvm_rtti(matcore_cpu_gemm_candidate_test)
 add_test(NAME generated_cpu.strict_candidate COMMAND matcore_cpu_gemm_candidate_test)
 
@@ -35,6 +41,17 @@ foreach(mode IN ITEMS normal asan)
     target_link_options(matcore_generated_cpu_independent_${mode}_test PRIVATE -fsanitize=address)
   endif()
   add_test(NAME generated_cpu.independent_execution.${mode} COMMAND matcore_generated_cpu_independent_${mode}_test)
+  add_executable(matcore_generated_cpu_input_alias_${mode}_test input_alias_execution_test.cpp "${object}")
+  target_compile_features(matcore_generated_cpu_input_alias_${mode}_test PRIVATE cxx_std_20)
+  target_compile_options(matcore_generated_cpu_input_alias_${mode}_test PRIVATE -ffp-contract=off -frounding-math)
+  if(mode STREQUAL "asan")
+    target_compile_options(matcore_generated_cpu_input_alias_${mode}_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(matcore_generated_cpu_input_alias_${mode}_test PRIVATE -fsanitize=address,undefined)
+  endif()
+  add_test(NAME generated_cpu.input_alias.${mode} COMMAND matcore_generated_cpu_input_alias_${mode}_test)
+  add_test(NAME generated_cpu.input_alias_corruption.${mode} COMMAND "${CMAKE_COMMAND}"
+    "-DEXECUTABLE=$<TARGET_FILE:matcore_generated_cpu_input_alias_${mode}_test>"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/expect_input_alias_corruption.cmake")
 endforeach()
 find_program(MDSLC_CANDIDATE_NM NAMES llvm-nm HINTS "${LLVM_TOOLS_BINARY_DIR}" NO_DEFAULT_PATH REQUIRED)
 find_program(MDSLC_CANDIDATE_OBJDUMP NAMES llvm-objdump HINTS "${LLVM_TOOLS_BINARY_DIR}" NO_DEFAULT_PATH REQUIRED)

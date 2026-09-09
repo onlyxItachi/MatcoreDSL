@@ -292,6 +292,42 @@ bool verifyStage(mlir::ModuleOp module, bool buffer, std::string &error,
 }
 } // namespace
 
+bool preserveStrictGemmOutputStorageV1(llvm::Module &module, std::string &error) {
+  error.clear();
+  auto *leaf = module.getFunction(kStrictGemmSymbolV1);
+  auto *wrapper = module.getFunction(kStrictGemmCInterfaceV1);
+  if (module.size() != 2 || !leaf || !wrapper || leaf->isDeclaration() ||
+      wrapper->isDeclaration() || leaf->isVarArg() || wrapper->isVarArg() ||
+      leaf->getCallingConv() != llvm::CallingConv::C ||
+      wrapper->getCallingConv() != llvm::CallingConv::C ||
+      !leaf->getReturnType()->isVoidTy() || !wrapper->getReturnType()->isVoidTy() ||
+      leaf->arg_size() != 21 || wrapper->arg_size() != 3)
+    return fail(error, "private output storage signature/ownership boundary changed");
+  // Pinned rank-2 descriptor expansion: allocated, aligned, offset,
+  // sizes[2], strides[2]. These checks guard the data-pointer binding, not
+  // arbitrary LLVM pointer provenance or semantic correctness of an IR body.
+  for (unsigned index = 0; index != 21; ++index) {
+    auto *type = leaf->getArg(index)->getType();
+    if ((index % 7 < 2 ? !type->isPointerTy() ||
+                            type->getPointerAddressSpace() != 0
+                      : !type->isIntegerTy(64)) ||
+        leaf->getAttributes().getParamAttrs(index).hasAttributes())
+      return fail(error, "private output storage descriptor mapping/attributes changed");
+  }
+  for (unsigned index = 0; index != 3; ++index) {
+    auto *type = wrapper->getArg(index)->getType();
+    if (!type->isPointerTy() || type->getPointerAddressSpace() != 0 ||
+        wrapper->getAttributes().getParamAttrs(index).hasAttributes())
+      return fail(error, "descriptor-pointer attributes cannot prove data isolation");
+  }
+  // This is already required by the private leaf's caller contract and
+  // established by fresh output allocation while both input values stay alive.
+  // Do not mark allocated-C, input data or wrapper descriptor pointers; do not
+  // infer nonnull, alignment, dereferenceability or physical source noalias.
+  leaf->addParamAttr(15, llvm::Attribute::NoAlias);
+  return true;
+}
+
 bool verifyStrictGemmStructuredV1(mlir::ModuleOp module, std::string &error) {
   return verifyStage(module, false, error);
 }
@@ -464,6 +500,12 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
     fail(result.error, "LLVM strict scalar arithmetic footprint changed");
     return result;
   }
+  if (!preserveStrictGemmOutputStorageV1(*lowered, result.error) ||
+      llvm::verifyModule(*lowered)) {
+    if (result.error.empty())
+      fail(result.error, "LLVM output-data fact preservation failed verification");
+    return result;
+  }
   llvm::raw_string_ostream output(result.llvm_ir);
   lowered->print(output, nullptr);
   output.flush();
@@ -475,6 +517,8 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
       "\nprofile=strict_f32\n"
       "shape=dynamic_nonnegative_M_N_K\ncaller_guards=retained_not_discharged\n"
       "tensor_allocations=0\ncopies=0\npublication=none\n"
+      "output_storage=caller_private_disjoint_from_inputs\n"
+      "output_alias_fact=llvm_leaf_aligned_c_only\ninput_input_alias=permitted\n"
       "pipeline=one-shot-bufferize," +
       (schedule == StrictGemmScheduleV1::ScalarMNK ? std::string{} :
           "transform-generalize-interchange-mkn,") +
