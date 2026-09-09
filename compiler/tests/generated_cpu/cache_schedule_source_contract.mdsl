@@ -1,0 +1,212 @@
+// Actual source-route correctness, not a benchmark or a structural-IR oracle.
+#include <matcore/region.h>
+#include <bit>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <limits>
+#include <vector>
+
+namespace md = matcore::mdsl;
+
+MATCORE_REGION md::Result cache_contract_region(
+    md::Storage A, md::Storage B, md::Storage C, md::Storage D,
+    md::Storage E, md::Shape M, md::Shape K, md::Shape N,
+    md::Shape P) noexcept {
+  auto a = md::read(A, M, K);
+  auto b = md::read(B, K, N);
+  auto old = md::read(C, M, N);
+  auto first = md::gemm(a, b, md::Numerics::strict_f32);
+  md::publish(first, C);
+  md::observe(C);
+  auto late = md::read(D, N, P);
+  auto second = md::gemm(first, late, md::Numerics::strict_f32);
+  md::publish(second, E);
+  md::observe(E);
+  md::publish(old, C);
+  md::observe(C);
+  return md::complete();
+}
+
+static int failures = 0, checks = 0, cases = 0;
+static void check(bool condition, const char *label) {
+  ++checks;
+  if (!condition) {
+    ++failures;
+    std::fprintf(stderr, "FAIL case %d: %s\n", cases, label);
+  }
+}
+static bool equal(float a, float b) {
+  return (std::isnan(a) && std::isnan(b)) ||
+      std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b);
+}
+static void values(const float *actual, const std::vector<float> &expected,
+                   const char *label) {
+  for (std::size_t i = 0; i < expected.size(); ++i)
+    check(equal(actual[i], expected[i]), label);
+}
+static std::vector<float> product(const float *a, const float *b,
+                                  std::size_t m, std::size_t k, std::size_t n) {
+  std::vector<float> result(m * n);
+  for (std::size_t i = 0; i < m; ++i)
+    for (std::size_t j = 0; j < n; ++j) {
+      volatile float accumulator = 0.0f;
+      for (std::size_t p = 0; p < k; ++p) {
+        volatile float term = a[i * k + p] * b[p * n + j];
+        accumulator = accumulator + term;
+      }
+      result[i * n + j] = accumulator;
+    }
+  return result;
+}
+static void observation(const md::Result &result, md::Shape index,
+                        md::Shape rows, md::Shape columns,
+                        const std::vector<float> &expected) {
+  auto item = result.observation(index);
+  check(item.valid() && item.rows() == rows && item.columns() == columns,
+        "owning observation identity and shape");
+  if (item.valid()) values(item.data(), expected, "owning observation contents");
+}
+static md::Storage input(std::vector<float> &v, std::size_t rows,
+                         std::size_t columns) {
+  return {v.data(), rows, columns, v.size(), md::Access::read_only};
+}
+
+// failure=1 rejects the late read; failure=2 rejects the second publication.
+// The alias case has P=M and D=C+1, including one trailing canary element.
+static void run(std::size_t m, std::size_t k, std::size_t n, std::size_t p,
+                std::vector<float> a, std::vector<float> b,
+                int failure = 0, bool alias = false) {
+  ++cases;
+  std::vector<float> c(m * n + 2, 17.0f), e(m * p + 2, -29.0f), d(n * p);
+  c.front() = 701; c.back() = 709;
+  e.front() = 719; e.back() = 727;
+  for (std::size_t i = 0; i < d.size(); ++i)
+    d[i] = float(int((7 * i + 3) % 11) - 5) * 0.25f;
+  const std::vector<float> old(c.begin() + 1, c.end() - 1);
+  const std::vector<float> untouched(e.begin() + 1, e.end() - 1);
+  const auto first = product(a.data(), b.data(), m, k, n);
+  auto expected_late = d;
+  if (alias) {
+    // This is the view AFTER the first publication, not an entry-time read.
+    expected_late.assign(first.begin() + 1, first.end());
+    expected_late.push_back(c.back());
+  }
+  const auto second = product(first.data(), expected_late.data(), m, n, p);
+  auto late = input(d, n, p);
+  if (alias) late = {c.data() + 2, n, p, n * p, md::Access::read_only};
+  if (failure == 1) --late.capacity_elements;
+  auto result = cache_contract_region(input(a, m, k), input(b, k, n),
+      {c.data() + 1, m, n, m * n, md::Access::read_write}, late,
+      {e.data() + 1, m, p, m * p,
+       failure == 2 ? md::Access::read_only : md::Access::read_write},
+      m, k, n, p);
+  check(c.front() == 701, "publication keeps C prefix canary");
+  check(c.back() == 709, "publication keeps C suffix canary");
+  check(e.front() == 719, "publication keeps E prefix canary");
+  check(e.back() == 727, "publication keeps E suffix canary");
+  if (failure) {
+    check(!result && result.error() == (failure == 1 ?
+        md::Error::insufficient_capacity : md::Error::access_denied),
+        "late failure identity");
+    check(result.publication_count() == 1 && result.observation_count() == 1,
+          "late failure preserves exactly the earlier effect prefix");
+    check(result.failure_location().line != 0 &&
+          result.failed_frontier() > result.completed_effect_frontier(),
+          "late failure stays source-bound after completed effects");
+    values(c.data() + 1, first, "earlier publication survives late failure");
+    values(e.data() + 1, untouched, "failed or unreached publication leaves E unchanged");
+    observation(result, 0, m, n, first);
+    return;
+  }
+  check(result.ok() && result.publication_count() == 3 &&
+        result.observation_count() == 3, "successful complete effect trace");
+  values(c.data() + 1, old, "saved old Value is republished after both GEMMs");
+  values(e.data() + 1, second, "second GEMM uses the ordered late read");
+  for (std::size_t i = 1; i + 1 < c.size(); ++i) c[i] = 101;
+  for (std::size_t i = 1; i + 1 < e.size(); ++i) e[i] = 103;
+  observation(result, 0, m, n, first);
+  observation(result, 1, m, p, second);
+  observation(result, 2, m, n, old);
+}
+
+static void lane_distinct(std::size_t m, std::size_t k, std::size_t n,
+                          std::size_t p, int failure = 0, bool alias = false) {
+  std::vector<float> a(m * k), b(k * n);
+  for (std::size_t i = 0; i < m; ++i)
+    for (std::size_t q = 0; q < k; ++q)
+      a[i * k + q] = float(int((i * 7 + q * 3) % 17) - 8) * 0.25f;
+  for (std::size_t q = 0; q < k; ++q)
+    for (std::size_t j = 0; j < n; ++j)
+      b[q * n + j] = float(int((q * 11 + j * 5) % 23) - 11) * 0.125f;
+  run(m, k, n, p, a, b, failure, alias);
+}
+
+int main() {
+  // All 216 combinations exercise complete tiles and tails in each dimension.
+  // The second GEMM also has N=65 and K equal to the first GEMM's N.
+  for (std::size_t m : {3, 4, 5, 7, 8, 9})
+    for (std::size_t k : {31, 32, 33, 63, 64, 65})
+      for (std::size_t n : {63, 64, 65, 127, 128, 129})
+        lane_distinct(m, k, n, 65);
+
+  // Ordered result is 3. Independently zeroed 32-term partial sums give 2;
+  // re-zeroing the destination for each chunk also leaves only the final 2.
+  std::vector<float> terms(65);
+  terms[0] = 0x1p25f; terms[31] = 1;
+  terms[32] = -0x1p25f; terms[33] = 1; terms[64] = 2;
+  const std::vector<float> ones(65, 1.0f);
+  const float ordered = product(terms.data(), ones.data(), 1, 65, 1)[0];
+  volatile float split = 0.0f, reset = 0.0f;
+  for (std::size_t base = 0; base < 65; base += 32) {
+    volatile float partial = 0.0f;
+    for (std::size_t q = base; q < 65 && q < base + 32; ++q)
+      partial = partial + terms[q];
+    split = split + partial;
+    reset = partial;
+  }
+  check(equal(ordered, 3), "ordered chunk-boundary counteroracle equals 3");
+  check(equal(split, 2) && !equal(split, ordered), "split-K counteroracle is discriminating");
+  check(equal(reset, 2) && !equal(reset, ordered), "K-reset counteroracle is discriminating");
+  std::vector<float> a(5 * 65);
+  for (std::size_t i = 0; i < 5; ++i)
+    for (std::size_t q = 0; q < 65; ++q) a[i * 65 + q] = terms[q];
+  run(5, 65, 129, 65, a, std::vector<float>(65 * 129, 1.0f));
+  run(5, 65, 129, 65, std::vector<float>(5 * 65, 1.0f),
+      std::vector<float>(65 * 129, 1.0f));
+
+  // The FMA-discriminating update straddles K32 or K64. Separate operations
+  // produce +0; contracting the last update produces -2^-46 instead.
+  for (std::size_t k : {33, 65}) {
+    std::vector<float> lhs(5 * k), rhs(k * 129, 1.0f);
+    for (std::size_t i = 0; i < 5; ++i) {
+      lhs[i * k + k - 2] = -1.0f;
+      lhs[i * k + k - 1] = 0x1.000002p0f;
+    }
+    for (std::size_t j = 0; j < 129; ++j)
+      rhs[(k - 1) * 129 + j] = 0x1.fffffcp-1f;
+    run(5, k, 129, 65, lhs, rhs);
+  }
+  // Non-finite and gradual-underflow behavior in the final K/N tails. NaN
+  // payload is unspecified; every non-NaN result is compared bit-for-bit.
+  const float inf = std::numeric_limits<float>::infinity();
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const float special[] = {inf, -inf, nan, -0.0f, 1.0f};
+  const float factors[] = {0.5f, -0.5f, 1.0f, -1.0f, 0.0f};
+  std::vector<float> rhs(65 * 129, 1.0f), tiny(65 * 129, 1.0f);
+  std::vector<float> tiny_lhs(5 * 65);
+  for (std::size_t j = 0; j < 129; ++j) {
+    rhs[64 * 129 + j] = special[j % 5];
+    tiny[64 * 129 + j] = factors[j % 5];
+  }
+  for (std::size_t i = 0; i < 5; ++i) tiny_lhs[i * 65 + 64] = 0x1p-126f;
+  run(5, 65, 129, 65, std::vector<float>(5 * 65), rhs);
+  run(5, 65, 129, 65, tiny_lhs, tiny);
+
+  lane_distinct(5, 65, 129, 65, 1);
+  lane_distinct(5, 65, 129, 65, 2);
+  lane_distinct(5, 33, 65, 5, 0, true);
+  if (!failures)
+    std::printf("PASS cache_schedule_source_contract %d cases %d checks\n", cases, checks);
+  return failures ? 1 : 0;
+}
