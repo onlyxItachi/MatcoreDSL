@@ -224,3 +224,63 @@ Remaining production acceptance gaps are unchanged:
 - Independent whole-source/storage/failure and capability-refusal gates are
   still needed. These direct-leaf controls establish neither descriptor guarding,
   source authority, general performance superiority nor BLAS parity.
+
+## Narrower AVX2/FMA target experiment
+
+This follow-up starts from sanitizer-control commit
+`71d65879df791e228a4e3518d2592e1cc8c62010`. It answers only whether the same
+generated LLVM realization survives a narrower target than x86-64-v3. The
+runner retains the original v3 default and explicit opt-in, and adds an
+independently selected `avx2-fma` target. There is no product dispatch change.
+
+```sh
+MDSLC_RESEARCH_TARGET=avx2-fma MDSLC_RESEARCH_RUN_AVX2_FMA=1 bash \
+  compiler/experiments/mlir_reassociate_register_v1/run.sh \
+  /tmp/mdslc-register-avx2-fma.iOxVro
+```
+
+The generated normal object uses `-O3 -march=x86-64 -mavx2 -mfma`; the actual
+generated ASan object uses `-O1 -g` with that same target. The independent host
+oracle retains `-ffp-contract=off -frounding-math -ftrapping-math`, without target
+widening. Clang 21.1.8 `-###` independently reports target CPU `x86-64` and the
+explicit `+avx2` / `+fma` features. This executed on the same local AMD Ryzen AI
+9 HX 370; it is not physical validation of another CPU family.
+
+Both normal and sanitized runs pass **1,417 cases / 109,632 checks**, with zero
+failures. Corruption still produces 1,715 failures and the deliberately strict
+oracle 7,749 failures, in both executables. The separate A and B sanitizer
+adversaries retain exact exit 1, generated frame #0 and READ widths 4 and 32;
+all nine classifier negatives pass. `bash -n` passes. Three additional
+pre-compilation probes (v3 without opt-in, AVX2/FMA without opt-in, and an unknown
+target) each return exactly 2 without creating the requested artifact directory;
+their logs are in `/tmp/mdslc-register-isa-refusals.uIEvzA`.
+
+`cmp` verifies byte-identical scheduled MLIR and LLVM against the preceding v3
+run. The objects are distinct. The narrower O3 assembly still has four YMM FMA
+accumulators, four A broadcasts and one contiguous B vector load in the full
+tile K loop (offsets `0x5e0` through `0x61a`), without C loads/stores or accumulator
+spills inside that loop. Instruction scheduling differs; this experiment does
+not transfer the earlier v3 timing to these objects. No benchmarks were run and
+no measured v3 artifacts were overwritten.
+
+| Artifact in `/tmp/mdslc-register-avx2-fma.iOxVro` | SHA256 |
+| --- | --- |
+| `leaf.o` | `9df92d4d4676eb6134a1baeb45ba423fdb3da6080276476e282c4cb84fdb0649` |
+| `sanitized.o` | `ba09cab9d016c03cd38730611e8c8474ec52390a76803d6e905107ce50f3c2d9` |
+| `scheduled.mlir` | `69e3120cb4320f53aeb4dc84d0086830d12924c0239c1da94cd159bf114c6923` |
+| `leaf.ll` | `a16ae9e926ff67fa25a50df6aec80b0e22a4bb6b601793d8ee3ce1a1687e5aa8` |
+| `execution` | `1db202609437ff9db3a08b1df25d7cdf21fd39f758a06a827c37a0d75a8b3264` |
+| `execution-asan` | `78815ffce20f88362273a98a2b0f48f04eead4e15d9227479a7bc5b0dbfe9213` |
+| `run.log` | `77bac4f66e5eb22b7b9a3e7b61044438d180fdc99c9d90002d64ac467bb22390` |
+| `asan-a-negative.stderr` | `90a33b7cd83b76082bd340bc9e9ca6ae4ad1a44ff5358ba41bf633f93af3760a` |
+| `asan-b-negative.stderr` | `e77f0658b52c74f35cd2cede543e3783cec4b8799ad7dba18c832379c29404dc` |
+
+The justified candidate target is therefore the explicit narrower compile
+contract, with direct hardware **and OS extended-state** discovery before any
+selected AVX2/FMA execution. This evidence does not make an AVX2/FMA check
+sufficient for an x86-64-v3 object, and the research opt-in is not a runtime
+capability guard. Compiler-issued source authority, per-operation numerical
+refusal, private-output/FP adaptation, ordered failure prefixes, installed
+integration and the stronger normal-return publication guarantee remain
+production acceptance requirements. Neither the default nor generated strict
+candidate is changed by this experiment.

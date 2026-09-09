@@ -1,12 +1,25 @@
 #!/usr/bin/env bash
 # Research-only reproduction. Does not modify a product target or issue a source
-# candidate. Explicit v3 opt-in is required because the oracle expects real FMA.
+# candidate. Explicit ISA opt-in is required because the oracle expects real FMA.
 set -euo pipefail
 export DEBUGINFOD_URLS=
-if [[ ${MDSLC_RESEARCH_RUN_V3:-0} != 1 ]]; then
-  echo 'Set MDSLC_RESEARCH_RUN_V3=1 only on an independently validated x86-64-v3 host.' >&2
-  exit 2
-fi
+case ${MDSLC_RESEARCH_TARGET:-x86-64-v3} in
+  x86-64-v3)
+    if [[ ${MDSLC_RESEARCH_RUN_V3:-0} != 1 ]]; then
+      echo 'Set MDSLC_RESEARCH_RUN_V3=1 only on an independently validated x86-64-v3 host.' >&2
+      exit 2
+    fi
+    generated_isa=(-march=x86-64-v3)
+    ;;
+  avx2-fma)
+    if [[ ${MDSLC_RESEARCH_RUN_AVX2_FMA:-0} != 1 ]]; then
+      echo 'Set MDSLC_RESEARCH_RUN_AVX2_FMA=1 only on an independently validated AVX2/FMA+OS host.' >&2
+      exit 2
+    fi
+    generated_isa=(-march=x86-64 -mavx2 -mfma)
+    ;;
+  *) echo 'Research target must be x86-64-v3 or avx2-fma.' >&2; exit 2 ;;
+esac
 experiment_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 mlir_bin=${MDSLC_RESEARCH_MLIR_BIN:-/home/hamza-usta/.local/toolchains/mlir-21.1.8-6ubuntu1/usr/lib/llvm-21/bin}
 clangxx=${MDSLC_RESEARCH_CLANGXX:-/usr/bin/clang++-21}
@@ -16,6 +29,7 @@ out=${1:-$(mktemp -d /tmp/mdslc-reassociate-register.XXXXXX)}
 mkdir -p -- "$out"
 "$mlir_bin/mlir-opt" --version
 "$clang" --version
+printf 'Generated object ISA:'; printf ' %s' "${generated_isa[@]}"; printf '\n'
 strict=(-ffp-contract=off -frounding-math -ftrapping-math)
 
 "$mlir_bin/mlir-opt" "$experiment_dir/peeled_contract.mlir" \
@@ -42,7 +56,7 @@ if grep -Eq 'noalias|\b(fast|reassoc|nnan|ninf|nsz|arcp|afn|contract)\b' "$out/l
   echo 'Unexpected alias claim or blanket fast-math flag.' >&2
   exit 1
 fi
-"$clang" -O3 -march=x86-64-v3 -Wno-override-module -ffp-contract=off \
+"$clang" -O3 "${generated_isa[@]}" -Wno-override-module -ffp-contract=off \
   -c "$out/leaf.ll" -o "$out/leaf.o"
 objdump -d "$out/leaf.o" > "$out/leaf.asm"
 grep -q vfmadd "$out/leaf.asm"
@@ -54,7 +68,7 @@ grep -q vfmadd "$out/leaf.asm"
 # does not add sanitize_address to its already emitted function definitions.
 "$opt" "$out/leaf.ll" -S -passes=forceattrs -force-attribute=sanitize_address \
   -o "$out/sanitized.ll"
-"$clang" -O1 -g -march=x86-64-v3 -Wno-override-module -ffp-contract=off \
+"$clang" -O1 -g "${generated_isa[@]}" -Wno-override-module -ffp-contract=off \
   -fsanitize=address -c "$out/sanitized.ll" -o "$out/sanitized.o"
 "$clangxx" -std=c++20 -O1 -g -Wall -Wextra -Werror "${strict[@]}" \
   -fsanitize=address,undefined "$experiment_dir/execution.cpp" \
