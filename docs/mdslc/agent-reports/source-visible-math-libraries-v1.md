@@ -3,8 +3,9 @@
 2026-09-09. Bounded implementation of source-visible C++ mathematical helpers
 in ordinary headers. No public import syntax, opaque modules, second C++ parser,
 interpreter, custom linker or ABI-as-mathematics contract was introduced.
-Final local validation: full Release **146/146**, affected ASan/UBSan **92/92**,
-and independent source/ownership review accepted the corrected engineering
+Final standalone-lane validation: full Release **146/146**, affected ASan/UBSan
+**92/92**; subsequent combined canonical integration passed **151/151** and
+**97/97**. Independent source/ownership review accepted the corrected engineering
 input. The first failed gate and subsequent specialization counterexample are
 preserved below; no hosted CI or integration result is inferred.
 
@@ -255,8 +256,9 @@ Final raw logs in the owning worktree:
 - `build-library-asan/corrected-focused-ctest.log`, SHA256
   `65a334faf57239a4482ac05922dda4c1d0e65672f9b8d1db680e4da77e5bb8a8`.
 
-The implementation and evidence are ready for integration-owner review. No
-push, PR creation or normal engineering merge was performed by this lane.
+The implementation and evidence were handed to the integration owner. No
+push, PR creation or normal engineering merge was performed by the implementation
+lane; subsequent root reconciliation is recorded below.
 
 ## Fresh installed-SDK source-library supplement
 
@@ -294,6 +296,44 @@ artifacts. Prefix-local logs remain `install.log`, SHA256
 `84b2b71e6802ebcfcda5398d776c70c7b58e9e388f2f781e04869ee75f2cb6e3`, and
 `library-cases.log`, SHA256
 `5aa0dbd45379c382e4e7345f04a369b5fb0344b4e06ca375ba7efa12dfbdb4a7`.
+
+## Canonical integration revalidation
+
+Root normally merged canonical `c04215e787832b35bbd6a85a51d9285b053181bc`
+(PR #62's private output-data fact, including PR #61 documentation) into this
+branch as `8fbdc61258173c46f199f9142092fc1bbec6cb04`. The only merge conflict
+was the additive sanitizer inventory: original 83, plus nine library cases and
+five output-alias cases, equals 97. Both CI expressions were retained and the
+actual combined CTest inventory was checked as **97**, not assumed from arithmetic.
+The builtin GEMM's source-file table and output-data annotation composed without
+changing either contract. Root re-reviewed both production diffs.
+
+Both existing builds were reconfigured and fully rebuilt from clean `8fbdc61`.
+No source/report edits occurred during either complete run. The Release tuple
+remains OpenBLAS ON/required; Debug/O1 ASan+UBSan remains OFF, with the exact
+sanitizer environment above. Both select coherent 21.1.8, matcore-mlir and the
+opt-in row-contiguous schedule; inspection-only vector readiness is OFF here.
+
+| Combined local scope | Exact outcome |
+| --- | --- |
+| Focused semantic/admission/library/generated path | **27/27 passed**, 30.27 s |
+| Complete Release suite | **151/151 passed**, 345.92 s |
+| Affected ASan+UBSan suite, exact CI selection | **97/97 passed**, 212.70 s |
+
+Raw log SHA256 values:
+
+- `build-library-release/combined-full-ctest.log`:
+  `672ee309a018f95563fd7691adcedba7f4f9dcacf5b12aabd3891b987ce94982`.
+- `build-library-asan/combined-focused-ctest.log`:
+  `f7d5fdab62348bc4e446cd28c53c57155286204a2d709e783c3ccefc2e70ec30`.
+
+Combined Release driver SHA256 is
+`d755534f5fd47a80d42ac7851209c6734021a1b0fb55f7a82cc499e2d892ad82`;
+ASan driver is `7de872d67c350a65f6afab049fbf518f0ffe3a4a3761e4bb2c74b5e80e925012`.
+These frozen artifacts are separate from the pre-integration installed supplement.
+[PR #63](https://github.com/onlyxItachi/MatcoreDSL/pull/63) records the reviewable
+engineering branch. Latest hosted CI and normal integration remain separate
+pending gates; this report does not turn local success into a merge claim.
 
 ## Limits
 
