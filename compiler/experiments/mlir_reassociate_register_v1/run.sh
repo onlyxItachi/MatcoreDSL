@@ -59,7 +59,7 @@ grep -q vfmadd "$out/leaf.asm"
 "$clangxx" -std=c++20 -O1 -g -Wall -Wextra -Werror "${strict[@]}" \
   -fsanitize=address,undefined "$experiment_dir/execution.cpp" \
   "$out/sanitized.o" -o "$out/execution-asan"
-export ASAN_OPTIONS=detect_leaks=1:halt_on_error=1
+export ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:exitcode=1
 export UBSAN_OPTIONS=halt_on_error=1
 "$out/execution-asan"
 for binary in execution execution-asan; do
@@ -75,17 +75,46 @@ for binary in execution execution-asan; do
     fi
   done
 done
-set +e
-"$out/execution-asan" --asan-invalid-capacity \
-  > "$out/asan-negative.stdout" 2> "$out/asan-negative.stderr"
-code=$?
-set -e
-if [[ $code == 0 || $code == 99 ]] ||
-   ! grep -q 'AddressSanitizer: heap-buffer-overflow' "$out/asan-negative.stderr" ||
-   ! grep -q research_gemm "$out/asan-negative.stderr"; then
-  echo 'Generated full-tile load instrumentation was not established.' >&2
+generated_read() {
+  local status=$1 width=$2 diagnostic=$3
+  [[ $status == 1 ]] &&
+    grep -Eq '^==[0-9]+==ERROR: AddressSanitizer: heap-buffer-overflow on address ' <<< "$diagnostic" &&
+    grep -Eq "^READ of size $width at 0x[[:xdigit:]]+ thread T0$" <<< "$diagnostic" &&
+    grep -Eq '^    #0 0x[[:xdigit:]]+ in research_gemm([[:space:]]|$)' <<< "$diagnostic"
+}
+for input in a b; do
+  option=--asan-invalid-capacity; width=4
+  if [[ $input == b ]]; then option=--asan-invalid-b-capacity; width=32; fi
+  set +e
+  "$out/execution-asan" "$option" \
+    > "$out/asan-$input-negative.stdout" 2> "$out/asan-$input-negative.stderr"
+  code=$?
+  set -e
+  diagnostic=$(< "$out/asan-$input-negative.stderr")
+  if ! generated_read "$code" "$width" "$diagnostic"; then
+    echo "Generated $input input READ of size $width with exact ASan exit/top frame was not established." >&2
+    exit 1
+  fi
+  printf 'ASan input %s: exit 1, generated top-frame READ of size %s\n' "$input" "$width"
+done
+# Permanent classifier negatives use the real diagnostics without rewriting
+# artifacts: neither the scalar A failure nor a caller-only frame proves B.
+a_diagnostic=$(< "$out/asan-a-negative.stderr")
+b_diagnostic=$(< "$out/asan-b-negative.stderr")
+for status in 0 2 99 134; do
+  if generated_read "$status" 32 "$b_diagnostic"; then
+    echo 'ASan classifier accepted the wrong process outcome.' >&2; exit 1
+  fi
+done
+if generated_read 1 32 "$a_diagnostic" ||
+   generated_read 1 4 "$b_diagnostic" ||
+   generated_read 1 32 "${b_diagnostic/READ of size 32/WRITE of size 32}" ||
+   generated_read 1 32 "${b_diagnostic/ in research_gemm / in unrelated_owner }" ||
+   generated_read 1 32 "${b_diagnostic/AddressSanitizer: heap-buffer-overflow/AddressSanitizer: stack-buffer-overflow}"; then
+  echo 'ASan classifier accepted wrong width/access/owner/error-kind evidence.' >&2
   exit 1
 fi
+printf 'ASan read classifier: nine rejection controls passed\n'
 
 # Retain the losing masked-K4 pipeline: this can compile without delivering
 # either a register-carried accumulator or the desired outer-product FMA form.

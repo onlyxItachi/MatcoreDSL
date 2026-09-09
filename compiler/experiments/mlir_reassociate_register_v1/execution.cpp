@@ -93,9 +93,18 @@ int main(int argc, char **argv) {
   std::fenv_t saved;
   if (fegetenv(&saved) || fesetenv(FE_DFL_ENV)) return 2;
   if (argc == 2 && std::string_view(argv[1]) == "--asan-invalid-capacity") {
-    // Full-tile generated vector load must be instrumented, not only the caller.
+    // Preserve the original A-capacity control: its generated broadcast reads
+    // one f32, so this establishes a scalar 4-byte read, not a wide B load.
     std::vector<float> a(1, 1), b(16, 1), c(32, 0);
     auto av = view(a.data(), 4, 2), bv = view(b.data(), 2, 8), cv = view(c.data(), 4, 8);
+    _mlir_ciface_research_gemm(&av, &bv, &cv);
+    return 99;
+  }
+  if (argc == 2 && std::string_view(argv[1]) == "--asan-invalid-b-capacity") {
+    // A and private C are truthful. The full 4x8 tile reads eight contiguous
+    // f32 elements from B, whose actual allocation has only one element.
+    std::vector<float> a(4, 1), b(1, 1), c(32, 0);
+    auto av = view(a.data(), 4, 1), bv = view(b.data(), 1, 8), cv = view(c.data(), 4, 8);
     _mlir_ciface_research_gemm(&av, &bv, &cv);
     return 99;
   }

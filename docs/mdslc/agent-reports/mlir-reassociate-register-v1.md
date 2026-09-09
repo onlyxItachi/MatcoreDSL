@@ -163,3 +163,64 @@ it. Only if that evidence survives should a separately gated generated
 reassociate candidate be engineered, with source-profile refusal, capability
 requirements, retained private-output/FP guarantees and actual source execution
 tests. The current default and strict candidate remain unchanged.
+
+## Independent generated-read sanitizer tightening
+
+The independent review of `caa2364` verified the recorded source/IR/object hashes
+and accepted the stated numerical/hoisting envelope, but found that the original
+invalid-capacity case faulted on a **4-byte A read** in the generated function.
+That is useful scalar-load instrumentation evidence, not evidence for the wide
+contiguous B load. The original result is not relabeled as a wide read.
+
+Starting from research head `48adacfac75d8751133fe7a64871661c2fea5cf4`, the
+research harness now retains that A case and adds a separate B case: A is a
+truthful 4x1 allocation, private C is a truthful 4x8 allocation, and B advertises
+1x8 while containing only one f32. The runner requires configured ASan exit 1,
+heap-buffer-overflow, the exact READ width, and `research_gemm` as frame #0.
+Merely finding the function elsewhere in a trace no longer suffices.
+
+Correctness-only reproduction (no benchmark):
+
+```sh
+MDSLC_RESEARCH_RUN_V3=1 bash \
+  compiler/experiments/mlir_reassociate_register_v1/run.sh \
+  /tmp/mdslc-register-read-controls.IWAEiy
+```
+
+Both normal and ASan/UBSan executions again passed **1,417 cases / 109,632
+checks**. Corrupted output and strict-result requirements retained their 1,715
+and 7,749 failures in both executables. The A adversary produced exit 1 with a
+generated top-frame **READ of size 4**; the B adversary separately produced
+exit 1 with a generated top-frame **READ of size 32**. Nine permanent classifier
+negatives reject wrong exit statuses (0/2/99/134), swapped widths, a WRITE,
+an unrelated top-frame owner, and the wrong sanitizer error kind.
+Independent read-only review accepted the two-file test delta; it did not run
+or rebuild the tests and did not infer source legality from the sanitizer fault.
+
+The scheduled MLIR, LLVM, O3 v3 object and O1 v3 ASan object hashes are unchanged
+from the earlier table. Only the research harness/control machinery changed.
+No measured artifact was overwritten and no timing series was rerun.
+
+| New artifact in `/tmp/mdslc-register-read-controls.IWAEiy` | SHA256 |
+| --- | --- |
+| `execution` | `3d1b9f4bf4f6cb2a23864ccb11558489cf46a0084c5d283d348a857235ce68ed` |
+| `execution-asan` | `12b8f7ca285dc2c7037f252d9b916c2b0187bb77c4bf50368dd0d958dd95c1a8` |
+| `run.log` | `b00bd17431836e5e716c1d318b50b19657b7aae22e439e3a657d2fdbec475376` |
+| `asan-a-negative.stderr` | `402e0aeff6239b18550d034f1073043fbe686cf9d3e74f0c10ed5ef8584c1940` |
+| `asan-b-negative.stderr` | `2e9e307fd65a725920aa16d392d0cd23ebec6453052d3869bd6d4577eba9a01e` |
+
+Remaining production acceptance gaps are unchanged:
+
+- A compiler-issued `reassociate_f32` candidate and actual strict-source refusal;
+  `--require-strict` remains only a numerical oracle discriminator.
+- An exact lowering-envelope verifier, not structural grep or hoister success:
+  preserve initialized private C, complete M/N bounds, zero-trip input safety,
+  no fictitious K padding and per-GEMM f32 boundaries.
+- A correct minimum ISA/capability contract and isolated target compilation;
+  existing AVX2/FMA detection alone does not establish all x86-64-v3 features.
+- Existing FP adaptation, allocation/shape checks, helper/DSO identity and the
+  selected adapter's stronger normal-return publication guarantee must survive
+  actual source execution and installed-package integration.
+- Independent whole-source/storage/failure and capability-refusal gates are
+  still needed. These direct-leaf controls establish neither descriptor guarding,
+  source authority, general performance superiority nor BLAS parity.
