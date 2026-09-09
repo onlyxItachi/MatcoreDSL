@@ -185,6 +185,10 @@ prefix. Eliminating an allocation opportunity is allowed; deleting a required
 check or publishing later failures early is not. No fusion or general liveness
 engine is required for this bounded transformation.
 
+Every derived realization must preserve the selected adapter's normal-return
+guarantee: failed publication leaves its own destination unchanged. The generic
+dialect's partial-write allowance cannot justify weakening this guarantee.
+
 The serial structured-only precursor was not selected: current orchestration is
 already serial, and the forwarding case demonstrates actual optimization freedom
 while testing the separate-derivation contract. Required falsifiers include an

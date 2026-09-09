@@ -111,6 +111,11 @@ requested-extent, shape and descriptor guards in their original order, including
 when its result is dead, its source failure location, sticky failure handling
 and completed frontier. Do not replace an ordered publication or observation.
 
+Final independent documentation review clarification: every derived realization
+must preserve the selected adapter's normal-return guarantee that failed
+publication leaves its own destination unchanged. The generic dialect's
+partial-write allowance cannot justify weakening this stronger guarantee.
+
 This recommendation **revises the initial serial structured two-GEMM precursor**.
 That precursor was safe but not necessary: reproducing already serial
 orchestration in another representation would not itself demonstrate additional
