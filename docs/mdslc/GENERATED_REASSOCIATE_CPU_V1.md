@@ -100,7 +100,16 @@ full suite's installed-source-inaccessible gate.
 The permanent matrix and its runner add two tests: **174** total Release ON,
 **119** in the affected sanitizer OFF selection. These test-only additions do
 not change the already-tested production compiler, runtime or generated leaf.
-Their CTest wiring and exact final-head hosted CI remain final gates.
+At clean `02a98d6081bd2dbfbbc006157eb617947f653233`, both new CTest gates passed:
+Release **2/2 / 51.94 s**, sanitizer **2/2 / 60.38 s**, with no skips. Their
+actual configured inventories are 174 Release ON and 168 sanitizer OFF total;
+the selected sanitizer union contains 119. Independent static review accepted
+the exact CMake/wrapper wiring and confirmed unchanged production artifacts.
+Logs `connected-final-ctest.log` have SHA256
+`ea528a16b835b4c775d341c6455a1465973009069c28acacb18ef7978573c572`
+(Release) and
+`43e8807ba5e091d88633831878ee032abae70b2a342d055b872200c332dff0c0`
+(sanitizer). Exact final-head hosted CI remains a separate gate.
 
 ## Claim boundary
 
@@ -112,6 +121,12 @@ separate evidence. No whole-region transformation, fusion, automatic buffer
 reuse, new device support, numerical-policy expansion or default schedule change.
 
 Research x86-64-v3 timing does not authenticate this narrower compiled artifact
-or its source overhead. No performance threshold or BLAS-parity claim follows.
-Issue #15 remains partial. The next performance question is a fresh same-source,
-same-contract, same-hardware comparison of the connected candidate and provider.
+or its source overhead. A new [same-source measurement](agent-reports/generated-reassociate-source-evidence-v1.md)
+does bind this actual narrower candidate: one warm single-thread Ryzen AI 9 HX
+370 study, six shapes, 540 samples. The new candidate used 27.28–57.62% less time
+than the previous generated candidate under identical reassociated source
+permissions; OpenBLAS won five of six. The intervention combines schedule,
+target features and optimization level, not a causal FMA-only improvement.
+[Independent audit](agent-reports/generated-reassociate-source-measurement-independent-v1.md)
+recomputed every sample and median and rechecked all frozen paths. No threshold,
+universal performance or BLAS-parity claim follows; Issue #15 remains partial.
