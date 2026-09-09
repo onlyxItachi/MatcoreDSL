@@ -59,7 +59,11 @@ in `context.md`.
   See `docs/mdslc/REGION_COMPILER_V1.md` and the frontend/resource contracts it
   links. The whole-region MLIR module is an exact untransformed paired witness;
   orchestration is compiled from the sealed frontend-neutral Program. Only the
-  issued strict GEMM primitive presently traverses the generated MLIR/LLVM path.
+  compiler-issued isolated GEMM primitives traverse the generated MLIR/LLVM path.
+  The explicitly forced `generated-reassociate` candidate requires the selected
+  GEMM's `reassociate_f32` permission plus AVX2/FMA hardware and OS-state legality;
+  it is not a strict schedule or an automatic-dispatch policy change. Its serial
+  register tile belongs to the private target realization, never semantic IR.
   Transformed region IR needs a new legality-preserving derivation, not relaxed
   source-pair verification. Preserve the frozen original host, checked ABI thunk,
   issued-helper isolation and candidate DSO ownership. Arbitrary manual linking
