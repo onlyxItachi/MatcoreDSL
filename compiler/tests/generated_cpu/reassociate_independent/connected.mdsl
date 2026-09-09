@@ -1,0 +1,182 @@
+#include <matcore/region.h>
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cerrno>
+#include <cfenv>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <iostream>
+#include <xmmintrin.h>
+
+namespace md = matcore::mdsl;
+
+MATCORE_REGION md::Result connected(md::Storage input, md::Storage first,
+                                    md::Storage late, md::Storage last) noexcept {
+  auto original = md::read(input, 8, 8);
+  auto square = md::gemm(original, original, md::Numerics::reassociate_f32);
+  md::publish(square, first);
+  md::observe(first);
+  auto changed = md::read(late, 8, 8);
+  auto product = md::gemm(original, changed, md::Numerics::reassociate_f32);
+  md::publish(product, last);
+  md::observe(last);
+  return md::complete();
+}
+
+// These ordinary host oracle pragmas do not alter admitted region numerics.
+#pragma STDC FENV_ACCESS ON
+#pragma STDC FP_CONTRACT OFF
+namespace {
+using Matrix = std::array<float, 64>;
+using Arena = std::array<float, 80>;
+int checks = 0, failures = 0;
+void check(bool value, const char *what) {
+  ++checks;
+  if (!value) { ++failures; std::cerr << "FAIL: " << what << '\n'; }
+}
+bool same(float a, float b) {
+  return std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b);
+}
+Matrix snapshot(const Arena &arena, std::size_t offset) {
+  Matrix result;
+  std::copy_n(arena.data() + offset, 64, result.data());
+  return result;
+}
+Matrix multiply(const Matrix &a, const Matrix &b, bool fused) {
+  Matrix result{};
+  for (std::size_t i = 0; i < 8; ++i)
+    for (std::size_t j = 0; j < 8; ++j) {
+      float sum = 0;
+      for (std::size_t k = 0; k < 8; ++k) {
+        if (fused) sum = std::fma(a[8*i+k], b[8*k+j], sum);
+        else {
+          volatile float product = a[8*i+k] * b[8*k+j];
+          volatile float rounded = sum + product;
+          sum = rounded;
+        }
+      }
+      result[8*i+j] = sum;
+    }
+  return result;
+}
+void run(bool fused, bool discriminator, int lateShift, bool failPublication) {
+  Arena arena;
+  arena.fill(-777.0F);
+  for (std::size_t i = 0; i < 64; ++i)
+    arena[4+i] = discriminator ? 0.0F : float(int((7*i+3)%5)-2);
+  if (discriminator) {
+    arena[4] = -1;
+    arena[5] = 0x1.000002p0F;
+    arena[6] = 1;
+    arena[4+8+2] = 0x1.fffffep-1F;
+  }
+  const Matrix original = snapshot(arena, 4);
+  const Matrix first = multiply(original, original, fused);
+  if (discriminator) {
+    const auto separatelyRounded = multiply(original, original, false);
+    const auto fusedResult = multiply(original, original, true);
+    check(!same(separatelyRounded[2], fusedResult[2]),
+          "full-tile same-Value input is an actual FMA discriminator");
+  }
+  Arena expected = arena;
+  std::copy(first.begin(), first.end(), expected.begin()+5);
+  const auto lateOffset = static_cast<std::size_t>(5+lateShift);
+  const Matrix changed = snapshot(expected, lateOffset);
+  const Matrix final = multiply(original, changed, fused);
+  // These independently wrong alternatives must not accidentally equal the
+  // tested original-value/late-read operation for the integer corpus.
+  if (!discriminator) {
+    check(final != multiply(snapshot(expected, 4), changed, fused),
+          "old Value must not become a pointer-backed view after publication");
+    check(final != multiply(original, snapshot(arena, lateOffset), fused),
+          "late read must not be moved to region entry");
+    // With shift zero, changed=A*A and exact integer associativity makes
+    // A*(A*A)==(A*A)*A. Only shifted slices discriminate operand reversal.
+    if (lateShift != 0)
+      check(final != multiply(changed, original, fused),
+            "shifted late read and old Value operands must not commute");
+  }
+  if (!failPublication)
+    std::copy(final.begin(), final.end(), expected.begin()+6);
+  md::Observation retained;
+  {
+    std::fenv_t saved{}, before{}, after{};
+    const bool savedOk = std::fegetenv(&saved) == 0;
+    const bool roundOk = std::fesetround(FE_UPWARD) == 0;
+    const bool flagsOk = std::feraiseexcept(FE_INEXACT | FE_UNDERFLOW) == 0;
+    _mm_setcsr(_mm_getcsr() | 0x8040U);
+    const auto mxcsr = _mm_getcsr();
+    const bool capturedOk = std::fegetenv(&before) == 0;
+    check(savedOk && roundOk && flagsOk && capturedOk &&
+          std::fegetround() == FE_UPWARD && (mxcsr & 0x8040U) == 0x8040U &&
+          std::fetestexcept(FE_INEXACT | FE_UNDERFLOW) == (FE_INEXACT | FE_UNDERFLOW),
+          "nondefault caller FP environment was actually established");
+    errno = ERANGE;
+    auto result = connected(
+        {arena.data()+4, 8, 8, 64, md::Access::read_write},
+        {arena.data()+5, 8, 8, 64, md::Access::read_write},
+        {arena.data()+lateOffset, 8, 8, 64, md::Access::read_write},
+        {arena.data()+6, 8, 8, failPublication ? 63ULL : 64ULL,
+         md::Access::read_write});
+    const int observedErrno = errno;
+    const auto observedMxcsr = _mm_getcsr();
+    std::fegetenv(&after);
+    std::fesetenv(&saved);
+    check(observedErrno == ERANGE && observedMxcsr == mxcsr &&
+          before.__control_word == after.__control_word &&
+          before.__status_word == after.__status_word,
+          "successful/failed source restores errno and FP controls/status");
+    check(bool(result) == !failPublication, "exact source completion result");
+    check(result.publication_count() == (failPublication ? 1U : 2U) &&
+          result.observation_count() == (failPublication ? 1U : 2U),
+          "exact owning observation and publication prefix");
+    if (failPublication) {
+      check(result.error() == md::Error::insufficient_capacity &&
+            result.failed_frontier() == 7 && result.completed_frontier() == 6 &&
+            result.completed_effect_frontier() == 4,
+            "late overlapping publication fails before any destination write");
+      check(result.failure_location().line == 23 &&
+            result.failure_location().column == 3,
+            "failure names the original source publication");
+    } else {
+      check(result.error() == md::Error::ok && result.failed_frontier() == 0 &&
+            result.completed_frontier() == 9 && result.completed_effect_frontier() == 8,
+            "success retires every frontier exactly");
+      const auto last = result.observation(1);
+      for (std::size_t i = 0; i < 64; ++i)
+        check(same(last.data()[i], final[i]), "second owning observation exact math");
+    }
+    retained = result.observation(0);
+    check(retained.valid() && retained.rows() == 8 && retained.columns() == 8,
+          "first full-tile observation is owned");
+    for (std::size_t i = 0; i < 64; ++i)
+      check(same(retained.data()[i], first[i]), "first observation preserves exact math");
+  }
+  for (std::size_t i = 0; i < arena.size(); ++i)
+    check(same(arena[i], expected[i]), "entire overlapping arena and sentinels exact");
+  arena.fill(999);
+  for (std::size_t i = 0; i < 64; ++i)
+    check(same(retained.data()[i], first[i]),
+          "owning first observation survives Result and all resource mutation");
+}
+}
+int main(int argc, char **argv) {
+  if (argc != 2) return 2;
+  const bool fused = std::strcmp(argv[1], "generated-reassociate") == 0;
+  const bool legalUnspecified = std::strcmp(argv[1], "existing-native") == 0 ||
+                                std::strcmp(argv[1], "openblas") == 0;
+  if (fused && (!__builtin_cpu_supports("avx2") || !__builtin_cpu_supports("fma"))) {
+    std::cout << "SKIP independent connected source: AVX2/FMA unavailable\n";
+    return 77;
+  }
+  for (bool discriminator : {false, true}) {
+    if (discriminator && legalUnspecified) continue;
+    for (int shift : {-1, 0, 1})
+      for (bool failed : {false, true}) run(fused, discriminator, shift, failed);
+  }
+  std::cout << "Independent connected source: " << checks << " checks; "
+            << failures << " failures\n";
+  return failures ? 1 : 0;
+}
