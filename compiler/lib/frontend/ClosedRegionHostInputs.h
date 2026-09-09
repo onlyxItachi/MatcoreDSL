@@ -1,7 +1,7 @@
 #pragma once
 
-// Private, noninstalled compiler-input capture for the inspection-only closed
-// region experiment. These records do not authenticate any semantic operation.
+// Private, noninstalled compiler-input capture. These records do not
+// authenticate any semantic operation.
 #include "frontend.h"
 
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
@@ -15,6 +15,9 @@
 namespace matcore::mdslc::frontend::closed_region_host {
 
 using OwnedHostFiles = std::vector<std::pair<std::string, std::string>>;
+// Only the inspection grammar needs its compiler-owned declarations. Public
+// region and ordinary host sources must retain their original include context.
+enum class HostInputPrelude { ClosedRegionFixture, None };
 
 struct HostInputReplay {
   llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> filesystem;
@@ -56,12 +59,13 @@ private:
   std::unique_ptr<Impl> impl_;
   friend std::unique_ptr<HostInputCapture>
   prepareHostInputs(const Options &, const std::string &, const OwnedHostFiles &,
-                    std::string &);
+                    std::string &, HostInputPrelude);
 };
 
 std::unique_ptr<HostInputCapture>
 prepareHostInputs(const Options &options, const std::string &working_directory,
                   const OwnedHostFiles &owned_files,
-                  std::string &error);
+                  std::string &error,
+                  HostInputPrelude prelude = HostInputPrelude::ClosedRegionFixture);
 
 } // namespace matcore::mdslc::frontend::closed_region_host

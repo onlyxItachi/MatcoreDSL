@@ -15,6 +15,10 @@ mdslc-region --program \
 
 Each `--region SOURCE NAME` selects one region definition in that physical TU.
 An ordinary `--host SOURCE` can contain utility code with no Matcore header.
+Public region TUs and ordinary host TUs retain their original include context:
+the driver does not force-include the inspection-only declaration fixture.
+The exact recorded arguments, original main bytes, physical file identities and
+preprocessing transcript remain bound to each source snapshot and replay.
 Exactly one ordinary C++ `main` definition is required across the program.
 Additional annotated region definitions must not be left unselected. Duplicate
 physical source identities, including symlink/hard-link aliases, are rejected.

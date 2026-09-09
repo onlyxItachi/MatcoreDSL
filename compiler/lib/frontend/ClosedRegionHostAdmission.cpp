@@ -352,8 +352,10 @@ static ClosedRegionAdmissionResult admitHost(
     result.error = "bounded closed host admission requires a selected region";
     return result;
   }
-  auto capture = host::prepareHostInputs(options, working_directory,
-      {{closedRegionOwnedHeaderPath(), closedRegionOwnedHeaderSource()}}, result.error);
+  const host::OwnedHostFiles owned_files = headers ? host::OwnedHostFiles{} :
+      host::OwnedHostFiles{{closedRegionOwnedHeaderPath(), closedRegionOwnedHeaderSource()}};
+  auto capture = host::prepareHostInputs(options, working_directory, owned_files, result.error,
+      headers ? host::HostInputPrelude::None : host::HostInputPrelude::ClosedRegionFixture);
   if (!capture) return result;
   ParseState state;
   initialize(state, capture->sourceSnapshot(), capture->inputPath(), region_name, headers);

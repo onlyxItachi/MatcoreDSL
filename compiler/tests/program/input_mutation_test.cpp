@@ -1,6 +1,7 @@
 #include "ExperimentalProgramCompiler.h"
 #include "platform_support.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -34,7 +35,7 @@ int main(int argc, char **argv) {
   auto runtime = llvm::MemoryBuffer::getFile(argv[5]);
   if (!candidate || !runtime) return 2;
   unsigned checks = 0;
-  for (const std::string mode : {"host", "region", "header", "negative_lookup", "missing_candidate", "duplicate_candidate"}) {
+  for (const std::string mode : {"host", "region", "header", "negative_lookup", "missing_candidate", "duplicate_candidate", "no_prelude"}) {
     std::string error;
     auto source_dir = support::create_temp_directory_v1("mdslc-program-mutation", error);
     auto stage = support::create_temp_directory_v1("mdslc-program-stage", error);
@@ -70,6 +71,7 @@ int main(int argc, char **argv) {
       result = cg::compileExperimentalProgramToLLVMForTesting(sources, root.string(), inputs,
         cg::ClosedCpuPolicy::GeneratedStrict, [&] {
           hook = true;
+          if (mode == "no_prelude") return;
           if (mode == "negative_lookup") write(root / "optional_program_header.h", "#pragma once\n");
           else {
             const auto target = root / (mode == "host" ? "main.cpp" : mode == "region" ? "first.mdsl" : "api.h");
@@ -77,6 +79,23 @@ int main(int argc, char **argv) {
           }
         });
       output = capture.text.str();
+    }
+    if (mode == "no_prelude") {
+      if (!result || !hook || result.compilation->inputs.size() != sources.size() + 1) {
+        std::cerr << "FAIL no-prelude compilation: " << result.error << '\n'; return 1;
+      }
+      for (std::size_t i = 0; i < sources.size(); ++i) {
+        // The first snapshot belongs to the compiler-issued interface witness.
+        const auto &snapshot = *result.compilation->inputs[i + 1];
+        const auto &args = snapshot.arguments();
+        if (snapshot.sourceSnapshot() != read(sources[i].options.input_path) ||
+            args.back() != sources[i].options.input_path ||
+            std::find(args.begin(), args.end(), "-include") != args.end()) {
+          std::cerr << "FAIL original program source capture was polluted\n"; return 1;
+        }
+      }
+      ++checks;
+      continue;
     }
     const bool artifact_case = mode == "missing_candidate" || mode == "duplicate_candidate";
     const bool expected = artifact_case
@@ -91,5 +110,5 @@ int main(int argc, char **argv) {
     ++checks;
   }
   std::cout << "PASS program input mutation/artifact gates " << checks << " checks\n";
-  return checks == 6 ? 0 : 1;
+  return checks == 7 ? 0 : 1;
 }

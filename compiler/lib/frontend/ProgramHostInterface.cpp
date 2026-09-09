@@ -157,8 +157,8 @@ ProgramHostInterfaceResult inspectProgramHost(
   ProgramHostInterfaceResult result;
   std::optional<ProgramHostInterface> initial;
   if (!snapshot) {
-    auto capture = host::prepareHostInputs(options, working_directory,
-        {{closedRegionOwnedHeaderPath(), closedRegionOwnedHeaderSource()}}, result.error);
+    auto capture = host::prepareHostInputs(options, working_directory, {}, result.error,
+        host::HostInputPrelude::None);
     if (!capture) return result;
     initial.emplace();
     if (!scan(capture->arguments(), capture->workingDirectory(), capture->fileSystem(),

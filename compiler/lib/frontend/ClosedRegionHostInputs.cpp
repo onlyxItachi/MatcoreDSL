@@ -773,19 +773,32 @@ std::shared_ptr<const HostInputSnapshot> HostInputCapture::freeze(std::string &e
 
 std::unique_ptr<HostInputCapture>
 prepareHostInputs(const Options &options, const std::string &working_directory,
-                  const OwnedHostFiles &owned_files, std::string &error) {
+                  const OwnedHostFiles &owned_files, std::string &error,
+                  HostInputPrelude prelude) {
   error.clear();
   auto records = std::make_shared<Records>();
-  if (!configure(options, working_directory, *records, error) ||
-      !addOwnedFiles(*records, owned_files, error)) return {};
-  if (!records->owned.count("/__mdsl_private__/fixture.h")) {
-    error = "the fixed compiler-owned declaration header is required"; return {};
+  if (!configure(options, working_directory, *records, error)) return {};
+  switch (prelude) {
+  case HostInputPrelude::ClosedRegionFixture:
+    if (!addOwnedFiles(*records, owned_files, error)) return {};
+    if (!records->owned.count("/__mdsl_private__/fixture.h")) {
+      error = "the fixed compiler-owned declaration header is required"; return {};
+    }
+    records->arguments.insert(records->arguments.end(),
+        {"-include", "/__mdsl_private__/fixture.h"});
+    break;
+  case HostInputPrelude::None:
+    if (!owned_files.empty()) {
+      error = "original host capture cannot inject compiler-owned virtual inputs"; return {};
+    }
+    break;
+  default:
+    error = "unknown compiler-owned host prelude mode"; return {};
   }
   if (records->owned.count(records->input)) {
     error = "physical main source cannot alias a compiler-owned virtual input"; return {};
   }
-  records->arguments.insert(records->arguments.end(),
-      {"-include", "/__mdsl_private__/fixture.h", records->input});
+  records->arguments.push_back(records->input);
   auto impl = std::make_unique<HostInputCapture::Impl>();
   impl->records = records;
   impl->filesystem = llvm::IntrusiveRefCntPtr<InputFileSystem>(new InputFileSystem(records));
