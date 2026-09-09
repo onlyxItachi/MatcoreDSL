@@ -1,0 +1,46 @@
+Pinned llvm-objdump-21 selected AllocateSlow calls.
+
+Before: ASan research driver 3eb3995799d34ad582aa7c1c2e02edd8b959878e1069731c928dbf8f2cb5507a (CRTP visitor + out-of-line TU anchor), followed by passing H1 compiler driver 7de872d67c350a65f6afab049fbf518f0ffe3a4a3761e4bb2c74b5e80e925012:
+0000000000399ee0 <llvm::BumpPtrAllocatorImpl<llvm::MallocAllocator, 4096ul, 4096ul, 128ul>::AllocateSlow(unsigned long, unsigned long, llvm::Align)>:
+  399f33: e8 18 a5 db ff               	callq	0x154450 <_ZN4llvm15allocate_bufferEmm@plt>
+  399f41: e8 4a 45 e6 ff               	callq	0x1fe490 <__asan_poison_memory_region>
+  39a005: e8 46 a4 db ff               	callq	0x154450 <_ZN4llvm15allocate_bufferEmm@plt>
+  39a013: e8 78 44 e6 ff               	callq	0x1fe490 <__asan_poison_memory_region>
+  39a117: e8 f4 46 e6 ff               	callq	0x1fe810 <__asan_unpoison_memory_region>
+  39a150: e8 2b c8 e6 ff               	callq	0x206980 <__asan_handle_no_return>
+  39a1a9: e8 02 af e6 ff               	callq	0x2050b0 <__asan_report_load4>
+  39a20d: e8 6e c7 e6 ff               	callq	0x206980 <__asan_handle_no_return>
+  39a264: e8 17 c7 e6 ff               	callq	0x206980 <__asan_handle_no_return>
+  39a2d0: e8 1b b3 e6 ff               	callq	0x2055f0 <__asan_report_store8>
+  39a2d8: e8 13 b3 e6 ff               	callq	0x2055f0 <__asan_report_store8>
+  39a2dd: e8 0e b3 e6 ff               	callq	0x2055f0 <__asan_report_store8>
+  39a2e5: e8 96 ae e6 ff               	callq	0x205180 <__asan_report_load8>
+  39a2ea: e8 91 ae e6 ff               	callq	0x205180 <__asan_report_load8>
+00000000003ad980 <llvm::BumpPtrAllocatorImpl<llvm::MallocAllocator, 4096ul, 4096ul, 128ul>::AllocateSlow(unsigned long, unsigned long, llvm::Align)>:
+  3ad9d1: e8 ea 79 d3 ff               	callq	0xe53c0 <_ZN4llvm15allocate_bufferEmm@plt>
+  3ada7b: e8 40 79 d3 ff               	callq	0xe53c0 <_ZN4llvm15allocate_bufferEmm@plt>
+
+Intermediate: ASan research driver 527c17f2b9eaa3075f1932f8bd196744eeda8411f84e6e2b24f3d541eff18436 (dynamic visitor, still inline CXXRecordDecl definition query):
+0000000000269420 <llvm::BumpPtrAllocatorImpl<llvm::MallocAllocator, 4096ul, 4096ul, 128ul>::AllocateSlow(unsigned long, unsigned long, llvm::Align)>:
+  269473: e8 68 8f ea ff               	callq	0x1123e0 <_ZN4llvm15allocate_bufferEmm@plt>
+  269481: e8 1a 2d f5 ff               	callq	0x1bc1a0 <__asan_poison_memory_region>
+  269545: e8 96 8e ea ff               	callq	0x1123e0 <_ZN4llvm15allocate_bufferEmm@plt>
+  269553: e8 48 2c f5 ff               	callq	0x1bc1a0 <__asan_poison_memory_region>
+  269657: e8 c4 2e f5 ff               	callq	0x1bc520 <__asan_unpoison_memory_region>
+  269690: e8 fb af f5 ff               	callq	0x1c4690 <__asan_handle_no_return>
+  2696e9: e8 d2 96 f5 ff               	callq	0x1c2dc0 <__asan_report_load4>
+  26974d: e8 3e af f5 ff               	callq	0x1c4690 <__asan_handle_no_return>
+  2697a4: e8 e7 ae f5 ff               	callq	0x1c4690 <__asan_handle_no_return>
+  269810: e8 eb 9a f5 ff               	callq	0x1c3300 <__asan_report_store8>
+  269818: e8 e3 9a f5 ff               	callq	0x1c3300 <__asan_report_store8>
+  26981d: e8 de 9a f5 ff               	callq	0x1c3300 <__asan_report_store8>
+  269825: e8 66 96 f5 ff               	callq	0x1c2e90 <__asan_report_load8>
+  26982a: e8 61 96 f5 ff               	callq	0x1c2e90 <__asan_report_load8>
+
+Final: ASan research driver b78453fa03cf9f274c5cc157588c9fe72cd5ea73d42d40a52e8644a69b2f096c (out-of-line TagDecl definition query; all experiment checks remain instrumented):
+0000000000410510 <llvm::BumpPtrAllocatorImpl<llvm::MallocAllocator, 4096ul, 4096ul, 128ul>::AllocateSlow(unsigned long, unsigned long, llvm::Align)>:
+  410561: e8 7a 0e d0 ff               	callq	0x1113e0 <_ZN4llvm15allocate_bufferEmm@plt>
+  41060b: e8 d0 0d d0 ff               	callq	0x1113e0 <_ZN4llvm15allocate_bufferEmm@plt>
+
+Command template:
+llvm-objdump-21 -d --demangle DRIVER | sed -n '/^[[:xdigit:]]\+ <llvm::BumpPtrAllocatorImpl<.*::AllocateSlow(/,/^$/p' | rg '^[[:xdigit:]]|call.*(__asan_|StartNewSlab|allocate_buffer)'
