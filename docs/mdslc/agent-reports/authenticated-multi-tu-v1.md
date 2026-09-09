@@ -12,8 +12,10 @@ multi-file support.
 Research branch `research/authenticated-multi-tu-v1` began at accepted H1
 `486d3e5d74e17fbf305c73fca3e3760ef7da59b6`, then fast-forwarded to its normal
 H1/private-output-fact composition `8fbdc61258173c46f199f9142092fc1bbec6cb04`.
-No production files, product builds, GitHub state or published artifacts were
-changed by this lane. Reused H1 builds were frozen at that compiled source;
+No production files, product builds or release artifacts were changed by this
+lane. The completed research branch was subsequently authorized for normal push;
+that is not a product merge or an installed capability. Reused H1 builds were
+frozen at that compiled source;
 their later worktree head `75c78f586801a108ec3cc49b4003b83c34a9cb26` was report-only.
 
 Final research C++ source SHA256:
