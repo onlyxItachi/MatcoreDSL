@@ -1,4 +1,5 @@
 #include "MatcoreCpuGemmCandidate.h"
+#include "MatcoreCpuReassociateGemmCandidate.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include <string>
@@ -9,6 +10,7 @@ int main(int argc, char **argv) {
   auto schedule = candidate::StrictGemmScheduleV1::ScalarMNK;
   bool valid = argc >= 3 && argc <= 5 && std::string(argv[1]) == "--output";
   bool has_schedule = false;
+  bool reassociate = false;
   for (int i = 3; i < argc; ++i) {
     const std::string option(argv[i]);
     if (option == "--asan" && !asan)
@@ -16,18 +18,22 @@ int main(int argc, char **argv) {
     else if (option == "--schedule=row-contiguous" && !has_schedule) {
       has_schedule = true;
       schedule = candidate::StrictGemmScheduleV1::RowContiguousMKN;
+    } else if (option == "--candidate=reassociate-register" && !reassociate) {
+      reassociate = true;
     } else
       valid = false;
   }
+  if (reassociate && has_schedule) valid = false;
   if (!valid) {
     llvm::errs()
         << "private built-in candidate generator: --output FILE [--asan] "
-           "[--schedule=row-contiguous]\n"
+           "[--schedule=row-contiguous | --candidate=reassociate-register]\n"
            "No source/MLIR input is accepted. This does not admit a program.\n";
     return 2;
   }
   mlir::MLIRContext context;
-  auto artifact = candidate::issueStrictGemmArtifactV1(context, asan, schedule);
+  auto artifact = reassociate ? candidate::issueReassociateGemmArtifactV1(context, asan)
+                             : candidate::issueStrictGemmArtifactV1(context, asan, schedule);
   if (!artifact) {
     llvm::errs() << artifact.error << '\n';
     return 1;
