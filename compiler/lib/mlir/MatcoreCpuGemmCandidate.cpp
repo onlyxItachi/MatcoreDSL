@@ -1,4 +1,6 @@
 #include "MatcoreCpuGemmCandidate.h"
+#include "MatcoreCpuGemmCandidateInternal.h"
+#include "MatcoreCpuReassociateGemmCandidate.h"
 #include "MatcoreBufferizedGemmHandoff.h"
 #include "MatcoreClosedRegion.h"
 #include "MatcoreContractionModel.h"
@@ -41,6 +43,12 @@ constexpr auto contract =
     "nonnegative-i64;increasing-k;positive-zero;separate-f32-mul-add;"
     "nearest-even;gradual-underflow;no-cross-op-reassociation;"
     "nan-payload-unspecified;no-finite-assumption;no-publication";
+constexpr auto reassociateContract =
+    "matcore.builtin.reassociate-gemm-f32.v1: A[M,K],B[K,N]->V[M,N];"
+    "nonnegative-i64;positive-zero;per-operation-f32-reassociation-and-fma;"
+    "nearest-even;gradual-underflow;no-cross-op-reassociation;"
+    "signed-zero-not-ignored;nan-payload-unspecified;no-finite-assumption;"
+    "no-publication";
 
 // Change only the independent output traversal. For each (m,n), K remains
 // scalar, increasing and complete. No vector contraction, reduction tiling,
@@ -77,18 +85,20 @@ bool fail(std::string &error, llvm::StringRef message) {
   return false;
 }
 
-closed_region::Program primitive() {
+closed_region::Program primitive(bool reassociate = false) {
   namespace cr = closed_region;
   cr::Program program;
-  program.source_identity = "matcore-builtin:strict-gemm-f32-v1";
-  program.source_sha256 = digest(contract);
+  program.source_identity = reassociate ? "matcore-builtin:reassociate-gemm-f32-v1"
+                                       : "matcore-builtin:strict-gemm-f32-v1";
+  const llvm::StringRef selectedContract = reassociate ? reassociateContract : contract;
+  program.source_sha256 = digest(selectedContract);
   program.source_files = {{1, program.source_identity, program.source_sha256,
-                           llvm::StringRef(contract).size()}};
+                           selectedContract.size()}};
   // This is a compiler-owned primitive identity, explicitly not a C++ header.
   program.header_sha256 = digest("no-source-header:compiler-owned-primitive");
   program.compiler_identity = "matcore-cpu-candidate:LLVM-" LLVM_VERSION_STRING;
   cr::Region region;
-  region.name = "strict_gemm_primitive";
+  region.name = reassociate ? "reassociate_gemm_primitive" : "strict_gemm_primitive";
   region.site = {0, 1, 1, 1, 1};
   region.resources = {{1, "lhs", 0}, {2, "rhs", 1}};
   region.shape_parameters = {{1, "M", 2}, {2, "K", 3}, {3, "N", 4}};
@@ -111,14 +121,16 @@ closed_region::Program primitive() {
   gemm.result = 3;
   gemm.lhs = 1;
   gemm.rhs = 2;
+  if (reassociate) gemm.numerical_profile = cr::NumericalProfile::ReassociateF32;
   region.body = {lhs, rhs, gemm};
   program.regions = {region};
   return program;
 }
 
 mlir::OwningOpRef<mlir::ModuleOp>
-structuredFromPrimitive(mlir::ModuleOp semantic, std::string &error) {
-  if (!closed_region::verifyModuleMatchesProgram(primitive(), semantic, error))
+structuredFromPrimitive(mlir::ModuleOp semantic, std::string &error,
+                        bool reassociate = false) {
+  if (!closed_region::verifyModuleMatchesProgram(primitive(reassociate), semantic, error))
     return {};
   mlir::Operation *gemm = nullptr;
   semantic.walk([&](mlir::Operation *op) {
@@ -127,8 +139,8 @@ structuredFromPrimitive(mlir::ModuleOp semantic, std::string &error) {
   });
   if (!gemm || gemm->getNumOperands() != 3 || gemm->getNumResults() != 1 ||
       gemm->getAttrOfType<mlir::StringAttr>("numerical_profile").getValue() !=
-          "strict_f32") {
-    fail(error, "compiler-owned semantic primitive lost strict GEMM");
+          (reassociate ? "reassociate_f32" : "strict_f32")) {
+    fail(error, "compiler-owned semantic primitive lost its GEMM profile");
     return {};
   }
   auto *context = semantic.getContext();
@@ -138,7 +150,7 @@ structuredFromPrimitive(mlir::ModuleOp semantic, std::string &error) {
   mlir::OwningOpRef<mlir::ModuleOp> module =
       mlir::ModuleOp::create(builder.getUnknownLoc());
   auto function = mlir::func::FuncOp::create(
-      builder.getUnknownLoc(), kStrictGemmSymbolV1,
+      builder.getUnknownLoc(), reassociate ? kReassociateGemmSymbolV1 : kStrictGemmSymbolV1,
       builder.getFunctionType({lhs, rhs, output}, {output}));
   module->push_back(function);
   auto *block = function.addEntryBlock();
@@ -157,7 +169,7 @@ structuredFromPrimitive(mlir::ModuleOp semantic, std::string &error) {
 }
 
 bool verifyStage(mlir::ModuleOp module, bool buffer, std::string &error,
-                 bool rowContiguous = false) {
+                 bool rowContiguous = false, bool reassociate = false) {
   error.clear();
   if (!module || mlir::failed(mlir::verify(module)) ||
       !module->getAttrs().empty() ||
@@ -173,7 +185,8 @@ bool verifyStage(mlir::ModuleOp module, bool buffer, std::string &error,
         error,
         "stage contains unsupported extra semantic or authority attributes");
   auto function = mlir::dyn_cast<mlir::func::FuncOp>(module.getBody()->front());
-  if (!function || function.getName() != kStrictGemmSymbolV1 ||
+  if (!function || function.getName() !=
+          (reassociate ? kReassociateGemmSymbolV1 : kStrictGemmSymbolV1) ||
       function.getNumArguments() != 3 || function.getNumResults() != 1 ||
       function->getAttrs().size() != 2 ||
       !llvm::hasSingleElement(function.getBody()))
@@ -298,7 +311,17 @@ bool preserveStrictGemmOutputStorageV1(llvm::Module &module, std::string &error)
   error.clear();
   auto *leaf = module.getFunction(kStrictGemmSymbolV1);
   auto *wrapper = module.getFunction(kStrictGemmCInterfaceV1);
-  if (module.size() != 2 || !leaf || !wrapper || leaf->isDeclaration() ||
+  if (module.size() != 2 || !leaf || !wrapper)
+    return fail(error, "private output storage module/symbol boundary changed");
+  return detail::preserveGemmOutputData(*leaf, *wrapper, error);
+}
+
+bool detail::preserveGemmOutputData(llvm::Function &leafRef,
+                                   llvm::Function &wrapperRef,
+                                   std::string &error) {
+  auto *leaf = &leafRef;
+  auto *wrapper = &wrapperRef;
+  if (leaf->isDeclaration() ||
       wrapper->isDeclaration() || leaf->isVarArg() || wrapper->isVarArg() ||
       leaf->getCallingConv() != llvm::CallingConv::C ||
       wrapper->getCallingConv() != llvm::CallingConv::C ||
@@ -372,22 +395,23 @@ deriveStrictGemmRowContiguousV1(mlir::ModuleOp bufferized, std::string &error) {
   return scheduled;
 }
 
-StrictGemmStagesV1 buildStrictGemmStagesV1(mlir::MLIRContext &context) {
-  StrictGemmStagesV1 result;
+namespace {
+GemmStagesV1 buildGemmStages(mlir::MLIRContext &context, bool reassociate) {
+  GemmStagesV1 result;
   if (llvm::StringRef(LLVM_VERSION_STRING) != "21.1.8") {
     fail(result.error, "requires exact LLVM/MLIR 21.1.8");
     return result;
   }
   mlir_bridge::registerBufferizedGemmHandoffDialectsV1(context);
-  auto witness = closed_region::buildModule(primitive(), context);
+  auto witness = closed_region::buildModule(primitive(reassociate), context);
   if (!witness) {
     result.error = witness.error;
     return result;
   }
   result.semantic = std::move(witness.module);
-  result.structured = structuredFromPrimitive(*result.semantic, result.error);
+  result.structured = structuredFromPrimitive(*result.semantic, result.error, reassociate);
   if (!result.structured ||
-      !verifyStrictGemmStructuredV1(*result.structured, result.error))
+      !verifyStage(*result.structured, false, result.error, false, reassociate))
     return result;
   result.bufferized = result.structured->clone();
   mlir::bufferization::OneShotBufferizationOptions options;
@@ -402,13 +426,27 @@ StrictGemmStagesV1 buildStrictGemmStagesV1(mlir::MLIRContext &context) {
           *result.bufferized, options, state, &statistics)) ||
       statistics.numBufferAlloc || statistics.numBufferDealloc ||
       statistics.numTensorOutOfPlace ||
-      !verifyStrictGemmBufferizedV1(*result.bufferized, result.error)) {
+      !verifyStage(*result.bufferized, true, result.error, false, reassociate)) {
     if (result.error.empty())
       fail(result.error, "One-Shot did not preserve isolated destination "
                          "without tensor allocation/copy");
     result.bufferized = nullptr;
   }
   return result;
+}
+} // namespace
+
+StrictGemmStagesV1 buildStrictGemmStagesV1(mlir::MLIRContext &context) {
+  return buildGemmStages(context, false);
+}
+GemmStagesV1 buildReassociateGemmStagesV1(mlir::MLIRContext &context) {
+  return buildGemmStages(context, true);
+}
+bool verifyReassociateGemmStructuredV1(mlir::ModuleOp module, std::string &error) {
+  return verifyStage(module, false, error, false, true);
+}
+bool verifyReassociateGemmBufferizedV1(mlir::ModuleOp module, std::string &error) {
+  return verifyStage(module, true, error, false, true);
 }
 
 StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,

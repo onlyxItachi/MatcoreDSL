@@ -123,6 +123,7 @@ machine exceptions, restoring caller FP controls and status on normal return.
 | --- | --- |
 | `automatic` (default) | Selects the linked generated-strict candidate in this package; no benchmark-derived cost model or crossover threshold. |
 | `generated-strict` | Compiler-owned strict GEMM lowered through MLIR/LLVM; legal for both profiles. |
+| `generated-reassociate` | Separately issued MLIR/LLVM GEMM with full-tile FMA and strict tails; requires each executed GEMM's `reassociate_f32` permission and directly discovered AVX2/FMA hardware plus OS-enabled vector state. |
 | `native-strict` | Matcore strict scalar implementation; legal for both profiles. |
 | `existing-native` | Existing Runtime's forced reference implementation; requires `reassociate_f32`. It is not the legacy planner's fastest-choice mode. |
 | `openblas` | Authenticated linked provider; requires `reassociate_f32`, availability and provider conformance checks. |
@@ -131,6 +132,16 @@ A forced unavailable/incompatible candidate returns checked failure; it does
 not silently fall back or change numerical permissions. Provider probes are
 distinct from the requested GEMM, and their passing examples are not a universal
 provider theorem. See the [candidate contract](agent-reports/closed-candidate-coexistence-v1.md).
+
+Forced numerical/capability checks occur at each executed GEMM, including empty
+output and zero reduction, before its allocation or computation. A later strict
+GEMM under `generated-reassociate` fails at that GEMM without erasing earlier
+publication/observation effects; the compiler does not reject the entire region
+in advance. Unchosen generated-reassociate code performs no feature discovery.
+Its leaf receives fresh private C, not public storage; the existing complete FP
+restoration and normal-return publication guarantee are unchanged. This explicit
+choice does not change `automatic`, promise a fastest choice, or establish BLAS
+parity. CPU instructions are enabled only for the isolated generated object.
 
 ## Compiler and deployment boundaries
 

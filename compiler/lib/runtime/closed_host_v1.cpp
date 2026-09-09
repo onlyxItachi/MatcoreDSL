@@ -1,6 +1,7 @@
 #include "closed_host_v1.h"
 
 #include <cfenv>
+#include <cerrno>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -17,6 +18,9 @@
 
 #if defined(MDSLC_CLOSED_HOST_LEGACY_CANDIDATES)
 #include "matcore/runtime_c.h"
+#endif
+#if defined(MDSLC_CLOSED_HOST_GENERATED_REASSOCIATE)
+#include "closed_generated_capability_v1.h"
 #endif
 
 #if defined(__FAST_MATH__)
@@ -99,7 +103,8 @@ static void release(ObservationBlock *block) noexcept {
 SessionAbiV2::~SessionAbiV2() noexcept { release(observations_); }
 
 namespace {
-#if defined(MDSLC_CLOSED_HOST_GENERATED_STRICT)
+#if defined(MDSLC_CLOSED_HOST_GENERATED_STRICT) || \
+    defined(MDSLC_CLOSED_HOST_GENERATED_REASSOCIATE)
 // Private pinned MLIR 21 x86-64 identity-memref ABI, never an installed type.
 struct GeneratedMemref {
   float *allocated;
@@ -111,8 +116,14 @@ struct GeneratedMemref {
 static_assert(sizeof(GeneratedMemref) == 56 && alignof(GeneratedMemref) == 8);
 static_assert(offsetof(GeneratedMemref, sizes) == 24 &&
               offsetof(GeneratedMemref, strides) == 40);
+#if defined(MDSLC_CLOSED_HOST_GENERATED_STRICT)
 extern "C" void _mlir_ciface___matcore_strict_gemm_f32_v1(
     GeneratedMemref *, GeneratedMemref *, GeneratedMemref *);
+#endif
+#if defined(MDSLC_CLOSED_HOST_GENERATED_REASSOCIATE)
+extern "C" void _mlir_ciface___matcore_reassociate_gemm_f32_avx2_v1(
+    GeneratedMemref *, GeneratedMemref *, GeneratedMemref *);
+#endif
 GeneratedMemref descriptor(const ValueStorageAbiV2 &value) noexcept {
   auto *data = const_cast<float *>(value.elements.data());
   return {data, data, 0,
@@ -137,6 +148,23 @@ Code candidateLegality(Candidate request, Numeric numeric) noexcept {
   case Candidate::generated_strict:
 #if defined(MDSLC_CLOSED_HOST_GENERATED_STRICT)
     return Code::ok;
+#else
+    return Code::candidate_unavailable;
+#endif
+  case Candidate::generated_reassociate:
+    if (numeric != Numeric::reassociate_f32)
+      return Code::candidate_incompatible;
+#if defined(MDSLC_CLOSED_HOST_GENERATED_REASSOCIATE)
+    {
+      // Direct discovery can query OS state through syscalls. Preserve errno;
+      // do not run discovery for unchosen or numerically incompatible routes.
+      // No legacy packed-kernel selftest or implementation claim is inherited.
+      const int saved_errno = errno;
+      const auto capabilities = platform::discover_cpu_capabilities_v2({});
+      errno = saved_errno;
+      return detail::generatedReassociateCpuSupported(capabilities)
+                 ? Code::ok : Code::candidate_unavailable;
+    }
 #else
     return Code::candidate_unavailable;
 #endif
@@ -575,6 +603,20 @@ Status SessionAbiV2::gemm(Frontier frontier, const Value &lhs, const Value &rhs,
         code = Code::candidate_unavailable;
 #endif
         break;
+      case Candidate::generated_reassociate:
+#if defined(MDSLC_CLOSED_HOST_GENERATED_REASSOCIATE)
+        {
+          auto a = descriptor(*lhs.storage_), b = descriptor(*rhs.storage_);
+          auto c = descriptor(*storage);
+          candidate_report_.actual = Implementation::generated_reassociate;
+          candidate_report_.invocation_attempted = true;
+          candidate_report_.actual_threads = 1;
+          _mlir_ciface___matcore_reassociate_gemm_f32_avx2_v1(&a, &b, &c);
+        }
+#else
+        code = Code::candidate_unavailable;
+#endif
+        break;
       case Candidate::existing_native:
       case Candidate::authenticated_openblas:
 #if defined(MDSLC_CLOSED_HOST_LEGACY_CANDIDATES)
@@ -719,6 +761,8 @@ const char *implementationName(Implementation implementation) noexcept {
   case Implementation::none: return "none";
   case Implementation::native_strict: return "closed.native.strict_f32.v1";
   case Implementation::generated_strict: return "closed.generated.strict_f32.mlir21.v1";
+  case Implementation::generated_reassociate:
+    return "closed.generated.reassociate_f32.avx2_fma.mlir21.v1";
   case Implementation::existing_reference: return "cpu.reference.f32.v1";
   case Implementation::authenticated_openblas: return "cpu.external.openblas.f32.v1";
   case Implementation::empty_output: return "closed.semantic.empty_output.v1";

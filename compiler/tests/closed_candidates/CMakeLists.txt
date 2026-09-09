@@ -26,6 +26,18 @@ add_test(NAME closed_candidates.production_symbols COMMAND "${CMAKE_COMMAND}"
   -P "${CMAKE_CURRENT_SOURCE_DIR}/symbol_contract.cmake")
 
 # Keep all original adapter falsification fixtures against the expanded registry.
+add_executable(matcore_closed_generated_reassociate_guard
+  generated_reassociate_guard_test.cpp ../../lib/runtime/closed_host_v1.cpp)
+target_include_directories(matcore_closed_generated_reassociate_guard PRIVATE
+  ../../lib/runtime ../../include)
+target_compile_features(matcore_closed_generated_reassociate_guard PRIVATE cxx_std_20)
+target_compile_options(matcore_closed_generated_reassociate_guard PRIVATE
+  -fno-fast-math -ffp-contract=off -frounding-math)
+target_compile_definitions(matcore_closed_generated_reassociate_guard PRIVATE
+  MDSLC_CLOSED_HOST_GENERATED_REASSOCIATE MDSLC_CLOSED_HOST_TESTING)
+add_test(NAME closed_candidates.generated_reassociate_guard
+  COMMAND matcore_closed_generated_reassociate_guard)
+
 add_executable(matcore_closed_candidates_adapter_regression ../closed_host/closed_host_v1_test.cpp)
 target_link_libraries(matcore_closed_candidates_adapter_regression PRIVATE matcore_closed_candidates_testing_v1)
 target_compile_options(matcore_closed_candidates_adapter_regression PRIVATE -ffp-contract=off -frounding-math)

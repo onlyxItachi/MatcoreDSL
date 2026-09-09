@@ -61,6 +61,16 @@ if(TARGET mdslc-region)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/../experimental_region/library_adversary/template_run.cmake")
     set_tests_properties(driver.source_library_${library_case} PROPERTIES TIMEOUT 200)
   endforeach()
+  set(reassociate_policies generated-reassociate generated-strict native-strict automatic existing-native)
+  if(MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS)
+    list(APPEND reassociate_policies openblas)
+  endif()
+  foreach(policy IN LISTS reassociate_policies)
+    add_test(NAME driver.generated_reassociate.${policy}
+      COMMAND "${CMAKE_COMMAND}" "-DDRIVER=$<TARGET_FILE:mdslc-region>"
+        "-DPOLICY=${policy}" -P "${CMAKE_CURRENT_SOURCE_DIR}/generated_reassociate.cmake")
+    set_tests_properties(driver.generated_reassociate.${policy} PROPERTIES TIMEOUT 180)
+  endforeach()
   get_target_property(driver_provider mdslc-region MDSLC_REGION_PROVIDER_PATH)
   add_test(NAME driver.experimental_region_contract
     COMMAND "${CMAKE_COMMAND}"

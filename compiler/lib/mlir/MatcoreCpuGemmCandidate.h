@@ -26,13 +26,14 @@ inline constexpr char kCpuTargetV1[] = "x86_64-pc-linux-gnu";
 // publication, and preserves neither host FP status nor failure ordering
 // itself: the region adapter owns these obligations. No imported/serialized
 // MLIR can be submitted to its issuer.
-struct StrictGemmStagesV1 {
+struct GemmStagesV1 {
   mlir::OwningOpRef<mlir::ModuleOp> semantic;
   mlir::OwningOpRef<mlir::ModuleOp> structured;
   mlir::OwningOpRef<mlir::ModuleOp> bufferized;
   std::string error;
   explicit operator bool() const { return bool(bufferized); }
 };
+using StrictGemmStagesV1 = GemmStagesV1;
 
 StrictGemmStagesV1 buildStrictGemmStagesV1(mlir::MLIRContext &context);
 // Self-consistency checks only; none grants source/execution authority. Linalg
@@ -59,7 +60,7 @@ bool verifyStrictGemmRowContiguousV1(mlir::ModuleOp module, std::string &error);
 // This helper alone never grants source/execution authority to supplied IR.
 bool preserveStrictGemmOutputStorageV1(llvm::Module &module, std::string &error);
 
-struct StrictGemmArtifactV1 {
+struct GemmArtifactV1 {
   std::string llvm_ir;
   std::string semantic_ir;
   std::string structured_ir;
@@ -70,6 +71,7 @@ struct StrictGemmArtifactV1 {
   std::string error;
   explicit operator bool() const { return !llvm_ir.empty(); }
 };
+using StrictGemmArtifactV1 = GemmArtifactV1;
 
 // Closed issuer: only the built-in verified strict primitive, exact 21.1.8
 // schedules and baseline Linux x86-64 target. Address instrumentation is carried

@@ -34,6 +34,16 @@ float strict(const float *a, const float *b, std::uint64_t k, std::uint64_t n) {
   return sum;
 }
 ch::Code expected(ch::Candidate candidate, ch::Numeric numeric) {
+  if (candidate == ch::Candidate::generated_reassociate) {
+    if (numeric != ch::Numeric::reassociate_f32)
+      return ch::Code::candidate_incompatible;
+#ifdef EXPECT_NATIVE_ONLY
+    return ch::Code::candidate_unavailable;
+#else
+    if (!__builtin_cpu_supports("avx2") || !__builtin_cpu_supports("fma"))
+      return ch::Code::candidate_unavailable;
+#endif
+  }
   if (candidate == ch::Candidate::existing_native ||
       candidate == ch::Candidate::authenticated_openblas) {
     if (numeric == ch::Numeric::strict_f32)
@@ -64,6 +74,8 @@ ch::Implementation actual(ch::Candidate candidate) {
     return ch::Implementation::native_strict;
   if (candidate == ch::Candidate::generated_strict)
     return ch::Implementation::generated_strict;
+  if (candidate == ch::Candidate::generated_reassociate)
+    return ch::Implementation::generated_reassociate;
   if (candidate == ch::Candidate::existing_native)
     return ch::Implementation::existing_reference;
   return ch::Implementation::authenticated_openblas;
@@ -140,7 +152,8 @@ bool allowed(float result, float a, float b, float c, float d) {
 }
 void numerical(ch::Candidate candidate) {
   const auto numeric =
-      candidate == ch::Candidate::existing_native ||
+      candidate == ch::Candidate::generated_reassociate ||
+              candidate == ch::Candidate::existing_native ||
               candidate == ch::Candidate::authenticated_openblas
           ? ch::Numeric::reassociate_f32
           : ch::Numeric::strict_f32;
@@ -251,7 +264,8 @@ void numerical(ch::Candidate candidate) {
 }
 void connected(ch::Candidate candidate) {
   const auto numeric =
-      candidate == ch::Candidate::existing_native ||
+      candidate == ch::Candidate::generated_reassociate ||
+              candidate == ch::Candidate::existing_native ||
               candidate == ch::Candidate::authenticated_openblas
           ? ch::Numeric::reassociate_f32
           : ch::Numeric::strict_f32;
@@ -272,9 +286,30 @@ void connected(ch::Candidate candidate) {
           "handle replacement did not overwrite live inputs");
   }
   {
+    // A full 4x8 generated tile must keep input/input aliasing legal, including
+    // replacement of the input handle only after private output completes.
+    std::array<float,64> data{}, original{}, want{};
+    for (std::size_t i=0; i<data.size(); ++i) data[i]=float(int(i%5)-2);
+    original=data;
+    for (std::size_t i=0; i<8; ++i)
+      for (std::size_t j=0; j<8; ++j)
+        want[i*8+j]=strict(original.data()+i*8,original.data()+j,8,8);
+    ch::Session session(ch::Options{candidate});
+    ch::Value value;
+    session.read(1,{data.data(),8,8,64},value);
+    const auto old=value;
+    check(bool(session.gemm(2,value,value,numeric,value)),
+          "full-tile same Value lhs/rhs/result completes");
+    for (std::size_t i=0; i<64; ++i)
+      check(equal(old.data()[i],original[i]) && equal(value.data()[i],want[i]) &&
+            equal(data[i],original[i]),"full-tile private output preserves old/input bytes");
+  }
+  {
     // Independently suggested: valid zero-footprint operands do not imply a
     // representable output. Overflow must precede allocation or any provider
     // probe/leaf call, preserving the previous result handle and effect prefix.
+    // A generated-reassociate hardware availability check occurs earlier in
+    // candidate legality; it is not a numerical invocation or provider probe.
     constexpr auto huge =
         static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
     float old = 17;
@@ -338,7 +373,8 @@ void connected(ch::Candidate candidate) {
   }
 }
 void environment(ch::Candidate candidate) {
-  auto numeric = candidate == ch::Candidate::existing_native ||
+  auto numeric = candidate == ch::Candidate::generated_reassociate ||
+                         candidate == ch::Candidate::existing_native ||
                          candidate == ch::Candidate::authenticated_openblas
                      ? ch::Numeric::reassociate_f32
                      : ch::Numeric::strict_f32;
@@ -372,7 +408,7 @@ int main() {
   const std::array candidates{
       ch::Candidate::automatic, ch::Candidate::native_strict,
       ch::Candidate::generated_strict, ch::Candidate::existing_native,
-      ch::Candidate::authenticated_openblas};
+      ch::Candidate::authenticated_openblas, ch::Candidate::generated_reassociate};
   for (auto candidate : candidates) {
     for (auto numeric :
          {ch::Numeric::strict_f32, ch::Numeric::reassociate_f32}) {

@@ -118,12 +118,13 @@ codegen::ClosedCpuPolicy parseCandidatePolicy(const std::string &name) {
   if (name == "automatic") return codegen::ClosedCpuPolicy::Automatic;
   if (name == "native-strict") return codegen::ClosedCpuPolicy::NativeStrict;
   if (name == "generated-strict") return codegen::ClosedCpuPolicy::GeneratedStrict;
+  if (name == "generated-reassociate") return codegen::ClosedCpuPolicy::GeneratedReassociate;
   if (name == "existing-native") return codegen::ClosedCpuPolicy::ExistingNative;
   if (name == "openblas") return codegen::ClosedCpuPolicy::OpenBLAS;
   reject("unknown built-in candidate: " + name);
 }
 const char *candidatePolicyUsage() {
-  return "automatic|native-strict|generated-strict|existing-native|openblas";
+  return "automatic|native-strict|generated-strict|generated-reassociate|existing-native|openblas";
 }
 Installation::Installation()
     : installed(layout()), clang(Artifact::capture(REGION_CLANG, REGION_CLANG_SHA)),
