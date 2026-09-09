@@ -54,8 +54,8 @@ authoritative operation**, with explicit source/profile/resource/effect and
 target requirements—not another loop/vector/backend language. Existing immutable
 values, all-MAY-alias external resources, read frontiers, ordered publication/
 observation/failure contracts remain indispensable. Candidate-private storage
-and the precise aligned-output noalias fact are distinct from host descriptor
-identity. Numerical permission is per GEMM; a fused implementation cannot lend
+and the precise fresh output-data pointer noalias fact are distinct from host
+descriptor identity; no extra alignment is asserted. Numerical permission is per GEMM; a fused implementation cannot lend
 permission to strict calls or erase the intermediate f32 boundary between GEMMs.
 
 `MatcoreCpuReassociateGemmCandidate.cpp` uses upstream tile/peel/vector/transfer
