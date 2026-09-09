@@ -195,6 +195,28 @@ relaxation. New focused tests and clean full/sanitizer reruns are required befor
 claiming the corrected input validated; the 140/86 results above remain
 explicitly pre-correction evidence.
 
+The independent reviewer accepted correction commit
+`c6ff41b763fc97c7cb016ee20fe764c76f7f968e`. Its focused semantic/admission/library
+suite passed 6/6 in Release and ASan/UBSan; experimental admission now checks 125
+assertions. Independent fixture commit
+`4d4e1bdd7f464da939afc749b8257ba0523617c8`, integrated as `865239b`, adds six
+[durable specialization controls](../../../compiler/tests/experimental_region/library_adversary/template_provenance.md).
+All six independently passed both corrected drivers: generic-T primary plus
+separate explicit specialization executes 59 numerical/owning-observation/failure
+checks, while macro primary type, macro selected body, hidden selected effect,
+escaped selected helper and an arbitrary split cross-file body each require its
+specific rejection and no artifact. The late reversed-product shape mismatch
+retains first publication/observation, fails at frontier 6 after effect 5, and
+attributes failure to the main callsite. Fake success/failure tools do not
+satisfy the runner.
+
+Corrected driver SHA256 values are Release
+`6ebd962629218e2dbf3f7291be0948c0245994c66711a99e4f4347031580eda0` and ASan
+`61ddbb12e17de334819c9b98643c301fedcb1d042ce6cbb245ead78e2ee29341`.
+The full Release and affected sanitizer inventories are expected to become
+146 and 92; the CI region-driver subset becomes 26. Clean final reruns remain
+pending and will be recorded separately from the pre-correction gates.
+
 ## Limits
 
 All bodies remain source-visible and admitted through Clang/Sema. Opaque
