@@ -1,7 +1,7 @@
 # MDSLC current state
 
 Engineering checkpoint: canonical merge
-`0b2c21f126288501fe27afea9320ec9fce392dcc`, [PR #60](https://github.com/onlyxItachi/MatcoreDSL/pull/60).
+`c04215e787832b35bbd6a85a51d9285b053181bc`, [PR #62](https://github.com/onlyxItachi/MatcoreDSL/pull/62).
 This identifies the latest engineering merge; documentation-only updates may follow.
 
 ## Architecture
@@ -15,7 +15,7 @@ Ordinary C++ host + explicit closed mathematical regions
   -> static orchestration from the sealed semantic Program (no interpreter)
 Original Clang host -> sealed ABI-checked entry thunk + isolated helper LLVM
 Strict GEMM primitive -> verified Linalg/One-Shot -> optional Transform M/K/N
-  -> LLVM (row schedule: output-column SIMD) -> generated x64 code
+  -> LLVM (private output-data isolation; optional column SIMD) -> generated x64
 Trusted registry -> generated/native strict or numerically legal legacy/provider
   -> private candidate output, checked completion/FP state, immutable value
   -> ordered host publication, owning observation, sticky failure prefix
@@ -31,15 +31,14 @@ Linux region execution, standalone Windows and Linux Python/JIT are separate lan
 
 ## Material change
 
-The first upstream-Transform schedule is source-connected and executable.
-It preserves strict per-output arithmetic and existing effects; selection is
-build-time opt-in, not a runtime threshold. Scalar remains the default.
-Pre-merge head `58193878394c774c3365dbf746d1622e951b0813`: Release **138/138**,
-affected ASan/UBSan **83/83**, independent review and **21/21 hosted checks**.
-Six-shape local measurements favored this simpler schedule over the old scalar
-route; explicit-vector and cache-tile alternatives remain research, not policy.
-See [schedule/evidence](ROW_CONTIGUOUS_CPU_SCHEDULE_V1.md),
-[user guide](REGION_COMPILER_V1.md) and [CPU foundation](CPU_FOUNDATION_CHECKPOINT_V1.md).
+The issued GEMM now carries its already-proven private output-data isolation
+through the exact LLVM descriptor boundary. Input/input aliasing stays legal;
+no source noalias, runtime, numerical or default-schedule contract changed.
+Pre-merge head `d371f8b492667b9dcebab24387c06b08314da79c`: Release **143/143**,
+affected ASan/UBSan **88/88**, independent review and **21/21 hosted checks**.
+Independent overlap and source-level numerical/effect oracles remain gates.
+See [output-storage evidence](PRIVATE_OUTPUT_ALIAS_FACT_V1.md),
+[schedule](ROW_CONTIGUOUS_CPU_SCHEDULE_V1.md) and [user guide](REGION_COMPILER_V1.md).
 
 ## Unsupported or unproven
 
@@ -57,9 +56,9 @@ remains partial/open; [#20](https://github.com/onlyxItachi/MatcoreDSL/issues/20)
 
 ## Exactly one next boundary
 
-**Preserve the private GEMM output's proven non-aliasing through LLVM lowering.**
-The runtime already owns an isolated output; the current lowered data pointer
-does not communicate that fact to LLVM. Preserve only this existing guarantee,
-keep input/input aliasing legal, and test actual numerical/storage behavior.
-This precedes more schedule complexity; it is not external-storage noalias,
-new generated authority or whole-region storage reuse.
+**Admit authenticated source-visible mathematical helper libraries in headers.**
+The existing restricted helper grammar can be reused without opaque imports or
+a second language. Preserve each semantic file's identity, selected definition,
+call chain and failure frontier, then prove source/helper ownership across headers.
+The reviewed implementation is still unmerged; this boundary does not promise
+separate-TU semantic linking or cross-module optimization.
