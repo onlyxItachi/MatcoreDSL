@@ -45,11 +45,23 @@ the extra source HEAD and uncommitted compiler diff and compares generated/nativ
 source routes. This supports a source-equivalent historical baseline without
 relabeling its binaries as a fresh current-head build.
 
+`--extra-reassociate-primitive LABEL OBJECT ENTRY` explicitly selects the
+reassociated research profile for that primitive only. It runs the 16 ordinary
+exact-dyadic cases, not the eight strict-FP counterexamples. This does not prove
+the complete numerical contract or give the object source execution authority;
+an independently reviewed numerical study remains necessary. Existing extra
+primitives remain strict and the baseline cannot be relabeled. Duplicate primitive labels
+are rejected before they can overwrite an earlier compared binary.
+
 The runner freezes driver, compiler, candidate/runtime/provider and primitive
 hashes, records fixture hashes and complete commands, and checks ELF64 x86-64
 object/executable kinds, primitive entry definitions and direct region dependencies.
 It fails on any changed frozen input. `evidence.json` includes failures, not just
 the successful summary. Runtime dynamic loading remains trusted.
+Newly compiled executables are frozen before inspection and rechecked before
+and after every later command, including timing. Older reports retain their
+original weaker executable-identity coverage; this does not authenticate them
+retroactively.
 
 ## Optional timing protocol
 

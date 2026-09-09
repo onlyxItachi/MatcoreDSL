@@ -42,6 +42,29 @@ def compiler_processes():
     return found
 
 
+def primitive_specs(baseline, strict, reassociated):
+    result = [("baseline", baseline, "_mlir_ciface___matcore_strict_gemm_f32_v1", "strict")]
+    labels = {"baseline"}
+    for profile, items in (("strict", strict), ("reassociate", reassociated)):
+        for label, obj, entry in items:
+            if (not re.fullmatch(r"[a-zA-Z0-9_-]+", label) or
+                    not re.fullmatch(r"[a-zA-Z_][a-zA-Z_0-9]*", entry)):
+                raise ValueError("extra primitive label/entry must be simple identifiers")
+            if label in labels:
+                raise ValueError("duplicate primitive label could overwrite a compared artifact: " + label)
+            labels.add(label)
+            result.append((label, obj, entry, profile))
+    return result
+
+
+def oracle_profile(profile):
+    if profile == "strict":
+        return [], 24
+    if profile == "reassociate":
+        return ["--relaxed"], 16
+    raise ValueError("unknown numerical evidence profile: " + profile)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--driver", required=True, type=Path)
@@ -53,6 +76,9 @@ def main():
     parser.add_argument("--clangxx", type=Path, default=Path("/usr/bin/clang++-21"))
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--extra-primitive", nargs=3, action="append", default=[], metavar=("LABEL", "OBJECT", "ENTRY"))
+    parser.add_argument("--extra-reassociate-primitive", nargs=3, action="append", default=[],
+                        metavar=("LABEL", "OBJECT", "ENTRY"),
+                        help="explicit research-only numerical profile; 16 ordinary oracles, not strict FP proof")
     parser.add_argument("--extra-driver", nargs=4, action="append", default=[],
                         metavar=("LABEL", "DRIVER", "SHA256", "SOURCE_ROOT"),
                         help="compare additional generated/native source routes; capture source diff provenance")
@@ -65,6 +91,11 @@ def main():
     parser.add_argument("--timing-cases", nargs="+", default=["square16", "square128", "square512",
                         "rect128x256x64", "skinny16x512x256", "tail65x67x63"])
     args = parser.parse_args()
+    try:
+        primitives = primitive_specs(args.primitive_object, args.extra_primitive,
+                                     args.extra_reassociate_primitive)
+    except ValueError as error:
+        parser.error(str(error))
     if args.timing and not args.quiet_window_note:
         parser.error("--timing requires --quiet-window-note; coordinate other compilation first")
     if args.rounds < 1 or args.rounds > 30:
@@ -84,9 +115,7 @@ def main():
                  library / "libmatcore_runtime.so"]
     if args.provider:
         artifacts.append(args.provider.absolute())
-    for label, obj, entry in args.extra_primitive:
-        if not re.fullmatch(r"[a-zA-Z0-9_-]+", label) or not re.fullmatch(r"[a-zA-Z_][a-zA-Z_0-9]*", entry):
-            parser.error("extra primitive label/entry must be simple identifiers")
+    for label, obj, entry, profile in primitives[1:]:
         artifacts.append(Path(obj).resolve(strict=True))
     for label, path, expected, source_root in args.extra_driver:
         if not re.fullmatch(r"[a-zA-Z0-9_-]+", label):
@@ -96,7 +125,7 @@ def main():
             parser.error("extra driver differs from supplied SHA256")
         artifacts.extend([other, other.parent.parent / "lib/libmatcore_closed_candidates_isolated_v1.so",
                           other.parent.parent / "lib/libmatcore_runtime.so"])
-    for obj in [args.primitive_object, *(Path(item[1]) for item in args.extra_primitive)]:
+    for obj in [Path(item[1]) for item in primitives]:
         llvm_ir = obj.with_suffix(".ll")
         for path in [llvm_ir, Path(str(llvm_ir) + ".manifest")]:
             if path.is_file():
@@ -201,13 +230,12 @@ def main():
                 binary = output / name
                 run([selected_driver, source / f"{profile}.mdsl", "--region", "hpc_region",
                      "--candidate", candidate, "-o", binary])
+                hashes[str(binary)] = digest(binary)
                 inspect(binary, region=True)
                 lanes.append({"name": name, "binary": str(binary), "driver": str(selected_driver),
                               "layer": "region_end_to_end", "requested_candidate": candidate,
                               "actual_identity": "not_exposed_by_public_Result", "profile": profile})
-        primitives = [("baseline", args.primitive_object, "_mlir_ciface___matcore_strict_gemm_f32_v1"),
-                      *args.extra_primitive]
-        for label, obj, entry in primitives:
+        for label, obj, entry, profile in primitives:
             name = "primitive-" + label
             binary = output / name
             inspect(obj, obj=True)
@@ -216,15 +244,15 @@ def main():
                 raise RuntimeError("primitive C wrapper is missing: " + entry)
             run([args.clangxx, "-std=c++20", "-O2", "-ffp-contract=off", "-frounding-math",
                  "-DMDSLC_EXPERIMENT_ENTRY=" + entry, source / "primitive.cpp", obj, "-o", binary])
+            hashes[str(binary)] = digest(binary)
             inspect(binary)
             lanes.append({"name": name, "binary": str(binary), "layer": "standalone_primitive",
-                          "profile": "strict", "entry": entry,
+                          "profile": profile, "entry": entry,
                           "product_authority": "none_standalone_experiment"})
         for lane in lanes:
             binary = Path(lane["binary"])
-            opts = ["--relaxed"] if lane["profile"] == "reassociate" else []
+            opts, expected_count = oracle_profile(lane["profile"])
             records = json_lines(run([binary, *opts], execution=True))
-            expected_count = 16 if opts else 24
             if len(records) != expected_count or not all(r.get("pass") for r in records):
                 raise RuntimeError("wrong oracle count/output identity")
             lane["correctness_cases"] = len(records)
@@ -244,6 +272,7 @@ def main():
             binary = output / ("strict-refusal-" + candidate)
             run([driver, source / "strict.mdsl", "--region", "hpc_region", "--candidate", candidate,
                  "-o", binary])
+            hashes[str(binary)] = digest(binary)
             records = json_lines(run([binary, "--expect-incompatible"], execution=True))
             if len(records) != 24:
                 raise RuntimeError("strict policy refusal matrix was incomplete")
@@ -261,7 +290,7 @@ def main():
                         busy = compiler_processes()
                         if busy:
                             raise RuntimeError("timing interrupted by compiler/build activity: " + str(busy))
-                        opts = ["--relaxed"] if lane["profile"] == "reassociate" else []
+                        opts, _ = oracle_profile(lane["profile"])
                         result = run([lane["binary"], "--case", case, "--timing", "--samples", args.samples,
                                       "--target-ms", args.target_ms, *opts], execution=True)
                         rows = [r for r in json_lines(result) if r["kind"] == "timing"]

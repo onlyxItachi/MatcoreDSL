@@ -30,6 +30,24 @@ class EvidenceControls(unittest.TestCase):
         self.assertEqual(strict.count("Numerics::strict_f32"), 1)
         self.assertEqual(strict.replace("Numerics::strict_f32", "Numerics::reassociate_f32"), relaxed)
 
+    def test_numerical_profile_is_explicit(self):
+        self.assertEqual(runner.oracle_profile("strict"), ([], 24))
+        self.assertEqual(runner.oracle_profile("reassociate"), (["--relaxed"], 16))
+        with self.assertRaises(ValueError):
+            runner.oracle_profile("fast")
+        specs = runner.primitive_specs("baseline.o", [("ordered", "o.o", "ordered")],
+                                       [("fused", "f.o", "fused")])
+        self.assertEqual([item[3] for item in specs], ["strict", "strict", "reassociate"])
+
+    def test_artifact_labels_cannot_alias(self):
+        for label in ("baseline", "same"):
+            with self.assertRaises(ValueError):
+                runner.primitive_specs("baseline.o", [("same", "a.o", "a")],
+                                       [(label, "b.o", "b")])
+        for label, entry in (("../escape", "valid"), ("valid", "bad-entry")):
+            with self.assertRaises(ValueError):
+                runner.primitive_specs("baseline.o", [], [(label, "b.o", entry)])
+
 
 if __name__ == "__main__":
     unittest.main()
