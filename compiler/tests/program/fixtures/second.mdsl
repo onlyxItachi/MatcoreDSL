@@ -1,0 +1,10 @@
+#include "api.h"
+MATCORE_REGION md::Result second(md::Storage A, md::Storage B, md::Storage C,
+    md::Shape M, md::Shape K, md::Shape N) noexcept {
+  auto a = md::read(A, M, K);
+  auto b = md::read(B, K, N);
+  auto c = md::gemm(a, b, md::Numerics::strict_f32);
+  md::publish(c, C);
+  md::observe(C);
+  return md::complete();
+}

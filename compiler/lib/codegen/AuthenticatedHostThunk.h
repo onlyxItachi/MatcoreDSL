@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+namespace llvm { class CallBase; }
 
 namespace matcore::mdslc::codegen {
 
@@ -16,6 +17,9 @@ bool sameAuthenticatedHostABI(const llvm::Function &, const llvm::Function &,
                               bool remapped = false);
 bool sameAuthenticatedHostFunctionAttributes(const llvm::Function &,
                                             const llvm::Function &);
+// Exact callsite ABI/effect comparison against a compiler-issued call witness.
+// Reuses the same type/attribute algorithms; does not admit caller LLVM.
+bool sameAuthenticatedHostCallInterface(const llvm::CallBase &, const llvm::CallBase &);
 
 struct HostThunkRequest {
   std::string host_symbol;

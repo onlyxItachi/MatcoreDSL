@@ -1,5 +1,6 @@
 #include "region_driver_paths.h"
 #include "DriverSupport.h"
+#include "program_main.h"
 #include <iostream>
 
 namespace {
@@ -72,6 +73,9 @@ int run(int argc, char **argv) {
 } // namespace
 
 int main(int argc, char **argv) {
-  try { return run(argc, argv); }
+  try {
+    if (argc > 1 && std::string(argv[1]) == "--program") return runProgram(argc, argv);
+    return run(argc, argv);
+  }
   catch (const std::exception &error) { std::cerr << "mdslc-region: " << error.what() << '\n'; return 1; }
 }

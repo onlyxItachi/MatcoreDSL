@@ -183,6 +183,15 @@ bool sameAuthenticatedHostFunctionAttributes(const llvm::Function &a,
                                             const llvm::Function &b) {
   return sameAttributes(a.getAttributes().getFnAttrs(), b.getAttributes().getFnAttrs());
 }
+bool sameAuthenticatedHostCallInterface(const llvm::CallBase &a, const llvm::CallBase &b) {
+  if (a.getCallingConv() != b.getCallingConv() || a.arg_size() != b.arg_size() ||
+      !sameType(a.getFunctionType(), b.getFunctionType()) ||
+      !sameAttributes(a.getAttributes().getRetAttrs(), b.getAttributes().getRetAttrs()) ||
+      !sameAttributes(a.getAttributes().getFnAttrs(), b.getAttributes().getFnAttrs())) return false;
+  for (unsigned i = 0; i < a.arg_size(); ++i)
+    if (!sameAttributes(a.getAttributes().getParamAttrs(i), b.getAttributes().getParamAttrs(i))) return false;
+  return true;
+}
 
 HostThunkResult linkAuthenticatedHostThunk(const llvm::Module &host,
                                            const llvm::Module &helper,
