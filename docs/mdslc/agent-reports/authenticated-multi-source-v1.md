@@ -58,6 +58,46 @@ Complete composed logs:
 This report followup is prepared separately from the frozen PR #67 source head;
 it does not replace, rewrite or restart the recorded execution evidence.
 
+## Hosted acceptance and mergeability reconciliation
+
+Reviewed head `e56e5a648295f7b5ec60bff31f30bf37c031c854` completed **21/21
+hosted checks**. Independent raw completed-job inspection of
+[native run 34305784001](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34305784001)
+and [Windows run 34305783999](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34305783999)
+established the following exact scopes, separately from the local 184/129 runs:
+
+| Hosted profile | Passed | Skipped |
+| --- | ---: | ---: |
+| Release MLIR ON / OpenBLAS ON | 182 | 0 |
+| Release MLIR ON / OpenBLAS OFF | 180 | 0 |
+| Release row-contiguous / OpenBLAS OFF | 180 | 1 |
+| Debug MLIR ON / OpenBLAS OFF | 180 | 1 |
+| ASan+UBSan affected scope | 128 | 1 |
+| Release MLIR OFF / OpenBLAS ON | 82 | 0 |
+| Release MLIR OFF / OpenBLAS OFF | 81 | 0 |
+| TSan existing runtime | 4 | 0 |
+| Windows existing Release | 48 | 1 |
+| Windows existing focused Debug | 31 | 1 |
+| Windows focused clang-cl ASan | 1 | 0 |
+
+Every skip was the existing `runtime.cpu.packed_avx512` capability control.
+All ten program gates, including `driver.program_reassociate`, actually passed
+in all five compiler-enabled Linux profiles. Default Release/OpenBLAS OFF also
+passed the separate 1/1 vector-readiness control. Windows evidence remains the
+existing standalone/runtime route, not generated-region or multi-source support.
+
+The [independent composed review](https://github.com/onlyxItachi/MatcoreDSL/pull/67#issuecomment-5595377303)
+accepted `e56e5a6`. The first normal merge attempt nevertheless received GitHub
+HTTP 405 (reported conflicts), while local Git calculated a clean prospective
+merge and the API still reported stale base `b7e6cc0`. No canonical mutation
+occurred. Normal merge `c22ba0792e9fbe5ffec526e0e1641092b8d0d575` incorporated
+actual main `164eb96739c75c051830673bc474cea72320f105` without conflicts or code
+edits. Its parents are `e56e5a6` and `164eb967`; its tree is
+`e85e768d8b9a61140ac84fd341ebf9fdd1046bff`. Only the two PR #68 documents differ
+from `e56e5a6`; `compiler/`, `AGENTS.md` and `.github` are byte-identical.
+GitHub then reported mergeable. This normal-history ancestry correction neither
+relabeled the earlier executions nor bypassed fresh exact-head hosted acceptance.
+
 ## Initial checkpoint retained
 
 Initial local integration passed at **`ed8f7fed1d4a1969328e4f0c9626f0d98151169e`**:
