@@ -1,0 +1,14 @@
+// Public-region admission must not inject the unrelated legacy probe namespace.
+int mdsl_probe = 37;
+#include "api.h"
+#include "value_helper.h"
+int region_unit_identity() { return mdsl_probe; }
+MATCORE_REGION md::Result first(md::Storage A, md::Storage B, md::Storage C,
+    md::Shape M, md::Shape K, md::Shape N) noexcept {
+  auto a = md::read(A, M, K);
+  auto b = md::read(B, K, N);
+  auto c = library::product(a, b);
+  md::publish(c, C);
+  md::observe(C);
+  return md::complete();
+}

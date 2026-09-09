@@ -1,0 +1,24 @@
+#include <matcore/region.h>
+#include <cstdio>
+
+int mdsl_probe = 37;
+namespace md = matcore::mdsl;
+MATCORE_REGION md::Result namespace_region(md::Storage A, md::Storage B,
+                                           md::Storage C) noexcept {
+  auto a = md::read(A, 1, 2);
+  auto b = md::read(B, 2, 1);
+  auto c = md::gemm(a, b, md::Numerics::strict_f32);
+  md::publish(c, C);
+  return md::complete();
+}
+int main() {
+  float a[] = {2, 3}, b[] = {5, 7}, c = -1;
+  const auto result = namespace_region(
+      {a, 1, 2, 2, md::Access::read_only},
+      {b, 2, 1, 2, md::Access::read_only},
+      {&c, 1, 1, 1, md::Access::read_write});
+  if (!result || result.publication_count() != 1 ||
+      result.observation_count() != 0 || c != 31 || mdsl_probe != 37)
+    return 1;
+  std::puts("PASS independent original host namespace");
+}
