@@ -52,3 +52,8 @@ add_test(NAME codegen.program_call_interface_v1
     "-DTEST=$<TARGET_FILE:matcore_program_call_interface_test>"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/../program_independent/call_interface.cmake")
 set_tests_properties(codegen.program_call_interface_v1 PROPERTIES TIMEOUT 180)
+
+add_test(NAME driver.program_reassociate
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../program_reassociate/run.py"
+    --driver "$<TARGET_FILE:mdslc-region>")
+set_tests_properties(driver.program_reassociate PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
