@@ -1,6 +1,7 @@
 # Strict row-contiguous CPU GEMM schedule
 
-Status: **candidate integration under validation**, not a merged checkpoint.
+Status: **merged bounded engineering checkpoint**, [PR #60](https://github.com/onlyxItachi/MatcoreDSL/pull/60),
+canonical merge `0b2c21f126288501fe27afea9320ec9fce392dcc`.
 Campaign start: `0e8c040809ae1fe6b0f1c01e41fc509b07212be7`.
 
 ## What changes
@@ -81,15 +82,48 @@ sanitizer negative controls distinguish actual instrumentation from linked
 sanitizer libraries.
 
 Pre-integration exact-artifact experiments and their limitations are retained in
-[the independent report](agent-reports/mlir-hpc-legality-v1.md). Final committed
-Release, ASan/UBSan, hosted and merge evidence must be appended before this
-document can claim a completed engineering checkpoint.
+[the independent report](agent-reports/mlir-hpc-legality-v1.md).
 
 Timing evidence is bounded to the recorded host, shapes, numerical profiles,
 warm-buffer regime and artifact identities. A win over the previous scalar
 generated candidate is not BLAS parity, especially when strict and provider
 numerical profiles differ. No new target or universal performance claim follows.
 
-The subsequent campaign continues cache/structured schedule experiments and
-multi-operation resource legality, then reusable semantic modules as justified.
-This first schedule does not complete the full campaign objective.
+## Exact integration and subsequent experiment disposition
+
+Pre-merge head: `58193878394c774c3365dbf746d1622e951b0813`, clean.
+Production delta originated at `9769dbafc18d4b8efd05c2e3519543eb57531604`;
+later focused commits add independent wide-read ASan control and review evidence.
+Final-head local Release (OpenBLAS required) passed **138/138**, 331.69 seconds;
+affected Debug ASan/UBSan (OpenBLAS OFF) passed **83/83**, 286.39 seconds.
+Focused generated suites passed **11/11** and **10/10**, respectively;
+the candidate unit test passed **45 checks, zero failures**. These are correctness
+test durations, not benchmarks. Installed/consumer/ABI/storage/provider ownership
+regressions are included in the stated suites.
+
+All **21 hosted checks** succeeded before normal merge, including push/PR
+instances of native, Windows and hygiene plus legacy CI. Relevant PR runs:
+[native 34289281056](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34289281056),
+[Windows 34289281055](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34289281055),
+[hygiene 34289281039](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34289281039),
+[legacy 34289281057](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34289281057).
+Merge parents preserve starting main `0e8c040809ae1fe6b0f1c01e41fc509b07212be7`
+and accepted head `58193878394c774c3365dbf746d1622e951b0813`.
+
+Durable, unmerged experiments remain separate:
+
+- [Exact-artifact six-shape comparison](https://github.com/onlyxItachi/MatcoreDSL/blob/3650fd4c31db6c8bf7d5eb2d4432799ca425e7fa/docs/mdslc/agent-reports/mlir-hpc-execution-evidence-v1.md):
+  row source medians beat the previous generated scalar route in those samples;
+  provider numerics and timing layers remain distinct.
+- [Cache follow-up decision](https://github.com/onlyxItachi/MatcoreDSL/blob/93e340a3121f81e5d365942d72257ca7aaae4151/docs/mdslc/agent-reports/cache-measurement-and-numerical-next-v1.md):
+  the connected 4x64x32 cache specimen passes broad arithmetic/effect controls
+  but loses all six comparisons to row. Preserve it as research, not a new default.
+- [Coherent 22.1.8 control](https://github.com/onlyxItachi/MatcoreDSL/blob/e7e67583e3fbc9123a7611360b5eee2a4aebfc01/docs/mdslc/MLIR_HPC_22_CONTROL_V1.md):
+  actual research execution succeeds; no product migration follows.
+- [Source-library feasibility](https://github.com/onlyxItachi/MatcoreDSL/blob/3669d4d92178ea330227294e2f489c73f3f80906/docs/mdslc/agent-reports/semantic-modules-feasibility-v1.md):
+  source-visible libraries need explicit multi-file source identity, not opaque
+  function types masquerading as semantic authority.
+
+The next leaf boundary preserves the already-proven private output-data alias
+fact through LLVM; source-library work proceeds independently. This first schedule
+does not complete the full campaign objective or authorize whole-region reuse.
