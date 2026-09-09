@@ -6,6 +6,8 @@
 #include "mlir/IR/OwningOpRef.h"
 #include <string>
 
+namespace llvm { class Module; }
+
 namespace matcore::mdslc::cpu_candidate {
 
 inline constexpr char kStrictGemmSymbolV1[] = "__matcore_strict_gemm_f32_v1";
@@ -49,6 +51,13 @@ enum class StrictGemmScheduleV1 { ScalarMNK, RowContiguousMKN };
 mlir::OwningOpRef<mlir::ModuleOp>
 deriveStrictGemmRowContiguousV1(mlir::ModuleOp bufferized, std::string &error);
 bool verifyStrictGemmRowContiguousV1(mlir::ModuleOp module, std::string &error);
+
+// Private ABI fact preservation, not an LLVM importer or a body verifier.
+// Precondition: issuer-owned preoptimization LLVM from the already-checked
+// structured/destination derivation and fixed lowering. Check its signature
+// before encoding the existing C-data isolation guarantee; A/B may alias.
+// This helper alone never grants source/execution authority to supplied IR.
+bool preserveStrictGemmOutputStorageV1(llvm::Module &module, std::string &error);
 
 struct StrictGemmArtifactV1 {
   std::string llvm_ir;
