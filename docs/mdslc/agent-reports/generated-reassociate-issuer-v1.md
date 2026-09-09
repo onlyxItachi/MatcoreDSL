@@ -125,6 +125,16 @@ the pinned ASan pass's common `___asan_globals_registered` bookkeeping symbol;
 only that exact symbol is now admitted in the sanitizer lane. None was recorded
 as a successful gate or solved by loosening mathematical verification.
 
+Independent final review reproduced a test-classifier false positive: a wrong
+primary fault owner followed by a generated entry in the later allocation stack
+passed three independent greps. The focused correction binds the first ASan
+error, its first memory-access diagnostic and its first stack frame in order.
+The actual captured READ 4 / READ 32 faults already had the correct primary
+owner; this fixes the negative control, not generated numerical behavior.
+The corrected classifier passed all 14 independently authored diagnostic
+controls and independently repeated both real generated faults. A focused
+local rerun also passed both CTests (2/2, 0.12 s) without rebuilding the leaf.
+
 Earlier masked-K4 research failed to establish register carry; strict cache
 tiling lost the measured comparisons. Neither alternative is adopted. Their
 negative records remain on the research branches. Full-v3 behind only AVX2/FMA

@@ -21,8 +21,26 @@ if [[ $status != 1 ]]; then echo "Wrong negative-control outcome: $status" >&2; 
 if [[ $mode == corrupt || $mode == strict ]]; then
   grep -q 'FAIL: chosen legal realization' "$work/stderr"
 else
-  grep -Eq '^==[0-9]+==ERROR: AddressSanitizer: heap-buffer-overflow on address ' "$work/stderr"
-  grep -Eq "^READ of size $width at 0x[[:xdigit:]]+ thread T0$" "$work/stderr"
-  grep -Eq '^    #0 0x[[:xdigit:]]+ in __matcore_reassociate_gemm_f32_avx2_v1([[:space:]]|$)' "$work/stderr"
+  # Bind the primary error, its access, and its FIRST stack frame. A generated
+  # entry in a later allocation stack is not evidence of the fault owner.
+  awk -v width="$width" '
+    /^==[0-9]+==ERROR: AddressSanitizer:/ {
+      if (phase != 0 || $0 !~ /^==[0-9]+==ERROR: AddressSanitizer: heap-buffer-overflow on address /)
+        exit 1
+      phase = 1
+      next
+    }
+    phase == 1 && /^(READ|WRITE) of size / {
+      if ($0 !~ ("^READ of size " width " at 0x[[:xdigit:]]+ thread T0$"))
+        exit 1
+      phase = 2
+      next
+    }
+    phase != 0 && /^[[:space:]]+#[0-9]+ / {
+      accepted = phase == 2 && $0 ~ /^    #0 0x[[:xdigit:]]+ in __matcore_reassociate_gemm_f32_avx2_v1([[:space:]]|$)/
+      exit
+    }
+    END { exit !accepted }
+  ' "$work/stderr"
 fi
 printf 'Issued reassociate negative %s: exact exit1 and required diagnostic\n' "$mode"
