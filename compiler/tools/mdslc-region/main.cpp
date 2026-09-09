@@ -153,6 +153,7 @@ Invocation parse(int argc, char **argv) {
       if (name == "automatic") args.policy = codegen::ClosedCpuPolicy::Automatic;
       else if (name == "native-strict") args.policy = codegen::ClosedCpuPolicy::NativeStrict;
       else if (name == "generated-strict") args.policy = codegen::ClosedCpuPolicy::GeneratedStrict;
+      else if (name == "generated-reassociate") args.policy = codegen::ClosedCpuPolicy::GeneratedReassociate;
       else if (name == "existing-native") args.policy = codegen::ClosedCpuPolicy::ExistingNative;
       else if (name == "openblas") args.policy = codegen::ClosedCpuPolicy::OpenBLAS;
       else reject("unknown built-in candidate: " + name);
@@ -166,7 +167,7 @@ Invocation parse(int argc, char **argv) {
     else reject("unknown or unsupported argument: " + argument);
   }
   if (args.source.empty() || args.output.empty() || args.region.empty())
-    reject("usage: mdslc-region source.mdsl --region qualified_name [-c] [--candidate automatic|native-strict|generated-strict|existing-native|openblas] -o NEW_OUTPUT [-- bounded C++ include/macro options]");
+    reject("usage: mdslc-region source.mdsl --region qualified_name [-c] [--candidate automatic|native-strict|generated-strict|generated-reassociate|existing-native|openblas] -o NEW_OUTPUT [-- bounded C++ include/macro options]");
   return args;
 }
 

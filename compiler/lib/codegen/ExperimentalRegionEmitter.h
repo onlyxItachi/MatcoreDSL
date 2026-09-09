@@ -7,7 +7,8 @@ namespace matcore::mdslc::codegen {
 // Implementation policy belongs to compilation/dispatch, not mathematical IR
 // or source syntax. Forced unsupported candidates fail rather than fall back.
 enum class ClosedCpuPolicy {
-  Automatic, NativeStrict, GeneratedStrict, ExistingNative, OpenBLAS
+  Automatic, NativeStrict, GeneratedStrict, ExistingNative, OpenBLAS,
+  GeneratedReassociate
 };
 
 struct ExperimentalRegionEmission {

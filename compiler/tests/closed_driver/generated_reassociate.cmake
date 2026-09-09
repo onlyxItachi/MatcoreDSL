@@ -1,0 +1,20 @@
+cmake_minimum_required(VERSION 3.24)
+foreach(required IN ITEMS DRIVER POLICY)
+  if(NOT DEFINED ${required})
+    message(FATAL_ERROR "Missing generated reassociate input ${required}")
+  endif()
+endforeach()
+string(RANDOM LENGTH 12 ALPHABET 0123456789abcdef suffix)
+set(output "${CMAKE_CURRENT_BINARY_DIR}/generated-reassociate-${suffix}")
+execute_process(COMMAND "${DRIVER}" "${CMAKE_CURRENT_LIST_DIR}/generated_reassociate.mdsl"
+  --region reassociate_pipeline --candidate "${POLICY}" -o "${output}"
+  RESULT_VARIABLE status OUTPUT_VARIABLE stdout ERROR_VARIABLE stderr)
+if(NOT status EQUAL 0 OR NOT EXISTS "${output}")
+  message(FATAL_ERROR "Source compilation failed: ${stdout}\n${stderr}")
+endif()
+execute_process(COMMAND "${output}" "${POLICY}"
+  RESULT_VARIABLE status OUTPUT_VARIABLE stdout ERROR_VARIABLE stderr)
+if(NOT status EQUAL 0 OR NOT stdout MATCHES "^Generated reassociate source: [1-9][0-9]* checks; 0 failures\n$")
+  message(FATAL_ERROR "Source oracle failed: ${stdout}\n${stderr}")
+endif()
+message(STATUS "${POLICY}: ${stdout}")

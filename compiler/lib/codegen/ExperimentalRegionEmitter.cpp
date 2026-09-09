@@ -28,6 +28,7 @@ const char *candidate(ClosedCpuPolicy policy) {
   case ClosedCpuPolicy::Automatic: return "automatic";
   case ClosedCpuPolicy::NativeStrict: return "native_strict";
   case ClosedCpuPolicy::GeneratedStrict: return "generated_strict";
+  case ClosedCpuPolicy::GeneratedReassociate: return "generated_reassociate";
   case ClosedCpuPolicy::ExistingNative: return "existing_native";
   case ClosedCpuPolicy::OpenBLAS: return "authenticated_openblas";
   }

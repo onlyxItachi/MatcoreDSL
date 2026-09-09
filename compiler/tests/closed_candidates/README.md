@@ -66,3 +66,21 @@ K1..4 binary reduction trees/permutations and optional FMA placements, and exerc
 eight concurrent first-use Sessions. That test is retained with per-worker failure
 diagnostics because its initial passing run was later falsified in Release; it
 must not be accepted without the owning provider-policy correction.
+# Forced generated-reassociate coverage
+
+The `generated_reassociate_guard` executable compiles the real adapter with
+test-linked discovery/leaf definitions, not an installed injection hook. It
+checks hardware/OS/XCR0 refusals, errno preservation, no unchosen probe,
+empty/zero guard order and sticky late numerical failure. These are synthetic
+guard/adapter checks, not generated instruction execution.
+
+The ordinary production/testing registry matrix separately exercises the real
+issued candidate when physical AVX2/FMA+OS support is present; native-only tests
+require its checked unavailability. Full-tile input/input/result handle aliasing
+keeps the old immutable handle alive. Source-level tests in
+`../closed_driver/generated_reassociate.mdsl` additionally run the real driver
+across generated-strict, generated-reassociate, native, automatic and optional
+provider choices. Only the explicit new candidate/full-tile rounding case
+establishes FMA execution; allowing reassociate semantics on a strict candidate
+does not itself exercise fusion. Public Result remains effect/status evidence,
+not candidate identity telemetry.
