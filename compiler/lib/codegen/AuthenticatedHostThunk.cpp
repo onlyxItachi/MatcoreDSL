@@ -175,6 +175,15 @@ private:
 };
 } // namespace
 
+bool sameAuthenticatedHostABI(const llvm::Function &a, const llvm::Function &b,
+                              bool remapped) {
+  return sameAbi(a, b, remapped);
+}
+bool sameAuthenticatedHostFunctionAttributes(const llvm::Function &a,
+                                            const llvm::Function &b) {
+  return sameAttributes(a.getAttributes().getFnAttrs(), b.getAttributes().getFnAttrs());
+}
+
 HostThunkResult linkAuthenticatedHostThunk(const llvm::Module &host,
                                            const llvm::Module &helper,
                                            const HostThunkRequest &request) {

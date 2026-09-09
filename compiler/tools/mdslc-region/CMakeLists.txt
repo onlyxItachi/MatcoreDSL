@@ -1,4 +1,4 @@
-add_executable(mdslc-region main.cpp)
+add_executable(mdslc-region main.cpp DriverSupport.cpp)
 target_compile_features(mdslc-region PRIVATE cxx_std_20)
 target_link_libraries(mdslc-region PRIVATE matcore_experimental_region_compiler
   MatcoreDSL::PlatformSupportV1 LLVM)

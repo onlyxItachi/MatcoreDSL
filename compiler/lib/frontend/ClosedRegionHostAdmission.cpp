@@ -1,4 +1,5 @@
 #include "ClosedRegionAdmissionInternal.h"
+#include "ClosedHostInspection.h"
 
 #include <clang/AST/ASTConsumer.h>
 #include <clang/AST/ASTContext.h>
@@ -34,6 +35,7 @@ struct ParseState {
   bool preprocessing_budget_exceeded = false;
   std::optional<ExperimentalRegionHeaders> public_headers;
   ClosedRegionEntryBinding entry;
+  detail::ClosedHostInspector inspector;
 };
 
 class Diagnostics final : public clang::DiagnosticConsumer {
@@ -218,6 +220,11 @@ public:
       return;
     }
     if (!bindPreprocessing(context, state_)) return;
+    if (state_.inspector) {
+      state_.admitted = state_.inspector(context, anchor_, compiler_.getFileManager(),
+                                        state_.policy, state_.error);
+      return;
+    }
     if (state_.public_headers) {
       if (!detail::authenticateExperimentalRegionHeaders(context, compiler_.getFileManager(),
               *state_.public_headers, state_.policy, state_.error)) return;
@@ -294,6 +301,26 @@ void bindContext(cr::Program &program, const std::string &identity) {
 } // namespace
 
 namespace detail {
+bool inspectClosedHost(
+    const std::vector<std::string> &arguments,
+    const std::string &working_directory,
+    llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> filesystem,
+    const std::string &source, const std::string &input,
+    const ClosedHostInspector &inspector, std::string &preprocessing_identity,
+    std::string &error) {
+  if (!inspector) { error = "closed host inspection requires a compiler callback"; return false; }
+  ParseState state;
+  initialize(state, source, input, "");
+  state.inspector = inspector;
+  bool syntax_valid = false;
+  if (!parse(arguments, working_directory, filesystem, state, syntax_valid)) {
+    error = state.error;
+    return false;
+  }
+  preprocessing_identity = state.program.compiler_identity;
+  return true;
+}
+
 bool replayClosedRegionHost(const host::HostInputSnapshot &snapshot,
                            const std::string &region_name, cr::Program &program,
                            std::string &error, const ExperimentalRegionHeaders *headers,
