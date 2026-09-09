@@ -12,7 +12,7 @@ interpreter, custom linker or ABI-as-mathematics contract was introduced.
   `0b2c21f126288501fe27afea9320ec9fce392dcc` (row-contiguous opt-in, PR #60).
 - Independent test source: `9659fb5187144721a8bb63844824ae73e0ed4c4c`,
   cherry-picked as `ebb0159`; registration `87fd2b7`.
-- Final engineering input under validation:
+- Initial engineering input validated before the specialization correction:
   `2082852915a688baf6f2c7a8bf7a2bcdcd153332` (adds affected CI selection).
 
 The preceding feasibility experiment, research commit
@@ -116,19 +116,20 @@ ordinary Release suite and affected sanitizer selection. The CI region inventory
 increases from 17 to 20 and the selected row-schedule ASan inventory from 83 to
 86; these are expected registrations, not hosted CI outcomes.
 
-## Final validation (in progress)
+## Pre-correction validation
 
-Engineering input is `2082852915a688baf6f2c7a8bf7a2bcdcd153332`.
+Engineering input was `2082852915a688baf6f2c7a8bf7a2bcdcd153332`.
 Both builds explicitly select `matcore-mlir` and `row-contiguous`, coherent
-Clang/LLVM/MLIR 21.1.8. The current Release driver SHA256 is
+Clang/LLVM/MLIR 21.1.8. The pre-correction Release driver SHA256 is
 `908dc80083d5801016d4717b0ded1d00e82f7a93601c60b7d32e6028c0af6850`.
 
 | Scope | Current outcome |
 | --- | --- |
 | Fresh Release, OpenBLAS ON, full build | Passed, then row-selected rebuild passed. |
 | First full row-selected Release CTest | 138/140 passed; two cleanliness refusals described below. |
+| Clean full row-selected Release rerun | 140/140 passed, 380.18 seconds, clean head `8b5b8c31ed8b389293aef4179214a06e192a811e`. |
 | Fresh Debug ASan/UBSan, OpenBLAS OFF | Full build passed. |
-| Affected sanitizer CTest | Running; inventory 86 mechanically checked against the CI regex. |
+| Affected sanitizer CTest | 86/86 passed, 199.47 seconds; inventory mechanically checked against the CI regex. |
 
 The first full Release run took 311.30 seconds and is **not a successful gate**.
 The owning agent created this untracked report while tests were running.
@@ -136,14 +137,63 @@ The owning agent created this untracked report while tests were running.
 `benchmark.cpu.native_blas_parity_runner_contract` correctly refused the dirty
 worktree, explicitly identifying this report path. All 138 remaining tests,
 including all new library cases, passed. No production change or weakened check
-is justified. Commit the report, reconfigure from a clean head and rerun the
-entire suite with no concurrent edits before claiming final acceptance.
+was justified. The report was committed, the build reconfigured/rebuilt from
+clean head `8b5b8c3`, and the entire suite rerun without concurrent edits.
+The rerun passed. Final semantic/private/experimental/host-context checks were
+93/506/118/179 respectively, with all three independent source-library cases.
+
+Raw log SHA256 values:
+
+- First failed Release: `9d252d52f624dc5383ee15dc24396b5ee641806149ff7e20a4392ef46d9c6739`.
+- Clean Release rerun: `799e9a708e74c56a3f6d3a54baf9a67b200e02a2240eb2ed98063da7b70329f2`.
+- Affected sanitizer: `8fda84d47ffbbd489bc54e88dfbc9454d8a5dfe88aa4de1492113a247cfe9c03`.
+
+The pre-correction ASan driver SHA256 is
+`81b670b1892d5dabd33e1c9db8b73ab1cedf4380a7313d63f8811881417b2f6b`.
+It used Debug `-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer`,
+`DEBUGINFOD_URLS=''`,
+`ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:strict_string_checks=1:check_initialization_order=1`
+and `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`.
+The independent reviewer also executed all three library cases successfully
+with this exact driver and environment.
 
 Build/test logs are under the owning worktree's ignored `build-library-release`
 and `build-library-asan` directories. No other worktree/build was modified.
 Root's concurrent compilation means elapsed times are not benchmark data.
-Hosted CI, final installed-package isolation, tests-disabled configuration and
-normal integration/merge are not claimed by this report at this stage.
+Existing installed-package and compatibility source-inaccessible isolation
+tests passed on the clean rerun. This is not a new separately isolated installed
+header-library demonstration. Hosted CI, tests-disabled configuration and
+normal integration/merge are not claimed.
+
+## Independent specialization counterexample and correction
+
+Final review of `8b5b8c3` found a useful source-form rejection: a primary
+template in `primary.h`, an explicit specialization in `specialization.h`, and
+another ordinary instantiation failed both pre-correction drivers with
+`primary.h:3:21: closed-region admission rejected: closed declaration spelling is not body-source-owned`.
+Header-primary-only compilation passed, and the equivalent flattened main-file
+program compiled and executed the distinct noncommuting mathematical bodies.
+This was an ownership compatibility rejection, not incorrect execution.
+
+An independent Clang 21 LibTooling dump established the cause. Clang's canonical
+nondefining explicit-specialization stub has its name location in the selected
+specialization header, but its entire lexical range, TypeLoc ranges and parameter
+source ranges are copied exactly from the primary template. The actual selected
+definition and body remain wholly in the specialization header. The earlier
+code incorrectly used the stub's name location as its lexical owner.
+[Upstream FunctionDecl source-range construction](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/clang/lib/AST/Decl.cpp#L4129-L4131)
+retains separate outer-start and stored-end locations; it does not recover a
+physical declaration from a filename.
+
+The bounded correction authenticates only this canonical, nondefining concrete
+explicit-specialization stub against its exact primary-template lexical range,
+full TypeLoc range sequence and every parameter location/range/TypeLoc sequence.
+Its selected definition pointer and name owner must also agree. Existing
+captured-file, macro, concrete-type and attribute checks still run; actual
+selected-body ownership never changes. This is not a general cross-file range
+relaxation. New focused tests and clean full/sanitizer reruns are required before
+claiming the corrected input validated; the 140/86 results above remain
+explicitly pre-correction evidence.
 
 ## Limits
 

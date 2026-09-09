@@ -260,6 +260,51 @@ int main(int argc, char **argv) {
     auto helper_decl = helper_prototype.admit();
     check(bool(helper_decl), "captured header redeclaration with main helper definition: " + helper_decl.error);
     paired(helper_decl, "helper redeclaration");
+    const std::string primary_template =
+        "template<class Tag,class T> T select_product(T a,T b){"
+        "return gemm(b,a,Numerics::strict_f32);}\n";
+    const std::string explicit_specialization =
+        "template<> Value select_product<int,Value>(Value a,Value b){"
+        "return gemm(a,b,Numerics::strict_f32);}\n";
+    const std::string specialized_source = preamble +
+        "#include \"a_primary.h\"\n#include \"z_specialization.h\"\n" + signature +
+        "{auto a=read(A,m,k);auto b=read(B,k,n);"
+        "auto first=select_product<int>(a,b);auto second=select_product<long>(a,b);"
+        "publish(first,C);publish(second,C);return complete();}";
+    Fixture specialized(argv[1], argv[2], include, specialized_source);
+    write(specialized.temporary.path()/"a_primary.h", primary_template);
+    write(specialized.temporary.path()/"z_specialization.h", explicit_specialization);
+    auto selected = specialized.admit();
+    check(selected.syntax_valid && bool(selected),
+          "cross-header explicit specialization and generic primary instantiation: " + selected.error);
+    paired(selected, "cross-header concrete template bodies");
+    if (selected) {
+      const auto &program = selected.evidence->program();
+      const auto &ops = program.regions[0].body;
+      const auto &helpers = selected.evidence->entryBinding()->value_helpers;
+      check(program.source_files.size() == 3 &&
+            program.source_files[1].sha256 == fe::detail::closedRegionDigest(primary_template) &&
+            program.source_files[2].sha256 == fe::detail::closedRegionDigest(explicit_specialization),
+            "synthetic redeclaration and selected definition retain both exact source identities");
+      check(ops.size() == 6 && ops[2].site.file_id == 3 && ops[3].site.file_id == 2 &&
+            ops[2].lhs == ops[3].rhs && ops[2].rhs == ops[3].lhs &&
+            ops[2].helper_calls.size() == 1 && ops[2].helper_calls[0].file_id == 1 &&
+            ops[3].helper_calls.size() == 1 && ops[3].helper_calls[0].file_id == 1,
+            "selected specialization and generic primary preserve distinct bodies, operand order and callers");
+      check(helpers.size() == 2 && helpers[0].body.file_id == 3 && helpers[1].body.file_id == 2 &&
+            helpers[0].mangled_name != helpers[1].mangled_name,
+            "both concrete template symbols retire with their actual definition owners");
+    }
+    Fixture impure_specialization(argv[1], argv[2], include, specialized_source);
+    write(impure_specialization.temporary.path()/"a_primary.h", primary_template);
+    write(impure_specialization.temporary.path()/"z_specialization.h",
+          "Storage hidden;\ntemplate<> Value select_product<int,Value>(Value a,Value b){"
+          "observe(hidden);return a;}\n");
+    auto impure_selected = impure_specialization.admit();
+    check(impure_selected.syntax_valid && !impure_selected &&
+          impure_selected.error.find("pure helper cannot") != std::string::npos &&
+          impure_selected.error.find("z_specialization.h:2:") != std::string::npos,
+          "selected cross-header specialization rejects its actual hidden effect: " + impure_selected.error);
     const std::string one_product = preamble + "#include \"helper.h\"\n" + signature +
         "{auto a=read(A,m,k);auto b=read(B,k,n);auto c=product(a,b);publish(c,C);return complete();}";
     for (const auto &[name, bytes, reason] : std::vector<std::tuple<std::string,std::string,std::string>>{

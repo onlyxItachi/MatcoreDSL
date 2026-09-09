@@ -103,6 +103,11 @@ body owner, then the callee's actual inclusion FileID owns its body traversal.
 Repeated inclusions may share a semantic file record without sharing an AST
 body owner. Diagnostics retain the physical helper file; public runtime failure
 locations preserve the existing outermost helper-callsite attribution policy.
+For a Clang-synthesized nondefining explicit-specialization stub, the name can
+belong to the selected specialization while lexical spelling belongs to the
+primary template. Only exact primary-template declaration, type and parameter
+source-range agreement admits that separate lexical owner; the selected concrete
+definition and body retain their own physical owner and all existing checks.
 
 These C++-specific witnesses are absent from the frontend-neutral semantic
 Program. Pairing replays frozen inputs and compares both the complete semantic

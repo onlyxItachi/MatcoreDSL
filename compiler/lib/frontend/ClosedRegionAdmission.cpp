@@ -581,7 +581,8 @@ private:
           !inMain(declaration->getLocation()) && !declaration->doesThisDeclarationHaveABody();
       if (entry && !inMain(declaration->getLocation()) && !header_prototype)
         return reject(declaration->getLocation(), "helper or region redeclaration is not source-owned");
-      const auto declaration_owner = sources_.getFileID(declaration->getLocation());
+      auto declaration_owner = sources_.getFileID(declaration->getLocation());
+      if (!redeclarationOwner(declaration, function, entry, declaration_owner)) return false;
       if (!sourceFile(declaration_owner) ||
           !closedSourceRange(declaration->getSourceRange(), declaration_owner) ||
           !validateTypeLocation(declaration->getTypeSourceInfo(), declaration_owner)) return false;
@@ -613,6 +614,55 @@ private:
                     "requires a Value or Shape result");
     for (const clang::ParmVarDecl *parameter : function->parameters())
       if (!validateParameter(parameter, true, owner)) return false;
+    return true;
+  }
+  bool sameTypeSpelling(const clang::TypeSourceInfo *a,
+                        const clang::TypeSourceInfo *b) const {
+    if (!a || !b) return false;
+    auto left = a->getTypeLoc(), right = b->getTypeLoc();
+    for (; !left.isNull() && !right.isNull();
+         left = left.getNextTypeLoc(), right = right.getNextTypeLoc())
+      if (left.getSourceRange() != right.getSourceRange()) return false;
+    return left.isNull() && right.isNull();
+  }
+  bool redeclarationOwner(const clang::FunctionDecl *declaration,
+                          const clang::FunctionDecl *definition, bool entry,
+                          clang::FileID &owner) {
+    const auto lexical_owner = sources_.getFileID(declaration->getBeginLoc());
+    if (lexical_owner == owner) return true;
+    // Clang can synthesize the canonical explicit-specialization stub with a
+    // name in the selected specialization but its entire lexical spelling in
+    // the primary template. Authenticate that exact upstream provenance; this
+    // is not permission for arbitrary cross-file declaration/body ranges.
+    const auto *primary = declaration->getPrimaryTemplate();
+    const auto *pattern = primary ? primary->getTemplatedDecl() : nullptr;
+    if (entry || !policy_.experimental || !pattern || declaration == definition ||
+        declaration != declaration->getCanonicalDecl() ||
+        declaration->doesThisDeclarationHaveABody() ||
+        declaration->getTemplateSpecializationKind() != clang::TSK_ExplicitSpecialization ||
+        declaration->getDefinition() != definition ||
+        declaration->getNumTemplateParameterLists() != 0 ||
+        !inFile(declaration->getLocation(), sources_.getFileID(definition->getBody()->getBeginLoc())) ||
+        !inFile(pattern->getLocation(), lexical_owner) ||
+        declaration->getInnerLocStart() != pattern->getInnerLocStart() ||
+        declaration->getSourceRange() != pattern->getSourceRange() ||
+        declaration->getNumParams() != pattern->getNumParams() ||
+        !sameTypeSpelling(declaration->getTypeSourceInfo(), pattern->getTypeSourceInfo()))
+      return reject(declaration->getLocation(),
+                    "synthesized specialization redeclaration lacks exact primary-template source provenance");
+    for (unsigned index = 0; index < declaration->getNumParams(); ++index) {
+      const auto *parameter = declaration->getParamDecl(index);
+      const auto *original = pattern->getParamDecl(index);
+      if (parameter->getLocation() != original->getLocation() ||
+          parameter->getSourceRange() != original->getSourceRange() ||
+          !sameTypeSpelling(parameter->getTypeSourceInfo(), original->getTypeSourceInfo()))
+        return reject(parameter->getLocation(),
+                      "synthesized specialization parameter lacks exact primary-template source provenance");
+    }
+    // Existing closed-range, macro, concrete type and attribute validation now
+    // checks this spelling in its captured owner. The selected body is never
+    // rebound: helperCall still enters the actual definition's inclusion FileID.
+    owner = lexical_owner;
     return true;
   }
   bool authenticateOperation(const clang::FunctionDecl *function,
