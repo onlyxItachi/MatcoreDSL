@@ -1,5 +1,6 @@
 #include "ClosedRegionAdmissionInternal.h"
 #include "../../lib/support/platform_support.h"
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -86,8 +87,15 @@ int main(int argc, char **argv) {
             "body and terminal completion source ranges are sealed");
       check(bool(fe::detail::ClosedRegionCompilationAccess::host(*initial.evidence)),
             "compiler-only frozen host access exists");
+      const auto snapshot = fe::detail::ClosedRegionCompilationAccess::host(*initial.evidence);
+      check(snapshot && snapshot->sourceSnapshot() == load(first.options.input_path) &&
+                snapshot->arguments().back() == first.options.input_path &&
+                std::find(snapshot->arguments().begin(), snapshot->arguments().end(), "-include") ==
+                    snapshot->arguments().end(),
+            "public admission freezes original main source without an inspection prelude");
     }
     const std::vector<std::pair<std::string, std::string>> admitted = {
+      {"unpolluted ordinary host spelling", "int mdsl_probe = 9;\n" + program(math + "return complete();")},
       {"rhs carried rectangular", program("auto a=read(A,2,3);auto b=read(B,3,4);auto c=gemm(a,b,Numerics::strict_f32);publish(c,C);auto d=read(A,5,2);auto e=gemm(d,c,Numerics::reassociate_f32);publish(e,C);return complete();")},
       {"lhs carried late read and branch", program(math + "auto late=read(C,m,n); if(m<n){auto e=gemm(c,late,Numerics::strict_f32);publish(e,C);}else{observe(C);} return complete();")},
       {"old API header first", "#include <matcore/mdsl.h>\n" + program(math + "return complete();")},
@@ -124,7 +132,7 @@ int main(int argc, char **argv) {
       {"missing noexcept", preamble + "MATCORE_REGION Result region(Storage A){return complete();}"},
       {"forged marker macro", preamble + "#undef MATCORE_REGION\n#define MATCORE_REGION [[clang::annotate(\"matcore.experimental.region.v1\")]]\n" + signature + "{return complete();}"},
       {"nested marker macro", preamble + "#define REGION MATCORE_REGION\nREGION Result region(Storage A)noexcept{return complete();}"},
-      {"private grammar is not public", "using namespace mdsl_probe; [[clang::annotate(\"mdsl.private.closed_region.v1\")]]void region(Storage A){}"},
+      {"private grammar is not public", "namespace mdsl_probe { struct Storage {}; }\nusing namespace mdsl_probe; [[clang::annotate(\"mdsl.private.closed_region.v1\")]]void region(Storage A){}"},
       {"volatile", program("volatile Shape x=m;return complete();")},
       {"consteval placeholder evaluation", preamble + "consteval Shape folded(){return sizeof(Value);}\n" + signature + "{auto dim=folded();auto a=read(A,dim,k);return complete();}"},
       {"constexpr placeholder evaluation", preamble + "constexpr Shape folded(){return sizeof(Value);}\n" + signature + "{auto dim=folded();auto a=read(A,dim,k);return complete();}"},

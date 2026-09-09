@@ -1,6 +1,17 @@
-add_executable(mdslc-region main.cpp)
+add_library(matcore_experimental_program_compiler STATIC
+  ../../lib/frontend/ProgramHostInterface.cpp
+  ../../lib/codegen/ExperimentalProgramCompiler.cpp)
+target_compile_features(matcore_experimental_program_compiler PUBLIC cxx_std_20)
+target_link_libraries(matcore_experimental_program_compiler PUBLIC
+  matcore_experimental_region_compiler MatcoreDSL::PlatformSupportV1 LLVM)
+target_include_directories(matcore_experimental_program_compiler SYSTEM PRIVATE
+  ${LLVM_INCLUDE_DIRS} ${CLANG_INCLUDE_DIRS})
+mdslc_target_enable_warnings(matcore_experimental_program_compiler WERROR)
+mdslc_target_match_llvm_rtti(matcore_experimental_program_compiler)
+
+add_executable(mdslc-region main.cpp DriverSupport.cpp program_main.cpp)
 target_compile_features(mdslc-region PRIVATE cxx_std_20)
-target_link_libraries(mdslc-region PRIVATE matcore_experimental_region_compiler
+target_link_libraries(mdslc-region PRIVATE matcore_experimental_program_compiler
   MatcoreDSL::PlatformSupportV1 LLVM)
 target_include_directories(mdslc-region PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 mdslc_target_enable_warnings(mdslc-region WERROR)
@@ -56,3 +67,6 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/region_driver_identity.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/installation_identity.cmake" VERBATIM)
 target_sources(mdslc-region PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/region_driver_identity.h")
 install(TARGETS mdslc-region RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+if(BUILD_TESTING)
+  add_subdirectory("../../tests/program" "${CMAKE_CURRENT_BINARY_DIR}/program-tests")
+endif()

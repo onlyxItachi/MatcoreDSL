@@ -5,8 +5,21 @@
 #include <memory>
 #include <string>
 #include <vector>
+namespace llvm { class CallBase; }
 
 namespace matcore::mdslc::codegen {
+
+// Compiler-private reuse of the thunk's existing structural ABI comparator.
+// Equality of LLVM types is not source admission, an effect summary, or
+// permission to import external LLVM. Declaration witnesses are compared to
+// declarations, because Clang attaches additional facts to definitions.
+bool sameAuthenticatedHostABI(const llvm::Function &, const llvm::Function &,
+                              bool remapped = false);
+bool sameAuthenticatedHostFunctionAttributes(const llvm::Function &,
+                                            const llvm::Function &);
+// Exact callsite ABI/effect comparison against a compiler-issued call witness.
+// Reuses the same type/attribute algorithms; does not admit caller LLVM.
+bool sameAuthenticatedHostCallInterface(const llvm::CallBase &, const llvm::CallBase &);
 
 struct HostThunkRequest {
   std::string host_symbol;
