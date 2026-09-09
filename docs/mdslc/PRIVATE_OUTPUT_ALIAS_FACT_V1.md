@@ -98,7 +98,12 @@ Ignored logs `build-alias-release/full-ctest.log` and
 `build-alias-asan/focused-ctest.log` have SHA256 respectively
 `870e5c690232cf8a73d4db8d264f66a9bb0ea65e04cecf7f8dd98b4fe4ef3eff` and
 `9f269c14bb72b05787b59c5a8228decc09e998476c43ed0ec89fb3cc307aec87`.
-Hosted CI and normal integration are separate, still-pending gates in PR #62.
+Pre-merge head `d371f8b492667b9dcebab24387c06b08314da79c` subsequently passed
+all **21/21 hosted checks**, separately from these local scopes. After independent
+and integration review, [PR #62](https://github.com/onlyxItachi/MatcoreDSL/pull/62)
+merged normally as `c04215e787832b35bbd6a85a51d9285b053181bc`. The final
+[integration audit](https://github.com/onlyxItachi/MatcoreDSL/pull/62#issuecomment-5594074719)
+records the exact accepted head and authority boundaries.
 
 Frozen generated object SHA256 identities for the independent overlap runs:
 
@@ -115,10 +120,12 @@ Neither failure was a successful validation gate or a production LLVM workaround
 
 ## Limits and next evidence
 
-There is no measured performance claim for this integration yet. Smaller
-research object text and fewer possible alias checks are not timing evidence.
-Compare authenticated old/new actual source and primitive paths before choosing
-any performance policy. No provider crossover, public ABI, new target, input
+There is no performance policy change. Subsequent six-shape research comparisons
+found the output fact mostly performance-neutral; the independent
+[measurement audit](https://github.com/onlyxItachi/MatcoreDSL/blob/48adacfac75d8751133fe7a64871661c2fea5cf4/docs/mdslc/agent-reports/register-measurement-independent-v1.md)
+keeps source and primitive paths, strict and reassociate permissions, and ISA
+targets distinct. Smaller object text alone is not timing evidence.
+No provider crossover, public ABI, new target, input
 noalias, zero-copy, buffer reuse or general transformed-region execution follows.
 The private leaf's caller-storage contract and exact pinned descriptor lowering
 remain preconditions; a future ABI or bufferization change must re-establish the

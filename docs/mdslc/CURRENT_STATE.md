@@ -1,21 +1,21 @@
 # MDSLC current state
 
 Engineering checkpoint: canonical merge
-`0b2c21f126288501fe27afea9320ec9fce392dcc`, [PR #60](https://github.com/onlyxItachi/MatcoreDSL/pull/60).
+`917b5ecf1d325e525bc24e3c94764d2958980a93`, [PR #63](https://github.com/onlyxItachi/MatcoreDSL/pull/63).
 This identifies the latest engineering merge; documentation-only updates may follow.
 
 ## Architecture
 
 ```text
 Ordinary C++ host + explicit closed mathematical regions
-  -> Clang/Sema admission and frozen source/header/toolchain authentication
+  -> Clang/Sema admission, source-visible helpers, frozen source/header/toolchain
   -> frontend-neutral immutable values + separate all-MAY-alias host resources
   -> dynamic shapes, per-operation numerics, ordered checks/effect frontiers
   -> exact untransformed Matcore MLIR paired witness
   -> static orchestration from the sealed semantic Program (no interpreter)
 Original Clang host -> sealed ABI-checked entry thunk + isolated helper LLVM
 Strict GEMM primitive -> verified Linalg/One-Shot -> optional Transform M/K/N
-  -> LLVM (row schedule: output-column SIMD) -> generated x64 code
+  -> LLVM (private output-data isolation; optional column SIMD) -> generated x64
 Trusted registry -> generated/native strict or numerically legal legacy/provider
   -> private candidate output, checked completion/FP state, immutable value
   -> ordered host publication, owning observation, sticky failure prefix
@@ -31,23 +31,23 @@ Linux region execution, standalone Windows and Linux Python/JIT are separate lan
 
 ## Material change
 
-The first upstream-Transform schedule is source-connected and executable.
-It preserves strict per-output arithmetic and existing effects; selection is
-build-time opt-in, not a runtime threshold. Scalar remains the default.
-Pre-merge head `58193878394c774c3365dbf746d1622e951b0813`: Release **138/138**,
-affected ASan/UBSan **83/83**, independent review and **21/21 hosted checks**.
-Six-shape local measurements favored this simpler schedule over the old scalar
-route; explicit-vector and cache-tile alternatives remain research, not policy.
-See [schedule/evidence](ROW_CONTIGUOUS_CPU_SCHEDULE_V1.md),
-[user guide](REGION_COMPILER_V1.md) and [CPU foundation](CPU_FOUNDATION_CHECKPOINT_V1.md).
+Mathematical Value/Shape helpers can now live in source-visible headers, including
+bounded selected template specializations. Physical file identity and selected
+body provenance remain bound through admission, MLIR verification and execution;
+hidden effects and escaped Value helpers still fail closed.
+Pre-merge head `75c78f586801a108ec3cc49b4003b83c34a9cb26`: Release **151/151**,
+affected ASan/UBSan **97/97**, independent review and **21/21 hosted checks**.
+No numerical, runtime, schedule or provider policy changed.
+See [library evidence](agent-reports/source-visible-math-libraries-v1.md),
+[frontend contract](EXPERIMENTAL_REGION_FRONTEND_V1.md) and [user guide](REGION_COMPILER_V1.md).
 
 ## Unsupported or unproven
 
 Experimental region execution is Linux x86-64 / coherent 21.1.8 only; syntax and
 API/ABI are unfrozen. No transformed whole-region execution, fusion, automatic
 reuse, general views, asynchronous/device/export effects or generated-region Windows.
-No GPU/NPU, zero-copy, universal performance or BLAS-parity claim. Semantic helper
-libraries in headers and separate semantic modules are not yet supported. Valid caller
+No GPU/NPU, zero-copy, universal performance or BLAS-parity claim. Opaque semantic
+imports and authenticated multi-source program linking are not yet supported. Valid caller
 objects/lifetimes, race-free storage, conforming allocation and trusted library
 loading remain preconditions; this is not a sandbox or crash-atomic transaction.
 Manual archive/object linking does not inherit the complete driver contract.
@@ -57,9 +57,9 @@ remains partial/open; [#20](https://github.com/onlyxItachi/MatcoreDSL/issues/20)
 
 ## Exactly one next boundary
 
-**Preserve the private GEMM output's proven non-aliasing through LLVM lowering.**
-The runtime already owns an isolated output; the current lowered data pointer
-does not communicate that fact to LLVM. Preserve only this existing guarantee,
-keep input/input aliasing legal, and test actual numerical/storage behavior.
-This precedes more schedule complexity; it is not external-storage noalias,
-new generated authority or whole-region storage reuse.
+**Authenticate and link a bounded multi-source program in one driver invocation.**
+Header helpers now preserve their semantic source identity; independent regions
+can next share an ordinary C++ host program without inventing opaque mathematical
+imports. Freeze every translation unit, authenticate cross-file declarations and
+global symbol ownership before linking, and retain per-region effects/failures.
+This does not authorize cross-region optimization or new candidate execution.

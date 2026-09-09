@@ -335,6 +335,17 @@ These frozen artifacts are separate from the pre-integration installed supplemen
 engineering branch. Latest hosted CI and normal integration remain separate
 pending gates; this report does not turn local success into a merge claim.
 
+## Canonical integration
+
+PR #63 was normally merged as `917b5ecf1d325e525bc24e3c94764d2958980a93`
+after all **21/21 hosted checks** passed at exact reviewed head
+`75c78f586801a108ec3cc49b4003b83c34a9cb26`. Canonical pre-merge main was
+`9d68692710d80b9cc80d9d704b02e63206e49a66`; its additional PR #64 changes
+were documentation-only. The prospective merged tree was checked byte-identical
+to the tested head under `compiler/`, `AGENTS.md` and `.github/` before merging.
+The final merge preserves both parents and the output-storage checkpoint.
+Local main was fast-forwarded to the canonical merge without altering user work.
+
 ## Limits
 
 All bodies remain source-visible and admitted through Clang/Sema. Opaque
