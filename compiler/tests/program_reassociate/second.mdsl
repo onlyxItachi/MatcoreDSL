@@ -1,0 +1,10 @@
+#include "api.h"
+MATCORE_REGION md::Result strict_second(md::Storage a, md::Storage b,
+                                      md::Storage c) noexcept {
+  auto av = md::read(a, 4, 8);
+  auto bv = md::read(b, 8, 3);
+  auto cv = md::gemm(av, bv, md::Numerics::strict_f32);
+  md::publish(cv, c);
+  md::observe(c);
+  return md::complete();
+}
