@@ -55,7 +55,7 @@ attributes; that test-only error was corrected without changing production.
 
 **OBSERVED:** fresh integrated Release / OpenBLAS ON-required build succeeded;
 focused **22/22** tests passed in **26.55 s**, including six actual source policies,
-both real generated leaf profiles, strict counterexamples, genuine READ4/READ32
+both real generated leaf instrumentation modes, strict counterexamples, genuine READ4/READ32
 sanitizer controls, capability guards and independent mutation/classifier tests.
 The new scalar/vector fault classifier previously accepted an unrelated primary
 fault with a later generated allocation frame; the reproduced false positive is
