@@ -55,7 +55,8 @@ target requirements—not another loop/vector/backend language. Existing immutab
 values, all-MAY-alias external resources, read frontiers, ordered publication/
 observation/failure contracts remain indispensable. Candidate-private storage
 and the precise fresh output-data pointer noalias fact are distinct from host
-descriptor identity; no extra alignment is asserted. Numerical permission is per GEMM; a fused implementation cannot lend
+descriptor identity; no extra alignment is asserted. Numerical permission is per
+GEMM; a fused implementation cannot lend
 permission to strict calls or erase the intermediate f32 boundary between GEMMs.
 
 `MatcoreCpuReassociateGemmCandidate.cpp` uses upstream tile/peel/vector/transfer
@@ -102,19 +103,46 @@ sandbox, crash-atomic publication, arbitrary provider identity guarantee, stable
 API/ABI, global optimum or Issue #15 completion. Snapshots are the current
 realization, not the definition of a logical value.
 
-**Next: establish the first effect-preserving structured derivation for one
-closed region containing two dependent GEMMs, initially serial.** Keep the
-authoritative Program/witness unchanged; derive a separate candidate with
-explicit guard, read, publication and completion boundaries, preserving both
-operand orientations, late alias-sensitive reads, old observations, per-GEMM
-rounding and a second failure after a first publication. Do not add fusion or
-reuse merely to make the checkpoint look optimized. First prove the connected
-derivation and reject any altered observable trace.
+**Next: checked read-after-publication forwarding inside one closed region.**
+Keep the authoritative Program and exact MLIR witness unchanged; a separately
+checked derived plan may reuse the successfully published immutable Value for
+a later read of that same sealed resource/version. Retain the original read's
+requested-extent, shape and descriptor guards in their original order, including
+when its result is dead, its source failure location, sticky failure handling
+and completed frontier. Do not replace an ordered publication or observation.
 
-This is a new compositional optimization boundary, not evidence that the current
-bounded result must be redesigned. It must use upstream SSA/buffer analyses
-rather than duplicating liveness: [One-Shot Bufferize](https://mlir.llvm.org/docs/Bufferization/)
-analyzes tensor uses and buffer conflicts, but cannot recover Matcore's omitted
-host observations or failure semantics. Matcore must expose those obligations
-before delegating physical storage decisions. Passing a bufferization pass alone
-will not prove a legal two-operation region or authorize its execution.
+This recommendation **revises the initial serial structured two-GEMM precursor**.
+That precursor was safe but not necessary: reproducing already serial
+orchestration in another representation would not itself demonstrate additional
+optimization freedom. Forwarding directly proves one eliminated snapshot/copy
+under the existing semantics. The [resource contract](../FOUNDATION_RESOURCE_DECISION_V1.md)
+items 1–3 and 8 define immutable read-at-frontier meaning, preserve source-required
+checks, and explicitly permit removing an allocation opportunity. The private
+adapter header likewise makes allocation-attempt counts implementation details,
+not fixed mathematical trace events. This does not permit a speculative later
+failure to retire before an earlier required effect.
+
+The bounded derivation must establish a successful dominating publication on
+every applicable taken path, exact source resource identity (not pointer equality
+between unrelated descriptors), matching checked shape, no intervening
+potentially aliasing publication, and a retained immutable Value lifetime.
+An unproven branch join or potentially aliasing write must disable forwarding.
+Required falsifiers include:
+
+- `publish(v,C); read(C,m+1,n)`: fail at the late read, preserving publication,
+  even if the result is unused. Do not erase a check as apparently redundant.
+- `publish(v,C); publish(w,D); read(C,...)`, with `D=C+1`: do not forward the
+  stale value. A branch-local publication also cannot justify an untaken path.
+- Save an old value and an owning observation, then overwrite C: both must retain
+  their original contents. No observable publication may be elided.
+- Allocation-failure injection must retain allowed source-frontier/effect
+  prefixes, not demand the old snapshot's removed nth allocation failure.
+  Remaining failures cannot suppress earlier publication or observation.
+
+This is Matcore-owned resource/effect fact consumption, not a generic liveness,
+alias, bufferization or fusion engine. [One-Shot Bufferize](https://mlir.llvm.org/docs/Bufferization/)
+already analyzes tensor uses and buffer conflicts; it cannot recover missing
+host observation/failure obligations. Broader physical storage analysis should
+use upstream machinery when those obligations are represented. No implementation
+of forwarding, new public API, numerical change, cross-region optimization or
+additional execution authority is supplied by this recommendation.
