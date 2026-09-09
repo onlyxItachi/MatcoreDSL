@@ -3,6 +3,10 @@
 2026-09-09. Bounded implementation of source-visible C++ mathematical helpers
 in ordinary headers. No public import syntax, opaque modules, second C++ parser,
 interpreter, custom linker or ABI-as-mathematics contract was introduced.
+Final local validation: full Release **146/146**, affected ASan/UBSan **92/92**,
+and independent source/ownership review accepted the corrected engineering
+input. The first failed gate and subsequent specialization counterexample are
+preserved below; no hosted CI or integration result is inferred.
 
 ## Identity and decision
 
@@ -14,6 +18,8 @@ interpreter, custom linker or ABI-as-mathematics contract was introduced.
   cherry-picked as `ebb0159`; registration `87fd2b7`.
 - Initial engineering input validated before the specialization correction:
   `2082852915a688baf6f2c7a8bf7a2bcdcd153332` (adds affected CI selection).
+- Final corrected engineering/validation input:
+  `486d3e5d74e17fbf305c73fca3e3760ef7da59b6`.
 
 The preceding feasibility experiment, research commit
 `3669d4d92178ea330227294e2f489c73f3f80906`
@@ -111,10 +117,11 @@ stronger normal-return publication contract, not just generic partial writes.
 Two escaped Value-helper cases must reach the exact retirement rejection and
 publish no executable; generic admission failure does not satisfy them.
 
-All three independent cases are registered as `driver.source_library_*` in the
-ordinary Release suite and affected sanitizer selection. The CI region inventory
-increases from 17 to 20 and the selected row-schedule ASan inventory from 83 to
-86; these are expected registrations, not hosted CI outcomes.
+The initial three independent cases were registered as `driver.source_library_*`
+in the ordinary Release suite and affected sanitizer selection, increasing the
+CI region inventory from 17 to 20 and row-schedule ASan inventory from 83 to 86.
+The specialization controls below extend these inventories further; none of
+these registrations is a hosted CI outcome.
 
 ## Pre-correction validation
 
@@ -159,7 +166,8 @@ with this exact driver and environment.
 
 Build/test logs are under the owning worktree's ignored `build-library-release`
 and `build-library-asan` directories. No other worktree/build was modified.
-Root's concurrent compilation means elapsed times are not benchmark data.
+Elapsed times are test-gate bookkeeping, not benchmark data; these were not
+coordinated quiet performance windows.
 Existing installed-package and compatibility source-inaccessible isolation
 tests passed on the clean rerun. This is not a new separately isolated installed
 header-library demonstration. Hosted CI, tests-disabled configuration and
@@ -191,9 +199,8 @@ full TypeLoc range sequence and every parameter location/range/TypeLoc sequence.
 Its selected definition pointer and name owner must also agree. Existing
 captured-file, macro, concrete-type and attribute checks still run; actual
 selected-body ownership never changes. This is not a general cross-file range
-relaxation. New focused tests and clean full/sanitizer reruns are required before
-claiming the corrected input validated; the 140/86 results above remain
-explicitly pre-correction evidence.
+relaxation. The subsequent focused tests and clean full/sanitizer reruns are
+recorded below; the 140/86 results above remain explicitly pre-correction evidence.
 
 The independent reviewer accepted correction commit
 `c6ff41b763fc97c7cb016ee20fe764c76f7f968e`. Its focused semantic/admission/library
@@ -213,9 +220,42 @@ satisfy the runner.
 Corrected driver SHA256 values are Release
 `6ebd962629218e2dbf3f7291be0948c0245994c66711a99e4f4347031580eda0` and ASan
 `61ddbb12e17de334819c9b98643c301fedcb1d042ce6cbb245ead78e2ee29341`.
-The full Release and affected sanitizer inventories are expected to become
-146 and 92; the CI region-driver subset becomes 26. Clean final reruns remain
-pending and will be recorded separately from the pre-correction gates.
+The full Release and affected sanitizer inventories were mechanically checked
+as 146 and 92, and the CI region-driver subset as 26, using the committed
+selection expressions. Independent integration review accepted exact
+`486d3e5d74e17fbf305c73fca3e3760ef7da59b6`: all imported adversary files were
+byte-identical to the independent commit, the six new cases were registered,
+and prior CI selections were retained.
+
+## Final corrected validation
+
+Both builds were reconfigured from clean engineering head
+`486d3e5d74e17fbf305c73fca3e3760ef7da59b6`, then fully rebuilt at `-j2`.
+No source or report edits occurred during either final `ctest -j1` run.
+The tested drivers retained the corrected SHA256 identities above throughout.
+The eventual report-only follow-up is not a new tested engineering input.
+
+| Local scope | Outcome |
+| --- | --- |
+| Linux x86_64 Release, OpenBLAS ON, matcore-mlir, row-contiguous | Full build passed; **146/146 tests passed**, 339.04 seconds. |
+| Debug ASan/UBSan, OpenBLAS OFF, same pipeline/schedule | Full build passed; **92/92 affected tests passed**, 207.67 seconds, with the sanitizer environment above. |
+
+The final logs record 93 semantic, 506 private-admission, 125 experimental-
+admission and 179 host-context checks, plus all nine source-library cases.
+Existing package isolation, authenticated host/helper ownership, storage/failure
+conformance and strict generated primitive controls remain in the passing scopes.
+These are local execution gates, not timing comparisons or candidate-identity
+telemetry from the public Result API.
+
+Final raw logs in the owning worktree:
+
+- `build-library-release/corrected-full-ctest.log`, SHA256
+  `c22b55c98907b0227b7fdc576be72cb7db34fd64d51419206594753089d8fe1c`.
+- `build-library-asan/corrected-focused-ctest.log`, SHA256
+  `65a334faf57239a4482ac05922dda4c1d0e65672f9b8d1db680e4da77e5bb8a8`.
+
+The implementation and evidence are ready for integration-owner review. No
+push, PR creation or normal engineering merge was performed by this lane.
 
 ## Limits
 
