@@ -72,10 +72,33 @@ structural inspection therefore accompanies execution oracles. The separate
 
 ## Validation record
 
-Initial focused connected Release scope: 16/16 passed, 9.70 seconds, with
-OpenBLAS required, `matcore-mlir`, row-contiguous and exact coherent 21.1.8.
-The complete Release and affected Debug ASan/UBSan suites and hosted CI are
-pending; this initial result is not integration acceptance.
+Implementation: `94eab4c3d9c53a6b075727d505f09f8f4b7b5740`.
+Clean full validation checkpoint:
+`c932bcfbc754fb2479c376581b61ddab075e7ad1`, incorporating canonical documentation
+merge `3eaf5e4e58d92e3898a0ccdc802c5e89758c79f8` (PR #61). No source/report edits
+occurred during either complete validation run.
+
+| Scope | Actual outcome |
+| --- | --- |
+| Focused connected Release | 16/16 passed, 9.70 s |
+| Candidate signature/body/mutation unit | 92 checks, zero failures |
+| Full Release, OpenBLAS ON and required | 143/143 passed, 388.52 s |
+| Debug/O1 ASan+UBSan, OpenBLAS OFF | Full build; affected 88/88 passed, 287.01 s |
+
+Both builds use `matcore-mlir`, row-contiguous and coherent 21.1.8. Release also
+enables inspection-only vector readiness. Sanitizer execution uses the hosted
+ASan/UBSan environment and the exact union of both committed selection regexes;
+88 registrations were checked before execution. Dynamic linkage confirms no
+OpenBLAS in the disabled build. Elapsed suite times are not benchmarks.
+
+Release driver SHA256:
+`2c79847729d5d58e5766a8c6a78137e5a57dc89abc17900684cd71938ba61f23`;
+ASan driver: `200b290b1f9e607b709a40755cd515e28218b0d58460d912febef6379c65dd5e`.
+Ignored logs `build-alias-release/full-ctest.log` and
+`build-alias-asan/focused-ctest.log` have SHA256 respectively
+`870e5c690232cf8a73d4db8d264f66a9bb0ea65e04cecf7f8dd98b4fe4ef3eff` and
+`9f269c14bb72b05787b59c5a8228decc09e998476c43ed0ec89fb3cc307aec87`.
+Hosted CI and normal integration are separate, still-pending gates in PR #62.
 
 Frozen generated object SHA256 identities for the independent overlap runs:
 
