@@ -1,0 +1,14 @@
+#include <matcore/region.h>
+namespace md = matcore::mdsl;
+namespace library {
+md::Value product(md::Value a, md::Value b)
+#include "template_body_fragment.h"
+}
+MATCORE_REGION md::Result library_region(md::Storage A, md::Storage B, md::Storage C) noexcept {
+  auto a = md::read(A, 2, 2);
+  auto b = md::read(B, 2, 2);
+  auto c = library::product(a, b);
+  md::publish(c, C);
+  return md::complete();
+}
+int main() { return 0; }

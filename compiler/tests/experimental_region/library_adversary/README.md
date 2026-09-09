@@ -68,3 +68,59 @@ package, hosted-CI, sanitizer or performance evidence. No additional template
 grammar is introduced: the existing experimental admission test already
 supports bounded Sema-resolved template specializations. The new source table
 and active physical owner must preserve their concrete bodies and symbols.
+
+## Final H1 review and specialization regression
+
+The original three cases were independently rerun under ASan+UBSan at clean
+H1 validation commit `8b5b8c31ed8b389293aef4179214a06e192a811e`, using driver
+SHA-256 `81b670b1892d5dabd33e1c9db8b73ab1cedf4380a7313d63f8811881417b2f6b`.
+All passed: the repeated-inclusion program completed 67 checks, and both
+escaped-helper programs reached their exact retirement rejection.
+
+An additional independent probe found a safe compatibility rejection: a primary
+template in one header and an explicit specialization in another failed because
+Clang's synthesized canonical specialization declaration has its name location
+in the selected header but its lexical/type spelling in the primary header.
+The same source flattened into the main file compiled and executed its
+noncommuting-matrix oracle; a header-only primary instantiation compiled.
+The failed cross-header probes used the preceding ASan driver and Release
+SHA-256 `908dc80083d5801016d4717b0ded1d00e82f7a93601c60b7d32e6028c0af6850`.
+This was not wrong-body execution or an authority bypass. The owning lane then
+implemented a narrow exact-primary-provenance correction. See the pinned
+[Clang provenance evidence](template_provenance.md).
+
+The six new cases are run with `template_run.cmake` and these `CASE` values:
+
+- `template_specialization`: a generic `T` primary reverses multiplication;
+  the separately defined `int` specialization preserves operand order. Both
+  concrete functions must retire, and the actual generated executable must
+  pass 59 checks for noncommuting products, two publication/observation pairs,
+  owning observations, and a late primary-only shape failure preserving the
+  first publication and physical outer-caller coordinates.
+- `template_macro_type`: macro-derived primary type spelling must not qualify
+  as the exact synthesized-declaration provenance exception.
+- `template_macro_body`: selected-body macro expansion remains rejected.
+- `template_hidden_effect`: the selected body cannot conceal observation.
+- `template_escaped_specialization`: an ordinary global taking the selected
+  concrete specialization's address must reach exact helper retirement failure.
+- `template_split_body`: an ordinary function whose name and actual body are in
+  different physical files remains rejected; this is not a blanket cross-file
+  declaration/body exception.
+
+All six independently passed through each corrected driver at clean production
+commit `c6ff41b763fc97c7cb016ee20fe764c76f7f968e`:
+
+| Profile | Driver SHA-256 | Actual result |
+| --- | --- | --- |
+| Release | `6ebd962629218e2dbf3f7291be0948c0245994c66711a99e4f4347031580eda0` | 59-check executable plus five exact rejections |
+| ASan+UBSan | `61ddbb12e17de334819c9b98643c301fedcb1d042ce6cbb245ead78e2ee29341` | 59-check executable plus five exact rejections |
+
+The sanitizer run used `DEBUGINFOD_URLS=''`,
+`ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:strict_string_checks=1:check_initialization_order=1`,
+and `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`. These are independent
+source-execution/negative-control results, not the owning lane's complete
+Release/ASan CTest gates, hosted CI, installed-package evidence, performance
+measurements, or support for arbitrary templates. The runner requires exact
+diagnostic text and no output artifact for each rejection; generic nonzero exit
+does not pass. The positive runner requires the actual executable and exact
+59-check output with empty stderr.
