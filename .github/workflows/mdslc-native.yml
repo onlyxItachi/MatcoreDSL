@@ -468,7 +468,7 @@ jobs:
           sanitizer_tests="${sanitizer_tests}|${region_tests}"
           ctest --test-dir build-mdslc-asan-ubsan -N -R "${sanitizer_tests}" \
             | tee build-mdslc-asan-ubsan/focused-test-list.txt
-          grep -Fx "Total Tests: 117" \
+          grep -Fx "Total Tests: 119" \
             build-mdslc-asan-ubsan/focused-test-list.txt
           ctest --test-dir build-mdslc-asan-ubsan --output-on-failure -j1 \
             -R "${sanitizer_tests}"

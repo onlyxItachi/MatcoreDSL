@@ -67,10 +67,40 @@ Frozen integrated Release identities:
 - private candidate DSO: `262cfc9c40bf23d2bfa326fb1a17d78afd91243cea03e3e1c0fbbf98060c9e4c`;
 - unchanged canonical runtime DSO: `df8222de671294b94865f8597c24f239051e44889ce71f01581ef7e97e45c014`.
 
-The actual OpenBLAS-disabled sanitizer CTest selection contains **117** tests;
-the Release ON selection has 172 total. Full integrated regressions, installed
-source-connected adversarial review and exact-head hosted CI are pending gates,
-not implied by the focused result above.
+At clean implementation checkpoint
+`73cdeb927c160c9eda691aeb7f666b9f22d3a6b3`, full Release/OpenBLAS ON regressions
+passed **172/172** in **428.04 s**, including installed-source-inaccessible
+execution. The exact OpenBLAS-OFF compiler ASan+UBSan affected selection passed
+**117/117** in **252.45 s**; the smaller sanitizer gate passed **21/21** in
+**31.33 s**. No test in those successful selections was skipped or not run.
+
+The first full Release run was **171/172**: the installed-source-inaccessible
+safety check correctly refused a stale configure-time dirty-source snapshot.
+A clean explicit CMake reconfiguration, rebuild and complete rerun produced the
+172/172 result above. No assertion or production code was weakened.
+
+Frozen log identities (under the integration worktree's build directories):
+
+- Release `full-clean-ctest.log`:
+  `10dc0a34d3e93b3572a4aa8117a18e45ca6edced33532f6f2205b72273050676`;
+- sanitizer `focused-ctest.log`:
+  `968fdf7f98685e07e7b17e2f5cc10fdbf0d7772244adafc7e71b9f9f1f21af42`;
+- preserved first Release `full-ctest.log`:
+  `329d74518c74a0d18cf2042f6b37f62770bf898b833fcfe5be0d92394fe20fab`.
+
+Independent connected-source and fresh-installed-SDK testing subsequently
+passed **30,147 checks / 13 positive executions + 5 negative controls** in
+Release/provider ON, and **27,157 / 11 + 5** in ASan+UBSan/provider OFF. Twenty
+synthetic runner controls distinguish exact intended mathematical failures,
+real hardware skips, changed artifacts and unrelated sanitizer/crash failures.
+See [the independent connected report](agent-reports/generated-reassociate-connected-independent-v1.md).
+This installed matrix keeps source/build trees visible; it is distinct from the
+full suite's installed-source-inaccessible gate.
+
+The permanent matrix and its runner add two tests: **174** total Release ON,
+**119** in the affected sanitizer OFF selection. These test-only additions do
+not change the already-tested production compiler, runtime or generated leaf.
+Their CTest wiring and exact final-head hosted CI remain final gates.
 
 ## Claim boundary
 
