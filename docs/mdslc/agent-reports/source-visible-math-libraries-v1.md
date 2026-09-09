@@ -169,9 +169,10 @@ and `build-library-asan` directories. No other worktree/build was modified.
 Elapsed times are test-gate bookkeeping, not benchmark data; these were not
 coordinated quiet performance windows.
 Existing installed-package and compatibility source-inaccessible isolation
-tests passed on the clean rerun. This is not a new separately isolated installed
-header-library demonstration. Hosted CI, tests-disabled configuration and
-normal integration/merge are not claimed.
+tests passed on the clean rerun. Those tests alone were not a new installed
+header-library demonstration; the separate installed-SDK supplement below
+supplies that narrower evidence without hiding source. Hosted CI, tests-disabled
+configuration and normal integration/merge are not claimed.
 
 ## Independent specialization counterexample and correction
 
@@ -256,6 +257,43 @@ Final raw logs in the owning worktree:
 
 The implementation and evidence are ready for integration-owner review. No
 push, PR creation or normal engineering merge was performed by this lane.
+
+## Fresh installed-SDK source-library supplement
+
+After final validation, `cmake --install build-library-release --prefix
+/tmp/mdslc-installed-source-libraries.v8oBiQ` installed the validated Release
+artifacts into a newly created empty prefix. No rebuild or production/test edit
+occurred. Source was clean report-only head
+`485b4966143eb04e79b0c3df2622b756bf9c53b5`; engineering remained `486d3e5`.
+The installed executable was invoked by its absolute prefix path, with no
+source/build include override and `LD_LIBRARY_PATH=''`, through the existing
+`run.cmake` and `template_run.cmake` fixtures. The driver's installed-layout
+branch resolves public headers and the private SDK relative to that executable.
+
+All **nine installed-driver cases passed**: repeated inclusion executed its 67
+checks, cross-header template specialization executed its 59 checks, and the
+seven escaped-use/macro/hidden-effect/split-body controls required their exact
+diagnostic and no output artifact. Source/build directories stayed accessible;
+there was no hiding, renaming, deletion, or claim of source-inaccessible H1
+coverage. All cases forced `generated-strict`; the OpenBLAS-enabled package does
+not make these provider comparisons or sanitizer evidence.
+
+Installed SHA256 identities (paths relative to the prefix):
+
+| Artifact | SHA256 |
+| --- | --- |
+| `bin/mdslc-region` | `31453127bbc7dd4e006ad76936f724dd5388cc32919c8a9a5695ad18b9f11849` |
+| `include/matcore/region.h` | `2cbff60e4c5685d1388604df9642126e31296e067bd471e6eae9a70a26c2a39b` |
+| `include/matcore/detail/region_storage.h` | `8803a9b31de0e72ffb1045acfede828473b08f9f7292e4fefd27e1dc9b1c0927` |
+| `lib/mdslc/experimental-regions/include/closed_host_v1.h` | `d8f3d0312c4cd71e869f32e350d0aa3baa5bbc139b7bdef948099ad6b7a3db7f` |
+| `lib/mdslc/experimental-regions/libmatcore_closed_candidates_isolated_v1.so` | `5c58ef46468577475998a3fa42ec842a9787446a92ec0ca13e034bc004977ad3` |
+| `lib/libmatcore_runtime.so.0.0.0` | `bbfbbd75b6c73aa7f1cd22227cdc2ab2fa6bdc21b3dee045f9b4346e6dc1851e` |
+
+These are installed-byte identities, separately recorded from build-tree
+artifacts. Prefix-local logs remain `install.log`, SHA256
+`84b2b71e6802ebcfcda5398d776c70c7b58e9e388f2f781e04869ee75f2cb6e3`, and
+`library-cases.log`, SHA256
+`5aa0dbd45379c382e4e7345f04a369b5fb0344b4e06ca375ba7efa12dfbdb4a7`.
 
 ## Limits
 
