@@ -158,3 +158,37 @@ Windows/GPU route, installer gate or hosted product CI is established. The
 smallest product follow-up should remove unnecessary host-only restrictions and
 factor internal APIs normally, then integrate these ownership/ABI tests; it need
 not invent an independent module format first.
+
+## Separate ordinary-host expressiveness supplement
+
+After core research commit `7e094b88f6d1594b624a4a25606fe0ac58d0c0cc`, the
+integration owner requested two additional falsifiers. The research driver,
+existing fixtures and all product code/artifacts remained unchanged. Separate
+[fixtures and runner](../../../compiler/experiments/authenticated_multi_tu_v1/host_expressiveness.py)
+produced these same results in both recorded profiles:
+
+| Additional source set | Actual observation |
+| --- | --- |
+| Main + two region TUs + ordinary `host_helper(int)` TU, with canonical header included | Executed 11 checks, including ordinary utility result and both GEMMs |
+| Same utility body with no region-header include | Checked exit 1 before program link: `experimental canonical header physical FileID or exact bytes disagree`; no output or sanitizer/crash marker |
+| Main + two region TUs + two ordinary helper TUs defining the same `static local_value()` spelling, returning 31 and 47 | Executed 12 checks; both results remain distinct, plus both GEMMs |
+
+The [Release record](../../../compiler/experiments/authenticated_multi_tu_v1/evidence/host-expressiveness-release.json),
+SHA256 `112634614c8adf55c8f4486ed54fb8d05d353452aa1ea19c44d127b444ba4d93`,
+and [ASan/UBSan record](../../../compiler/experiments/authenticated_multi_tu_v1/evidence/host-expressiveness-asan-ubsan.json),
+SHA256 `f427df559e37eb4e39bf2f04ab0d7ed0487bf130ee379e64c3b667c803877477`,
+each preserve five commands with exact exits `0,0,1,0,0`. Their status is
+`OBSERVATIONS_MATCHED`, not three successful source programs. Local originals are
+`build-multi-tu-host-release-01/evidence.json` and
+`build-multi-tu-host-asan-01/evidence.json`. The
+[ELF symbol readback](../../../compiler/experiments/authenticated_multi_tu_v1/evidence/host-internal-symbols.txt)
+also shows two distinct local functions after normal LLVM linker renaming.
+
+Thus header-free utility support is a real, unnecessary restriction of this
+prototype, not a reason to require semantic-module imports. A product design
+should capture/replay every ordinary TU without force-including a region header;
+authenticate canonical types and declaration promises whenever that TU actually
+declares an issued region; and always retain the program-wide LLVM symbol-owner
+checks. Merely skipping all interface checks when a header is absent would not be
+a valid correction. Independently sealed opaque mathematical modules remain a
+different, unimplemented authority boundary.

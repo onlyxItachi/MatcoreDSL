@@ -1,0 +1,148 @@
+{
+  "schema": "authenticated-multi-tu-host-expressiveness-v1",
+  "status": "OBSERVATIONS_MATCHED",
+  "source_and_driver_sha256": {
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness/static_b.cpp": "315cfe4a23b414dbefa487c11bde71afaa3b7eb7c42258a2977ec530f53b52ac",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness/static_main.cpp": "0d640e674d617b1b8da2bf529fe7f3386c96e4092b4c07f6a837eb766105a240",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness/static_a.cpp": "080e65ca3c009810f5b0eb98eeef13000450e255d423e363205d2bbd07d7a8dd",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness/helper_with_header.cpp": "ffef20840f0d6d5edd1fef5c2860dce680eb182d665a63093a136de40291853d",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness/helper_header_free.cpp": "3c6aebe9fc3e98843dc5f1e59a87efb4fe1c2e7ecfec898f97e13b209e7ab9c6",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness/math_oracle.h": "f6bbca4e6745ceecc637ecab4c63ae3c69fa1b67a99aa3ae1d907b8246c948b7",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness/utility_main.cpp": "d29db20bc5f04b8565d7285938b3d61a278ca413bfda985222020386e9533543",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/main_comdat.cpp": "0091b412ef05c7a0ffa1ad89376ff9a6d88b51d32163a08cbb41dcb90ee3cbe7",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/main_retired.cpp": "2faddeca9f5306dfd49760d1da18f2e35557a1813513953321a260b8a183a380",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/main_asm_pure.cpp": "e516659129de6a25762bcbc25cd7d07c3bca57dbb07d3098ba83ad64caf38dc3",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/main_inline_unused.cpp": "30a35b5e6bb10d16752322d89af3b47e85ff25582649863405978efb5859a32c",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/value_helper.h": "2583a7b684fa9d51821b38be06d4b88792dc43c810b1764bbfae291132d252d0",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/main_packed.cpp": "a9a08aca64772d7217046a04768871fe1fad1a72e17170426a611e834d65e6a7",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/extra_main.cpp": "9e19042ef6f021f603b4fa04ea7ff5d68c3bc4fe0118d0ba78b40810c5b9ae72",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/main_const.cpp": "d5f7c23a1868854ab0c8e256cc001794fa19d8bd3b538b99681d06ff07dd3393",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/extra_main_asm.cpp": "21ff72d1f3d1c03c6ae86c19eacf3d5aeaf4b03cf6c963835cb22d9c6359d5c1",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/main_weak.cpp": "d5f788e24b25878749c077061522bef72aea1dbe70ff165669edd6da240c4b87",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/main_body.h": "f1d341ffa30ed4a9034d975bc58b3a6bad24fe43c67647248f6054d0aa8b1429",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/main_c_pure.cpp": "4eb27166c3548387202cb34d7ee8717668529807ae4c8e976d18cdf7bca1537a",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/second_opaque.mdsl": "6b21e156d94b7ddfc96ce74f47c58f19d5e1e1567d5a037019d5fd51a0d53777",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/api.h": "eacd90d4a156ca01693c641ab831ac87d913bd04b2ca29413d0a48b68b59a59a",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/second.mdsl": "fca71cd0ab5e833e02ab5564d510662d737206aafceb7f240365ce201d491f23",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/first.mdsl": "8f2c31bfe2c51a6d959812ceddd94650a303f2d68739179a4c87997d7538bbbc",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/main.cpp": "a0be8b673c45584a3f5ad3ac27f9a1c34f4970d98911061f4fd8e55d7b66c4a2",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/main_pure.cpp": "3782558c05ceb4ab4ee1ad3d564e847774dbafad5f2887e8262e3828120a2fd5",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/build-multi-tu-research-asan-06/multi-tu": "b78453fa03cf9f274c5cc157588c9fe72cd5ea73d42d40a52e8644a69b2f096c",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness.py": "1d57bbf78b3f4555ac9d6ac12887982cd1001fcacf09e6ab7a6a961bb0a68961",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/run.py": "ca32d74215385206b75320881562ac2cf231e4f945d98bcf67ab638895f27d1f",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/build-multi-tu-host-asan-01/header_present_control/program": "9a7a41e9f2fa679fad44d725447bc6e6d3a087f2b1aa7917eb5b4ddc881c76b2",
+    "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/build-multi-tu-host-asan-01/repeated_internal_linkage/program": "75655a2a640cfddf5ebf04087febcf2591844f94fdaa7dcd98aca3ca41eb240b"
+  },
+  "commands": [
+    {
+      "argv": [
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/build-multi-tu-research-asan-06/multi-tu",
+        "--host",
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness/utility_main.cpp",
+        "--host",
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness/helper_with_header.cpp",
+        "--region",
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/first.mdsl",
+        "first",
+        "--region",
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/second.mdsl",
+        "second",
+        "-o",
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/build-multi-tu-host-asan-01/header_present_control/program"
+      ],
+      "cwd": "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/build-multi-tu-host-asan-01/header_present_control",
+      "exit": 0,
+      "stdout": "FROZEN 0 sha256:4a59fe7b2a20c1c6b1625dc9c2882c6880325c5d4894afa345f033c6cd52d703 /home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness/utility_main.cpp\nFROZEN 1 sha256:34e5ff11643bfb3aee5064884244ae1e0300de656099010b10bd5a8a309727ef /home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness/helper_with_header.cpp\nFROZEN 2 sha256:609288d6de00d043f09dee08db75b3e9c7433c28fce447466c015425b853c414 /home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/first.mdsl\nFROZEN 3 sha256:3fd54dca9d7403fc28e01a169d9a42714b3e60d6439e91a1ecba5633366e8e71 /home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/second.mdsl\nDECLARATION_WITNESS sha256:0d8d3269cbb2567f87632c930f08be8362115ae9f70b3d9ddf90c88209140275\nVALIDATED program ownership and ABI before cross-TU link/optimization\nCROSS_TU_LINK 1\nCROSS_TU_LINK 2\nCROSS_TU_LINK 3\nNATIVE_LINK authenticated program\nPUBLISHED 9a7a41e9f2fa679fad44d725447bc6e6d3a087f2b1aa7917eb5b4ddc881c76b2 /home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/build-multi-tu-host-asan-01/header_present_control/program\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/build-multi-tu-host-asan-01/header_present_control/program"
+      ],
+      "cwd": "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/build-multi-tu-host-asan-01/header_present_control",
+      "exit": 0,
+      "stdout": "PASS ordinary_host_utility 11 checks\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/build-multi-tu-research-asan-06/multi-tu",
+        "--host",
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness/utility_main.cpp",
+        "--host",
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness/helper_header_free.cpp",
+        "--region",
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/first.mdsl",
+        "first",
+        "--region",
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/second.mdsl",
+        "second",
+        "-o",
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/build-multi-tu-host-asan-01/header_free_limitation/program"
+      ],
+      "cwd": "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/build-multi-tu-host-asan-01/header_free_limitation",
+      "exit": 1,
+      "stdout": "FROZEN 0 sha256:556366213c3d2c5c8e6ce7ec3fecd91359da189d9f5479932670cf036ede77c6 /home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness/utility_main.cpp\n",
+      "stderr": "multi-tu research: INTERFACE: experimental canonical header physical FileID or exact bytes disagree: /home/hamza-usta/MatcoreDSL-wt-source-visible-math-libraries-v1/compiler/include/matcore/region.h \n"
+    },
+    {
+      "argv": [
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/build-multi-tu-research-asan-06/multi-tu",
+        "--host",
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness/static_main.cpp",
+        "--host",
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness/static_a.cpp",
+        "--host",
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness/static_b.cpp",
+        "--region",
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/first.mdsl",
+        "first",
+        "--region",
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/second.mdsl",
+        "second",
+        "-o",
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/build-multi-tu-host-asan-01/repeated_internal_linkage/program"
+      ],
+      "cwd": "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/build-multi-tu-host-asan-01/repeated_internal_linkage",
+      "exit": 0,
+      "stdout": "FROZEN 0 sha256:40f40c0534dedd016c09bad2ed6cbcd124cc4d08c7085064f08f80982b0b5b45 /home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness/static_main.cpp\nFROZEN 1 sha256:0010a9edc06f25ba5fa78f04a7997038a75d3a605fd065d5c8ab413d12e59d72 /home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness/static_a.cpp\nFROZEN 2 sha256:52677edcb24e412f27ba12bc0a8f073579531dcb69f8c3cc4bd0cb90c535eb39 /home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/host_expressiveness/static_b.cpp\nFROZEN 3 sha256:6d90ef2bca3f4f74ae21135bba49b51defbeb9d3c3a2b731b96cb134c6be5708 /home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/first.mdsl\nFROZEN 4 sha256:b4b60dd676497956541e88f7291ebd66e1e594b351392f5714db903fefd738ca /home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/compiler/experiments/authenticated_multi_tu_v1/fixtures/second.mdsl\nDECLARATION_WITNESS sha256:de06483726f8b44cacb9b41b67cfd233168692110d150acb02f4bc32f886bf78\nVALIDATED program ownership and ABI before cross-TU link/optimization\nCROSS_TU_LINK 1\nCROSS_TU_LINK 2\nCROSS_TU_LINK 3\nCROSS_TU_LINK 4\nNATIVE_LINK authenticated program\nPUBLISHED 75655a2a640cfddf5ebf04087febcf2591844f94fdaa7dcd98aca3ca41eb240b /home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/build-multi-tu-host-asan-01/repeated_internal_linkage/program\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/build-multi-tu-host-asan-01/repeated_internal_linkage/program"
+      ],
+      "cwd": "/home/hamza-usta/MatcoreDSL-wt-authenticated-multi-tu-v1/build-multi-tu-host-asan-01/repeated_internal_linkage",
+      "exit": 0,
+      "stdout": "PASS ordinary_internal_linkage 12 checks\n",
+      "stderr": ""
+    }
+  ],
+  "cases": [
+    {
+      "name": "header_present_control",
+      "observed": "EXECUTION_PASS",
+      "expected_output": "PASS ordinary_host_utility 11 checks",
+      "executable_sha256": "9a7a41e9f2fa679fad44d725447bc6e6d3a087f2b1aa7917eb5b4ddc881c76b2"
+    },
+    {
+      "name": "header_free_limitation",
+      "observed": "FAIL_CLOSED_LIMITATION_CONFIRMED",
+      "not_supported": true,
+      "exact_diagnostic": "experimental canonical header physical FileID or exact bytes disagree"
+    },
+    {
+      "name": "repeated_internal_linkage",
+      "observed": "EXECUTION_PASS",
+      "expected_output": "PASS ordinary_internal_linkage 12 checks",
+      "executable_sha256": "75655a2a640cfddf5ebf04087febcf2591844f94fdaa7dcd98aca3ca41eb240b"
+    }
+  ],
+  "driver_source_change": false,
+  "timing": "not_requested",
+  "sanitizer_environment": {
+    "ASAN_OPTIONS": "detect_leaks=1:halt_on_error=1:strict_string_checks=1:check_initialization_order=1",
+    "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1",
+    "DEBUGINFOD_URLS": ""
+  }
+}

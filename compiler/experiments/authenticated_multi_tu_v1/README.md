@@ -83,3 +83,14 @@ ASan-poisoning allocator slow path into the prebuilt unsanitized Clang/MLIR tupl
 The initial genuine allocator failure and the earlier asm/pure acceptance bug are
 preserved, not counted as successful refusals. See the
 [full report](../../../docs/mdslc/agent-reports/authenticated-multi-tu-v1.md).
+
+## Separate ordinary-host expressiveness supplement
+
+`host_expressiveness.py` takes the same three arguments as `run.py` and reuses the
+unchanged final drivers. It records two actual execution controls (11 checks for
+a fourth utility TU, 12 checks for distinct same-named internal helpers in two
+additional TUs) and one **confirmed unsupported case**: removing the unnecessary
+region-header include from the otherwise identical utility TU is refused.
+Both Release and ASan/UBSan produced those exact observations. This is not a
+claim that header-free host source is supported. The supplement's raw evidence
+and the distinct internal ELF symbols are stored separately under `evidence/`.

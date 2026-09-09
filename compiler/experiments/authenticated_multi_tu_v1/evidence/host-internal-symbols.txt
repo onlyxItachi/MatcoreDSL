@@ -1,0 +1,12 @@
+Command: nm --defined-only -C PROGRAM | rg 'local_value'
+
+Release program f14919da3d3a2c8712ca0270d68859a06346538cf9594bf740aa2f6e1165acea:
+0000000000001670 t local_value()
+0000000000001690 t local_value() [clone .5]
+
+ASan/UBSan program (see host-expressiveness-asan-ubsan.json for full identity):
+000000000011aa58 t local_value()
+000000000011aa88 t local_value() [clone .5]
+
+Both original source functions have internal linkage and distinct results 31/47.
+Actual execution checked both results plus the two separately compiled regions.
