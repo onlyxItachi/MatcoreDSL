@@ -98,6 +98,44 @@ from `e56e5a6`; `compiler/`, `AGENTS.md` and `.github` are byte-identical.
 GitHub then reported mergeable. This normal-history ancestry correction neither
 relabeled the earlier executions nor bypassed fresh exact-head hosted acceptance.
 
+## Final canonical integration
+
+PR #67 normally merged as **`bfbf0b36adc9998e948601735758b49b630c11f2`** after
+the [final gate](https://github.com/onlyxItachi/MatcoreDSL/pull/67#issuecomment-5595722113).
+Parents: `164eb96739c75c051830673bc474cea72320f105` and
+`c22ba0792e9fbe5ffec526e0e1641092b8d0d575`; tree:
+`e85e768d8b9a61140ac84fd341ebf9fdd1046bff`, identical to the reviewed final head.
+Local canonical main was fast-forwarded and verified clean against origin/main.
+The [independent ancestry review](https://github.com/onlyxItachi/MatcoreDSL/pull/67#issuecomment-5595460748)
+accepted the documentation-only delta; no local execution was relabeled as c22.
+
+Final head `c22ba079` passed its own **21/21 hosted checks**, independently of the
+earlier e56 run. Raw completed-job review of
+[native run 34308217455](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34308217455)
+and [Windows run 34308217454](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34308217454)
+confirmed:
+
+| Final-head hosted profile | Passed | Skipped |
+| --- | ---: | ---: |
+| Release MLIR ON / OpenBLAS ON | 181 | 1 |
+| Release MLIR ON / OpenBLAS OFF | 179 | 1 |
+| Release row-contiguous / OpenBLAS OFF | 180 | 1 |
+| Debug MLIR ON / OpenBLAS OFF | 180 | 1 |
+| ASan+UBSan affected scope | 129 | 0 |
+| Release MLIR OFF / OpenBLAS ON | 81 | 1 |
+| Release MLIR OFF / OpenBLAS OFF | 80 | 1 |
+| TSan existing runtime | 4 | 0 |
+| Windows existing Release | 48 | 1 |
+| Windows existing focused Debug | 31 | 1 |
+| Windows focused clang-cl ASan | 1 | 0 |
+
+Again every skip was `runtime.cpu.packed_avx512`, not a new program gate.
+All ten program gates passed in all five compiler-enabled Linux profiles;
+Release/OpenBLAS OFF additionally passed the separate 1/1 vector-readiness check.
+The different hardware-dependent skip counts are not normalized to the older
+e56 run. Debug's full scope completed in 1739.43 s; its actual policy-composition
+test passed in 57.90 s. No new performance claim follows from these CI timings.
+
 ## Initial checkpoint retained
 
 Initial local integration passed at **`ed8f7fed1d4a1969328e4f0c9626f0d98151169e`**:

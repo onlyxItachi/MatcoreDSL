@@ -1,8 +1,9 @@
 # MLIR HPC execution campaign
 
-Status: **implementation/reconciliation complete locally; final canonical
-multi-source integration remains pending PR #67**. The initial investigation
-below is historical; the bounded results and remaining merge gate follow it.
+Status: **bounded engineering campaign complete on canonical main**, latest
+engineering merge `bfbf0b36adc9998e948601735758b49b630c11f2` / PR #67.
+The initial investigation below is historical; the reconciled results,
+validation boundaries and next unimplemented boundary follow it.
 
 Canonical start: `0e8c040809ae1fe6b0f1c01e41fc509b07212be7` (PR #59),
 engineering merge `8e0cf0f39833966227dee44d4367b99927a7ae03` (PR #58).
@@ -77,7 +78,7 @@ performance evidence. Issue #15 remains partial/open; its existing envelope
 cannot be completed by a few generated-kernel wins. Issue #20 remains a design
 record, not a completed general tensor API.
 
-## Campaign reconciliation still required
+## Initial reconciliation requirements (fulfilled below)
 
 - Explain which upstream mechanisms suffice and which concrete counterexamples
   require Matcore-owned abstractions.
@@ -105,7 +106,7 @@ planning abstractions are unnecessary.
 | Fresh output-data isolation | `c04215e787832b35bbd6a85a51d9285b053181bc` / PR #62 | Only fresh output data receives noalias; input/input aliasing stays legal. This was not a blanket performance win. |
 | Source-visible mathematical libraries | `917b5ecf1d325e525bc24e3c94764d2958980a93` / PR #63 | Sema-selected pure Value/Shape helpers and bounded templates in headers retain actual source/inclusion identity. |
 | Explicitly permitted generated FMA | `c3b7b0b9a05e11d1b8d8cd3eff1c7ef3551a8280` / PR #66 | Separate authenticated per-GEMM permission, upstream register retention, isolated AVX2/FMA object, hardware/OS gate, preserved ordered effects and candidate ownership. |
-| Authenticated multi-source program | Reviewed `e56e5a648295f7b5ec60bff31f30bf37c031c854` / PR #67, canonical merge pending | Genuine 2–8 source TUs, original host compilation, foreign interface/effect witnesses and protected symbol ownership before linking. Both candidate policies compose across source files. |
+| Authenticated multi-source program | `bfbf0b36adc9998e948601735758b49b630c11f2` / PR #67 | Genuine 2–8 source TUs, original host compilation, foreign interface/effect witnesses and protected symbol ownership before linking. Both candidate policies compose across source files. |
 
 The distinction between immutable values, host resources and possible physical
 aliasing survived. Required read checks, publication/owning observation and
@@ -119,8 +120,21 @@ The [source-to-generated contract](GENERATED_REASSOCIATE_CPU_V1.md),
 [independent cross-file policy execution](agent-reports/program-reassociate-composition-v1.md)
 and [independent campaign audit](agent-reports/mlir-hpc-campaign-terminal-independent-v1.md)
 preserve exact source heads, artifact identities, actual failures and validation.
-Neither a green branch nor this report substitutes for final exact-head hosted
-CI, normal dependency-ordered merges and the operator checkpoint.
+The dependency order was PR #66 -> documentation checkpoint #68
+(`164eb96739c75c051830673bc474cea72320f105`) -> PR #67. Each completed **21/21
+exact-head hosted checks** before normal merge. PR #67's reviewed local execution
+head `e56e5a648295f7b5ec60bff31f30bf37c031c854` passed Release **184/184** and
+affected ASan/UBSan **129/129**, without skips. Its normal ancestry correction
+`c22ba0792e9fbe5ffec526e0e1641092b8d0d575` changed only the two #68 documents;
+all implementation/test/CI bytes stayed identical and its own hosted gate passed.
+The canonical #67 merge has parents `164eb967` and `c22ba079` and exactly the
+tested/reviewed candidate tree `e85e768d8b9a61140ac84fd341ebf9fdd1046bff`.
+
+The [merge record](agent-reports/authenticated-multi-source-v1.md#final-canonical-integration)
+retains the initially refused GitHub merge attempt, normal-history resolution,
+independent review and actual hosted counts/skips. No history was rewritten or
+required check bypassed. The [operator checkpoint](CURRENT_STATE.md) records the
+engineering merge rather than a self-referential documentation SHA.
 
 ### What the measurements actually say
 

@@ -1,5 +1,10 @@
 # Independent bounded MLIR/HPC campaign terminal audit
 
+This preserves the independent review's pre-integration snapshot. The later
+[canonical reconciliation](../MLIR_HPC_EXECUTION_CAMPAIGN_V1.md#reconciled-results)
+records fulfillment of its composition, validation and normal-merge conditions;
+it does not rewrite the historical observations below.
+
 ## Verdict: conditional completion, not universal compiler sufficiency
 
 **Yes:** the recorded [campaign objective](../MLIR_HPC_EXECUTION_CAMPAIGN_V1.md)
