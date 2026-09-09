@@ -8,7 +8,137 @@ It retains single-source mode, source-visible mathematical helper admission,
 private candidate ownership, and the existing region execution contract.
 See the [operator contract](../MULTI_SOURCE_PROGRAMS_V1.md).
 
-Local integration passed at **`ed8f7fed1d4a1969328e4f0c9626f0d98151169e`**:
+## Composed local acceptance
+
+Final local validation passed at clean
+**`e56e5a648295f7b5ec60bff31f30bf37c031c854`**:
+
+- Full Release: **184/184**, 639.99 seconds.
+- Affected ASan/UBSan: **129/129**, 538.91 seconds.
+- Actual CI region inventories: **42 OpenBLAS ON / 41 OFF**.
+- Independent genuine three-TU policy composition: **164 strict + 152
+  reassociated checks**, host trace 123, in each profile. Both exact wrong-oracle
+  controls exit 1 with 143/155 expected assertion failures; no crash or skip.
+
+Normal merge `fa292efec1728996854a1bf212c0265af397a999` combines report head
+`17405ff42c81cb8228c758d2efee49dd7939048c` with reviewed PR #66 head
+`76bcf62183712544b202ce58290f04fef7502e48`. The only manual production resolution
+adds the generated-reassociate arm and usage spelling to the shared DriverSupport
+parser; both CLI modes still use that parser. Independent composition fixtures
+are `c11a4aa` (original `c3346f8`), followed by CTest/CI registration `e56e5a6`.
+The normal canonical PR #66 merge is now
+`c3b7b0b9a05e11d1b8d8cd3eff1c7ef3551a8280`. Its prospective merge with `e56e5a6`
+has exactly the already tested tree
+`521a0282c1bc80a694f7460f7e19a89a68811be3`; acquiring that ancestry needs no
+production content change. Hosted PR #67 acceptance and its normal merge remain
+separate gates, not results inferred from the local suites.
+
+The [independent composition record](program-reassociate-composition-v1.md)
+distinguishes real full 4x8/K2 FMA arithmetic from strict multiply/add, preserves
+an owning observation across both Result lifetimes and ordinary host mutation,
+and checks the later strict operation's exact physical-source failure frontier.
+The new test passed rather than skipped in both registered suites. Installed
+strict multi-source execution and the existing installed FMA matrix passed
+separately; no installed combined-policy or source-hidden multi-source claim is
+made.
+
+All six driver/candidate/runtime artifacts were rehashed unchanged after the
+full suites. Final driver SHA256 values:
+
+- Release: `23ca6986a99a1b0acdeb7a73bc77a6903c3a650c1664475f4bd2595dfe90a02c`.
+- ASan/UBSan: `07d3ce88800b45a0959787750cce36e160db681fc34ce11bc4890c2765d05661`.
+
+Complete composed logs:
+
+- `/tmp/mdslc-program-composed-full-release-tests.log`, SHA256
+  `176a66c29e440c3b1d5eb73a9ee37e536c86d16a9c8f6e8fe6f1ba22e770c6f6`.
+- `/tmp/mdslc-program-composed-affected-asan-tests.log`, SHA256
+  `d373317e6238a2d5f4ab03c862f303c2ac7a60bb723572e6459cf3366f19400d`.
+
+This report followup is prepared separately from the frozen PR #67 source head;
+it does not replace, rewrite or restart the recorded execution evidence.
+
+## Hosted acceptance and mergeability reconciliation
+
+Reviewed head `e56e5a648295f7b5ec60bff31f30bf37c031c854` completed **21/21
+hosted checks**. Independent raw completed-job inspection of
+[native run 34305784001](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34305784001)
+and [Windows run 34305783999](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34305783999)
+established the following exact scopes, separately from the local 184/129 runs:
+
+| Hosted profile | Passed | Skipped |
+| --- | ---: | ---: |
+| Release MLIR ON / OpenBLAS ON | 182 | 0 |
+| Release MLIR ON / OpenBLAS OFF | 180 | 0 |
+| Release row-contiguous / OpenBLAS OFF | 180 | 1 |
+| Debug MLIR ON / OpenBLAS OFF | 180 | 1 |
+| ASan+UBSan affected scope | 128 | 1 |
+| Release MLIR OFF / OpenBLAS ON | 82 | 0 |
+| Release MLIR OFF / OpenBLAS OFF | 81 | 0 |
+| TSan existing runtime | 4 | 0 |
+| Windows existing Release | 48 | 1 |
+| Windows existing focused Debug | 31 | 1 |
+| Windows focused clang-cl ASan | 1 | 0 |
+
+Every skip was the existing `runtime.cpu.packed_avx512` capability control.
+All ten program gates, including `driver.program_reassociate`, actually passed
+in all five compiler-enabled Linux profiles. Default Release/OpenBLAS OFF also
+passed the separate 1/1 vector-readiness control. Windows evidence remains the
+existing standalone/runtime route, not generated-region or multi-source support.
+
+The [independent composed review](https://github.com/onlyxItachi/MatcoreDSL/pull/67#issuecomment-5595377303)
+accepted `e56e5a6`. The first normal merge attempt nevertheless received GitHub
+HTTP 405 (reported conflicts), while local Git calculated a clean prospective
+merge and the API still reported stale base `b7e6cc0`. No canonical mutation
+occurred. Normal merge `c22ba0792e9fbe5ffec526e0e1641092b8d0d575` incorporated
+actual main `164eb96739c75c051830673bc474cea72320f105` without conflicts or code
+edits. Its parents are `e56e5a6` and `164eb967`; its tree is
+`e85e768d8b9a61140ac84fd341ebf9fdd1046bff`. Only the two PR #68 documents differ
+from `e56e5a6`; `compiler/`, `AGENTS.md` and `.github` are byte-identical.
+GitHub then reported mergeable. This normal-history ancestry correction neither
+relabeled the earlier executions nor bypassed fresh exact-head hosted acceptance.
+
+## Final canonical integration
+
+PR #67 normally merged as **`bfbf0b36adc9998e948601735758b49b630c11f2`** after
+the [final gate](https://github.com/onlyxItachi/MatcoreDSL/pull/67#issuecomment-5595722113).
+Parents: `164eb96739c75c051830673bc474cea72320f105` and
+`c22ba0792e9fbe5ffec526e0e1641092b8d0d575`; tree:
+`e85e768d8b9a61140ac84fd341ebf9fdd1046bff`, identical to the reviewed final head.
+Local canonical main was fast-forwarded and verified clean against origin/main.
+The [independent ancestry review](https://github.com/onlyxItachi/MatcoreDSL/pull/67#issuecomment-5595460748)
+accepted the documentation-only delta; no local execution was relabeled as c22.
+
+Final head `c22ba079` passed its own **21/21 hosted checks**, independently of the
+earlier e56 run. Raw completed-job review of
+[native run 34308217455](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34308217455)
+and [Windows run 34308217454](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34308217454)
+confirmed:
+
+| Final-head hosted profile | Passed | Skipped |
+| --- | ---: | ---: |
+| Release MLIR ON / OpenBLAS ON | 181 | 1 |
+| Release MLIR ON / OpenBLAS OFF | 179 | 1 |
+| Release row-contiguous / OpenBLAS OFF | 180 | 1 |
+| Debug MLIR ON / OpenBLAS OFF | 180 | 1 |
+| ASan+UBSan affected scope | 129 | 0 |
+| Release MLIR OFF / OpenBLAS ON | 81 | 1 |
+| Release MLIR OFF / OpenBLAS OFF | 80 | 1 |
+| TSan existing runtime | 4 | 0 |
+| Windows existing Release | 48 | 1 |
+| Windows existing focused Debug | 31 | 1 |
+| Windows focused clang-cl ASan | 1 | 0 |
+
+Again every skip was `runtime.cpu.packed_avx512`, not a new program gate.
+All ten program gates passed in all five compiler-enabled Linux profiles;
+Release/OpenBLAS OFF additionally passed the separate 1/1 vector-readiness check.
+The different hardware-dependent skip counts are not normalized to the older
+e56 run. Debug's full scope completed in 1739.43 s; its actual policy-composition
+test passed in 57.90 s. No new performance claim follows from these CI timings.
+
+## Initial checkpoint retained
+
+Initial local integration passed at **`ed8f7fed1d4a1969328e4f0c9626f0d98151169e`**:
 
 | Gate | Actual result |
 | --- | --- |
@@ -22,9 +152,8 @@ Local integration passed at **`ed8f7fed1d4a1969328e4f0c9626f0d98151169e`**:
 These are local correctness/integration results, not timings for a performance
 comparison. [Draft PR #67](https://github.com/onlyxItachi/MatcoreDSL/pull/67) was
 opened at this exact head while the local gates ran. Hosted acceptance and normal
-merge are not claimed. The separately pending generated-reassociate candidate
-lane must be composed through the shared policy parser and independently tested;
-this checkpoint does not claim that future composition passed.
+merge are not claimed for this initial checkpoint. The then-pending candidate
+composition is validated separately above, not retroactively by these old tests.
 
 ## Implementation and authority
 
@@ -95,7 +224,7 @@ whose actual inventories are asserted in CI. ASan used leak detection,
 halt-on-error, strict string checks and initialization-order checks; UBSan used
 halt-on-error and stack traces. No sanitizer suppression was added.
 
-Final driver SHA256 values, unchanged after all gates:
+Initial-checkpoint driver SHA256 values, unchanged after its gates:
 
 - Release: `61da18ddbbf5ef47563d92a3b0bf92657e136d91712731dfcd1fc9f700c1952e`.
 - ASan/UBSan: `060d31e67e4476d74045d77202397682fc32f8c2e1ec20dd26db0da5e2f6fc88`.
