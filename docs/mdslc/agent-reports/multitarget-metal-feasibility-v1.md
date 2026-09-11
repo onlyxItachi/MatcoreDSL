@@ -208,3 +208,13 @@ A separate CPU-lane reviewer found the first K-order witness was too weak:
 now explicitly proves its wrong-order oracle differs before launching anything.
 This is ordinary engineering review, not native Apple validation or a security
 audit. Rejected weak fixtures remain visible in normal commit history.
+
+## Hosted experiment history
+
+- [Run 34603623217](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34603623217),
+  head `0e83fa2b3b3b58a949561d3a6cfbeb9226ddd374`: the actual Apple compiler
+  rejected the initially proposed `-std=metal2.1` spelling and explicitly
+  prescribed `-std=macos-metal2.1`. This is a recipe error, not a numerical
+  counterexample or proof of device absence. The identity/compiler gate
+  correctly prevented host execution. The next commit corrects that exact
+  spelling; no semantic flag is weakened and the failed run is retained.

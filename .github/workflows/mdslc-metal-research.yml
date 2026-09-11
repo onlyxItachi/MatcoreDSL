@@ -30,7 +30,7 @@ jobs:
         run: |
           if xcrun --find metal > evidence/metal-tool.txt 2> evidence/metal-tool-error.txt; then
             for variant in fill gemm gemm-required-fp; do
-              xcrun -sdk macosx metal -std=metal2.1 -fno-fast-math -ffp-contract=off \
+              xcrun -sdk macosx metal -std=macos-metal2.1 -fno-fast-math -ffp-contract=off \
                 -c "golden/$variant.metal" -o "evidence/$variant.air"
             done
             echo COMPILE_ONLY_PASS > evidence/offline-compile-status.txt
