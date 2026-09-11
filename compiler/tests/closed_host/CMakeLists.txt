@@ -2,7 +2,8 @@
 # require fault injection against a separate variant rather than exposing an
 # arbitrary callback in the trusted runtime interface.
 foreach(target IN ITEMS matcore_closed_host_v1 matcore_closed_host_test_v1)
-  add_library(${target} STATIC ../../lib/runtime/closed_host_v1.cpp)
+  add_library(${target} STATIC ../../lib/runtime/closed_host_v1.cpp
+    ../../lib/platform/closed_fp_environment_v1.cpp)
   target_compile_features(${target} PUBLIC cxx_std_20)
   target_include_directories(${target} PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/../../lib/runtime"

@@ -169,7 +169,8 @@ function(mdslc_add_closed_candidate_runtime target)
   if(REGION_SHARED)
     set(library_kind SHARED)
   endif()
-  add_library(${target} ${library_kind} "${compiler_dir}/lib/runtime/closed_host_v1.cpp")
+  add_library(${target} ${library_kind} "${compiler_dir}/lib/runtime/closed_host_v1.cpp"
+    "${compiler_dir}/lib/platform/closed_fp_environment_v1.cpp")
   target_include_directories(${target} PUBLIC
     "${compiler_dir}/lib/runtime" "${compiler_dir}/include")
   target_compile_features(${target} PUBLIC cxx_std_20)

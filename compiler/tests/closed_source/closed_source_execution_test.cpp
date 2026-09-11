@@ -534,7 +534,10 @@ int main(int argc,char **argv) {
       compile.argv.push_back(object.string());
       if(generated) {
         compile.argv.insert(compile.argv.end(),{registry,runtimeLibrary,"-Wl,-rpath,"+fs::path(runtimeLibrary).parent_path().string()});
-      } else compile.argv.push_back((compiler/"lib/runtime/closed_host_v1.cpp").string());
+      } else {
+        compile.argv.push_back((compiler/"lib/runtime/closed_host_v1.cpp").string());
+        compile.argv.push_back((compiler/"lib/platform/closed_fp_environment_v1.cpp").string());
+      }
       compile.argv.insert(compile.argv.end(),{"-o",executable.string()});
       auto linked=support::run_process_v1(compile);
       check(linked.launched && linked.exit_code==0,"ordinary final link with production adapter: "+linked.error+linked.stderr_text);
