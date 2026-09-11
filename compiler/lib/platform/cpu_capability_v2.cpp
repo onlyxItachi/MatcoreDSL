@@ -1,12 +1,7 @@
 #include "cpu_capability_v2.h"
+#include "cpu_x86_probe_internal.h"
 
 #include <sstream>
-
-#if defined(_MSC_VER) && defined(_M_X64)
-#include <intrin.h>
-#elif defined(__x86_64__) && (defined(__clang__) || defined(__GNUC__))
-#include <cpuid.h>
-#endif
 
 #if defined(__linux__) && defined(__x86_64__)
 #include <asm/prctl.h>
@@ -72,59 +67,9 @@ void mark_available(CpuFeatureDomainV2 &domain,
   domain.available |= feature_bit(feature);
 }
 
-struct CpuidResult {
-  std::uint32_t eax = 0;
-  std::uint32_t ebx = 0;
-  std::uint32_t ecx = 0;
-  std::uint32_t edx = 0;
-};
-
-bool read_cpuid(std::uint32_t leaf, std::uint32_t subleaf,
-                CpuidResult *output) noexcept {
-  if (output == nullptr) return false;
-#if defined(_MSC_VER) && defined(_M_X64)
-  int maximum[4]{};
-  __cpuidex(maximum, 0, 0);
-  if (leaf > static_cast<std::uint32_t>(maximum[0])) return false;
-  int registers[4]{};
-  __cpuidex(registers, static_cast<int>(leaf), static_cast<int>(subleaf));
-  *output = {static_cast<std::uint32_t>(registers[0]),
-             static_cast<std::uint32_t>(registers[1]),
-             static_cast<std::uint32_t>(registers[2]),
-             static_cast<std::uint32_t>(registers[3])};
-  return true;
-#elif defined(__x86_64__) && (defined(__clang__) || defined(__GNUC__))
-  const unsigned int maximum = __get_cpuid_max(0, nullptr);
-  if (leaf > maximum) return false;
-  unsigned int eax = 0;
-  unsigned int ebx = 0;
-  unsigned int ecx = 0;
-  unsigned int edx = 0;
-  __cpuid_count(leaf, subleaf, eax, ebx, ecx, edx);
-  *output = {eax, ebx, ecx, edx};
-  return true;
-#else
-  (void)leaf;
-  (void)subleaf;
-  return false;
-#endif
-}
-
-bool read_xcr0(std::uint64_t *output) noexcept {
-  if (output == nullptr) return false;
-#if defined(_MSC_VER) && defined(_M_X64)
-  *output = _xgetbv(0);
-  return true;
-#elif defined(__x86_64__) && (defined(__clang__) || defined(__GNUC__))
-  std::uint32_t eax = 0;
-  std::uint32_t edx = 0;
-  __asm__ volatile("xgetbv" : "=a"(eax), "=d"(edx) : "c"(0));
-  *output = (static_cast<std::uint64_t>(edx) << 32U) | eax;
-  return true;
-#else
-  return false;
-#endif
-}
+using x86_probe_internal::CpuidResult;
+using x86_probe_internal::read_cpuid;
+using x86_probe_internal::read_xcr0;
 
 bool read_amx_permission(bool *granted) noexcept {
   if (granted == nullptr) return false;

@@ -1,0 +1,26 @@
+cmake_minimum_required(VERSION 3.20)
+if(NOT ISA MATCHES "^(avx|avx2|avx512f)$")
+  message(FATAL_ERROR "unknown ISA ownership request")
+endif()
+execute_process(COMMAND "${PROBE}" RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
+if(status STREQUAL "77" AND output MATCHES "^SKIP strict ISA" AND error STREQUAL "")
+  message(STATUS "${output}")
+  return()
+elseif(NOT status STREQUAL "0")
+  message(FATAL_ERROR "ISA probe failed: ${output}\n${error}")
+endif()
+string(RANDOM LENGTH 14 ALPHABET 0123456789abcdef nonce)
+set(executable "${CMAKE_CURRENT_BINARY_DIR}/strict-isa-ownership-${ISA}-${nonce}")
+execute_process(COMMAND "${DRIVER}" "${CMAKE_CURRENT_LIST_DIR}/strict_isa_ownership.mdsl"
+  --region isa_region --candidate "generated-strict-${ISA}" -o "${executable}" --
+  "-DISA_LEAF=\"__matcore_strict_gemm_f32_${ISA}_v1\""
+  "-DISA_WRAPPER=\"_mlir_ciface___matcore_strict_gemm_f32_${ISA}_v1\""
+  RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
+if(NOT status STREQUAL "0" OR NOT EXISTS "${executable}")
+  message(FATAL_ERROR "ISA ownership source compilation failed: ${output}\n${error}")
+endif()
+execute_process(COMMAND "${executable}" RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
+if(NOT status STREQUAL "0" OR NOT output STREQUAL "PASS strict ISA private leaf ownership: 129 outputs; host replacements not invoked\n" OR NOT error STREQUAL "")
+  message(FATAL_ERROR "Host replacement affected private ISA leaf: ${status}\n${output}\n${error}")
+endif()
+message(STATUS "${output}")

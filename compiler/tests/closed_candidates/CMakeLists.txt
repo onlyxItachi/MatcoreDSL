@@ -9,6 +9,7 @@ mdslc_add_closed_candidate_runtime(matcore_closed_candidates_native_only_v1 NATI
 foreach(mode IN ITEMS production testing native_only)
   set(target matcore_closed_candidates_${mode}_v1)
   add_executable(matcore_closed_candidates_${mode}_test candidate_test.cpp)
+  target_sources(matcore_closed_candidates_${mode}_test PRIVATE ../../lib/platform/closed_cpu_isa_v1.cpp)
   target_link_libraries(matcore_closed_candidates_${mode}_test PRIVATE ${target})
   target_compile_options(matcore_closed_candidates_${mode}_test PRIVATE -ffp-contract=off -frounding-math)
   if(mode STREQUAL "native_only")
@@ -19,6 +20,15 @@ foreach(mode IN ITEMS production testing native_only)
   endif()
   add_test(NAME closed_candidates.${mode} COMMAND matcore_closed_candidates_${mode}_test)
 endforeach()
+
+add_executable(matcore_closed_strict_isa_guard strict_isa_guard_test.cpp
+  ../../lib/runtime/closed_host_v1.cpp ../../lib/platform/closed_fp_environment_v1.cpp)
+target_include_directories(matcore_closed_strict_isa_guard PRIVATE ../../lib/runtime ../../include)
+target_compile_features(matcore_closed_strict_isa_guard PRIVATE cxx_std_20)
+target_compile_options(matcore_closed_strict_isa_guard PRIVATE -fno-fast-math -ffp-contract=off -frounding-math)
+target_compile_definitions(matcore_closed_strict_isa_guard PRIVATE
+  MDSLC_CLOSED_HOST_GENERATED_STRICT_ISA MDSLC_CLOSED_HOST_TESTING)
+add_test(NAME closed_candidates.strict_isa_guard COMMAND matcore_closed_strict_isa_guard)
 
 add_test(NAME closed_candidates.production_symbols COMMAND "${CMAKE_COMMAND}"
   "-DNM=${MDSLC_CANDIDATE_NM}"

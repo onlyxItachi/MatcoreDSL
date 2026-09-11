@@ -3,6 +3,8 @@ if(NOT TARGET matcore-cpu-gemm-candidate)
   return()
 endif()
 
+include(StrictCpuIsaTests.cmake)
+
 if(TARGET mdslc-region)
   foreach(case IN ITEMS source same_value)
     add_test(NAME generated_cpu.source_schedule.${case} COMMAND "${CMAKE_COMMAND}"

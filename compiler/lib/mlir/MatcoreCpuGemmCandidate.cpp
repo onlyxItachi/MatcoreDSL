@@ -450,7 +450,8 @@ bool verifyReassociateGemmBufferizedV1(mlir::ModuleOp module, std::string &error
 }
 
 StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
-    bool address_sanitizer, StrictGemmScheduleV1 schedule, CpuTargetV1 target) {
+    bool address_sanitizer, StrictGemmScheduleV1 schedule, CpuTargetV1 target,
+    StrictCpuIsaV1 isa) {
   StrictGemmArtifactV1 result;
   const char *targetTriple = cpuTargetTripleV1(target);
   if (!targetTriple) {
@@ -460,6 +461,13 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
   if (schedule != StrictGemmScheduleV1::ScalarMNK &&
       schedule != StrictGemmScheduleV1::RowContiguousMKN) {
     fail(result.error, "unknown strict GEMM schedule");
+    return result;
+  }
+  if (!strictCpuFeaturesV1(isa) ||
+      (isa != StrictCpuIsaV1::Baseline &&
+       (target != CpuTargetV1::LinuxX86_64 ||
+        schedule != StrictGemmScheduleV1::RowContiguousMKN))) {
+    fail(result.error, "strict ISA candidates require a closed x86 row-contiguous realization");
     return result;
   }
   auto stages = buildStrictGemmStagesV1(context);
@@ -551,6 +559,22 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
       fail(result.error, "LLVM output-data fact preservation failed verification");
     return result;
   }
+  if (isa != StrictCpuIsaV1::Baseline) {
+    // Rename only after the original compiler-owned derivation/ABI checks.
+    // setName updates the wrapper call's symbol reference, not the recipe.
+    lowered->getFunction(kStrictGemmSymbolV1)->setName(strictCpuLeafSymbolV1(isa));
+    lowered->getFunction(kStrictGemmCInterfaceV1)->setName(
+        std::string("_mlir_ciface_") + strictCpuLeafSymbolV1(isa));
+    for (auto &fn : *lowered) {
+      fn.addFnAttr("target-cpu", "x86-64");
+      fn.addFnAttr("target-features", strictCpuFeaturesV1(isa));
+      fn.addFnAttr("prefer-vector-width", strictCpuVectorWidthV1(isa));
+    }
+    if (llvm::verifyModule(*lowered)) {
+      fail(result.error, "strict ISA realization failed LLVM verification");
+      return result;
+    }
+  }
   llvm::raw_string_ostream output(result.llvm_ir);
   lowered->print(output, nullptr);
   output.flush();
@@ -578,6 +602,12 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
       "\ntransform_sha256=" + digest(result.transform_ir) +
       "\nscheduled_sha256=" + digest(result.scheduled_ir) +
       "\nllvm_sha256=" + digest(result.llvm_ir) + "\n";
+  if (isa != StrictCpuIsaV1::Baseline)
+    result.manifest += std::string("isa=") + platform::strictCpuIsaNameV1(isa) +
+        "\nleaf_symbol=" + strictCpuLeafSymbolV1(isa) +
+        "\ntarget_cpu=x86-64\ntarget_features=" + strictCpuFeaturesV1(isa) +
+        "\nprefer_vector_width=" + strictCpuVectorWidthV1(isa) +
+        "\narithmetic_fma_permission=none\n";
   return result;
 }
 } // namespace matcore::mdslc::cpu_candidate

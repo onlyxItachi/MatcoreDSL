@@ -10,12 +10,14 @@ namespace matcore::mdslc::runtime::closed_host_v1 {
 // automatic explicitly chooses linked strict generated, otherwise strict native.
 enum class Candidate : std::uint8_t {
   automatic, native_strict, generated_strict, existing_native,
-  authenticated_openblas, generated_reassociate
+  authenticated_openblas, generated_reassociate,
+  generated_strict_avx, generated_strict_avx2, generated_strict_avx512f
 };
 enum class Implementation : std::uint8_t {
   none, native_strict, generated_strict, existing_reference,
   authenticated_openblas, empty_output, zero_reduction, test_only,
-  generated_reassociate
+  generated_reassociate, generated_strict_avx, generated_strict_avx2,
+  generated_strict_avx512f
 };
 struct Options { Candidate candidate = Candidate::native_strict; };
 struct CandidateReport {
