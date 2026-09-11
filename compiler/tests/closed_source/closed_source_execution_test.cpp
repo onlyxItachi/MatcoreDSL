@@ -501,9 +501,15 @@ int main(int argc,char **argv) {
         matcore_cpu_gemm_plan_report_v2 report{};
         report.abi_version=MATCORE_RUNTIME_PLAN_ABI_VERSION_V2;report.struct_size=sizeof(report);
         const auto status=matcore_runtime_gemm_f32_execute_v1(&out,&lhs,&rhs,&policy,&options,nullptr,0,&report);
+#if defined(__aarch64__)
+        expect(status.code==MATCORE_STATUS_UNSUPPORTED_FLOATING_POINT_ENVIRONMENT_V0 &&
+               c[0]==-1 && a[0]==2 && b[0]==3 && !report.selected_stable_id,
+               "ordinary legacy C ABI remains explicitly unsupported on ARM without mutation or fallback");
+#else
         expect(status.code==MATCORE_STATUS_OK_V0 && c[0]==6 && report.selected_stable_id &&
                std::strcmp(report.selected_stable_id,"cpu.reference.f32.v1")==0,
                "ordinary legacy C ABI coexists in the exact generated-source executable");
+#endif
       })child";
     }
 
