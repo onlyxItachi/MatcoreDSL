@@ -1,6 +1,9 @@
 if(NOT TARGET mdslc-region)
   return()
 endif()
+# Own this directory's test-runner dependency; later/sibling discovery does not
+# populate Python3_EXECUTABLE here on a fresh, unseeded configure.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_executable(matcore_gpu_qualification_test qualification_test.cpp
   ../../lib/runtime/closed_host_v1.cpp
   ../../lib/platform/closed_fp_environment_v1.cpp)
