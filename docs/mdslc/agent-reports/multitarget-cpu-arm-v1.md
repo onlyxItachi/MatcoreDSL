@@ -108,3 +108,38 @@ Next smallest production boundary: fixed native Linux AArch64 strict issuer
 target plus full FPCR/FPSR scope and matched ELF ownership, then real native ARM
 source execution/negative tests in CI. Existing numerical, provider, automatic
 selection, publication and source authority contracts must remain unchanged.
+
+## Production-boundary preparation: full closed FP scope
+
+Root authorized a separate production extraction after the leaf-only commit
+`77c55d4`. New `platform::ClosedFpEnvironmentV1` owns only complete thread FP
+state; root separately owns runtime/CMake adoption, ELF ownership and native CI.
+It is noncopyable/nonmovable and retains `valid`, `controlsUnchanged`, `restore`
+and destructor restoration. Unknown platforms fail closed. Restore failure
+terminates rather than returning with a violated normal-return contract.
+
+The Linux x86-64 path preserves the previous closed adapter's fegetenv/fesetenv,
+MXCSR and x87 control/status algorithm. The Linux AArch64 path snapshots complete
+64-bit register reads of FPCR and FPSR, privately writes zero controls/status,
+checks exact zero controls and restores the captured values with raw register
+writes plus readback. This avoids inheriting a narrower libc mask of recognized
+control/status bits. FPCR zero excludes rounding changes, flushing, traps,
+default-NaN and alternative controls, including newer AH/FIZ bits. Every nonzero
+bit fails the pure compatibility predicate; this deliberately does not claim
+support for future nondefault control modes or SME/FP8 execution.
+
+Focused standalone Clang21 commands used `-std=c++20 -Wall -Wextra -Werror
+-fno-fast-math -ffp-contract=off -frounding-math -ftrapping-math -pthread` and
+only the new implementation/test files. Release `-O2` and instrumented `-O1 -g
+-fsanitize=address,undefined -fno-omit-frame-pointer` each passed **66 checks plus
+128 concurrent-thread cases**, zero failures. The sanitizer run enabled leak
+detection and halt-on-error. Outputs are `builds/cpu-arm/closed-fp-test` and
+`closed-fp-test-asan`; all compiler temporaries use `tmp/cpu-arm`.
+
+Tests cover every-bit synthetic ARM-control refusal; hostile caller rounding,
+FTZ/DAZ or ARM DN/FZ and sticky status; nested normalization; gradual underflow,
+NaN and non-FMA discrimination; legal computation-status changes; changed
+control detection; exact caller status/control restoration and idempotence;
+four independent threads running 32 cases each. ARM-specific physical branches
+are **not locally executed**. Neither this test nor extraction establishes
+source-to-ARM runtime execution; that remains the integration/native-CI gate.
