@@ -2,9 +2,12 @@
 
 Research branch `research/mdslc-nvvm-correctness-v1`, starting from canonical
 `9c2149a25e12f5192c168f3e047097505263fc1a`. Evidence date: 2026-09-11.
-This is a bounded physical lowering experiment, **not product NVIDIA support**.
-No production compiler/runtime source, dispatch policy, public API, or CPU
-execution authority is changed by this branch.
+The initial research checkpoint `f73cab9` is a bounded physical lowering
+experiment, **not product NVIDIA support**. Its four files change no production
+compiler/runtime source, dispatch policy, public API, or CPU execution authority.
+The subsequent shared issuer and checked-adapter implementation is recorded
+separately below; complete source-to-executable integration belongs to the
+integration branch, not the research harness.
 
 ## Result and connected derivation
 
@@ -171,10 +174,119 @@ versioned upstream implementations, not speculative support inferred from names:
 - [LLVM 21.1.8 GPU kernel outlining](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/mlir/lib/Dialect/GPU/Transforms/KernelOutlining.cpp).
 - [LLVM 21.1.8 GPU-to-NVVM conversion](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/mlir/lib/Conversion/GPUToNVVM/LowerGpuOpsToNVVMOps.cpp).
 
-## Next boundary
+## Initial research next boundary
 
 Connect this same compiler-owned strict primitive to an opt-in, artifact-bound,
 force-only NVIDIA candidate in the existing private-output Session execution
 mechanism, with checked transfer/completion failures and no default policy change.
 The experiment's passing arithmetic tests are necessary but not sufficient for
 that source-to-executable production contract.
+
+## Shared issuer and checked-adapter implementation
+
+The subsequent implementation reuses `buildStrictGemmStagesV1` directly.
+`MatcoreGpuGemmCandidate.{h,cpp}` (commit `c5657a6`) is a closed issuer with no
+imported source/IR argument. It emits common semantic, structured, bufferized
+and outlined stages plus separate fill/GEMM LLVM modules for NVVM `sm_89` or
+ROCDL `gfx1150`. Target selection leaves all four common stage bytes identical.
+`closed_gpu_images_v1.h` names private embedded device images, not a public
+kernel ABI or an imported-artifact authority mechanism.
+
+**MECHANICALLY CHECKED:** the outlined witness has exactly two ordered launches,
+positive-zero fill, contiguous dynamic rank-2 f32 descriptors, one block per
+output, one thread per block, increasing-K separate multiply/add, correct
+operand/index/destination identity, and a returned original destination. Extra
+operations, fast-math permission, argument/result attributes including forged
+noalias, target attributes, unexpected private/workgroup storage, and unknown
+execution metadata fail closed. Device export checks 7/21-field LLVM entry
+signatures and rejects nonintrinsic external calls or unexpected definitions.
+IEEE denormal attributes are explicit; downstream machine tools must retain
+the no-contraction/no-FTZ obligations recorded in the manifest.
+
+**OBSERVED upstream integration requirement:** unlike `mlir-opt`, an embedded
+compiler does not obtain every external dialect-conversion interface merely by
+loading the dialect. Explicit upstream Arith/MemRef/ControlFlow-to-LLVM interface
+registration was required for GPU-to-NVVM conversion to preserve branch argument
+types and finish MemRef lowering. No private replacement conversion was added.
+
+The checked CUDA adapter exposes only existing internal CandidateInput/Output
+descriptors and `Code` results. Every driver call runs in a fresh joined private
+worker with default host FP state. It owns its context, device allocations and
+heap-backed H2D/D2H staging; no device transfer references caller storage. It
+validates shape arithmetic, pointer alignment/range, distinct private output,
+actual `sm_89`, and the qualified launch envelope before device work. Inputs may
+alias each other. Host output is copied only after successful execution,
+quiescence, transfer and cleanup. Unknown completion or cleanup failure retains
+owned resources in a reachable quarantine and poisons further adapter attempts.
+This deliberately expensive correctness path makes no scheduling-performance or
+persistent-residency claim.
+
+The common integration-owned qualification envelope is M/N/K <=65,535, output
+elements <=2^20 and scalar products <=2^26. These are bounded validation/device
+watchdog protections for this realization, not semantic tensor limits, measured
+performance thresholds or automatic dispatch decisions. Session must enforce
+the same envelope before host allocation and before K-zero shortcuts.
+
+### Independent adversarial review and losing implementation
+
+The first adapter managed CUDA contexts on the calling thread. Independent AMD
+lane review falsified its claimed caller-state preservation: a failed context
+pop can leave caller context-stack state changed; CUDA discovery can mutate
+caller errno/FP state; raw pointer guards were incomplete; and failed synchronous
+copies do not by themselves prove host-memory quiescence.
+
+That implementation was replaced before integration. Worker isolation,
+heap-owned staging/quarantine, complete raw descriptor guards, and publication
+after successful cleanup directly address the four counterexamples. Independent
+re-review found no blocking defect in adapter source SHA-256
+`65d57ca56fb0d7d49db351309aac203ae45ed9619113379edc63c8cec6d16f45` and independently
+replayed all 33 then-existing ASan/UBSan fault modes successfully. Its suggested
+extra pending-D2H case was added and passed, increasing the suite to 34 modes.
+
+Thread isolation adds a real deployment trust obligation. Inspected libstdc++
+15 `std::thread` start/join call `pthread_create`/`pthread_join`; those entry points,
+thread state/RTTI/destructor symbols and system-error/terminate edges must not be
+replaceable by authenticated host source. The integration owner reserves the
+bounded used symbol closure alongside actual vendor-DSO exports. Conforming
+allocator, exception and standard/POSIX thread runtime plus a trusted loader
+remain preconditions, not a general hostile-process sandbox.
+[The upstream implementation](https://github.com/gcc-mirror/gcc/blob/releases/gcc-15/libstdc++-v3/src/c++11/thread.cc)
+matches local `/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.35` disassembly.
+
+### Exact implementation validation
+
+- Shared GPU issuer: **18/18** deterministic/structural/adversarial checks pass,
+  generating both NVVM and ROCDL LLVM IR without vendor hardware requirements.
+- CUDA adapter mock: **34/34** modes pass with ASan+UBSan: success, each of 31
+  individual Driver API failure sites, pending H2D plus failed synchronization,
+  and pending D2H plus failed synchronization. Every fault preserves sentinel
+  output, caller errno/FP/TLS, and required pending staging ownership. Test-only
+  fake Driver ABI functions are not linked into production artifacts.
+- Real CUDA adapter: **76/76** cases, **17,761** strict f32 bit comparisons pass,
+  using cubins generated by the new shared issuer. Includes seeded rectangular
+  shapes, aliasing inputs, zero dimensions, FMA/order discriminators, subnormal,
+  signed-zero and exceptional arithmetic; raw output alias and oversized K-zero
+  cases reject. An unrelated caller CUDA context and unusual caller FP state
+  remain unchanged.
+- CUDA Compute Sanitizer on that same real adapter: **76/76**, **0 errors**,
+  **0 bytes leaked in 0 allocations**. No API-error suppression is used here.
+- Full standalone regressions, source authentication/link closure, packaging,
+  Session dispatch and hosted CI are integration-owner responsibilities. These
+  local leaf tests do not assert that those separate surfaces passed.
+
+Local raw artifacts remain under
+`/home/hamza-usta/mdslc-work/multitarget-v1/builds/nvidia/`: `gpu-issuer-test`,
+`nvvm.{fill,gemm}.ll`, `production-{fill,gemm}.{ptx,cubin}`,
+`cuda-adapter-test-asan`, and `cuda-adapter-physical-test`. All compilation used
+the inspected 21.1.8 toolchain, at most one job, and task-local SSD TMPDIR.
+
+### Current integration boundary
+
+The reusable device issuer and adapter now support integrating a separately
+forced, authenticated generated-NVVM candidate with explicit staging in the
+existing Session. This report does not grant device code execution authority
+to serialized IR, change default CPU/provider selection, promise host FP flags
+from device arithmetic, or claim platform portability/performance/residency.
+The exact admitted-source -> frozen driver/runtime/images -> executable chain
+and ordered source failure-frontier tests must survive integration review and CI
+before the candidate becomes a canonical supported bounded route.
