@@ -143,3 +143,48 @@ control detection; exact caller status/control restoration and idempotence;
 four independent threads running 32 cases each. ARM-specific physical branches
 are **not locally executed**. Neither this test nor extraction establishes
 source-to-ARM runtime execution; that remains the integration/native-CI gate.
+
+## Production-boundary preparation: closed strict CPU targets
+
+The separately reviewable issuer change adds only
+`CpuTargetV1::{LinuxX86_64,LinuxAArch64}` and fixed triple lookup. Unknown enum
+values fail before any semantic artifact is built. The existing strict API's
+default remains Linux x86-64. An explicit final target argument selects ARM;
+the private CLI accepts `--target=linux-x86_64` or `--target=linux-aarch64`.
+Duplicate/arbitrary triples, feature strings, imported input and fast math are
+not accepted. Reassociate plus ARM is refused; the existing x86 reassociate
+primitive and its numerical/ISA authority are unchanged.
+
+Both targets use the same issuer-owned semantic/structured/bufferized/scheduled
+artifacts and exact MLIR pipeline. Only the final LLVM target and manifest
+target differ. All existing no-fastmath, separate fmul/fadd, symbol/call-set,
+private-output and sanitizer-attribute checks remain in force. This target
+selection itself does not certify the native ABI, source integration or FP
+runtime environment.
+
+With root's permission, this lane read the completed canonical Ninja commands,
+compiled only the changed issuer TU/main and target test into
+`builds/cpu-arm/target-build-01`, and relinked there against the immutable base
+dependencies. Every output/dependency log stayed in that SSD directory and the
+base build was not mutated. All compilations/links were sequential.
+
+- `cpu_target_contract_test.cpp`: **14/14 PASS**, covering both schedules,
+  unchanged x86 default, identical semantic stages across targets, fixed ARM
+  LLVM/manifest target, strict arithmetic, ASan attributes and unknown-enum
+  rejection.
+- New `cpu_target_cli_contract.cmake`: **four positive controls and eight
+  refused invocations PASS**, including ARM row-contiguous+ASan composition;
+  refused invocations publish no artifacts.
+- Existing reassociate CLI contract: **one positive/six refused invocations
+  PASS**, unchanged.
+- Both scalar and row-contiguous default x86 LLVM and manifests are byte-for-byte
+  equal to the fresh canonical issuer's outputs (`cmp` succeeded).
+- The directly ARM-issued row object compiled successfully with Clang21 for
+  AArch64 and has SHA256
+  `fa4ed944828076b0eb35d790bc391ddee0e3b5fad9c8f5142f914286ae015c8f`, exactly
+  matching the earlier inspected experimental cross object. This is object
+  compilation/identity evidence, **not native ARM execution**.
+
+Root still owns CMake/test registration, closed-runtime adoption, matching ELF
+ownership, source driver and native ARM CI. No production gate was weakened or
+hosted state changed in this lane.
