@@ -111,3 +111,30 @@ Hosted checks and eventual canonical merge must be recorded at their actual
 heads; local GPU hardware evidence must not be relabeled hosted execution.
 The separate ARM and strict-CPU-ISA branches require normal dependency merging
 and an independently reviewed combined regression before their claims compose.
+
+## Later dependency and complete-composition evidence
+
+ARM dependency merge `6c03f63` and narrow HIP/global-ASan configuration guard
+`65b6e9eacc145bd514e416bced3513655ebd7db0` were reviewed independently. At the
+clean latter head the full GPU-enabled x64 suite after the ARM dependency merge
+passed **335/335**, zero skips
+(1132.13 s). The unchanged two-GEMM example also compiled and ran normal and
+late-failure cases on both actual GPUs; see the
+[human-readable source control](../MULTITARGET_CORRECTNESS_CAMPAIGN_V1.md#human-readable-real-source-control).
+
+The initial local builds explicitly supplied a Python executable. Fresh hosted
+configuration subsequently exposed two **Not Run** GPU source tests, not GPU
+numerical failures: interpreter discovery occurred after test registration. This
+defect survived the dependency/composition merges until `4fc4560`; the earlier
+executed tests did not establish unseeded configuration correctness. The
+[focused fix record](gpu-test-discovery-fix-v1.md) preserves the exact failure and
+fresh-configure/actual-execution regression.
+
+The corrected CPU/ARM/GPU composition at
+`4fc4560ce16e5c4d9be070fcb465ce2ced317dd2` passed **379/379**, zero skips,
+including both real GPUs, the three forced CPU ISA paths, installed source and
+the existing runtime/provider contracts. Final local artifacts, review and
+separate unseeded **2/2** source-refusal evidence are recorded in the
+[composition report](multitarget-composed-v1.md#frozen-combined-execution-and-configuration-correction).
+Canonical merge and complete hosted qualification remain separately recorded
+engineering gates, not consequences of these local test counts alone.

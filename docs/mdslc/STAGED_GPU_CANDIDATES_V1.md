@@ -122,7 +122,8 @@ The NVVM recipe uses PTX 8.0 / sm_89, CUDA 13.3 headers and ptxas **13.3.73** wi
 actual HIP **7.2.70201**. Version refusals are intentional qualification gates,
 not claims that other releases cannot work. No LLVM/Rust source build is needed.
 
-Add to the existing supported experimental-region CMake configuration:
+Add these options to the [region guide's](REGION_COMPILER_V1.md#build-and-install)
+supported `build-regions` CMake configuration, then rebuild:
 
 ```sh
 -DMDSLC_ENABLE_EXPERIMENTAL_GPU_ISSUER=ON
@@ -137,12 +138,21 @@ their exact supported SDK/toolchain dependencies; no silent download or fallback
 For an enabled/qualified device, the unchanged repository example can be used:
 
 ```sh
-build/bin/mdslc-region compiler/examples/experimental/two_gemm.mdsl \
-  --region pipeline --candidate generated-nvvm -o build/nvvm-example
-build/nvvm-example
-build/nvvm-example fail-late
+build-regions/bin/mdslc-region compiler/examples/experimental/two_gemm.mdsl \
+  --region pipeline --candidate generated-nvvm -o build-regions/nvvm-example
+build-regions/nvvm-example
+build-regions/nvvm-example fail-late
 # Substitute generated-rocdl for the AMD candidate.
-ctest --test-dir build --output-on-failure -R '^generated_gpu\.'
+```
+
+The production guide deliberately disables tests. To run qualification from a
+clean committed checkout, explicitly enable them in the same already configured
+GPU-enabled build (retaining its compiler/toolchain paths), rebuild, then run:
+
+```sh
+cmake -S compiler -B build-regions -DBUILD_TESTING=ON
+cmake --build build-regions -j2
+ctest --test-dir build-regions --output-on-failure -R '^generated_gpu\.'
 ```
 
 GPU-enabled physical/source tests require the actual target and do not skip.
@@ -159,6 +169,12 @@ and Radeon 890M (`gfx1150`), not every NVIDIA/AMD device. Real CUDA memcheck and
 normal/ASan+UBSan mocked-driver tests are separate evidence. Real HIP+ASan has an
 unresolved alternate-signal-stack teardown failure; normal and host-UBSan HIP
 execution do not erase that limitation. No physical HIP+ASan pass is claimed.
+An enabled ROCDL build with explicit address-sanitizer flags in the normalized
+global host profile is therefore configure-refused, before vendor discovery.
+CPU-only ASan, the separately ASan-instrumented mocked-driver tests and HIP with
+host UBSan alone remain distinct admitted configurations. The gate is not a
+detector for instrumentation hidden in arbitrary compiler wrappers or injected
+libraries.
 
 Unsupported here: whole-region GPU lowering/fusion, device residency/transfer
 language APIs, zero-copy, async execution, reuse across GEMMs, dynamic scheduling,
