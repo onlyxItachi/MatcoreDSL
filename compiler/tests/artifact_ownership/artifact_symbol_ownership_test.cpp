@@ -204,8 +204,21 @@ int main(int argc, char **argv) {
       auto override = fixture.host("actual_provider_override", "extern \"C\" void *blas_memory_alloc(int) { return nullptr; }");
       check(!cg::verifyHostArtifactSymbolOwnership(*override, actual, report, error) && error.find("blas_memory_alloc") != std::string::npos, "actual provider internal export collision rejected");
     }
-    ordinary->setTargetTriple(llvm::Triple("aarch64-unknown-linux-gnu"));
-    check(!cg::verifyHostArtifactSymbolOwnership(*ordinary, artifacts, report, error), "unsupported host target rejected");
+    const auto original_target = ordinary->getTargetTriple();
+    const bool native_arm = original_target.getArch() == llvm::Triple::aarch64;
+    ordinary->setTargetTriple(llvm::Triple(native_arm ? "x86_64-unknown-linux-gnu"
+                                                    : "aarch64-unknown-linux-gnu"));
+    check(!cg::verifyHostArtifactSymbolOwnership(*ordinary, artifacts, report, error) &&
+          error.find("matching the authenticated host target") != std::string::npos &&
+          report.runtime_exports == 0 && report.provider_exports == 0,
+          "otherwise supported target cannot borrow different-machine DSO authority");
+    ordinary->setTargetTriple(llvm::Triple("riscv64-unknown-linux-gnu"));
+    check(!cg::verifyHostArtifactSymbolOwnership(*ordinary, artifacts, report, error),
+          "unqualified host architecture rejected");
+    ordinary->setTargetTriple(original_target);
+    ordinary->setDataLayout("E-p:64:64");
+    check(!cg::verifyHostArtifactSymbolOwnership(*ordinary, artifacts, report, error),
+          "big-endian host cannot borrow little-endian DSO authority");
   } catch (const std::exception &exception) {
     check(false, exception.what());
   }

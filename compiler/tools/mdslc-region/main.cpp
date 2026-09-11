@@ -41,7 +41,11 @@ Invocation parse(int argc, char **argv) {
 
 int run(int argc, char **argv) {
   if (argc == 2 && std::string(argv[1]) == "--version") {
+#if defined(__aarch64__)
+    std::cout << "MDSLC experimental regions: native Linux AArch64 strict-only candidates, Clang/MLIR 21.1.8, "
+#else
     std::cout << "MDSLC experimental regions: native Linux x86-64, Clang/MLIR 21.1.8, "
+#endif
               << (REGION_SANITIZED ? "ASan+UBSan" : "uninstrumented") << "; API/ABI not frozen\n";
     return 0;
   }

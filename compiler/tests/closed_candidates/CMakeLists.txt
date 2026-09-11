@@ -22,12 +22,14 @@ endforeach()
 
 add_test(NAME closed_candidates.production_symbols COMMAND "${CMAKE_COMMAND}"
   "-DNM=${MDSLC_CANDIDATE_NM}"
+  "-DCPU_X86=${MDSLC_CLOSED_CPU_X86}"
   "-DARCHIVE=$<TARGET_FILE:matcore_closed_candidates_production_v1>"
   -P "${CMAKE_CURRENT_SOURCE_DIR}/symbol_contract.cmake")
 
 # Keep all original adapter falsification fixtures against the expanded registry.
 add_executable(matcore_closed_generated_reassociate_guard
-  generated_reassociate_guard_test.cpp ../../lib/runtime/closed_host_v1.cpp)
+  generated_reassociate_guard_test.cpp ../../lib/runtime/closed_host_v1.cpp
+  ../../lib/platform/closed_fp_environment_v1.cpp)
 target_include_directories(matcore_closed_generated_reassociate_guard PRIVATE
   ../../lib/runtime ../../include)
 target_compile_features(matcore_closed_generated_reassociate_guard PRIVATE cxx_std_20)
@@ -44,7 +46,8 @@ target_compile_options(matcore_closed_candidates_adapter_regression PRIVATE -ffp
 add_test(NAME closed_candidates.adapter_regression COMMAND matcore_closed_candidates_adapter_regression)
 
 add_executable(matcore_closed_candidates_provider_negative
-  provider_negative.cpp ../../lib/runtime/closed_host_v1.cpp)
+  provider_negative.cpp ../../lib/runtime/closed_host_v1.cpp
+  ../../lib/platform/closed_fp_environment_v1.cpp)
 target_include_directories(matcore_closed_candidates_provider_negative PRIVATE ../../lib/runtime ../../include)
 target_compile_features(matcore_closed_candidates_provider_negative PRIVATE cxx_std_20)
 target_compile_options(matcore_closed_candidates_provider_negative PRIVATE -fno-fast-math -ffp-contract=off -frounding-math)

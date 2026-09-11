@@ -1,0 +1,92 @@
+name: mdslc-arm64-strict
+
+on:
+  push:
+    branches: [mdslc/arm64-strict-execution-v1]
+  pull_request:
+    paths: ["compiler/**", ".github/workflows/mdslc-arm64.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  native-strict:
+    name: Native ARM64 strict (${{ matrix.schedule }})
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        schedule: [scalar, row-contiguous]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate native machine and task storage
+        run: |
+          test "$(uname -m)" = aarch64
+          test "$(dpkg --print-architecture)" = arm64
+          task_tmp=$(mktemp -d /var/tmp/mdslc-arm64.XXXXXXXX)
+          echo "TMPDIR=${task_tmp}" >> "$GITHUB_ENV"
+          findmnt -T "$task_tmp"
+          uname -a
+          lscpu
+      - name: Install exact official LLVM, Clang and MLIR 21.1.8
+        run: |
+          sudo install -d -m 0755 /etc/apt/keyrings
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/keyrings/apt.llvm.org.asc >/dev/null
+          echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/apt.llvm.org.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+            | sudo tee /etc/apt/sources.list.d/apt.llvm.org.list
+          sudo apt-get update
+          tuple='1:21.1.8~++20251221032922+2078da43e25a-1~exp1~20251221153059.70'
+          packages=()
+          for package in clang-21 libclang-21-dev libclang-cpp21-dev libclang-rt-21-dev llvm-21-dev libmlir-21-dev mlir-21-tools; do
+            packages+=("${package}=${tuple}")
+          done
+          sudo apt-get install -y --no-install-recommends "${packages[@]}" \
+            cmake ninja-build ccache pkg-config python3 rapidjson-dev
+          clang++-21 --version | grep -F 'clang version 21.1.8'
+          llvm-config-21 --version | grep -Fx 21.1.8
+          mlir-opt-21 --version | grep -F 'LLVM version 21.1.8'
+          mlir-tblgen-21 --version | grep -F 'LLVM version 21.1.8'
+      - name: Configure native strict-only production path
+        run: |
+          cmake -S compiler -B build-arm -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=/usr/bin/clang-21 \
+            -DCMAKE_CXX_COMPILER=/usr/bin/clang++-21 \
+            -DMDSLC_CLANGXX_EXECUTABLE=/usr/bin/clang++-21 \
+            -DMDSLC_ENABLE_NATIVE_FRONTEND=ON \
+            -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=ON \
+            -DMDSLC_ENABLE_MATCORE_MLIR=ON \
+            -DMDSLC_ENABLE_EXPERIMENTAL_REGIONS=ON \
+            -DMDSLC_ENABLE_OPENBLAS=OFF -DMDSLC_REQUIRE_OPENBLAS=OFF \
+            -DMDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE=${{ matrix.schedule }} \
+            -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
+            -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang \
+            -DMLIR_DIR=/usr/lib/llvm-21/lib/cmake/mlir
+      - name: Build with bounded parallelism
+        run: cmake --build build-arm --parallel 2
+      - name: Authenticate generated artifact and native driver
+        run: |
+          grep -Fx 'target=aarch64-unknown-linux-gnu' build-arm/lib/regions/strict-normal.ll.manifest
+          readelf -h build-arm/lib/regions/strict-normal.o | grep -E 'Machine: +AArch64'
+          build-arm/bin/mdslc-region --version | grep -F 'native Linux AArch64 strict-only candidates'
+          test ! -e build-arm/lib/regions/reassociate-normal.o
+          sha256sum build-arm/bin/mdslc-region build-arm/lib/regions/strict-normal.o
+      - name: Execute complete closed-source qualification scope
+        run: |
+          python3 compiler/tests/closed_driver/qualify_native_cpu.py --build build-arm --require-arm
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-arm64-strict-${{ matrix.schedule }}-${{ github.sha }}
+          path: |
+            build-arm/native-cpu-qualification.json
+            build-arm/native-cpu-junit.xml
+            build-arm/Testing/Temporary/LastTest.log
+            build-arm/lib/regions/strict-normal.ll*
+            build-arm/lib/regions/strict-normal.o

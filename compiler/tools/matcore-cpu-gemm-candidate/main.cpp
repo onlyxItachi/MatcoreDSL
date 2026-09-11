@@ -8,8 +8,10 @@ int main(int argc, char **argv) {
   namespace candidate = matcore::mdslc::cpu_candidate;
   bool asan = false;
   auto schedule = candidate::StrictGemmScheduleV1::ScalarMNK;
-  bool valid = argc >= 3 && argc <= 5 && std::string(argv[1]) == "--output";
+  bool valid = argc >= 3 && argc <= 6 && std::string(argv[1]) == "--output";
   bool has_schedule = false;
+  bool has_target = false;
+  auto target = candidate::CpuTargetV1::LinuxX86_64;
   bool reassociate = false;
   for (int i = 3; i < argc; ++i) {
     const std::string option(argv[i]);
@@ -20,20 +22,29 @@ int main(int argc, char **argv) {
       schedule = candidate::StrictGemmScheduleV1::RowContiguousMKN;
     } else if (option == "--candidate=reassociate-register" && !reassociate) {
       reassociate = true;
+    } else if (option == "--target=linux-x86_64" && !has_target) {
+      has_target = true;
+      target = candidate::CpuTargetV1::LinuxX86_64;
+    } else if (option == "--target=linux-aarch64" && !has_target) {
+      has_target = true;
+      target = candidate::CpuTargetV1::LinuxAArch64;
     } else
       valid = false;
   }
   if (reassociate && has_schedule) valid = false;
+  if (reassociate && target != candidate::CpuTargetV1::LinuxX86_64) valid = false;
   if (!valid) {
     llvm::errs()
         << "private built-in candidate generator: --output FILE [--asan] "
-           "[--schedule=row-contiguous | --candidate=reassociate-register]\n"
+           "[--schedule=row-contiguous | --candidate=reassociate-register] "
+           "[--target=linux-x86_64 | --target=linux-aarch64]\n"
+           "AArch64 is a strict-only target; target selection is not runtime legality.\n"
            "No source/MLIR input is accepted. This does not admit a program.\n";
     return 2;
   }
   mlir::MLIRContext context;
   auto artifact = reassociate ? candidate::issueReassociateGemmArtifactV1(context, asan)
-                             : candidate::issueStrictGemmArtifactV1(context, asan, schedule);
+                             : candidate::issueStrictGemmArtifactV1(context, asan, schedule, target);
   if (!artifact) {
     llvm::errs() << artifact.error << '\n';
     return 1;

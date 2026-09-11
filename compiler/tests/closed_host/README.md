@@ -60,6 +60,7 @@ clang++-21 -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror \
   -frounding-math -ftrapping-math -ffp-contract=off \
   -DMDSLC_CLOSED_HOST_TESTING=1 -Icompiler/lib/runtime \
   compiler/lib/runtime/closed_host_v1.cpp \
+  compiler/lib/platform/closed_fp_environment_v1.cpp \
   compiler/tests/closed_host/closed_host_v1_test.cpp \
   -o build/closed-host-tests
 build/closed-host-tests

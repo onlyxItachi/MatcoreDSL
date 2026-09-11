@@ -16,7 +16,7 @@ int main() {
   std::array<float,4> c{-1,-1,-1,-1};
   ch::Session session;
   ch::Value lhs,rhs,result;
-#if !defined(__linux__) || !defined(__x86_64__)
+#if !defined(__linux__) || (!defined(__x86_64__) && !defined(__aarch64__))
   const auto status = session.read(1,{},lhs);
   return status.code == ch::Code::unsupported_fp_environment ? 0 : 1;
 #else

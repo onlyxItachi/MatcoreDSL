@@ -1,6 +1,7 @@
 #ifndef MATCORE_MDSLC_MLIR_CPU_GEMM_CANDIDATE_H
 #define MATCORE_MDSLC_MLIR_CPU_GEMM_CANDIDATE_H
 
+#include "MatcoreCpuTarget.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
@@ -74,11 +75,13 @@ struct GemmArtifactV1 {
 using StrictGemmArtifactV1 = GemmArtifactV1;
 
 // Closed issuer: only the built-in verified strict primitive, exact 21.1.8
-// schedules and baseline Linux x86-64 target. Address instrumentation is carried
+// schedules and closed baseline Linux target set. Address instrumentation is carried
 // as LLVM function attributes, not presumed from the host link command.
+// Target selection is not a source/ABI/FP/physical execution certificate.
 StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
     bool address_sanitizer,
-    StrictGemmScheduleV1 schedule = StrictGemmScheduleV1::ScalarMNK);
+    StrictGemmScheduleV1 schedule = StrictGemmScheduleV1::ScalarMNK,
+    CpuTargetV1 target = CpuTargetV1::LinuxX86_64);
 
 } // namespace matcore::mdslc::cpu_candidate
 #endif

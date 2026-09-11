@@ -79,8 +79,16 @@ int main(int argc, char **argv) {
       case 3: call->removeFnAttr(llvm::Attribute::NoUnwind); break;
       case 4: call->addParamAttr(0, llvm::Attribute::getWithAlignment(context, llvm::Align(16))); break;
       case 5: call->addParamAttr(1, llvm::Attribute::getWithAlignment(context, llvm::Align(16))); break;
-      case 6: call->addParamAttr(1, llvm::Attribute::getWithByValType(context,
-        alterRecord(call->getParamByValType(1), context))); break;
+      case 6: {
+        // x86 carries the Storage memory type in byval; AArch64 passes an
+        // opaque indirect pointer. For the latter, changing that native ABI
+        // to byval is the falsifier, not a nonexistent pointee-layout proof.
+        auto *type = call->getParamByValType(1);
+        auto *changed = type ? alterRecord(type, context)
+            : llvm::StructType::get(context, {llvm::Type::getInt64Ty(context)}, false);
+        call->addParamAttr(1, llvm::Attribute::getWithByValType(context, changed));
+        break;
+      }
       case 7: call->addParamAttr(0, llvm::Attribute::getWithStructRetType(context,
         alterRecord(call->getParamStructRetType(0), context))); break;
       case 8: call->addParamAttr(1, llvm::Attribute::NoAlias); break;

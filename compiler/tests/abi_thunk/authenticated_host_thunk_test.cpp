@@ -158,7 +158,9 @@ extern "C" Result __matcore_owned_helper(Storage storage,Shape shape) noexcept {
       sret|=original->hasParamAttribute(i,llvm::Attribute::StructRet);
       byval|=original->hasParamAttribute(i,llvm::Attribute::ByVal);
     }
-    check(sret && byval,"real Clang uses Result sret and Storage byval");
+    const bool arm = host->getTargetTriple().isAArch64();
+    check(sret && (arm ? !byval && original->getArg(1)->getType()->isPointerTy() : byval),
+          "real Clang uses Result sret and target-native Storage indirect ABI");
     const auto before=print(*host),helperBefore=print(*helper);
     auto transformed=cg::linkAuthenticatedHostThunk(*host,*helper,request);
     check(static_cast<bool>(transformed),"matched real Clang aggregate ABI links: "+transformed.error);
@@ -184,7 +186,10 @@ extern "C" Result __matcore_owned_helper(Storage storage,Shape shape) noexcept {
       check(!rejected && !rejected.error.empty(),label);
       check(print(*host)==before,"host unchanged after rejected "+label);
     };
-    rejectHelper("changed target triple rejected",[](auto &m,auto &){m.setTargetTriple(llvm::Triple("aarch64-unknown-linux-gnu"));});
+    rejectHelper("changed target triple rejected",[](auto &m,auto &){
+      m.setTargetTriple(llvm::Triple(m.getTargetTriple().isAArch64()
+          ? "x86_64-pc-linux-gnu" : "aarch64-unknown-linux-gnu"));
+    });
     rejectHelper("changed data layout rejected",[](auto &m,auto &){m.setDataLayout("e-p:32:32");});
     rejectHelper("changed calling convention rejected",[](auto &,auto &f){f.setCallingConv(llvm::CallingConv::Fast);});
     rejectHelper("changed target feature ABI rejected",[](auto &,auto &f){f.addFnAttr("target-features","+avx2");});
@@ -199,14 +204,25 @@ extern "C" Result __matcore_owned_helper(Storage storage,Shape shape) noexcept {
         auto *changed=llvm::StructType::create(m.getContext(),elements,"ChangedResult");
         f.addParamAttr(0,llvm::Attribute::getWithStructRetType(m.getContext(),changed));
       });
-    rejectHelper("byval Storage field permutation rejected",[](auto &m,auto &f){
-      auto *record=llvm::cast<llvm::StructType>(f.getParamByValType(1));
-      std::vector<llvm::Type*> elements(record->element_begin(),record->element_end());
-      std::swap(elements.front(),elements.back());
+    rejectHelper(arm ? "indirect Storage changed to byval rejected"
+                     : "byval Storage field permutation rejected",[](auto &m,auto &f){
+      std::vector<llvm::Type*> elements;
+      if(auto *type=f.getParamByValType(1)) {
+        auto *record=llvm::cast<llvm::StructType>(type);
+        elements.assign(record->element_begin(),record->element_end());
+        std::swap(elements.front(),elements.back());
+      } else {
+        // Opaque indirect pointer equality cannot prove Storage's field layout.
+        // Source canonical-record authentication supplies that closure on ARM;
+        // here changing its actual native call ABI must be refused.
+        elements={llvm::PointerType::get(m.getContext(),0),
+          llvm::Type::getInt64Ty(m.getContext()),llvm::Type::getInt64Ty(m.getContext()),
+          llvm::Type::getInt64Ty(m.getContext())};
+      }
       auto *changed=llvm::StructType::create(m.getContext(),elements,"ChangedStorage");
       f.addParamAttr(1,llvm::Attribute::getWithByValType(m.getContext(),changed));
     });
-    rejectHelper("byval Storage alignment mismatch rejected",[](auto &m,auto &f){
+    rejectHelper("Storage pointer alignment contract mismatch rejected",[](auto &m,auto &f){
       f.addParamAttr(1,llvm::Attribute::getWithAlignment(m.getContext(),llvm::Align(32)));
     });
     auto debugHelper=fixture.compile("debug-helper","#define _GLIBCXX_DEBUG 1\n"+helperSource);

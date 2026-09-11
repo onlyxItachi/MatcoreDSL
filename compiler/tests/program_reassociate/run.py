@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import re
 import subprocess
@@ -26,6 +27,7 @@ def main():
     parser.add_argument("--expected-driver-sha256")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    native_arm = platform.machine() == "aarch64"
     driver = args.driver.absolute()
     fixture = Path(__file__).resolve().parent
     directory = (args.output.absolute() if args.output else
@@ -88,12 +90,26 @@ def main():
             if "VALIDATED program ownership and ABI before cross-TU link/optimization\n" not in compiled.stdout:
                 raise RuntimeError("missing real multi-source ownership gate")
             executed = command([executable, policy], skip=(policy == "generated-reassociate"))
-            if executed.stdout != output(policy, count):
+            expected_output = ("ARM program reassociate refusal: 0 failures\n"
+                               if native_arm and policy == "generated-reassociate" else output(policy, count))
+            if executed.stdout != expected_output:
                 raise RuntimeError("source numerical/effect oracle failed: " + executed.stdout)
             elf = command(["readelf", "-dW", executable])
             needed = re.findall(r"\(NEEDED\).*\[([^]]+)\]", elf.stdout)
             if needed.count("libmatcore_closed_candidates_isolated_v1.so") != 1 or needed.count("libmatcore_runtime.so.0") != 1:
                 raise RuntimeError("source executable omitted direct private/canonical runtime ownership")
+        if native_arm:
+            # A strict binary cannot satisfy the unavailable-policy oracle.
+            negative = command([directory / "generated-strict", "generated-reassociate"], expected=1)
+            if (negative.stdout != "ARM program reassociate refusal: 1 failures\n" or
+                    negative.stderr != "FAIL: ARM forced reassociate is unavailable without effects or fallback\n"):
+                raise RuntimeError("ARM unavailable-policy counteroracle failed")
+            unchanged()
+            report.update(status="PASS", positive_checks=165, negative_controls=1,
+                          reassociate="explicitly unavailable; no ARM FMA execution claim")
+            save()
+            print("PASS program_reassociate: ARM strict 164 checks; unavailable policy; negative control")
+            return
         # Same frozen binaries with deliberately wrong numerical/refusal oracles:
         # accepting a strict fallback under the new name cannot satisfy the test.
         for actual, claimed, count, failures in (

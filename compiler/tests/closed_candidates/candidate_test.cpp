@@ -7,7 +7,7 @@
 #include <iostream>
 #include <limits>
 #include <vector>
-#include <xmmintrin.h>
+#include "../support/closed_fp_fixture.h"
 
 #pragma STDC FENV_ACCESS ON
 #pragma STDC FP_CONTRACT OFF
@@ -37,7 +37,7 @@ ch::Code expected(ch::Candidate candidate, ch::Numeric numeric) {
   if (candidate == ch::Candidate::generated_reassociate) {
     if (numeric != ch::Numeric::reassociate_f32)
       return ch::Code::candidate_incompatible;
-#ifdef EXPECT_NATIVE_ONLY
+#if defined(EXPECT_NATIVE_ONLY) || !defined(__x86_64__)
     return ch::Code::candidate_unavailable;
 #else
     if (!__builtin_cpu_supports("avx2") || !__builtin_cpu_supports("fma"))
@@ -48,7 +48,7 @@ ch::Code expected(ch::Candidate candidate, ch::Numeric numeric) {
       candidate == ch::Candidate::authenticated_openblas) {
     if (numeric == ch::Numeric::strict_f32)
       return ch::Code::candidate_incompatible;
-#ifdef EXPECT_NATIVE_ONLY
+#if defined(EXPECT_NATIVE_ONLY) || !defined(__x86_64__)
     return ch::Code::candidate_unavailable;
 #endif
 #ifndef EXPECT_OPENBLAS
@@ -384,22 +384,17 @@ void environment(ch::Candidate candidate) {
   std::fegetenv(&original);
   std::fesetround(FE_DOWNWARD);
   std::feraiseexcept(FE_INEXACT | FE_UNDERFLOW);
-  _mm_setcsr(_mm_getcsr() | 0x8040U);
-  const auto mxcsr = _mm_getcsr();
-  std::uint16_t cw = 0, sw = 0;
-  __asm__ volatile("fnstcw %0" : "=m"(cw));
-  __asm__ volatile("fnstsw %0" : "=am"(sw));
+  closed_fp_fixture::enableFlush();
+  const auto before = closed_fp_fixture::snapshot();
   float a = std::numeric_limits<float>::infinity(), b = 0;
   ch::Session session(ch::Options{candidate});
   ch::Value lhs, rhs, value;
   session.read(1, {&a, 1, 1, 1}, lhs);
   session.read(2, {&b, 1, 1, 1}, rhs);
   const auto status = session.gemm(3, lhs, rhs, numeric, value);
-  std::uint16_t acw = 0, asw = 0;
-  __asm__ volatile("fnstcw %0" : "=m"(acw));
-  __asm__ volatile("fnstsw %0" : "=am"(asw));
+  const auto after = closed_fp_fixture::snapshot();
   check(bool(status), "altered caller FP environment supported");
-  check(mxcsr == _mm_getcsr() && cw == acw && sw == asw,
+  check(before == after,
         "complete FP environment restored");
   std::fesetenv(&original);
 }
