@@ -180,6 +180,33 @@ int main(int argc, char **argv) {
       with_candidates[0], with_candidates[1], with_candidates[1]};
     check(!cg::verifyHostArtifactSymbolOwnership(*ordinary, duplicate_candidates, report, error),
           "duplicate candidate DSO rejected");
+    auto threaded = fixture.library("threaded_candidates", R"cpp(
+      extern "C" void start_worker() asm("_ZNSt6thread15_M_start_threadESt10unique_ptrINS_6_StateESt14default_deleteIS1_EEPFvvE");
+      extern "C" void join_worker() asm("_ZNSt6thread4joinEv");
+      extern "C" void private_worker_entry() { start_worker(); join_worker(); }
+    )cpp");
+    const cg::TrustedSymbolArtifact worker_artifacts[] = {artifacts[0],
+      {cg::SymbolArtifactOwner::PrivateCandidates, threaded->getMemBufferRef(), true}};
+    check(cg::verifyHostArtifactSymbolOwnership(*ordinary, worker_artifacts, report, error),
+          "reviewed worker imports plus ordinary STL accepted");
+    for (const char *symbol : {"pthread_create", "pthread_join", "_ZNSt6thread4joinEv",
+          "_ZNSt6thread6_StateD2Ev", "_ZTINSt6thread6_StateE", "_ZSt20__throw_system_errori"}) {
+      auto interposed = fixture.host("worker_interposed",
+          std::string("extern \"C\" void hidden() asm(\"") + symbol +
+          "\"); extern \"C\" void hidden() {}\n");
+      check(!cg::verifyHostArtifactSymbolOwnership(*interposed, worker_artifacts, report, error) &&
+            error.find(symbol) != std::string::npos && report.candidate_exports == 0,
+            "worker closure cannot be interposed by original host");
+    }
+    const cg::TrustedSymbolArtifact missing_worker[] = {artifacts[0],
+      {cg::SymbolArtifactOwner::PrivateCandidates, candidates->getMemBufferRef(), true}};
+    check(!cg::verifyHostArtifactSymbolOwnership(*ordinary, missing_worker, report, error) &&
+          error.find("qualified std::thread worker ABI") != std::string::npos,
+          "worker requirement cannot be asserted for an unmatched DSO");
+    const cg::TrustedSymbolArtifact wrong_worker_owner[] = {
+      {cg::SymbolArtifactOwner::MatcoreRuntime, threaded->getMemBufferRef(), true}};
+    check(!cg::verifyHostArtifactSymbolOwnership(*ordinary, wrong_worker_owner, report, error),
+          "worker contract must belong to the private candidate owner");
     auto no_exports = fixture.library("no_exports", "int hidden() { return 0; }", true, true);
     const cg::TrustedSymbolArtifact empty_dso{cg::SymbolArtifactOwner::MatcoreRuntime, no_exports->getMemBufferRef()};
     check(!cg::verifyHostArtifactSymbolOwnership(*ordinary, empty_dso, report, error), "empty export table rejected");

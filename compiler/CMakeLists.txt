@@ -161,6 +161,21 @@ if(MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE AND NOT BUILD_TESTING)
     "MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE is allowed only with BUILD_TESTING=ON")
 endif()
 
+option(MDSLC_ENABLE_EXPERIMENTAL_GPU_ISSUER
+  "Build the inspection-only fixed NVVM/ROCDL artifact issuer" OFF)
+option(MDSLC_ENABLE_EXPERIMENTAL_NVVM
+  "Enable the forced synchronous staged sm89 generated candidate" OFF)
+option(MDSLC_ENABLE_EXPERIMENTAL_ROCDL
+  "Enable the forced synchronous staged gfx1150 generated candidate" OFF)
+if(MDSLC_ENABLE_EXPERIMENTAL_GPU_ISSUER OR MDSLC_ENABLE_EXPERIMENTAL_NVVM OR
+   MDSLC_ENABLE_EXPERIMENTAL_ROCDL)
+  find_package(Threads REQUIRED)
+endif()
+if((MDSLC_ENABLE_EXPERIMENTAL_GPU_ISSUER OR MDSLC_ENABLE_EXPERIMENTAL_NVVM OR
+    MDSLC_ENABLE_EXPERIMENTAL_ROCDL) AND NOT MDSLC_ENABLE_EXPERIMENTAL_REGIONS)
+  message(FATAL_ERROR "Experimental GPU controls require MDSLC_ENABLE_EXPERIMENTAL_REGIONS=ON")
+endif()
+
 if(MDSLC_ENABLE_EXPERIMENTAL_REGIONS)
   if(NOT MDSLC_ENABLE_NATIVE_FRONTEND OR NOT MDSLC_ENABLE_MATCORE_MLIR OR
      MDSLC_EXPERIMENTAL_TOOLCHAIN_ACTIVE OR
@@ -446,6 +461,9 @@ set(MDSLC_EXPERIMENTAL_REGION_PRIVATE_INCLUDEDIR
 string(TOUPPER "${CMAKE_BUILD_TYPE}" MDSLC_REGION_BUILD_TYPE)
 set(MDSLC_CLOSED_REGION_CXX_FLAGS
   "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${MDSLC_REGION_BUILD_TYPE}}")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/MatcoreDSLGpuQualification.cmake")
+mdslc_check_rocdl_sanitizer_qualification(
+  "${MDSLC_ENABLE_EXPERIMENTAL_ROCDL}" "${MDSLC_CLOSED_REGION_CXX_FLAGS}")
 
 configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/mdslc_config.h.in"
@@ -499,6 +517,7 @@ add_subdirectory(tools/matcore-bench)
 if(MDSLC_BUILD_CLOSED_REGION_TESTS)
   add_subdirectory(tests/closed_region)
   add_subdirectory(tests/generated_cpu)
+  add_subdirectory(tests/generated_gpu)
   add_subdirectory(tests/closed_candidates)
   add_subdirectory(tests/closed_source)
   add_subdirectory(tests/closed_driver)
@@ -626,6 +645,10 @@ if(WIN32)
 endif()
 
 if(BUILD_TESTING)
+  add_test(NAME toolchain.gpu_sanitizer_qualification
+    COMMAND "${CMAKE_COMMAND}"
+      "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/gpu_sanitizer_qualification.cmake")
   if(NOT MDSLC_ENABLE_EXPERIMENTAL_REGIONS)
     add_test(NAME package.experimental_region_headers_uninstalled
       COMMAND "${CMAKE_COMMAND}"
@@ -645,6 +668,10 @@ if(BUILD_TESTING)
   if(TARGET mdslc-region)
     get_target_property(region_package_provider mdslc-region MDSLC_REGION_PROVIDER_PATH)
   endif()
+  set(region_package_accelerators "")
+  if(TARGET matcore_gpu_gemm_candidate)
+    get_target_property(region_package_accelerators matcore_gpu_gemm_candidate MDSLC_GPU_LIBRARIES)
+  endif()
   add_test(NAME package.experimental_regions.install_contract
     COMMAND "${CMAKE_COMMAND}"
       "-DBINARY_DIR=${CMAKE_BINARY_DIR}"
@@ -660,6 +687,7 @@ if(BUILD_TESTING)
       "-DENABLED=${MDSLC_ENABLE_EXPERIMENTAL_REGIONS}"
       "-DHAS_OPENBLAS=${MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS}"
       "-DPROVIDER=${region_package_provider}"
+      "-DACCELERATORS=${region_package_accelerators}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/experimental_regions_install.cmake")
   add_test(
     NAME toolchain.version_token.contract

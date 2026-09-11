@@ -44,6 +44,16 @@ if(NOT ENABLED)
 endif()
 matcore_installed_provider_link_flags("${HAS_OPENBLAS}" "${PROVIDER}"
   provider_link_flags driver_provider)
+# The private archive consumer deliberately does not use the authenticated
+# source driver. Like its provider dependency, optional accelerator dependencies
+# must be linked explicitly; static archives do not carry CMake usage metadata.
+# Reuse the tested absolute-file/RUNPATH contract, without changing the driver
+# provider argument or exporting GPU/LLVM dependencies in MatcoreDSL::Runtime.
+set(accelerator_link_flags)
+foreach(accelerator IN LISTS ACCELERATORS)
+  matcore_installed_provider_link_flags(ON "${accelerator}" flags identity)
+  list(APPEND accelerator_link_flags ${flags})
+endforeach()
 set(archive "${private}/libmatcore_closed_candidates_production_v1.a")
 set(candidates "${private}/libmatcore_closed_candidates_isolated_v1.so")
 foreach(path IN ITEMS "${include}/matcore/region.h"
@@ -80,7 +90,7 @@ if(NOT definition_count EQUAL 1 OR symbols MATCHES
 endif()
 separate_arguments(compile_flags NATIVE_COMMAND "${CXX_FLAGS}")
 separate_arguments(link_flags NATIVE_COMMAND "${LINK_FLAGS}")
-set(consumer_link_flags "-L${lib}" -lmatcore_runtime ${provider_link_flags}
+set(consumer_link_flags "-L${lib}" -lmatcore_runtime ${provider_link_flags} ${accelerator_link_flags}
   -lm -pthread -Xlinker -rpath -Xlinker "${lib}" ${link_flags})
 set(provider_flag)
 if(HAS_OPENBLAS)

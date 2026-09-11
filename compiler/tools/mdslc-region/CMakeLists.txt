@@ -57,12 +57,15 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/region_driver_identity.h"
     "-DCANDIDATES=$<TARGET_FILE:matcore_closed_candidates_isolated_v1>"
     "-DRUNTIME=$<TARGET_FILE:matcore_runtime>"
     "-DPROVIDER=${region_provider_path}"
+    "-DCUDA_DRIVER=${MDSLC_CUDA_DRIVER_IDENTITY}"
+    "-DHIP_RUNTIME=${MDSLC_HIP_RUNTIME_IDENTITY}"
     "-DCLANG=${MDSLC_CLANGXX_EXECUTABLE}"
     "-DLINKER=${region_linker}"
     "-DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/region_driver_identity.h"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/installation_identity.cmake"
   DEPENDS matcore_closed_candidates_isolated_v1 matcore_runtime
     ${region_provider_path}
+    ${MDSLC_CUDA_DRIVER_IDENTITY} ${MDSLC_HIP_RUNTIME_IDENTITY}
     "${MDSLC_CLANGXX_EXECUTABLE}" "${region_linker}"
     "${CMAKE_CURRENT_SOURCE_DIR}/installation_identity.cmake" VERBATIM)
 target_sources(mdslc-region PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/region_driver_identity.h")

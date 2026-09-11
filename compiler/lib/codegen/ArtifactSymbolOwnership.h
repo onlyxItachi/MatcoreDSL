@@ -17,6 +17,9 @@ enum class SymbolArtifactOwner { MatcoreRuntime, ExternalProvider, PrivateCandid
 struct TrustedSymbolArtifact {
   SymbolArtifactOwner owner;
   llvm::MemoryBufferRef bytes;
+  // Compiler-configured dependency contract, not a source-claimed capability.
+  // Only the private candidate DSO may require the reviewed worker ABI.
+  bool requires_worker_threads = false;
 };
 
 struct ArtifactSymbolOwnershipReport {
@@ -45,7 +48,11 @@ struct ArtifactSymbolOwnershipReport {
 // DSO localizes implementation definitions. Archive whole-linking is not an
 // equivalent ownership proof. Pinning does not authenticate future loading.
 // Deployment requires stable trusted runtime/provider/standard-library loading,
-// conforming allocator hooks and no foreign interposition. No sandbox or
+// conforming allocator and POSIX thread create/join implementations, and no
+// foreign interposition. Worker-enabled candidates additionally reserve the
+// reviewed libstdc++/pthread entry closure against original host definitions.
+// This does not replace the trusted loader/exception-runtime precondition.
+// No sandbox or
 // executable self-authentication claim follows from a successful check.
 bool verifyHostArtifactSymbolOwnership(
     const llvm::Module &original_host,

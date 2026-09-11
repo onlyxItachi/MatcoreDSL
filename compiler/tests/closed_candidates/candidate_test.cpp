@@ -15,6 +15,31 @@
 namespace ch = matcore::mdslc::runtime::closed_host_v1;
 namespace pl = matcore::mdslc::platform;
 namespace {
+// Private composition regression, not a public or serialized ABI promise.
+// CPU entries retain their pre-composition values; GPU entries append after them.
+static_assert([] {
+  constexpr ch::Candidate candidates[] = {
+      ch::Candidate::automatic, ch::Candidate::native_strict,
+      ch::Candidate::generated_strict, ch::Candidate::existing_native,
+      ch::Candidate::authenticated_openblas, ch::Candidate::generated_reassociate,
+      ch::Candidate::generated_strict_avx, ch::Candidate::generated_strict_avx2,
+      ch::Candidate::generated_strict_avx512f, ch::Candidate::generated_nvvm,
+      ch::Candidate::generated_rocdl};
+  constexpr ch::Implementation implementations[] = {
+      ch::Implementation::none, ch::Implementation::native_strict,
+      ch::Implementation::generated_strict, ch::Implementation::existing_reference,
+      ch::Implementation::authenticated_openblas, ch::Implementation::empty_output,
+      ch::Implementation::zero_reduction, ch::Implementation::test_only,
+      ch::Implementation::generated_reassociate, ch::Implementation::generated_strict_avx,
+      ch::Implementation::generated_strict_avx2, ch::Implementation::generated_strict_avx512f,
+      ch::Implementation::generated_nvvm, ch::Implementation::generated_rocdl};
+  for (unsigned i = 0; i < std::size(candidates); ++i)
+    if (static_cast<unsigned>(candidates[i]) != i) return false;
+  for (unsigned i = 0; i < std::size(implementations); ++i)
+    if (static_cast<unsigned>(implementations[i]) != i) return false;
+  return ch::Options{}.candidate == ch::Candidate::native_strict;
+}());
+
 int checks = 0, failures = 0;
 void check(bool condition, const char *label) {
   ++checks;

@@ -74,6 +74,17 @@ in `context.md`.
   inclusion FileID; semantic sites carry explicit file identities bound to the
   frozen host closure. This does not authorize opaque modules, arbitrary header
   effects, presumed `#line` identities or ABI-compatible substitute definitions.
+- The optional explicitly forced `generated-nvvm`/`generated-rocdl` candidates
+  reuse the built-in strict GEMM structured seam, then upstream GPU outlining
+  and target lowering. They do not transform the whole-region paired witness.
+  Their documented synchronous staged realization owns temporary device and
+  host allocations/copies; it confers no source residency, zero-copy, fusion or
+  automatic target-selection claim. Preserve original source/artifact/worker
+  symbol ownership, caller state, checked completion and earlier successful
+  publications. Unknown device completion retains possibly live resources and
+  poisons that adapter; never free them or silently fall back to CPU. See
+  `docs/mdslc/STAGED_GPU_CANDIDATES_V1.md` for exact toolchain/device bounds.
+
 - Preserve semantic information until the final optimization that can use it.
   Matcore semantic operations describe WHAT. Legality, planning, structured
   upstream dialects, scheduling, and library/generated-code selection describe

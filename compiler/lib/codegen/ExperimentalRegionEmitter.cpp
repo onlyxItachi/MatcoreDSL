@@ -32,6 +32,8 @@ const char *candidate(ClosedCpuPolicy policy) {
   case ClosedCpuPolicy::GeneratedStrictAvx: return "generated_strict_avx";
   case ClosedCpuPolicy::GeneratedStrictAvx2: return "generated_strict_avx2";
   case ClosedCpuPolicy::GeneratedStrictAvx512f: return "generated_strict_avx512f";
+  case ClosedCpuPolicy::GeneratedNvvm: return "generated_nvvm";
+  case ClosedCpuPolicy::GeneratedRocdl: return "generated_rocdl";
   case ClosedCpuPolicy::ExistingNative: return "existing_native";
   case ClosedCpuPolicy::OpenBLAS: return "authenticated_openblas";
   }
@@ -44,7 +46,7 @@ ExperimentalRegionEmissionResult emitExperimentalRegion(
     ClosedCpuPolicy policy) {
   ExperimentalRegionEmissionResult result;
   if (!evidence.hasHostContext() || !evidence.entryBinding() || !candidate(policy)) {
-    result.error = "experimental implementation requires a sealed named entry and known CPU policy";
+    result.error = "experimental implementation requires a sealed named entry and known candidate policy";
     return result;
   }
   // This replays the complete original host/semantic witness. No caller-provided

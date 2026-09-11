@@ -164,6 +164,7 @@ jobs:
           mlir_options=(
             -DMDSLC_ENABLE_MATCORE_MLIR=${{ matrix.mlir_enable }}
             -DMDSLC_ENABLE_EXPERIMENTAL_REGIONS=${{ matrix.mlir_enable }}
+            -DMDSLC_ENABLE_EXPERIMENTAL_GPU_ISSUER=${{ matrix.mlir_enable }}
             -DMDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS=${{ matrix.vector_readiness_enable }}
           )
           if [[ "${{ matrix.mlir_enable }}" == "ON" ]]; then

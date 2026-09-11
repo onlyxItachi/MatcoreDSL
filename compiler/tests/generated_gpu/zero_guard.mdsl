@@ -1,0 +1,26 @@
+#include <matcore/region.h>
+#include <cstdio>
+#include <vector>
+namespace md = matcore::mdsl;
+MATCORE_REGION
+md::Result pipeline(md::Storage A, md::Storage B, md::Storage C,
+                    md::Shape m, md::Shape n) noexcept {
+  auto a = md::read(A, m, 0);
+  auto b = md::read(B, 0, n);
+  auto c = md::gemm(a, b, md::Numerics::strict_f32);
+  md::publish(c, C);
+  return md::complete();
+}
+int main() {
+  constexpr md::Shape m = 1025, n = 1024;
+  std::vector<float> c(m*n, -13);
+  auto result = pipeline({nullptr,m,0,0}, {nullptr,0,n,0},
+      {c.data(),m,n,m*n,md::Access::read_write}, m, n);
+  unsigned failures = 0;
+  failures += result.ok() || result.error() != md::Error::candidate_incompatible;
+  failures += result.failed_frontier() != 3 || result.completed_frontier() != 2;
+  failures += result.publication_count() != 0 || result.completed_effect_frontier() != 0;
+  for (float value : c) failures += value != -13;
+  std::printf("GPU zero-K qualification before publication: %u failures\n", failures);
+  return failures ? 1 : 0;
+}

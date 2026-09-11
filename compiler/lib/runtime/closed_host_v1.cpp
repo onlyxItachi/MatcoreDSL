@@ -1,4 +1,5 @@
 #include "closed_host_v1.h"
+#include "closed_gpu_capability_v1.h"
 #include "../platform/closed_fp_environment_v1.h"
 #include "../platform/closed_cpu_isa_v1.h"
 
@@ -23,6 +24,12 @@
 #endif
 #if defined(MDSLC_CLOSED_HOST_GENERATED_REASSOCIATE)
 #include "closed_generated_capability_v1.h"
+#endif
+#if defined(MDSLC_CLOSED_HOST_GENERATED_NVVM)
+#include "closed_cuda_candidate_v1.h"
+#endif
+#if defined(MDSLC_CLOSED_HOST_GENERATED_ROCDL)
+#include "closed_rocdl_candidate_v1.h"
 #endif
 
 #if defined(__FAST_MATH__)
@@ -152,6 +159,18 @@ Candidate selectedCandidate(Candidate request) noexcept {
 Code candidateLegality(Candidate request, Numeric numeric) noexcept {
   switch (selectedCandidate(request)) {
   case Candidate::native_strict: return Code::ok;
+  case Candidate::generated_nvvm:
+#if defined(MDSLC_CLOSED_HOST_GENERATED_NVVM)
+    return detail::cudaCandidateAvailable();
+#else
+    return Code::candidate_unavailable;
+#endif
+  case Candidate::generated_rocdl:
+#if defined(MDSLC_CLOSED_HOST_GENERATED_ROCDL)
+    return detail::rocdlCandidateAvailable();
+#else
+    return Code::candidate_unavailable;
+#endif
   case Candidate::generated_strict:
 #if defined(MDSLC_CLOSED_HOST_GENERATED_STRICT)
     return Code::ok;
@@ -506,6 +525,15 @@ Status SessionAbiV2::gemm(Frontier frontier, const Value &lhs, const Value &rhs,
     return rejected(Code::invalid_value);
   if (lhs.columns() != rhs.rows()) return rejected(Code::shape_mismatch);
   auto code = candidateLegality(options_.candidate, numeric);
+  if (code == Code::ok &&
+      (options_.candidate == Candidate::generated_nvvm ||
+       options_.candidate == Candidate::generated_rocdl)) {
+    std::size_t elements = 0;
+    code = extent(lhs.rows(), rhs.columns(), elements);
+    if (code == Code::ok &&
+        !detail::closedGpuShapeCompatibleV1(lhs.rows(), rhs.columns(), lhs.columns()))
+      code = Code::candidate_incompatible;
+  }
   if (code != Code::ok) return rejected(code);
   Value owned_storage;
   code = allocate(lhs.rows(), rhs.columns(), owned_storage);
@@ -579,6 +607,30 @@ Status SessionAbiV2::gemm(Frontier frontier, const Value &lhs, const Value &rhs,
           candidate_report_.actual_threads = 1;
           _mlir_ciface___matcore_reassociate_gemm_f32_avx2_v1(&a, &b, &c);
         }
+#else
+        code = Code::candidate_unavailable;
+#endif
+        break;
+      case Candidate::generated_nvvm:
+#if defined(MDSLC_CLOSED_HOST_GENERATED_NVVM)
+        candidate_report_.actual = Implementation::generated_nvvm;
+        candidate_report_.invocation_attempted = true;
+        code = detail::cudaGemmCandidate(
+            {lhs.data(), lhs.rows(), lhs.columns()},
+            {rhs.data(), rhs.rows(), rhs.columns()},
+            {storage->elements.data(), storage->rows, storage->columns});
+#else
+        code = Code::candidate_unavailable;
+#endif
+        break;
+      case Candidate::generated_rocdl:
+#if defined(MDSLC_CLOSED_HOST_GENERATED_ROCDL)
+        candidate_report_.actual = Implementation::generated_rocdl;
+        candidate_report_.invocation_attempted = true;
+        code = detail::rocdlGemmCandidate(
+            {lhs.data(), lhs.rows(), lhs.columns()},
+            {rhs.data(), rhs.rows(), rhs.columns()},
+            {storage->elements.data(), storage->rows, storage->columns});
 #else
         code = Code::candidate_unavailable;
 #endif
@@ -746,7 +798,7 @@ const char *message(Code code) noexcept {
   case Code::already_complete: return "session is already complete";
   case Code::invalid_candidate: return "unknown compile-trusted candidate request";
   case Code::candidate_unavailable: return "forced candidate unavailable; fallback forbidden";
-  case Code::candidate_incompatible: return "forced candidate violates numerical permissions";
+  case Code::candidate_incompatible: return "forced candidate is incompatible with the numerical, shape or target contract";
   }
   return "unknown closed-host status";
 }
@@ -756,6 +808,10 @@ const char *implementationName(Implementation implementation) noexcept {
   case Implementation::none: return "none";
   case Implementation::native_strict: return "closed.native.strict_f32.v1";
   case Implementation::generated_strict: return "closed.generated.strict_f32.mlir21.v1";
+  case Implementation::generated_nvvm:
+    return "closed.generated.strict_f32.nvvm.sm89.staged.mlir21.v1";
+  case Implementation::generated_rocdl:
+    return "closed.generated.strict_f32.rocdl.gfx1150.staged.mlir21.v1";
   case Implementation::generated_strict_avx: return "closed.generated.strict_f32.mlir21.avx.v1";
   case Implementation::generated_strict_avx2: return "closed.generated.strict_f32.mlir21.avx2.v1";
   case Implementation::generated_strict_avx512f: return "closed.generated.strict_f32.mlir21.avx512f.v1";

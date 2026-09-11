@@ -134,6 +134,14 @@ machine exceptions, restoring caller FP controls and status on normal return.
 | `native-strict` | Matcore strict scalar implementation; legal for both profiles. |
 | `existing-native` | Existing Runtime's forced reference implementation; requires `reassociate_f32`. It is not the legacy planner's fastest-choice mode. |
 | `openblas` | Authenticated linked provider; requires `reassociate_f32`, availability and provider conformance checks. |
+| `generated-nvvm` | Optional, explicitly forced strict staged GPU realization for qualified sm_89; never an automatic CPU replacement. |
+| `generated-rocdl` | Optional, explicitly forced strict staged GPU realization for qualified gfx1150; no CPU/other-GPU fallback. |
+
+The GPU choices require their separately enabled, pinned Linux x86-64 package
+dependencies and checked realization bounds. They allocate/copy private staging
+and complete synchronously; they do not expose persistent device residency,
+zero-copy or fusion. See the [exact staged GPU contract](STAGED_GPU_CANDIDATES_V1.md)
+for source authentication, LLVM/MLIR ownership, failure containment and evidence.
 
 A forced unavailable/incompatible candidate returns checked failure; it does
 not silently fall back or change numerical permissions. Provider probes are

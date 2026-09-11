@@ -19,6 +19,17 @@ std::string symbolKey(llvm::StringRef name) {
 }
 
 using ReservedSymbols = std::map<std::string, std::string>;
+constexpr const char *thread_start =
+    "_ZNSt6thread15_M_start_threadESt10unique_ptrINS_6_StateESt14default_deleteIS1_EEPFvvE";
+constexpr const char *thread_join = "_ZNSt6thread4joinEv";
+// Qualified libstdc++ C++20 std::thread -> POSIX create/join closure. Unlike
+// reserving every libstdc++ export, this does not reject normal inline STL
+// instantiations. Unknown worker ABIs require an explicit new qualification.
+constexpr const char *worker_symbols[] = {
+    thread_start, thread_join, "pthread_create", "pthread_join",
+    "_ZNSt6thread6_StateD0Ev", "_ZNSt6thread6_StateD1Ev", "_ZNSt6thread6_StateD2Ev",
+    "_ZTINSt6thread6_StateE", "_ZTVNSt6thread6_StateE", "_ZTSNSt6thread6_StateE",
+    "_ZSt9terminatev", "_ZSt20__throw_system_errori"};
 
 bool collect(const TrustedSymbolArtifact &artifact, ReservedSymbols &symbols,
              unsigned expected_machine, ArtifactSymbolOwnershipReport &report,
@@ -43,6 +54,11 @@ bool collect(const TrustedSymbolArtifact &artifact, ReservedSymbols &symbols,
     error = "unknown trusted symbol artifact owner";
     return false;
   }
+  if (artifact.requires_worker_threads && artifact.owner != SymbolArtifactOwner::PrivateCandidates) {
+    error = "only the private candidate DSO may require the worker-thread contract";
+    return false;
+  }
+  bool imports_start = false, imports_join = false;
   std::size_t count = 0;
   for (const auto symbol : elf->getDynamicSymbolIterators()) {
     auto flags = symbol.getFlags();
@@ -50,8 +66,6 @@ bool collect(const TrustedSymbolArtifact &artifact, ReservedSymbols &symbols,
       error = "invalid trusted artifact symbol flags: " + llvm::toString(flags.takeError());
       return false;
     }
-    if ((*flags & llvm::object::SymbolRef::SF_Undefined) ||
-        symbol.getBinding() == llvm::ELF::STB_LOCAL) continue;
     auto name = symbol.getName();
     if (!name) {
       error = "invalid trusted artifact symbol name: " + llvm::toString(name.takeError());
@@ -59,12 +73,26 @@ bool collect(const TrustedSymbolArtifact &artifact, ReservedSymbols &symbols,
     }
     const auto key = symbolKey(*name);
     if (key.empty()) continue;
+    if (*flags & llvm::object::SymbolRef::SF_Undefined) {
+      imports_start |= key == thread_start;
+      imports_join |= key == thread_join;
+      continue;
+    }
+    if (symbol.getBinding() == llvm::ELF::STB_LOCAL) continue;
     symbols.try_emplace(key, label);
     ++count;
   }
   if (count == 0) {
     error = "trusted symbol artifact has no exports for its declared owner: " + label;
     return false;
+  }
+  if (artifact.requires_worker_threads) {
+    if (!imports_start || !imports_join) {
+      error = "private candidate DSO does not match the qualified std::thread worker ABI";
+      return false;
+    }
+    for (const auto *symbol : worker_symbols)
+      symbols.try_emplace(symbol, "trusted worker thread runtime");
   }
   if (artifact.owner == SymbolArtifactOwner::MatcoreRuntime) report.runtime_exports += count;
   else if (artifact.owner == SymbolArtifactOwner::ExternalProvider) report.provider_exports += count;

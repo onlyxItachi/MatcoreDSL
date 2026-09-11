@@ -175,6 +175,7 @@ set(MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS "${MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS
 
 # Test variants use exactly this definition, with injection enabled only in the
 # dedicated archive. The default invocation produces the installed candidate set.
+include(GpuCandidates.cmake)
 function(mdslc_add_closed_candidate_runtime target)
   cmake_parse_arguments(REGION "TESTING;NATIVE_ONLY;SHARED" "" "" ${ARGN})
   if(REGION_UNPARSED_ARGUMENTS)
@@ -219,6 +220,7 @@ function(mdslc_add_closed_candidate_runtime target)
     # The shared legacy runtime remains the sole OpenBLAS policy-state owner.
     # Never embed the private CPU backend archive into this archive.
     target_link_libraries(${target} PRIVATE MatcoreDSL::Runtime)
+    mdslc_add_closed_gpu_runtime(${target})
   endif()
   if(REGION_TESTING)
     target_compile_definitions(${target} PUBLIC MDSLC_CLOSED_HOST_TESTING)
