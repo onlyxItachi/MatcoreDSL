@@ -38,13 +38,11 @@ jobs:
             echo SKIP_NO_METAL_COMPILER_COMPONENT > evidence/offline-compile-status.txt
           fi
       - name: Build bounded research host
-        if: always()
         run: |
           xcrun clang++ -std=c++20 -O0 -fno-fast-math -ffp-contract=off -fobjc-arc \
             -framework Foundation -framework Metal -framework CoreGraphics \
             probe.mm -o evidence/metal-probe
       - name: Discover actual Metal device and preserve numerical counterexamples
-        if: always()
         run: |
           for variant in gemm gemm-required-fp; do
             set +e

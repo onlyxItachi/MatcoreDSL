@@ -61,6 +61,7 @@ int main(int argc, char **argv) {
       @"strict_contract_qualified": @NO,
       @"os": NSProcessInfo.processInfo.operatingSystemVersionString,
       @"arithmetic_flags": @"fastMathEnabled=NO; pragma METAL fp contract(off)",
+      @"msl_language_version": @"2.1 (explicit for offline and runtime compilation)",
       @"geometry": @"M=2 N=4 K=3; 1 thread/group; 2x4 groups",
       @"storage": @"explicit shared A/B/private-result staging; host access after completion"
     } mutableCopy];
@@ -114,6 +115,7 @@ int main(int argc, char **argv) {
       return fail(@"host oracle adversarial controls", nil);
     NSError *error = nil;
     MTLCompileOptions *options = [MTLCompileOptions new];
+    options.languageVersion = MTLLanguageVersion2_1;
     options.fastMathEnabled = NO;
     auto pipeline = [&](const char *file) -> id<MTLComputePipelineState> {
       NSString *text = [NSString stringWithContentsOfFile:@(file)

@@ -49,6 +49,10 @@ the documented EOF-newline normalization.
    workaround. It prevents one source contraction form; its signed-zero and
    denormal behavior must still be checked. Unused generated matrix helper
    templates are present in the golden but never instantiated by this GEMM.
+   In particular, `fma(x,y,+0)` is not a universal replacement for multiply:
+   it can change a negative-zero product to positive zero. This GEMM's initial
+   positive-zero accumulation may hide that difference, so this specimen must
+   not be generalized into a scalar arithmetic proof.
 6. The **actual dynamic outlined NVIDIA research specimen** was also tested
    with the SPIR-V Shader/storage-buffer target environment and entry ABI.
    It fails at `memref.store` for `memref<?x?xf32>`. Upstream
@@ -96,6 +100,13 @@ normal-number sample cannot replace these missing guarantees.
   inspected: `spirv_parser.cpp`, `spirv_glsl.cpp`, `spirv_msl.cpp`; no MSL
   denormal/rounding realization was found in those implementations. The
   byte-identical-output claim above is limited to the actual tested package.
+- [MoltenVK's capability implementation](https://github.com/KhronosGroup/MoltenVK/blob/4aaf714aa1b3e78e26ecfcefa9c75e9a576c500b/MoltenVK/MoltenVK/GPUObjects/MVKDevice.mm#L858)
+  explicitly reports `shaderDenormPreserveFloat32=false` and
+  `shaderRoundingModeRTEFloat32=true`. That exact current upstream source was
+  read, not built. MoltenVK is a relevant alternate host/runtime route for the
+  same SPIR-V, but does not supply the missing strict denormal guarantee. A
+  future Vulkan candidate must consume actual device float-control properties;
+  successful SPIR-V validation cannot substitute for that capability check.
 
 ## Runner and runtime experiment
 
@@ -127,7 +138,9 @@ subnormals, signed zero, a real FMA discriminator, K-order, RTNE-versus-RTZ,
 infinity and quiet NaN (NaN class, not payload identity). Each has eight output
 comparisons. Host input immutability and destination guards are checked.
 The host uses fast math disabled and an explicit no-contraction pragma for both
-plain and NoContraction-generated shaders.
+plain and NoContraction-generated shaders. Both offline and runtime compilation
+explicitly select MSL 2.1. Artifact identity or compilation failures prevent
+the execution step; only evidence upload uses unconditional workflow execution.
 
 Numerical mismatches are **successful falsification observations**, retained as
 `EXECUTED_STRICT_COUNTEREXAMPLE` with exact expected/actual bits; they do not
