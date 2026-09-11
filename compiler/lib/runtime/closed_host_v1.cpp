@@ -1,5 +1,6 @@
 #include "closed_host_v1.h"
 #include "closed_gpu_capability_v1.h"
+#include "../platform/closed_fp_environment_v1.h"
 
 #include <cfenv>
 #include <cerrno>
@@ -32,10 +33,6 @@
 
 #if defined(__FAST_MATH__)
 #error "closed host strict-f32 adapter must not be compiled with fast math"
-#endif
-
-#if defined(__linux__) && defined(__x86_64__)
-#include <xmmintrin.h>
 #endif
 
 #if defined(__clang__)
@@ -112,7 +109,7 @@ SessionAbiV2::~SessionAbiV2() noexcept { release(observations_); }
 namespace {
 #if defined(MDSLC_CLOSED_HOST_GENERATED_STRICT) || \
     defined(MDSLC_CLOSED_HOST_GENERATED_REASSOCIATE)
-// Private pinned MLIR 21 x86-64 identity-memref ABI, never an installed type.
+// Private pinned MLIR 21 Linux x86-64/AArch64 identity-memref ABI, never an installed type.
 struct GeneratedMemref {
   float *allocated;
   float *aligned;
@@ -329,11 +326,7 @@ Code closedProviderContract(CandidateReport &evidence) noexcept {
 #endif
 
 constexpr bool supportedPlatform() noexcept {
-#if defined(__linux__) && defined(__x86_64__)
-  return true;
-#else
-  return false;
-#endif
+  return platform::closedFpPlatformSupportedV1();
 }
 
 Code extent(std::uint64_t rows, std::uint64_t columns,
@@ -369,61 +362,9 @@ Code validate(ResourceView view, bool write, std::size_t &elements) noexcept {
   return Code::ok;
 }
 
-// Restore the complete thread environment, including sticky exception flags.
-// The old runtime's control-only helper intentionally is not reused here.
-// A failure to restore a previously captured supported-host environment is an
-// unrecoverable adapter malfunction: returning normally would violate the
-// contract. No recoverable status is claimed for that impossible-to-isolate path.
-class ScopedFp {
-public:
-  ScopedFp() noexcept {
-#if defined(__linux__) && defined(__x86_64__)
-    if (std::fegetenv(&saved_) != 0) return;
-    saved_mxcsr_ = _mm_getcsr();
-    __asm__ volatile("fnstcw %0" : "=m"(saved_control_));
-    __asm__ volatile("fnstsw %0" : "=am"(saved_status_));
-    captured_ = true;
-    if (std::fesetenv(FE_DFL_ENV) != 0) { restore(); return; }
-    expected_mxcsr_ = _mm_getcsr();
-    __asm__ volatile("fnstcw %0" : "=m"(expected_control_));
-    valid_ = (expected_mxcsr_ & 0xFFC0U) == 0x1F80U &&
-             (expected_control_ & 0x0C3FU) == 0x003FU;
-    if (!valid_) restore();
-#endif
-  }
-  ~ScopedFp() { restore(); }
-  bool valid() const noexcept { return valid_; }
-  bool controlsUnchanged() const noexcept {
-#if defined(__linux__) && defined(__x86_64__)
-    std::uint16_t control = 0;
-    __asm__ volatile("fnstcw %0" : "=m"(control));
-    return valid_ && (_mm_getcsr() & ~0x3FU) ==
-                         (expected_mxcsr_ & ~0x3FU) &&
-           control == expected_control_;
-#else
-    return false;
-#endif
-  }
-  void restore() noexcept {
-#if defined(__linux__) && defined(__x86_64__)
-    if (!captured_) return;
-    if (std::fesetenv(&saved_) != 0) std::terminate();
-    std::uint16_t control = 0, status = 0;
-    __asm__ volatile("fnstcw %0" : "=m"(control));
-    __asm__ volatile("fnstsw %0" : "=am"(status));
-    if (_mm_getcsr() != saved_mxcsr_ || control != saved_control_ ||
-        status != saved_status_)
-      std::terminate();
-    captured_ = false;
-#endif
-  }
-private:
-  std::fenv_t saved_{};
-  bool captured_ = false;
-  bool valid_ = false;
-  std::uint32_t saved_mxcsr_ = 0, expected_mxcsr_ = 0;
-  std::uint16_t saved_control_ = 0, saved_status_ = 0, expected_control_ = 0;
-};
+// Full thread controls AND sticky status; distinct from the old runtime's
+// intentionally control-only helper. Restoration failure cannot return normally.
+using ScopedFp = platform::ClosedFpEnvironmentV1;
 
 void strictGemm(const ValueStorageAbiV2 &lhs, const ValueStorageAbiV2 &rhs,
                 ValueStorageAbiV2 &result) noexcept {

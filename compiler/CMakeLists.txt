@@ -180,10 +180,10 @@ if(MDSLC_ENABLE_EXPERIMENTAL_REGIONS)
   if(NOT MDSLC_ENABLE_NATIVE_FRONTEND OR NOT MDSLC_ENABLE_MATCORE_MLIR OR
      MDSLC_EXPERIMENTAL_TOOLCHAIN_ACTIVE OR
      NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
-     NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" OR
+     NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|aarch64|arm64)$" OR
      NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR CMAKE_CROSSCOMPILING)
     message(FATAL_ERROR
-      "MDSLC_ENABLE_EXPERIMENTAL_REGIONS=ON requires native Linux x86_64, "
+      "MDSLC_ENABLE_EXPERIMENTAL_REGIONS=ON requires native Linux x86_64 or AArch64, "
       "MDSLC_ENABLE_NATIVE_FRONTEND=ON, MDSLC_ENABLE_MATCORE_MLIR=ON and "
       "the exact LLVM/Clang/MLIR 21.1.8 product tuple (no cross compilation)")
   endif()
@@ -504,7 +504,7 @@ if(MDSLC_ENABLE_EXPERIMENTAL_REGIONS OR MDSLC_BUILD_CLOSED_REGION_TESTS)
   add_subdirectory(lib/regions)
 endif()
 if(BUILD_TESTING AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
-   CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+   CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|aarch64|arm64)$")
   # Private host-storage conformance boundary. No installed API or connection
   # to the compatibility driver is introduced by this adapter.
   add_subdirectory(tests/closed_host)
@@ -1011,6 +1011,21 @@ if(BUILD_TESTING)
         set(MDSLC_PACKAGE_SOURCE_WAS_CLEAN OFF)
       endif()
       set(MDSLC_SOURCE_INACCESSIBLE_MLIR_ARGUMENTS)
+      if(TARGET mdslc-region)
+        add_test(NAME package.experimental_regions.closed_source_inaccessible
+          COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/closed_driver/installed_source_inaccessible.py"
+            --repository "${MDSLC_PACKAGE_REPOSITORY_ROOT}"
+            --expected-commit "${MDSLC_PACKAGE_SOURCE_COMMIT}"
+            --configured-clean "${MDSLC_PACKAGE_SOURCE_WAS_CLEAN}"
+            --cmake "${CMAKE_COMMAND}" --git "${MDSLC_PACKAGE_GIT_EXECUTABLE}"
+            --clang "${MDSLC_CLANGXX_EXECUTABLE}"
+            --llvm-dir "${LLVM_DIR}" --clang-dir "${Clang_DIR}" --mlir-dir "${MLIR_DIR}"
+            --schedule "${MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE}"
+            --linker-launcher "${CMAKE_CXX_LINKER_LAUNCHER}")
+        set_tests_properties(package.experimental_regions.closed_source_inaccessible
+          PROPERTIES RUN_SERIAL TRUE TIMEOUT 1200)
+      endif()
       if(MDSLC_ENABLE_MATCORE_MLIR)
         list(APPEND MDSLC_SOURCE_INACCESSIBLE_MLIR_ARGUMENTS
           --mlir-dir "${MLIR_DIR}")

@@ -31,6 +31,26 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 endif()
 
 if(BUILD_TESTING)
+  # Separate from the legacy platform archive: closed regions require complete
+  # thread-environment restoration, not the legacy control-only contract.
+  find_package(Threads REQUIRED)
+  add_executable(matcore_closed_fp_environment_v1_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/platform/closed_fp_environment_v1_test.cpp"
+    closed_fp_environment_v1.cpp)
+  target_compile_features(matcore_closed_fp_environment_v1_test PRIVATE cxx_std_20)
+  target_include_directories(matcore_closed_fp_environment_v1_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(matcore_closed_fp_environment_v1_test PRIVATE Threads::Threads)
+  if(MDSLC_USING_MSVC_ABI_FRONTEND)
+    target_compile_options(matcore_closed_fp_environment_v1_test PRIVATE /fp:strict)
+  else()
+    target_compile_options(matcore_closed_fp_environment_v1_test PRIVATE
+      -fno-fast-math -frounding-math -ffp-contract=off)
+  endif()
+  add_test(NAME platform.closed_fp_environment.v1
+    COMMAND matcore_closed_fp_environment_v1_test)
+  set_tests_properties(platform.closed_fp_environment.v1 PROPERTIES SKIP_RETURN_CODE 77)
+
   add_executable(
     matcore_platform_v1_test
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/platform/platform_test.cpp"

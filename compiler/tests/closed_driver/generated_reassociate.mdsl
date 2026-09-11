@@ -8,7 +8,7 @@
 #include <cstring>
 #include <iostream>
 #include <vector>
-#include <xmmintrin.h>
+// Architecture-specific FP intrinsics are included after the source region.
 
 // Host oracle FP pragmas follow the region; they are not inherited region
 // attributes or a way to change the source numerical profile.
@@ -41,6 +41,9 @@ MATCORE_REGION md::Result reassociate_pipeline(md::Storage a, md::Storage b, md:
   return md::complete();
 }
 
+#if defined(__x86_64__)
+#include <xmmintrin.h>
+#endif
 #pragma STDC FENV_ACCESS ON
 #pragma STDC FP_CONTRACT OFF
 namespace {
@@ -78,7 +81,11 @@ void run(const char *policy,std::size_t m,std::size_t n,std::size_t k,
   const bool generated=std::strcmp(policy,"generated-reassociate")==0;
   const bool provider=std::strcmp(policy,"openblas")==0;
   const bool incompatible=generated || provider || std::strcmp(policy,"existing-native")==0;
+#if defined(__x86_64__)
   const bool hardware=__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+#else
+  const bool hardware=false;
+#endif
   const std::size_t lateK=shapeFailure ? n+1 : (rhsCarry ? m : n);
   const std::size_t lateColumns=rhsCarry ? m : n;
   const std::size_t outM=rhsCarry ? lateK : m;
@@ -103,8 +110,11 @@ void run(const char *policy,std::size_t m,std::size_t n,std::size_t k,
     std::fegetenv(&old);
     std::fesetround(FE_DOWNWARD);
     std::feraiseexcept(FE_INEXACT|FE_UNDERFLOW);
+#if defined(__x86_64__)
     _mm_setcsr(_mm_getcsr()|0x8040U);
-    const auto mxcsr=_mm_getcsr();
+#endif
+    // Source hosts do not admit inline assembly. Raw FPCR/FPSR and flush-state
+    // isolation are separately covered by the native runtime/platform fixtures.
     std::fenv_t before{},after{};
     std::fegetenv(&before);
     errno=EDOM;
@@ -115,8 +125,7 @@ void run(const char *policy,std::size_t m,std::size_t n,std::size_t k,
       {aliasLate ? first.data()+1 : late.data(),lateK,lateColumns,lateK*lateColumns,md::Access::read_write},
       {last.data()+1,outM,n,outM*n,md::Access::read_write},m,n,k,lateK,lateColumns,strictSecond,rhsCarry);
     std::fegetenv(&after);
-    check(errno==EDOM && mxcsr==_mm_getcsr() &&
-          before.__control_word==after.__control_word && before.__status_word==after.__status_word,
+    check(errno==EDOM && std::memcmp(&before,&after,sizeof(before))==0,
           "source call restores errno and complete FP environment");
     std::fesetenv(&old);
     if(generated && !hardware) {

@@ -55,8 +55,15 @@ void verifyOutput(const Artifact &artifact, bool compile_only) {
       llvm::MemoryBufferRef(artifact.bytes, "issued compiler output"));
   if (!parsed) reject("compiler output is not an object: " + llvm::toString(parsed.takeError()));
   const auto *elf = llvm::dyn_cast<llvm::object::ELF64LEObjectFile>(parsed->get());
-  if (!elf || elf->getELFFile().getHeader().e_machine != llvm::ELF::EM_X86_64)
-    reject("compiler output is not a Linux x86-64 ELF artifact");
+#if defined(__linux__) && defined(__x86_64__)
+  constexpr auto machine = llvm::ELF::EM_X86_64;
+#elif defined(__linux__) && defined(__aarch64__) && !defined(__AARCH64EB__)
+  constexpr auto machine = llvm::ELF::EM_AARCH64;
+#else
+#error "Experimental source output verification requires native little-endian Linux x86-64 or AArch64"
+#endif
+  if (!elf || elf->getELFFile().getHeader().e_machine != machine)
+    reject("compiler output is not a Linux ELF64 artifact matching this native compiler target");
   const auto &file = elf->getELFFile();
   const auto &header = file.getHeader();
   if (compile_only) {

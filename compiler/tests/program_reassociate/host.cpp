@@ -22,10 +22,32 @@ int main(int argc, char **argv) {
   if (argc != 2) return 2;
   const bool fused = std::strcmp(argv[1], "generated-reassociate") == 0;
   if (!fused && std::strcmp(argv[1], "generated-strict") != 0) return 2;
+#if defined(__x86_64__)
   if (fused && (!__builtin_cpu_supports("avx2") || !__builtin_cpu_supports("fma"))) {
     std::cout << "SKIP program_reassociate: AVX2/FMA unavailable\n";
     return 77;
   }
+#else
+  if (fused) {
+    std::array<float,8> a{};
+    std::array<float,16> b{};
+    std::array<float,32> out;
+    a.fill(2); b.fill(3); out.fill(-777);
+    const auto saved_a=a;
+    const auto saved_b=b;
+    const auto saved_out=out;
+    auto result = permissive_first({a.data(), 4, 2, 8, md::Access::read_write},
+        {b.data(), 2, 8, 16, md::Access::read_write},
+        {out.data(), 4, 8, 32, md::Access::read_write});
+    check(result.error() == md::Error::candidate_unavailable &&
+          result.failed_frontier() == 3 && result.completed_frontier() == 2 &&
+          result.completed_effect_frontier() == 0 && result.publication_count() == 0 &&
+          result.observation_count() == 0 && out == saved_out && a == saved_a && b == saved_b,
+          "ARM forced reassociate is unavailable without effects or fallback");
+    std::cout << "ARM program reassociate refusal: " << failures << " failures\n";
+    return failures ? 1 : 0;
+  }
+#endif
   std::array<float, 8> a;
   std::array<float, 16> b;
   std::array<float, 34> first;

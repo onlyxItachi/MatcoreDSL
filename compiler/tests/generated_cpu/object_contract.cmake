@@ -20,9 +20,18 @@ if(NOT imports STREQUAL "")
 endif()
 execute_process(COMMAND "${OBJDUMP}" -d "${OBJECT}"
   RESULT_VARIABLE status OUTPUT_VARIABLE assembly ERROR_VARIABLE error)
+if(CPU_X86)
 if(NOT status EQUAL 0 OR NOT assembly MATCHES "file format elf64-x86-64" OR
    assembly MATCHES "[ \t]v?f(madd|msub|nmadd|nmsub)" OR
    NOT assembly MATCHES "[ \t]mulss" OR NOT assembly MATCHES "[ \t]addss")
   message(FATAL_ERROR "Generated baseline object lost separate scalar arithmetic/target: ${error}\n${assembly}")
 endif()
 message(STATUS "Generated object is baseline x86-64 with separate scalar multiply/add and bounded imports")
+else()
+  if(NOT status EQUAL 0 OR NOT assembly MATCHES "file format elf64-littleaarch64" OR
+     NOT assembly MATCHES "[ \t]fmul[ \t]+s" OR NOT assembly MATCHES "[ \t]fadd[ \t]+s" OR
+     assembly MATCHES "[ \t](fmla|fmls|fmadd|fmsub|fnmadd|fnmsub)[ \t]")
+    message(FATAL_ERROR "ARM strict object lost separate scalar arithmetic/target: ${error}\n${assembly}")
+  endif()
+  message(STATUS "Generated object is baseline AArch64 with separate scalar multiply/add and bounded imports")
+endif()

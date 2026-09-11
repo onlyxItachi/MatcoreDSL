@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import re
 import subprocess
@@ -23,14 +24,14 @@ def dynamic_dependencies(text):
     return {"needed": needed, "required": sorted(required)}
 
 
-def relocatable_header(text):
+def relocatable_header(text, machine="Advanced Micro Devices X86-64"):
     fields = {}
     for line in text.splitlines():
         key, separator, value = line.partition(":")
         if separator:
             fields[key.strip()] = value.strip()
     required = {"Class": "ELF64", "Type": "REL (Relocatable file)",
-                "Machine": "Advanced Micro Devices X86-64"}
+                "Machine": machine}
     for key, expected in required.items():
         if fields.get(key) != expected:
             raise ValueError(f"expected ELF {key}={expected!r}, got {fields.get(key)!r}")
@@ -72,6 +73,9 @@ def main():
     parser.add_argument("--has-openblas", action="store_true",
                         help="also execute reassociate_f32 cases with requested openblas policy")
     args = parser.parse_args()
+    architecture = platform.machine()
+    if architecture not in ("x86_64", "aarch64"):
+        parser.error("storage conformance requires native Linux x86_64 or aarch64")
     driver = args.driver.resolve(strict=True)
     initial_hash = digest(driver)
     if args.expected_sha256 and initial_hash != args.expected_sha256:
@@ -149,12 +153,17 @@ def main():
         run([driver, fixture_source / f"{carry}.mdsl", "--region", "pipeline",
              "--candidate", candidate, "-o", binary])
         reject_policy = candidate == "existing-native" and numerics == "strict_f32"
-        execution = run([binary, "--expect-policy-rejection"] if reject_policy else [binary])
+        unavailable_policy = (architecture == "aarch64" and candidate == "existing-native"
+                              and numerics == "reassociate_f32")
+        flags = (["--expect-policy-rejection"] if reject_policy else
+                 ["--expect-policy-unavailable"] if unavailable_policy else [])
+        execution = run([binary, *flags])
         print(f"{carry}/{numerics}/{candidate}: {execution.stdout.splitlines()[-1]}", flush=True)
         inspect_dynamic(binary)
         report["lanes"].append({"carry": carry, "numerics": numerics,
                                 "requested_candidate": candidate, "status": "pass",
                                 "expected_policy_rejection": reject_policy,
+                                "expected_policy_unavailable": unavailable_policy,
                                 "summary": execution.stdout.splitlines()[-1]})
         save()
 
@@ -169,7 +178,8 @@ def main():
     run([driver, source / "lhs.mdsl", "--region", "pipeline", "--candidate",
          "generated-strict", "-c", "-o", obj])
     header = run(["readelf", "-h", obj])
-    validate("generated object: ELF64 x86-64 REL", lambda: relocatable_header(header.stdout))
+    machine = "AArch64" if architecture == "aarch64" else "Advanced Micro Devices X86-64"
+    validate("generated object: native ELF64 REL", lambda: relocatable_header(header.stdout, machine))
     linked = output / "lhs-generated-strict-ordinary-link"
     run(ordinary_link_command(args.clangxx, obj, libraries, library_dir, linked, args.sanitized))
     linked_execution = run([linked])

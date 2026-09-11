@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
-#include <xmmintrin.h>
+#include "../support/closed_fp_fixture.h"
 
 #pragma STDC FENV_ACCESS ON
 #pragma STDC FP_CONTRACT OFF
@@ -45,7 +45,7 @@ extern "C" matcore_status_v0 matcore_runtime_gemm_f32_execute_v1(
   if (std::strcmp(mode, "wrong_threads") == 0)
     report->selected_actual_threads = 2;
   if (std::strcmp(mode, "control_corruption") == 0)
-    _mm_setcsr(_mm_getcsr() | 0x8000U);
+    closed_fp_fixture::enableFlush();
   if (std::strcmp(mode, "partial_failure") == 0 && calls == 6) {
     c[0] = 12345;
     status.code = MATCORE_STATUS_EXTERNAL_PROVIDER_FAILURE_V0;
@@ -68,7 +68,7 @@ int main(int argc, char **argv) {
   std::fegetenv(&saved);
   std::fesetround(FE_DOWNWARD);
   std::feraiseexcept(FE_INEXACT);
-  const auto mxcsr = _mm_getcsr();
+  const auto fp = closed_fp_fixture::snapshot();
   const auto status =
       session.gemm(4, lhs, rhs, ch::Numeric::reassociate_f32, result);
   const auto report = session.candidateReport();
@@ -82,7 +82,7 @@ int main(int argc, char **argv) {
       status.failed_frontier == 4 && report.provider_contract_checked &&
       report.provider_probe_invoked && !report.value_issued &&
       report.invocation_attempted == partial &&
-      (partial ? calls == 6 : calls >= 1) && _mm_getcsr() == mxcsr &&
+      (partial ? calls == 6 : calls >= 1) && closed_fp_fixture::snapshot() == fp &&
       std::fegetround() == FE_DOWNWARD;
   std::fesetenv(&saved);
   if (!correct) {

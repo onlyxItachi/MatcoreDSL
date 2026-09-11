@@ -17,6 +17,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
 jobs:
   clang-21-release:
     name: Clang 21.1.8 Release (${{ matrix.openblas_label }}, ${{ matrix.mlir_label }})
@@ -469,7 +472,7 @@ jobs:
           sanitizer_tests="${sanitizer_tests}|${region_tests}"
           ctest --test-dir build-mdslc-asan-ubsan -N -R "${sanitizer_tests}" \
             | tee build-mdslc-asan-ubsan/focused-test-list.txt
-          grep -Fx "Total Tests: 129" \
+          grep -Fx "Total Tests: 131" \
             build-mdslc-asan-ubsan/focused-test-list.txt
           ctest --test-dir build-mdslc-asan-ubsan --output-on-failure -j1 \
             -R "${sanitizer_tests}"

@@ -13,6 +13,7 @@ using Matrix = std::vector<float>;
 unsigned checks = 0, failures = 0;
 const char *current_case = nullptr;
 bool expect_policy_rejection = false;
+bool expect_policy_unavailable = false;
 void check(bool condition, const char *message) {
   ++checks;
   if (!condition) {
@@ -140,12 +141,14 @@ void run(const Case &test) {
     publications = observations = 1;
     expected_error = mdsl::Error::access_denied; expected_line = 16; break;
   }
-  if (expect_policy_rejection && test.failure != Failure::first_read_shape) {
+  if ((expect_policy_rejection || expect_policy_unavailable) && test.failure != Failure::first_read_shape) {
     // existing-native is not silently allowed to weaken strict_f32, including
     // empty and zero-reduction mathematical cases.
     expected_failed = 3; expected_completed = 2; expected_effect = 0;
     publications = observations = 0;
-    expected_error = mdsl::Error::candidate_incompatible; expected_line = 11;
+    expected_error = expect_policy_unavailable ? mdsl::Error::candidate_unavailable
+                                               : mdsl::Error::candidate_incompatible;
+    expected_line = 11;
   }
   const auto a = snapshot(expected_arena, a_offset, m * k);
   const auto b = snapshot(expected_arena, b_offset, k * n);
@@ -220,6 +223,7 @@ void run(const Case &test) {
 
 int main(int argc, char **argv) {
   expect_policy_rejection = argc == 2 && std::strcmp(argv[1], "--expect-policy-rejection") == 0;
+  expect_policy_unavailable = argc == 2 && std::strcmp(argv[1], "--expect-policy-unavailable") == 0;
   const Case cases[]{
     {"rectangular"},
     {"late_read_exact_alias", 2, 3, 4, 2, Alias::late_exact},

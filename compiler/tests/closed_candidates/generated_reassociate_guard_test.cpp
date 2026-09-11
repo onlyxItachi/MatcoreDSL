@@ -7,7 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
-#include <xmmintrin.h>
+#include "../support/closed_fp_fixture.h"
 
 #pragma STDC FENV_ACCESS ON
 #pragma STDC FP_CONTRACT OFF
@@ -79,10 +79,10 @@ void guardedShapes() {
       const auto allocations = session.allocationAttemptsForTesting();
       discovered = available ? supported() : pl::CpuCapabilitiesV2{};
       discoveries = invocations = 0;
-      const auto saved_mxcsr = _mm_getcsr();
+      const auto saved_mxcsr = closed_fp_fixture::snapshot();
       errno = EDOM;
       const auto status = session.gemm(3,a,b,ch::Numeric::reassociate_f32,c);
-      check(errno == EDOM && _mm_getcsr() == saved_mxcsr,
+      check(errno == EDOM && closed_fp_fixture::snapshot() == saved_mxcsr,
             "discovery preserves caller errno and FP state");
       check(discoveries == 1, "forced candidate checks hardware even for empty math");
       check(status.code == (available ? ch::Code::ok : ch::Code::candidate_unavailable),
@@ -112,11 +112,11 @@ void noUnchosenProbe() {
     ch::Value a,c;
     session.read(1,{&x,1,1,1},a);
     discoveries = invocations = 0;
-    const auto mxcsr = _mm_getcsr();
+    const auto mxcsr = closed_fp_fixture::snapshot();
     errno = ERANGE;
     const auto status = session.gemm(2,a,a,ch::Numeric::strict_f32,c);
     check(discoveries == 0 && invocations == 0, "unchosen or strict-refused never probes");
-    check(errno == ERANGE && mxcsr == _mm_getcsr(), "unchosen preserves errno/FP");
+    check(errno == ERANGE && mxcsr == closed_fp_fixture::snapshot(), "unchosen preserves errno/FP");
     if (candidate == ch::Candidate::generated_reassociate)
       check(status.code == ch::Code::candidate_incompatible,
             "strict profile fails before absent hardware test");
@@ -175,7 +175,7 @@ int main() {
   std::fegetenv(&original);
   std::fesetround(FE_DOWNWARD);
   std::feraiseexcept(FE_INEXACT | FE_UNDERFLOW);
-  _mm_setcsr(_mm_getcsr() | 0x8040U);
+  closed_fp_fixture::enableFlush();
   predicates(); guardedShapes(); noUnchosenProbe(); prefix();
   std::fesetenv(&original);
   std::cout << "Generated reassociate guard: " << checks << " checks; " << failures << " failures\n";

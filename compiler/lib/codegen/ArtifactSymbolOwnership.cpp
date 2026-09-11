@@ -32,7 +32,8 @@ constexpr const char *worker_symbols[] = {
     "_ZSt9terminatev", "_ZSt20__throw_system_errori"};
 
 bool collect(const TrustedSymbolArtifact &artifact, ReservedSymbols &symbols,
-             ArtifactSymbolOwnershipReport &report, std::string &error) {
+             unsigned expected_machine, ArtifactSymbolOwnershipReport &report,
+             std::string &error) {
   const auto label = artifact.bytes.getBufferIdentifier().str();
   auto parsed = llvm::object::ObjectFile::createObjectFile(artifact.bytes);
   if (!parsed) {
@@ -42,9 +43,9 @@ bool collect(const TrustedSymbolArtifact &artifact, ReservedSymbols &symbols,
   }
   const auto *elf = llvm::dyn_cast<llvm::object::ELFObjectFileBase>(parsed->get());
   if (!elf || elf->getEType() != llvm::ELF::ET_DYN ||
-      elf->getEMachine() != llvm::ELF::EM_X86_64 ||
+      elf->getEMachine() != expected_machine ||
       elf->getBytesInAddress() != 8 || !elf->isLittleEndian()) {
-    error = "trusted symbol artifact is not a Linux x86-64 ELF DSO: " + label;
+    error = "trusted symbol artifact is not a little-endian Linux ELF64 DSO matching the authenticated host target: " + label;
     return false;
   }
   if (artifact.owner != SymbolArtifactOwner::MatcoreRuntime &&
@@ -107,9 +108,14 @@ bool verifyHostArtifactSymbolOwnership(
   report = {};
   error.clear();
   const llvm::Triple target(host.getTargetTriple());
-  if (target.getArch() != llvm::Triple::x86_64 || !target.isOSLinux() ||
-      host.getDataLayout().getPointerSizeInBits() != 64) {
-    error = "artifact symbol ownership supports only the Linux x86-64 host contract";
+  const auto machine = target.getArch() == llvm::Triple::x86_64
+                           ? llvm::ELF::EM_X86_64
+                       : target.getArch() == llvm::Triple::aarch64
+                           ? llvm::ELF::EM_AARCH64 : llvm::ELF::EM_NONE;
+  if (machine == llvm::ELF::EM_NONE || !target.isOSLinux() ||
+      host.getDataLayout().getPointerSizeInBits() != 64 ||
+      !host.getDataLayout().isLittleEndian()) {
+    error = "artifact symbol ownership requires a little-endian Linux x86-64 or AArch64 host contract";
     return false;
   }
   for (const auto &function : host)
@@ -135,7 +141,7 @@ bool verifyHostArtifactSymbolOwnership(
   ReservedSymbols symbols;
   ArtifactSymbolOwnershipReport candidate;
   for (const auto &artifact : artifacts)
-    if (!collect(artifact, symbols, candidate, error)) return false;
+    if (!collect(artifact, symbols, machine, candidate, error)) return false;
 
   // GNU libstdc++ <iostream> emits this declaration to retain its initialization
   // dependency. It defines no symbol. Do not interpret arbitrary assembly or

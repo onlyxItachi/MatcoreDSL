@@ -2,7 +2,8 @@ if(NOT TARGET mdslc-region)
   return()
 endif()
 add_executable(matcore_gpu_qualification_test qualification_test.cpp
-  ../../lib/runtime/closed_host_v1.cpp)
+  ../../lib/runtime/closed_host_v1.cpp
+  ../../lib/platform/closed_fp_environment_v1.cpp)
 target_compile_features(matcore_gpu_qualification_test PRIVATE cxx_std_20)
 target_compile_definitions(matcore_gpu_qualification_test PRIVATE
   MDSLC_CLOSED_HOST_TESTING MDSLC_CLOSED_HOST_GENERATED_ROCDL)
