@@ -10,12 +10,12 @@ namespace matcore::mdslc::runtime::closed_host_v1 {
 // automatic explicitly chooses linked strict generated, otherwise strict native.
 enum class Candidate : std::uint8_t {
   automatic, native_strict, generated_strict, existing_native,
-  authenticated_openblas, generated_reassociate
+  authenticated_openblas, generated_reassociate, generated_nvvm, generated_rocdl
 };
 enum class Implementation : std::uint8_t {
   none, native_strict, generated_strict, existing_reference,
   authenticated_openblas, empty_output, zero_reduction, test_only,
-  generated_reassociate
+  generated_reassociate, generated_nvvm, generated_rocdl
 };
 struct Options { Candidate candidate = Candidate::native_strict; };
 struct CandidateReport {
@@ -58,8 +58,10 @@ private:
 
 // Private execution adapter, not a public source API or frozen ABI. This adapter
 // does not authenticate source, accept serialized authority, or interpret an AST.
-// These shapes describe only the private test injection ABI. No production
-// method accepts a candidate function. Production uses the closed registry above.
+// These shapes are the internal synchronous leaf inputs/outputs and private
+// test injection ABI. No production method accepts a candidate function.
+// Production uses the closed registry above. GPU candidates explicitly stage
+// private device buffers; these host pointers do not assert device residency.
 namespace detail {
 // Private helper/runtime layout revision, not semantic execution authority.
 // Versioned class linkage prevents an old inline constructor COMDAT from

@@ -119,12 +119,14 @@ codegen::ClosedCpuPolicy parseCandidatePolicy(const std::string &name) {
   if (name == "native-strict") return codegen::ClosedCpuPolicy::NativeStrict;
   if (name == "generated-strict") return codegen::ClosedCpuPolicy::GeneratedStrict;
   if (name == "generated-reassociate") return codegen::ClosedCpuPolicy::GeneratedReassociate;
+  if (name == "generated-nvvm") return codegen::ClosedCpuPolicy::GeneratedNvvm;
+  if (name == "generated-rocdl") return codegen::ClosedCpuPolicy::GeneratedRocdl;
   if (name == "existing-native") return codegen::ClosedCpuPolicy::ExistingNative;
   if (name == "openblas") return codegen::ClosedCpuPolicy::OpenBLAS;
   reject("unknown built-in candidate: " + name);
 }
 const char *candidatePolicyUsage() {
-  return "automatic|native-strict|generated-strict|generated-reassociate|existing-native|openblas";
+  return "automatic|native-strict|generated-strict|generated-reassociate|generated-nvvm|generated-rocdl|existing-native|openblas";
 }
 Installation::Installation()
     : installed(layout()), clang(Artifact::capture(REGION_CLANG, REGION_CLANG_SHA)),
@@ -138,21 +140,31 @@ Installation::Installation()
           : std::nullopt),
       public_header(Artifact::capture(installed.include / "matcore/region.h")),
       storage_header(Artifact::capture(installed.include / "matcore/detail/region_storage.h")),
-      private_header(Artifact::capture(installed.header)) {}
+      private_header(Artifact::capture(installed.header)) {
+  if (std::strlen(REGION_CUDA_DRIVER_PATH))
+    accelerators.push_back(Artifact::capture(REGION_CUDA_DRIVER_PATH, REGION_CUDA_DRIVER_SHA));
+  if (std::strlen(REGION_HIP_RUNTIME_PATH))
+    accelerators.push_back(Artifact::capture(REGION_HIP_RUNTIME_PATH, REGION_HIP_RUNTIME_SHA));
+}
 std::vector<codegen::TrustedSymbolArtifact> Installation::symbolArtifacts() const {
   std::vector<codegen::TrustedSymbolArtifact> result{
       {codegen::SymbolArtifactOwner::MatcoreRuntime,
        llvm::MemoryBufferRef(runtime.bytes, "canonical Matcore Runtime")},
       {codegen::SymbolArtifactOwner::PrivateCandidates,
-       llvm::MemoryBufferRef(candidates.bytes, "isolated private candidates")}};
+       llvm::MemoryBufferRef(candidates.bytes, "isolated private candidates"),
+       !accelerators.empty()}};
   if (provider) result.push_back({codegen::SymbolArtifactOwner::ExternalProvider,
       llvm::MemoryBufferRef(provider->bytes, "canonical OpenBLAS provider")});
+  for (const auto &artifact : accelerators)
+    result.push_back({codegen::SymbolArtifactOwner::ExternalProvider,
+        llvm::MemoryBufferRef(artifact.bytes, "pinned GPU driver/runtime")});
   return result;
 }
 void Installation::unchanged() const {
   for (const auto *artifact : {&candidates, &runtime, &public_header, &storage_header, &private_header, &clang, &linker})
     artifact->unchanged();
   if (provider) provider->unchanged();
+  for (const auto &artifact : accelerators) artifact.unchanged();
 }
 frontend::Options Installation::options(const fs::path &source, const std::vector<std::string> &host_options) const {
   frontend::Options result;
@@ -209,6 +221,9 @@ void compileAndPublish(const Installation &installation, const Staging &staging,
     if (provider)
       process.argv.insert(process.argv.end(), {provider->path.string(),
         "-Xlinker", "-rpath", "-Xlinker", provider->path.parent_path().string()});
+    for (const auto &artifact : installation.accelerators)
+      process.argv.insert(process.argv.end(), {artifact.path.string(),
+        "-Xlinker", "-rpath", "-Xlinker", artifact.path.parent_path().string()});
   }
   auto linked = support::run_process_v1(process);
   std::cerr << linked.stderr_text;

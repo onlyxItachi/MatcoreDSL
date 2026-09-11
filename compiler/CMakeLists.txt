@@ -161,6 +161,21 @@ if(MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE AND NOT BUILD_TESTING)
     "MDSLC_ENABLE_TEST_TOOL_PREFIX_OVERRIDE is allowed only with BUILD_TESTING=ON")
 endif()
 
+option(MDSLC_ENABLE_EXPERIMENTAL_GPU_ISSUER
+  "Build the inspection-only fixed NVVM/ROCDL artifact issuer" OFF)
+option(MDSLC_ENABLE_EXPERIMENTAL_NVVM
+  "Enable the forced synchronous staged sm89 generated candidate" OFF)
+option(MDSLC_ENABLE_EXPERIMENTAL_ROCDL
+  "Enable the forced synchronous staged gfx1150 generated candidate" OFF)
+if(MDSLC_ENABLE_EXPERIMENTAL_GPU_ISSUER OR MDSLC_ENABLE_EXPERIMENTAL_NVVM OR
+   MDSLC_ENABLE_EXPERIMENTAL_ROCDL)
+  find_package(Threads REQUIRED)
+endif()
+if((MDSLC_ENABLE_EXPERIMENTAL_GPU_ISSUER OR MDSLC_ENABLE_EXPERIMENTAL_NVVM OR
+    MDSLC_ENABLE_EXPERIMENTAL_ROCDL) AND NOT MDSLC_ENABLE_EXPERIMENTAL_REGIONS)
+  message(FATAL_ERROR "Experimental GPU controls require MDSLC_ENABLE_EXPERIMENTAL_REGIONS=ON")
+endif()
+
 if(MDSLC_ENABLE_EXPERIMENTAL_REGIONS)
   if(NOT MDSLC_ENABLE_NATIVE_FRONTEND OR NOT MDSLC_ENABLE_MATCORE_MLIR OR
      MDSLC_EXPERIMENTAL_TOOLCHAIN_ACTIVE OR
@@ -499,6 +514,7 @@ add_subdirectory(tools/matcore-bench)
 if(MDSLC_BUILD_CLOSED_REGION_TESTS)
   add_subdirectory(tests/closed_region)
   add_subdirectory(tests/generated_cpu)
+  add_subdirectory(tests/generated_gpu)
   add_subdirectory(tests/closed_candidates)
   add_subdirectory(tests/closed_source)
   add_subdirectory(tests/closed_driver)

@@ -43,6 +43,9 @@ struct Installation {
   Layout installed;
   Artifact clang, linker, candidates, runtime;
   std::optional<Artifact> provider;
+  // Actual installed driver/runtime bytes, never link stubs or source-chosen
+  // module paths. Full export sets participate in host ownership verification.
+  std::vector<Artifact> accelerators;
   Artifact public_header, storage_header, private_header;
   Installation();
   std::vector<codegen::TrustedSymbolArtifact> symbolArtifacts() const;

@@ -8,7 +8,7 @@ namespace matcore::mdslc::codegen {
 // or source syntax. Forced unsupported candidates fail rather than fall back.
 enum class ClosedCpuPolicy {
   Automatic, NativeStrict, GeneratedStrict, ExistingNative, OpenBLAS,
-  GeneratedReassociate
+  GeneratedReassociate, GeneratedNvvm, GeneratedRocdl
 };
 
 struct ExperimentalRegionEmission {
