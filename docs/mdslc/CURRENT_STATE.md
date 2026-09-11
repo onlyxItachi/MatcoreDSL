@@ -37,7 +37,7 @@ Private staging, worker isolation, guarded completion and retained failure
 prefixes compose with the merged CPU/ARM paths; default dispatch is unchanged.
 Final combined local **379/379**, no skips; all qualifying hosted lanes passed.
 Metal strict arithmetic was falsified on the tested paravirtual device and was
-not integrated. See the [campaign/evidence map](MULTITARGET_CORRECTNESS_CAMPAIGN_V1.md#completed-correctness-campaign)
+not integrated. See the [campaign/evidence map](MULTITARGET_CORRECTNESS_CAMPAIGN_V1.md#canonical-integration-and-preserved-heads)
 and [exact final qualification](agent-reports/multitarget-composed-v1.md#qualified-canonical-checkpoint).
 
 ## Unsupported or unproven
