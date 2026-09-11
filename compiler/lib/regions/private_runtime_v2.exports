@@ -1,4 +1,5 @@
-# Exact Linux x86-64/Clang 21.1.8 private link contract, not a frozen public ABI.
+# Exact native Linux LP64 x86-64/AArch64 Clang 21.1.8 private link contract,
+# not a frozen public ABI.
 # Export only out-of-line public owning methods and compiler orchestration
 # entrypoints. Runtime implementation, STL instantiations, cleanup, the issued
 # leaf and internal state are local. Inline helper definitions are isolated at

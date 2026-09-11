@@ -75,13 +75,15 @@ struct GemmArtifactV1 {
 using StrictGemmArtifactV1 = GemmArtifactV1;
 
 // Closed issuer: only the built-in verified strict primitive, exact 21.1.8
-// schedules and closed baseline Linux target set. Address instrumentation is carried
+// schedules, closed baseline Linux target set and fixed x86 row-contiguous ISA
+// refinements. No refinements change the source numerical contract. Address instrumentation is carried
 // as LLVM function attributes, not presumed from the host link command.
 // Target selection is not a source/ABI/FP/physical execution certificate.
 StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
     bool address_sanitizer,
     StrictGemmScheduleV1 schedule = StrictGemmScheduleV1::ScalarMNK,
-    CpuTargetV1 target = CpuTargetV1::LinuxX86_64);
+    CpuTargetV1 target = CpuTargetV1::LinuxX86_64,
+    StrictCpuIsaV1 isa = StrictCpuIsaV1::Baseline);
 
 } // namespace matcore::mdslc::cpu_candidate
 #endif

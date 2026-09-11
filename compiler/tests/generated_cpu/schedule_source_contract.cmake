@@ -1,4 +1,16 @@
 cmake_minimum_required(VERSION 3.20)
+if(NOT DEFINED POLICY)
+  set(POLICY generated-strict)
+endif()
+if(DEFINED PROBE)
+  execute_process(COMMAND "${PROBE}" RESULT_VARIABLE probe_status OUTPUT_VARIABLE probe_output ERROR_VARIABLE probe_error)
+  if(probe_status STREQUAL "77" AND probe_output MATCHES "^SKIP strict ISA" AND probe_error STREQUAL "")
+    message(STATUS "${probe_output}")
+    return()
+  elseif(NOT probe_status STREQUAL "0")
+    message(FATAL_ERROR "ISA execution probe failed: ${probe_output}\n${probe_error}")
+  endif()
+endif()
 if(NOT DEFINED DRIVER OR NOT IS_ABSOLUTE "${DRIVER}" OR NOT EXISTS "${DRIVER}")
   message(FATAL_ERROR "An actual built mdslc-region DRIVER is required")
 endif()
@@ -19,7 +31,7 @@ string(RANDOM LENGTH 16 ALPHABET 0123456789abcdef identity)
 set(executable "${work}/generated-${identity}")
 execute_process(
   COMMAND "${DRIVER}" "${source}" --region "${region}"
-    --candidate generated-strict -o "${executable}"
+    --candidate "${POLICY}" -o "${executable}"
   WORKING_DIRECTORY "${work}"
   RESULT_VARIABLE compile_status OUTPUT_VARIABLE compile_output
   ERROR_VARIABLE compile_error TIMEOUT 120)

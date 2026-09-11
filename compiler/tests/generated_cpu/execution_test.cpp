@@ -7,6 +7,7 @@
 #include <limits>
 #include <string_view>
 #include <vector>
+#include "strict_isa_test_support.h"
 
 // Private upstream C wrapper layout, intentionally not an installed ABI.
 struct Memref {
@@ -33,29 +34,30 @@ bool equal(float a, float b) {
                              std::bit_cast<std::uint32_t>(b);
 }
 int main(int argc, char **argv) {
+  if (!strictIsaTestAvailable()) return 77;
   if (argc == 2 && std::string_view(argv[1]) == "--oob-simd") {
-    // Deliberately violate only B's private leaf capacity precondition. N=16
-    // reaches the row-contiguous SIMD main loop, unlike the scalar N=1 probe.
+    // Deliberately violate only B's private leaf capacity precondition. N=128
+    // reaches even the four-ZMM strict ISA main loop, not a narrower remainder.
     // A larger actual C allocation keeps the generated alias-versioning ranges
-    // disjoint; only the descriptor's first 16 output elements are accessed.
+    // disjoint; only the descriptor's first 128 output elements are accessed.
     auto *a = new float[1]{1};
     auto *b = new float[1]{1};
-    auto *c = new float[64]{};
+    auto *c = new float[512]{};
     const auto ap = reinterpret_cast<std::uintptr_t>(a);
     const auto bp = reinterpret_cast<std::uintptr_t>(b);
     const auto cp = reinterpret_cast<std::uintptr_t>(c);
     auto disjoint = [](std::uintptr_t x, std::uintptr_t y, std::uintptr_t length) {
       return x < y ? y - x >= length : x - y >= length;
     };
-    if (!disjoint(ap, cp, 16 * sizeof(float)) ||
-        !disjoint(bp, cp, 16 * sizeof(float))) {
+    if (!disjoint(ap, cp, 128 * sizeof(float)) ||
+        !disjoint(bp, cp, 128 * sizeof(float))) {
       // A failed setup is NOT an accepted sanitizer result. No caller OOB is
       // performed while checking these integer address ranges.
       std::fputs("SIMD OOB control could not establish disjoint versioning ranges\n", stderr);
       delete[] a; delete[] b; delete[] c;
       return 3;
     }
-    run(a, b, c, 1, 16, 1);
+    run(a, b, c, 1, 128, 1);
     delete[] a;
     delete[] b;
     delete[] c;
@@ -124,6 +126,15 @@ int main(int argc, char **argv) {
   float c = 99;
   run(a, b, &c, 1, 1, 2);
   check(c == 0 && std::fma(a[1], b[1], -1.0f) != c);
+#ifdef MDSLC_TEST_STRICT_ISA
+  // N=129 crosses the full-width/interleaved loop and both narrower remainders.
+  // Every lane distinguishes separately rounded strict math from real FMA.
+  std::array<float,258> wide_b;
+  std::array<float,129> wide_c;
+  for(unsigned j=0;j<129;++j) { wide_b[j]=b[0]; wide_b[129+j]=b[1]; }
+  run(a,wide_b.data(),wide_c.data(),1,129,2);
+  for(float value:wide_c) check(value==0 && std::fma(a[1],b[1],-1.0f)!=value);
+#endif
   float ordered[4]{16777216.0f, 1.0f, -16777216.0f, 1.0f};
   float ones[4]{1, 1, 1, 1};
   run(ordered, ones, &c, 1, 1, 3);
