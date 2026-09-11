@@ -253,6 +253,8 @@ Downloaded evidence lives at
 `builds/metal/hosted-34603792231/metal-research-f937494113de4b2aa485de136fae349bb66c40a4/`
 under the task root. Both `gemm-result.json` and `gemm-required-fp-result.json`
 have SHA-256 `aceee00863c41f3dfe1b92ddec0f05f75c9759ba22e6d108f8b684090db3a9e9`.
+GitHub's uploaded workflow artifact is ID `10265587039`, size 30,569 bytes,
+archive digest `sha256:ac6da30f18fc6a80badd98b180faf576cf05b217ffa61f70276bf4642e797035`.
 Both explicitly report `EXECUTED_STRICT_COUNTEREXAMPLE` and
 `strict_contract_qualified: false`. Thus a green research job cannot be mistaken
 for MDSLC Metal support without contradicting the preserved evidence.
