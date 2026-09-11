@@ -30,6 +30,15 @@ static float reference(const Case &c, unsigned i, unsigned j) {
   return sum;
 }
 
+static float wrongOrderControl(const Case &c) {
+  volatile float sum = 0.0f;
+  for (unsigned k : {0u, 2u, 1u}) {
+    volatile float product = c.a[k] * c.b[k * 4];
+    sum = sum + product;
+  }
+  return sum;
+}
+
 static Case dotCase(const char *name, std::array<float, 3> a,
                     std::array<float, 3> b) {
   Case result{name, {}, {}};
@@ -100,7 +109,7 @@ int main(int argc, char **argv) {
     cases.push_back(dotCase("signed-zero", {-0.0f, -0.0f, -0.0f}, {1, 1, 1}));
     cases.push_back(dotCase("fma-discriminator", {-1, f(0x3f800001), 0},
                                                  {1, f(0x3f7ffffe), 1}));
-    cases.push_back(dotCase("increasing-k", {16777216.0f, -16777216.0f, 1}, {1, 1, 1}));
+    cases.push_back(dotCase("increasing-k", {16777216.0f, 1, -16777216.0f}, {1, 1, 1}));
     cases.push_back(dotCase("rte-not-rtz", {1, f(0x33c00000), 0}, {1, 1, 1}));
     cases.push_back(dotCase("infinity", {INFINITY, 1, 1}, {1, 1, 1}));
     cases.push_back(dotCase("quiet-nan", {f(0x7fc00001), 1, 1}, {1, 1, 1}));
@@ -110,7 +119,8 @@ int main(int argc, char **argv) {
         bits(reference(cases[4], 0, 0)) != 0 ||
         bits(reference(cases[5], 0, 0)) != 0 ||
         std::fma(f(0x3f800001), f(0x3f7ffffe), -1.0f) == 0 ||
-        reference(cases[6], 0, 0) != 1 ||
+        reference(cases[6], 0, 0) != 0 ||
+        wrongOrderControl(cases[6]) == reference(cases[6], 0, 0) ||
         bits(reference(cases[7], 0, 0)) != 0x3f800001)
       return fail(@"host oracle adversarial controls", nil);
     NSError *error = nil;

@@ -64,7 +64,7 @@ the documented EOF-newline normalization.
 20 tool invocations were recorded: **19 returned success, one returned the
 expected dynamic-stride rejection**. Four SPIR-V binary variants validated;
 three source goldens and the MLIR fixture match their recorded hashes. The
-host oracle's eight discriminating controls passed a separate small Linux
+host oracle's nine discriminating controls passed a separate small Linux
 Clang 21.1.8 compile/run. Objective-C++/Metal compilation and physical execution
 are **not locally validated** on the Linux host. Hosted results, when available,
 must be appended with exact run/head/device details rather than inferred.
@@ -195,3 +195,16 @@ extracted only into `builds/metal/tool-root`, **not installed**:
 
 No heavy source builds, production changes, system toolchain mutation, history
 rewrite, performance claim or MDSLC Metal target claim occurred in this lane.
+
+## Independent pre-push review
+
+Root reviewed the complete host, all three goldens, workflow, reproducer and
+record. It required fail-closed workflow ordering after artifact identity,
+explicit MSL-version pinning, exact negative return codes (not any crash), and
+60-second child-process timeouts. All were incorporated before hosted execution.
+A separate CPU-lane reviewer found the first K-order witness was too weak:
+`[2^24,-2^24,1]` does not distinguish both parenthesizations. The replacement
+`[2^24,1,-2^24]` produces strict zero but cancellation-first one, and the host
+now explicitly proves its wrong-order oracle differs before launching anything.
+This is ordinary engineering review, not native Apple validation or a security
+audit. Rejected weak fixtures remain visible in normal commit history.

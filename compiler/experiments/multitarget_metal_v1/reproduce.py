@@ -21,14 +21,15 @@ def main():
     args = ap.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     commands = []
+    (args.output / "manifest.json").write_text('{"status":"incomplete research run"}\n')
 
     def run(executable, *options, expect=0):
         argv = [str(executable), *map(str, options)]
-        result = subprocess.run(argv, capture_output=True, text=True)
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=60)
         commands.append(dict(argv=argv, returncode=result.returncode,
                              stdout=result.stdout, stderr=result.stderr))
         (args.output / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
-        if (expect == 0) != (result.returncode == 0):
+        if result.returncode != expect:
             raise RuntimeError(f"unexpected exit {result.returncode}: {argv}\n{result.stderr}")
         return result.stdout
 
