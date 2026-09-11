@@ -79,3 +79,27 @@ and native ELF machine are checked before execution. No source LLVM build or
 local system package mutation is used. Until a run passes at an exact head, this
 branch is an implementation awaiting native hosted qualification, not a product
 support or release claim.
+
+## First native qualification and fixture repair
+
+Native run `34599233232` at `e1fe9df` built and authenticated both ARM schedules,
+then failed four tests: scalar 89/93 and row-contiguous 91/95 passed, zero skipped.
+These were test portability failures, not a passing qualification: two tests
+assumed x86 `byval` Storage arguments (including null type dereferences), one
+forced-refusal fixture supplied 1x1 storage to a fixed 4x2-by-2x8 source program,
+and one ordinary-host legacy C API oracle incorrectly expected ARM support.
+
+The repair retains all x86 record/attribute rejection controls, exercises ARM's
+actual indirect-pointer ABI by changing it to `byval`, mutates the triple to the
+opposite architecture on either host, and supplies valid source shapes before
+testing unavailable-candidate failure with unchanged inputs/output. The legacy
+API must report its exact unsupported FP environment without execution/report
+publication. Local x86 reruns of all four repaired tests pass; fresh hosted native
+execution remains required.
+
+Opaque ARM argument pointers do not encode Storage's pointee layout. Exact
+canonical source headers and record-attribute authentication supply that closure,
+not LLVM pointer equality. The existing packing and ownership-attribute source
+rejection cases, host-thunk ABI tests and call-interface tests are now explicitly
+mandatory in the no-skip native qualifier. Recursive `sret` record and all actual
+pointer/calling-convention attributes remain checked on both targets.

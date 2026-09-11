@@ -29,6 +29,8 @@ REQUIRED = {
     "closed_candidates.provider_negative.control_corruption", "runtime.closed_host.contract_v1",
     "runtime.closed_host.independent_v1", "runtime.closed_host.authority_v1",
     "runtime.closed_host.private_value_abi_v2", "frontend.closed_source_generated_execution_v1",
+    "frontend.experimental_region_admission", "codegen.authenticated_host_thunk_v1",
+    "codegen.program_call_interface_v1",
     "driver.program_core", "driver.program_reassociate", "driver.program_installed",
     "driver.storage_conformance", "driver.implementation_ownership",
     "driver.generated_reassociate.generated-reassociate",
