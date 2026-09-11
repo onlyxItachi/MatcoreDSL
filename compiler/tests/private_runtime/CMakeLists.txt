@@ -7,7 +7,7 @@ add_test(NAME private_runtime.symbol_contract
 
 foreach(kind IN ITEMS candidates values results)
   if(kind STREQUAL "candidates")
-    set(source ../closed_candidates/candidate_test.cpp)
+    set(source ../closed_candidates/candidate_test.cpp ../../lib/platform/closed_cpu_isa_v1.cpp)
   elseif(kind STREQUAL "values")
     set(source ../closed_host/private_value_independent_test.cpp)
   else()

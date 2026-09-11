@@ -13,6 +13,7 @@
 #include <limits>
 #include <utility>
 #include <vector>
+#include "strict_isa_test_support.h"
 
 #if defined(__clang__)
 #pragma STDC FENV_ACCESS ON
@@ -127,6 +128,7 @@ void run(std::int64_t m, std::int64_t n, std::int64_t k,
 } // namespace
 
 int main(int argc, char **argv) {
+  if (!strictIsaTestAvailable()) return 77;
   const bool corrupt = argc == 2 && std::strcmp(argv[1], "--corrupt-output") == 0;
   if (argc != 1 && !corrupt) return 2;
   std::fenv_t caller;

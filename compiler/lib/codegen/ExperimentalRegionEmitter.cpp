@@ -29,6 +29,9 @@ const char *candidate(ClosedCpuPolicy policy) {
   case ClosedCpuPolicy::NativeStrict: return "native_strict";
   case ClosedCpuPolicy::GeneratedStrict: return "generated_strict";
   case ClosedCpuPolicy::GeneratedReassociate: return "generated_reassociate";
+  case ClosedCpuPolicy::GeneratedStrictAvx: return "generated_strict_avx";
+  case ClosedCpuPolicy::GeneratedStrictAvx2: return "generated_strict_avx2";
+  case ClosedCpuPolicy::GeneratedStrictAvx512f: return "generated_strict_avx512f";
   case ClosedCpuPolicy::GeneratedNvvm: return "generated_nvvm";
   case ClosedCpuPolicy::GeneratedRocdl: return "generated_rocdl";
   case ClosedCpuPolicy::ExistingNative: return "existing_native";

@@ -1,4 +1,5 @@
 #include "ClosedHostEmitter.h"
+#include "ExperimentalRegionEmitter.h"
 #include "frontend.h"
 #include "../../lib/support/platform_support.h"
 #include "mlir/IR/Builders.h"
@@ -23,6 +24,19 @@ namespace support = matcore::mdslc::support;
 namespace fs = std::filesystem;
 static_assert(!std::is_default_constructible_v<fe::AuthenticatedClosedRegionEvidence>);
 static_assert(!std::is_constructible_v<fe::AuthenticatedClosedRegionEvidence, cr::Program>);
+// Preserve CPU-first private policy numbering without declaring a public ABI.
+static_assert([] {
+  constexpr cg::ClosedCpuPolicy policies[] = {
+      cg::ClosedCpuPolicy::Automatic, cg::ClosedCpuPolicy::NativeStrict,
+      cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedCpuPolicy::ExistingNative,
+      cg::ClosedCpuPolicy::OpenBLAS, cg::ClosedCpuPolicy::GeneratedReassociate,
+      cg::ClosedCpuPolicy::GeneratedStrictAvx, cg::ClosedCpuPolicy::GeneratedStrictAvx2,
+      cg::ClosedCpuPolicy::GeneratedStrictAvx512f, cg::ClosedCpuPolicy::GeneratedNvvm,
+      cg::ClosedCpuPolicy::GeneratedRocdl};
+  for (unsigned i = 0; i < std::size(policies); ++i)
+    if (static_cast<unsigned>(policies[i]) != i) return false;
+  return true;
+}());
 
 namespace {
 unsigned checks=0, failures=0;

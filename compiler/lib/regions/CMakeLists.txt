@@ -160,6 +160,7 @@ endif()
 set(MDSLC_CLOSED_GEMM_NORMAL_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/strict-normal.o")
 add_custom_target(matcore_closed_candidates_leaf)
 add_dependencies(matcore_closed_candidates_leaf matcore_generated_cpu_normal_object)
+include(StrictCpuIsa.cmake)
 if(MDSLC_CLOSED_CPU_X86)
   set(MDSLC_CLOSED_REASSOCIATE_NORMAL_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/reassociate-normal.o")
   add_dependencies(matcore_closed_candidates_leaf matcore_generated_reassociate_normal_object)
@@ -197,7 +198,7 @@ function(mdslc_add_closed_candidate_runtime target)
     target_compile_definitions(${target} PRIVATE MDSLC_CLOSED_HOST_GENERATED_STRICT)
     if(MDSLC_CLOSED_CPU_X86)
       target_compile_definitions(${target} PRIVATE MDSLC_CLOSED_HOST_LEGACY_CANDIDATES
-        MDSLC_CLOSED_HOST_GENERATED_REASSOCIATE)
+        MDSLC_CLOSED_HOST_GENERATED_REASSOCIATE MDSLC_CLOSED_HOST_GENERATED_STRICT_ISA)
     endif()
     if(MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS)
       target_compile_definitions(${target} PRIVATE MDSLC_CLOSED_HOST_OPENBLAS)
@@ -207,6 +208,10 @@ function(mdslc_add_closed_candidate_runtime target)
     target_sources(${target} PRIVATE "${MDSLC_CLOSED_GEMM_NORMAL_OBJECT}")
     if(MDSLC_CLOSED_CPU_X86)
       target_sources(${target} PRIVATE "${MDSLC_CLOSED_REASSOCIATE_NORMAL_OBJECT}"
+        "${MDSLC_CLOSED_STRICT_AVX_NORMAL_OBJECT}"
+        "${MDSLC_CLOSED_STRICT_AVX2_NORMAL_OBJECT}"
+        "${MDSLC_CLOSED_STRICT_AVX512F_NORMAL_OBJECT}"
+        "${compiler_dir}/lib/platform/closed_cpu_isa_v1.cpp"
         "${compiler_dir}/lib/platform/cpu_capability_v2.cpp"
         "${compiler_dir}/lib/platform/platform.cpp")
     endif()

@@ -8,11 +8,38 @@
 #include <limits>
 #include <vector>
 #include "../support/closed_fp_fixture.h"
+#include "../../lib/platform/closed_cpu_isa_v1.h"
 
 #pragma STDC FENV_ACCESS ON
 #pragma STDC FP_CONTRACT OFF
 namespace ch = matcore::mdslc::runtime::closed_host_v1;
+namespace pl = matcore::mdslc::platform;
 namespace {
+// Private composition regression, not a public or serialized ABI promise.
+// CPU entries retain their pre-composition values; GPU entries append after them.
+static_assert([] {
+  constexpr ch::Candidate candidates[] = {
+      ch::Candidate::automatic, ch::Candidate::native_strict,
+      ch::Candidate::generated_strict, ch::Candidate::existing_native,
+      ch::Candidate::authenticated_openblas, ch::Candidate::generated_reassociate,
+      ch::Candidate::generated_strict_avx, ch::Candidate::generated_strict_avx2,
+      ch::Candidate::generated_strict_avx512f, ch::Candidate::generated_nvvm,
+      ch::Candidate::generated_rocdl};
+  constexpr ch::Implementation implementations[] = {
+      ch::Implementation::none, ch::Implementation::native_strict,
+      ch::Implementation::generated_strict, ch::Implementation::existing_reference,
+      ch::Implementation::authenticated_openblas, ch::Implementation::empty_output,
+      ch::Implementation::zero_reduction, ch::Implementation::test_only,
+      ch::Implementation::generated_reassociate, ch::Implementation::generated_strict_avx,
+      ch::Implementation::generated_strict_avx2, ch::Implementation::generated_strict_avx512f,
+      ch::Implementation::generated_nvvm, ch::Implementation::generated_rocdl};
+  for (unsigned i = 0; i < std::size(candidates); ++i)
+    if (static_cast<unsigned>(candidates[i]) != i) return false;
+  for (unsigned i = 0; i < std::size(implementations); ++i)
+    if (static_cast<unsigned>(implementations[i]) != i) return false;
+  return ch::Options{}.candidate == ch::Candidate::native_strict;
+}());
+
 int checks = 0, failures = 0;
 void check(bool condition, const char *label) {
   ++checks;
@@ -34,6 +61,18 @@ float strict(const float *a, const float *b, std::uint64_t k, std::uint64_t n) {
   return sum;
 }
 ch::Code expected(ch::Candidate candidate, ch::Numeric numeric) {
+  if (candidate == ch::Candidate::generated_strict_avx ||
+      candidate == ch::Candidate::generated_strict_avx2 ||
+      candidate == ch::Candidate::generated_strict_avx512f) {
+#if defined(EXPECT_NATIVE_ONLY) || !defined(__x86_64__)
+    return ch::Code::candidate_unavailable;
+#else
+    const auto isa = candidate == ch::Candidate::generated_strict_avx ? pl::StrictCpuIsaV1::AVX
+        : candidate == ch::Candidate::generated_strict_avx2 ? pl::StrictCpuIsaV1::AVX2 : pl::StrictCpuIsaV1::AVX512F;
+    return pl::closedCpuIsaSupportedV1(isa, pl::discoverClosedCpuIsaFactsV1())
+        ? ch::Code::ok : ch::Code::candidate_unavailable;
+#endif
+  }
   if (candidate == ch::Candidate::generated_reassociate) {
     if (numeric != ch::Numeric::reassociate_f32)
       return ch::Code::candidate_incompatible;
@@ -74,6 +113,12 @@ ch::Implementation actual(ch::Candidate candidate) {
     return ch::Implementation::native_strict;
   if (candidate == ch::Candidate::generated_strict)
     return ch::Implementation::generated_strict;
+  if (candidate == ch::Candidate::generated_strict_avx)
+    return ch::Implementation::generated_strict_avx;
+  if (candidate == ch::Candidate::generated_strict_avx2)
+    return ch::Implementation::generated_strict_avx2;
+  if (candidate == ch::Candidate::generated_strict_avx512f)
+    return ch::Implementation::generated_strict_avx512f;
   if (candidate == ch::Candidate::generated_reassociate)
     return ch::Implementation::generated_reassociate;
   if (candidate == ch::Candidate::existing_native)
@@ -403,7 +448,9 @@ int main() {
   const std::array candidates{
       ch::Candidate::automatic, ch::Candidate::native_strict,
       ch::Candidate::generated_strict, ch::Candidate::existing_native,
-      ch::Candidate::authenticated_openblas, ch::Candidate::generated_reassociate};
+      ch::Candidate::authenticated_openblas, ch::Candidate::generated_reassociate,
+      ch::Candidate::generated_strict_avx, ch::Candidate::generated_strict_avx2,
+      ch::Candidate::generated_strict_avx512f};
   for (auto candidate : candidates) {
     for (auto numeric :
          {ch::Numeric::strict_f32, ch::Numeric::reassociate_f32}) {
@@ -412,6 +459,8 @@ int main() {
       run(candidate, numeric, 0, 4, 3);
       run(candidate, numeric, 4, 0, 3);
       run(candidate, numeric, 3, 4, 0);
+      run(candidate, numeric, 3, 33, 7);
+      run(candidate, numeric, 2, 65, 3);
     }
     numerical(candidate);
     environment(candidate);

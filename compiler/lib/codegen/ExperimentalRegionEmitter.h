@@ -6,9 +6,12 @@ namespace matcore::mdslc::codegen {
 
 // Implementation policy belongs to compilation/dispatch, not mathematical IR
 // or source syntax. Forced unsupported candidates fail rather than fall back.
+// Preserve the CPU-first private composition order, not a public/wire ABI.
 enum class ClosedCpuPolicy {
-  Automatic, NativeStrict, GeneratedStrict, ExistingNative, OpenBLAS,
-  GeneratedReassociate, GeneratedNvvm, GeneratedRocdl
+  Automatic = 0, NativeStrict = 1, GeneratedStrict = 2, ExistingNative = 3,
+  OpenBLAS = 4, GeneratedReassociate = 5, GeneratedStrictAvx = 6,
+  GeneratedStrictAvx2 = 7, GeneratedStrictAvx512f = 8,
+  GeneratedNvvm = 9, GeneratedRocdl = 10
 };
 
 struct ExperimentalRegionEmission {

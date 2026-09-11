@@ -8,14 +8,20 @@ namespace matcore::mdslc::runtime::closed_host_v1 {
 // Private compile-trusted registry. No source/serialized identifier or callback
 // creates a candidate. Default sessions retain the original strict native path;
 // automatic explicitly chooses linked strict generated, otherwise strict native.
+// Explicit values preserve the CPU-first private composition order. This is not
+// a public or serialized candidate ABI; matched compiler/runtime artifacts remain
+// required, and later private entries must not renumber these existing entries.
 enum class Candidate : std::uint8_t {
-  automatic, native_strict, generated_strict, existing_native,
-  authenticated_openblas, generated_reassociate, generated_nvvm, generated_rocdl
+  automatic = 0, native_strict = 1, generated_strict = 2, existing_native = 3,
+  authenticated_openblas = 4, generated_reassociate = 5,
+  generated_strict_avx = 6, generated_strict_avx2 = 7, generated_strict_avx512f = 8,
+  generated_nvvm = 9, generated_rocdl = 10
 };
 enum class Implementation : std::uint8_t {
-  none, native_strict, generated_strict, existing_reference,
-  authenticated_openblas, empty_output, zero_reduction, test_only,
-  generated_reassociate, generated_nvvm, generated_rocdl
+  none = 0, native_strict = 1, generated_strict = 2, existing_reference = 3,
+  authenticated_openblas = 4, empty_output = 5, zero_reduction = 6, test_only = 7,
+  generated_reassociate = 8, generated_strict_avx = 9, generated_strict_avx2 = 10,
+  generated_strict_avx512f = 11, generated_nvvm = 12, generated_rocdl = 13
 };
 struct Options { Candidate candidate = Candidate::native_strict; };
 struct CandidateReport {

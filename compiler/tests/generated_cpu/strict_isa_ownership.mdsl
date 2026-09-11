@@ -1,0 +1,30 @@
+#include <matcore/region.h>
+#include <cstdio>
+namespace md=matcore::mdsl;
+static unsigned host_calls=0;
+extern "C" void source_leaf(void *,void *,void *) asm(ISA_LEAF);
+extern "C" void source_wrapper(void *,void *,void *) asm(ISA_WRAPPER);
+extern "C" void source_leaf(void *,void *,void *) { ++host_calls; }
+extern "C" void source_wrapper(void *,void *,void *) { ++host_calls; }
+MATCORE_REGION
+md::Result isa_region(md::Storage a,md::Storage b,md::Storage out) noexcept {
+  auto av=md::read(a,1,1);
+  auto bv=md::read(b,1,129);
+  auto result=md::gemm(av,bv,md::Numerics::strict_f32);
+  md::publish(result,out);
+  md::observe(out);
+  return md::complete();
+}
+int main() {
+  source_leaf(nullptr,nullptr,nullptr); source_wrapper(nullptr,nullptr,nullptr);
+  if(host_calls!=2) return 1;
+  float a=2,b[129],out[129];
+  for(unsigned i=0;i<129;++i) { b[i]=static_cast<float>(i); out[i]=-13; }
+  const auto result=isa_region({&a,1,1,1},{b,1,129,129},
+      {out,1,129,129,md::Access::read_write});
+  if(!result || result.publication_count()!=1 || result.observation_count()!=1 || host_calls!=2) return 2;
+  const auto observed=result.observation(0);
+  for(unsigned i=0;i<129;++i)
+    if(out[i]!=2*b[i] || observed.data()[i]!=out[i]) return 3;
+  std::puts("PASS strict ISA private leaf ownership: 129 outputs; host replacements not invoked");
+}

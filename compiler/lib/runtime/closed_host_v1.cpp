@@ -1,6 +1,7 @@
 #include "closed_host_v1.h"
 #include "closed_gpu_capability_v1.h"
 #include "../platform/closed_fp_environment_v1.h"
+#include "../platform/closed_cpu_isa_v1.h"
 
 #include <cfenv>
 #include <cerrno>
@@ -108,8 +109,9 @@ SessionAbiV2::~SessionAbiV2() noexcept { release(observations_); }
 
 namespace {
 #if defined(MDSLC_CLOSED_HOST_GENERATED_STRICT) || \
-    defined(MDSLC_CLOSED_HOST_GENERATED_REASSOCIATE)
-// Private pinned MLIR 21 Linux x86-64/AArch64 identity-memref ABI, never an installed type.
+    defined(MDSLC_CLOSED_HOST_GENERATED_REASSOCIATE) || \
+    defined(MDSLC_CLOSED_HOST_GENERATED_STRICT_ISA)
+// Private pinned MLIR 21 Linux LP64 identity-memref ABI, never an installed type.
 struct GeneratedMemref {
   float *allocated;
   float *aligned;
@@ -122,6 +124,14 @@ static_assert(offsetof(GeneratedMemref, sizes) == 24 &&
               offsetof(GeneratedMemref, strides) == 40);
 #if defined(MDSLC_CLOSED_HOST_GENERATED_STRICT)
 extern "C" void _mlir_ciface___matcore_strict_gemm_f32_v1(
+    GeneratedMemref *, GeneratedMemref *, GeneratedMemref *);
+#endif
+#if defined(MDSLC_CLOSED_HOST_GENERATED_STRICT_ISA)
+extern "C" void _mlir_ciface___matcore_strict_gemm_f32_avx_v1(
+    GeneratedMemref *, GeneratedMemref *, GeneratedMemref *);
+extern "C" void _mlir_ciface___matcore_strict_gemm_f32_avx2_v1(
+    GeneratedMemref *, GeneratedMemref *, GeneratedMemref *);
+extern "C" void _mlir_ciface___matcore_strict_gemm_f32_avx512f_v1(
     GeneratedMemref *, GeneratedMemref *, GeneratedMemref *);
 #endif
 #if defined(MDSLC_CLOSED_HOST_GENERATED_REASSOCIATE)
@@ -180,6 +190,21 @@ Code candidateLegality(Candidate request, Numeric numeric) noexcept {
       errno = saved_errno;
       return detail::generatedReassociateCpuSupported(capabilities)
                  ? Code::ok : Code::candidate_unavailable;
+    }
+#else
+    return Code::candidate_unavailable;
+#endif
+  case Candidate::generated_strict_avx:
+  case Candidate::generated_strict_avx2:
+  case Candidate::generated_strict_avx512f:
+#if defined(MDSLC_CLOSED_HOST_GENERATED_STRICT_ISA)
+    {
+      const auto isa = request == Candidate::generated_strict_avx
+          ? platform::StrictCpuIsaV1::AVX
+          : request == Candidate::generated_strict_avx2
+              ? platform::StrictCpuIsaV1::AVX2 : platform::StrictCpuIsaV1::AVX512F;
+      return platform::closedCpuIsaSupportedV1(isa, platform::discoverClosedCpuIsaFactsV1())
+          ? Code::ok : Code::candidate_unavailable;
     }
 #else
     return Code::candidate_unavailable;
@@ -610,6 +635,35 @@ Status SessionAbiV2::gemm(Frontier frontier, const Value &lhs, const Value &rhs,
         code = Code::candidate_unavailable;
 #endif
         break;
+      case Candidate::generated_strict_avx:
+      case Candidate::generated_strict_avx2:
+      case Candidate::generated_strict_avx512f:
+#if defined(MDSLC_CLOSED_HOST_GENERATED_STRICT_ISA)
+        {
+          auto a = descriptor(*lhs.storage_), b = descriptor(*rhs.storage_);
+          auto c = descriptor(*storage);
+          candidate_report_.invocation_attempted = true;
+          candidate_report_.actual_threads = 1;
+          switch (options_.candidate) {
+          case Candidate::generated_strict_avx:
+            candidate_report_.actual = Implementation::generated_strict_avx;
+            _mlir_ciface___matcore_strict_gemm_f32_avx_v1(&a, &b, &c);
+            break;
+          case Candidate::generated_strict_avx2:
+            candidate_report_.actual = Implementation::generated_strict_avx2;
+            _mlir_ciface___matcore_strict_gemm_f32_avx2_v1(&a, &b, &c);
+            break;
+          case Candidate::generated_strict_avx512f:
+            candidate_report_.actual = Implementation::generated_strict_avx512f;
+            _mlir_ciface___matcore_strict_gemm_f32_avx512f_v1(&a, &b, &c);
+            break;
+          default: code = Code::invalid_candidate; break;
+          }
+        }
+#else
+        code = Code::candidate_unavailable;
+#endif
+        break;
       case Candidate::existing_native:
       case Candidate::authenticated_openblas:
 #if defined(MDSLC_CLOSED_HOST_LEGACY_CANDIDATES)
@@ -758,6 +812,9 @@ const char *implementationName(Implementation implementation) noexcept {
     return "closed.generated.strict_f32.nvvm.sm89.staged.mlir21.v1";
   case Implementation::generated_rocdl:
     return "closed.generated.strict_f32.rocdl.gfx1150.staged.mlir21.v1";
+  case Implementation::generated_strict_avx: return "closed.generated.strict_f32.mlir21.avx.v1";
+  case Implementation::generated_strict_avx2: return "closed.generated.strict_f32.mlir21.avx2.v1";
+  case Implementation::generated_strict_avx512f: return "closed.generated.strict_f32.mlir21.avx512f.v1";
   case Implementation::generated_reassociate:
     return "closed.generated.reassociate_f32.avx2_fma.mlir21.v1";
   case Implementation::existing_reference: return "cpu.reference.f32.v1";
