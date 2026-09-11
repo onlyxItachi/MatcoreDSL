@@ -7,10 +7,13 @@ No production code, runtime registry, language semantics or target authority cha
 
 ## Decision
 
-**GO for a bounded upstream/physical research probe. NO-GO for advertising the
-current strict-f32 Matcore candidate on Metal.** Ordinary compilation success
-cannot establish the missing numerical guarantee. Do not silently broaden the
-existing `reassociate_f32` permission to permit denormal flushing either.
+**Research probe completed with a concrete strict-f32 counterexample. NO-GO for
+advertising the current strict-f32 Matcore candidate on the tested Metal path.**
+Actual hosted Apple paravirtual Metal execution flushed subnormals in both
+translated shader variants. Do not silently broaden the existing
+`reassociate_f32` permission to permit denormal flushing either. This does not
+prove every conceivable Metal implementation is impossible; it disproves this
+recipe's qualification under the existing strict contract.
 
 The useful route is Linalg → GPU → SPIR-V → SPIRV-Cross → MSL → Apple Metal
 compiler/runtime. It reuses existing structured lowering; it is not a direct
@@ -66,8 +69,9 @@ expected dynamic-stride rejection**. Four SPIR-V binary variants validated;
 three source goldens and the MLIR fixture match their recorded hashes. The
 host oracle's nine discriminating controls passed a separate small Linux
 Clang 21.1.8 compile/run. Objective-C++/Metal compilation and physical execution
-are **not locally validated** on the Linux host. Hosted results, when available,
-must be appended with exact run/head/device details rather than inferred.
+are **not locally validated** on the Linux host. The separate completed hosted
+result below records its actual Apple paravirtual device and counterexamples;
+it is not bare-metal GPU-model qualification.
 
 ## Exact upstream evidence
 
@@ -160,12 +164,14 @@ visibility, synchronization/failure containment and publication only after
 checked completion. Shared storage in this diagnostic is neither zero-copy
 MDSLC support nor persistent device-residency semantics.
 
-**Next justified boundary: run and preserve this exact standard-macOS diagnostic.**
-If arithmetic fails, retain the counterexample and stop strict-Metal admission.
-If it matches, investigate a precise hardware/toolchain contract before product
-integration. Neither result licenses silently weakened numerics. Dynamic ABI
-flattening and a production adapter are deferred independent engineering work.
-Do not handwrite another GEMM shader to circumvent the observed seam.
+**The planned diagnostic is now complete; stop strict-Metal admission here.**
+The next justified Metal-specific boundary would be proving a faithful
+denormal-preserving numerical realization before investing in a product adapter.
+No such realization is established by this work. Dynamic ABI flattening and a
+production adapter remain deferred; neither a private flag nor weakened source
+semantics is an acceptable shortcut. The broader campaign can proceed on its
+independently qualified targets. Do not handwrite another GEMM shader to
+circumvent the observed seam.
 
 ## Reproduction identity
 
@@ -218,3 +224,35 @@ audit. Rejected weak fixtures remain visible in normal commit history.
   counterexample or proof of device absence. The identity/compiler gate
   correctly prevented host execution. The next commit corrects that exact
   spelling; no semantic flag is weakened and the failed run is retained.
+- [Run 34603792231](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34603792231),
+  head `f937494113de4b2aa485de136fae349bb66c40a4`: **research PASS, strict
+  numerical qualification FAIL**. Standard `macos-15` supplied the actual
+  `Apple Paravirtual device`, `unified_memory=true`, registry ID `4294967706`.
+  OS 15.7.9 build 24G830; Xcode 16.4 build 16F6; Apple Clang 17.0.0
+  `clang-1700.0.13.5`, arm64. All three emitted MSL sources compiled offline;
+  the ObjC++ host and both runtime shader variants compiled and executed.
+
+Each variant made 80 comparisons: **56 matched, 24 failed**. The plain MSL and
+NoContraction/required-FP MSL produced identical observation JSON. Every failed
+case had the same failure in all eight output elements:
+
+| Case | Strict expected bits | Observed bits | Mismatches per variant |
+| --- | --- | --- | --- |
+| Subnormal input | `0x00000001` | `0x00000000` | 8/8 |
+| Subnormal result | `0x00400000` | `0x00000000` | 8/8 |
+| Negative subnormal | `0x80000001` | `0x00000000` | 8/8 |
+| Rectangle, signed zero, FMA witness, K order, RTNE witness, infinity, NaN class | matched within each stated check | matched | 0/56 |
+
+The NaN check intentionally compares NaN class, not payload: the actual quiet
+NaN payload was canonicalized. Output guards and input immutability checks
+passed, as did all nine host-oracle controls before execution. No device was
+skipped in this run. No specific bare-metal Apple GPU or performance claim
+follows from an `Apple Paravirtual device` result.
+
+Downloaded evidence lives at
+`builds/metal/hosted-34603792231/metal-research-f937494113de4b2aa485de136fae349bb66c40a4/`
+under the task root. Both `gemm-result.json` and `gemm-required-fp-result.json`
+have SHA-256 `aceee00863c41f3dfe1b92ddec0f05f75c9759ba22e6d108f8b684090db3a9e9`.
+Both explicitly report `EXECUTED_STRICT_COUNTEREXAMPLE` and
+`strict_contract_qualified: false`. Thus a green research job cannot be mistaken
+for MDSLC Metal support without contradicting the preserved evidence.
