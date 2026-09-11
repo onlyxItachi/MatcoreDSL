@@ -23,6 +23,13 @@ foreach(kind IN ITEMS nvvm rocdl)
       ../../lib/runtime ../../include)
     target_link_libraries(matcore_${kind}_candidate_identity PRIVATE matcore_closed_candidates_isolated_v1)
     add_test(NAME generated_gpu.${kind}.registry COMMAND matcore_${kind}_candidate_identity ${kind})
+    add_test(NAME generated_gpu.${kind}.installed_source COMMAND "${Python3_EXECUTABLE}" -B
+      "${CMAKE_CURRENT_SOURCE_DIR}/source_execution.py"
+      --driver "$<TARGET_FILE:mdslc-region>" --build "${CMAKE_CURRENT_BINARY_DIR}"
+      --target "${kind}" --enabled --install-build "${CMAKE_BINARY_DIR}"
+      --install-bindir "${CMAKE_INSTALL_BINDIR}")
+    set_tests_properties(generated_gpu.${kind}.installed_source PROPERTIES
+      TIMEOUT 900 RUN_SERIAL TRUE)
   endif()
   add_test(NAME generated_gpu.${kind}.source COMMAND "${Python3_EXECUTABLE}" -B
     "${CMAKE_CURRENT_SOURCE_DIR}/source_execution.py"
@@ -104,12 +111,21 @@ foreach(kind IN ITEMS nvvm rocdl)
     set(fixture "${CMAKE_CURRENT_SOURCE_DIR}/cuda_adapter_physical_test.cpp")
     set(sdk_include "${MDSLC_CUDA_INCLUDE}")
     set(sdk_library "${MDSLC_CUDA_DRIVER_IDENTITY}")
+    find_program(MDSLC_CUOBJDUMP NAMES cuobjdump HINTS /usr/local/cuda/bin REQUIRED)
+    set(object_options --cuobjdump "${MDSLC_CUOBJDUMP}")
   else()
     set(adapter rocdl)
     set(fixture "${CMAKE_CURRENT_SOURCE_DIR}/../closed_candidates/rocdl_adapter_physical_test.cpp")
     set(sdk_include "${MDSLC_HIP_INCLUDE}")
     set(sdk_library "${MDSLC_HIP_RUNTIME_IDENTITY}")
+    set(object_options)
   endif()
+  get_filename_component(image_directory "${embedded}" DIRECTORY)
+  add_test(NAME generated_gpu.${kind}.object COMMAND "${Python3_EXECUTABLE}" -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/object_contract.py"
+    --target "${kind}" --prefix "${image_directory}/${kind}-strict"
+    --llvm-bin "${LLVM_TOOLS_BINARY_DIR}" ${object_options}
+    --report "${CMAKE_CURRENT_BINARY_DIR}/${kind}-object-contract.json")
   add_executable(matcore_${kind}_adapter_physical_test "${fixture}"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../lib/runtime/closed_${adapter}_candidate_v1.cpp" "${embedded}")
   target_compile_features(matcore_${kind}_adapter_physical_test PRIVATE cxx_std_20)

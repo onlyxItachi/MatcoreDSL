@@ -28,6 +28,13 @@ set_tests_properties(frontend.closed_source_execution_v1 PROPERTIES TIMEOUT 180)
 # registry. Its archive already contains the issued LLVM object: linking another
 # copy would conceal an integration error behind duplicate kernel definitions.
 if(TARGET matcore_closed_candidates_production_v1)
+  set(closed_source_accelerators)
+  if(TARGET matcore_gpu_gemm_candidate)
+    get_target_property(accelerators matcore_gpu_gemm_candidate MDSLC_GPU_LIBRARIES)
+    foreach(accelerator IN LISTS accelerators)
+      list(APPEND closed_source_accelerators --accelerator "${accelerator}")
+    endforeach()
+  endif()
   add_dependencies(matcore_closed_source_execution_tests
     matcore_closed_candidates_production_v1 matcore_generated_cpu_asan_test)
   add_test(NAME frontend.closed_source_generated_execution_v1
@@ -40,6 +47,7 @@ if(TARGET matcore_closed_candidates_production_v1)
       --asan-control "$<TARGET_FILE:matcore_generated_cpu_asan_test>"
       --kernel "${MDSLC_CLOSED_GEMM_NORMAL_OBJECT}"
       --asan-kernel "${MDSLC_CLOSED_GEMM_ASAN_OBJECT}"
+      ${closed_source_accelerators}
       ${closed_source_child_flags})
   set_tests_properties(frontend.closed_source_generated_execution_v1
     PROPERTIES TIMEOUT 180)

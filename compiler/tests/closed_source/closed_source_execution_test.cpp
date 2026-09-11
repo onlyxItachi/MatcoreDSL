@@ -168,7 +168,7 @@ int main(int argc,char **argv) {
   const fs::path compiler=fs::weakly_canonical(argv[3]);
   try {
     std::string registry,runtimeLibrary,asanControl,kernel,asanKernel;
-    std::vector<std::string> childFlags;
+    std::vector<std::string> childFlags,accelerators;
     for(int i=4;i<argc;++i) {
       const std::string option=argv[i];
       auto take=[&]() -> std::string {
@@ -180,6 +180,7 @@ int main(int argc,char **argv) {
       else if(option=="--asan-control") asanControl=take();
       else if(option=="--kernel") kernel=take();
       else if(option=="--asan-kernel") asanKernel=take();
+      else if(option=="--accelerator") accelerators.push_back(take());
       else childFlags.push_back(option);
     }
     const bool generated=!registry.empty();
@@ -534,6 +535,13 @@ int main(int argc,char **argv) {
       compile.argv.push_back(object.string());
       if(generated) {
         compile.argv.insert(compile.argv.end(),{registry,runtimeLibrary,"-Wl,-rpath,"+fs::path(runtimeLibrary).parent_path().string()});
+        for(const auto &accelerator:accelerators) {
+          if(!fs::path(accelerator).is_absolute() || !fs::is_regular_file(accelerator))
+            throw std::runtime_error("manual archive consumer needs the actual accelerator library file");
+          compile.argv.insert(compile.argv.end(),{"-Xlinker","--push-state","-Xlinker","--no-as-needed",
+            accelerator,"-Xlinker","--pop-state","-Xlinker","-rpath","-Xlinker",
+            fs::path(accelerator).parent_path().string(),"-pthread"});
+        }
       } else compile.argv.push_back((compiler/"lib/runtime/closed_host_v1.cpp").string());
       compile.argv.insert(compile.argv.end(),{"-o",executable.string()});
       auto linked=support::run_process_v1(compile);

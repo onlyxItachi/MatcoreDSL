@@ -803,7 +803,7 @@ const char *message(Code code) noexcept {
   case Code::already_complete: return "session is already complete";
   case Code::invalid_candidate: return "unknown compile-trusted candidate request";
   case Code::candidate_unavailable: return "forced candidate unavailable; fallback forbidden";
-  case Code::candidate_incompatible: return "forced candidate violates numerical permissions";
+  case Code::candidate_incompatible: return "forced candidate is incompatible with the numerical, shape or target contract";
   }
   return "unknown closed-host status";
 }

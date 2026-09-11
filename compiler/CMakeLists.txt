@@ -661,6 +661,10 @@ if(BUILD_TESTING)
   if(TARGET mdslc-region)
     get_target_property(region_package_provider mdslc-region MDSLC_REGION_PROVIDER_PATH)
   endif()
+  set(region_package_accelerators "")
+  if(TARGET matcore_gpu_gemm_candidate)
+    get_target_property(region_package_accelerators matcore_gpu_gemm_candidate MDSLC_GPU_LIBRARIES)
+  endif()
   add_test(NAME package.experimental_regions.install_contract
     COMMAND "${CMAKE_COMMAND}"
       "-DBINARY_DIR=${CMAKE_BINARY_DIR}"
@@ -676,6 +680,7 @@ if(BUILD_TESTING)
       "-DENABLED=${MDSLC_ENABLE_EXPERIMENTAL_REGIONS}"
       "-DHAS_OPENBLAS=${MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS}"
       "-DPROVIDER=${region_package_provider}"
+      "-DACCELERATORS=${region_package_accelerators}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/experimental_regions_install.cmake")
   add_test(
     NAME toolchain.version_token.contract

@@ -19,21 +19,28 @@ def main():
     parser.add_argument("--build", type=Path, required=True)
     parser.add_argument("--target", choices=("nvvm", "rocdl"), required=True)
     parser.add_argument("--enabled", action="store_true")
+    parser.add_argument("--install-build", type=Path)
+    parser.add_argument("--install-bindir", default="bin")
     args = parser.parse_args()
     source = Path(__file__).resolve().parent
     work = Path(tempfile.mkdtemp(prefix=f"gpu-{args.target}-source-", dir=args.build))
     commands = []
-    driver_hash = hashlib.sha256(args.driver.read_bytes()).hexdigest()
-
-    def run(command, success=True):
+    def run(command, success=True, extra_env=None):
         command = list(map(str, command))
         result = subprocess.run(command, capture_output=True, text=True, timeout=180,
-            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "LC_ALL": "C"})
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "LC_ALL": "C",
+                 **(extra_env or {})})
         commands.append({"argv": command, "exit": result.returncode,
                          "stdout": result.stdout, "stderr": result.stderr})
         (work / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
         assert (result.returncode == 0) == success, commands[-1]
         return result
+
+    if args.install_build:
+        prefix = work / "installed"
+        run(["cmake", "--install", args.install_build, "--prefix", prefix])
+        args.driver = prefix / args.install_bindir / "mdslc-region"
+    driver_hash = hashlib.sha256(args.driver.read_bytes()).hexdigest()
 
     def compile(fixture, name, success=True):
         output = work / name
@@ -47,6 +54,11 @@ def main():
     result = run([binary] if args.enabled else [binary, "--unavailable"])
     assert "0 failures" in result.stdout, result.stdout
     if args.enabled:
+        # This same GPU-enabled executable must not borrow the other GPU or CPU
+        # when its forced device is hidden. This is a separate child process.
+        visibility = "CUDA_VISIBLE_DEVICES" if args.target == "nvvm" else "HIP_VISIBLE_DEVICES"
+        result = run([binary, "--unavailable"], extra_env={visibility: "-1"})
+        assert "0 failures" in result.stdout, result.stdout
         # Reuse the existing independent all-MAY-alias/late-read/observation/
         # failed-second-operation oracle, with no changes to its mathematics.
         for carry in ("lhs", "rhs"):
@@ -71,6 +83,7 @@ def main():
     assert hashlib.sha256(args.driver.read_bytes()).hexdigest() == driver_hash
     (work / "result.json").write_text(json.dumps({
         "driver_sha256": driver_hash, "target": args.target,
+        "installed_driver": bool(args.install_build),
         "evidence": "physical authenticated source execution" if args.enabled
                     else "unavailable candidate refusal only",
         "commands": len(commands), "status": "PASS"}, indent=2) + "\n")
