@@ -1,7 +1,7 @@
 # Forced strict CPU ISA candidates v1
 
-Implementation-owner evidence, not independent approval, hosted qualification,
-performance evidence or permission to merge. Initial base: ARM integration
+Initial implementation-owner record; final independent/hosted qualification and
+the canonical merge are recorded below. No performance claim. Initial base: ARM integration
 `e1fe9df4df8d3f625754ef762e06ba25fd67ec21`; ARM repair `8157eab` is a stack dependency.
 
 ## Closed realization and authority
@@ -116,3 +116,63 @@ The separate region counts remain 41/42, private-Value count four and package co
 two. Only the three stale count constants change; no test, regex, skip behavior,
 execution option or production code changes. Configure/listing validation is not
 a new hosted or fully instrumented execution claim; fresh PR checks remain required.
+
+## Qualified canonical checkpoint
+
+Normal [PR #73](https://github.com/onlyxItachi/MatcoreDSL/pull/73) merge:
+`1c8f534bba81760aaa211f13b0695254c1d93e60`.
+Actual parents: canonical `7a3033063dbc91c8bb4cf57aab93ae2c7e88caa4` and reviewed
+implementation `665cf3756c58196b5f58acc2f784e92f7b94b52c`.
+Hosted specimen `17734ff29dfd884cab30e0448f718ac1a9d7abd0` had parents `8157eab`
+and `665cf37`, tree `3f698d6197fd2ba0e9cb688b76ed32c0dfbe768e`.
+Final canonical differs from that implementation only in the prior ARM operator
+checkpoint/evidence Markdown files; its compiler subtree is identical:
+`0b4657000aaf0106ce85b4a59067802a364c001c`.
+
+[Native hosted run 34605270373](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34605270373)
+passed all eight jobs at the exact corrected head:
+
+| Configuration | Actually passed | Explicit skips |
+| --- | ---: | ---: |
+| Release, MLIR OFF, OpenBLAS OFF | 82 | 0 |
+| Release, MLIR OFF, OpenBLAS ON | 82 | 1 |
+| Release, scalar MLIR, OpenBLAS OFF | 214 | 14 |
+| Release, MLIR, OpenBLAS ON | 230 | 0 |
+| Release, row-contiguous, OpenBLAS OFF | 229 | 0 |
+| Debug, MLIR ON | 215 | 14 |
+| Global ASan + UBSan affected scope | 161 | 14 |
+| TSan runtime scope | 4 | 0 |
+
+Each group of fourteen is thirteen strict AVX512F hardware/OS-unavailability
+skips and one legacy packed-AVX512 effective-runtime-eligibility skip. The latter
+combines hardware, OS and compiler facts; its log does not isolate the failing
+subpredicate. None is counted as execution. The thirteen ISA entries cover four
+normal, six instrumented, and three source/ownership tests. Separate no-skip
+Release jobs actually execute those AVX512F paths; local leaf-ASan evidence above
+is also separate from a global sanitizer runner that lacked the needed state.
+
+Production installed checks passed, including Result 37, candidate 247255 on the
+row-contiguous Release runner (217029 on the scalar runner), private Value 85 and
+32000 ownership cycles. These differing counts follow actual availability, not
+a change to the candidate's mathematical contract.
+
+[Native ARM run 34605270306](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34605270306)
+passed scalar **97/97** (751.07 s) and row **99/99** (736.21 s), no skips.
+Installed source/build-inaccessible execution passed in 178.97 s and 171.49 s.
+Four added inspection/facts/guard tests explain the increase from PR #71's 93/95;
+this is not AVX execution on ARM. Artifacts: scalar ID `10266982744`, digest
+`feaf5ad9095ea2ef653e6ec78aa0d7c33ac65c772e1e7b5b72b81c531a696b20`;
+row ID `10266647856`, digest
+`36d5bf3d51828f3644295f7892ac422bb85a1c16169b77ffe1731ed085645cec`.
+[Windows 34605270285](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34605270285),
+[legacy CI 34605270280](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34605270280)
+and [hygiene 34605270284](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34605270284)
+also passed. Redundant cancelled push runs are not qualification evidence.
+
+Final independent adversarial review accepted the exact head after inspecting
+the fixed LLVM-only refinement, unchanged pre-LLVM stages/default behavior,
+complete feature/XSTATE guards, strict separate arithmetic, actual vector
+artifacts, wide ASan controls, private ABI and source/leaf ownership. Independent
+replays passed 102 fact checks and 1086 synthetic guard checks, separately from
+303 real direct-leaf checks per ISA. No performance, all-AVX-subset, AMX, dtype, ARM-ISA, public-wire or
+automatic-selection expansion is claimed.
