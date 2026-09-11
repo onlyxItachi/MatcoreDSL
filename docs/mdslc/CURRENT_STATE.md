@@ -1,7 +1,7 @@
 # MDSLC current state
 
 Engineering checkpoint: canonical merge
-`1c8f534bba81760aaa211f13b0695254c1d93e60`, [PR #73](https://github.com/onlyxItachi/MatcoreDSL/pull/73).
+`0fe537b4246510c57d801577a8d915876e40a941`, [PR #72](https://github.com/onlyxItachi/MatcoreDSL/pull/72).
 This identifies the latest engineering merge; documentation-only updates may follow.
 
 ## Architecture
@@ -15,11 +15,11 @@ Ordinary C++ host + explicit closed mathematical regions
   -> static orchestration from the sealed semantic Program (no interpreter)
 2–8 original source TUs -> per-file authentication -> checked host program link
 Original Clang host -> sealed ABI-checked entry thunk + isolated helper LLVM
-Strict GEMM primitive -> verified Linalg/One-Shot -> optional Transform M/K/N
+Build-issued strict GEMM -> Linalg/One-Shot -> CPU Transform or GPU outlining
+  -> LLVM x64 baseline/AVX/AVX2/AVX512F, ARM64; NVVM sm_89 / ROCDL gfx1150
 Permitted GEMM -> separate Transform/Linalg/Vector AVX2/FMA (x64 only)
-  -> LLVM strict x64 baseline/AVX/AVX2/AVX512F or ARM64; hardware/OS guards
-Trusted registry -> generated/native strict or numerically legal legacy/provider
-  -> private candidate output, checked completion/FP state, immutable value
+Trusted registry -> guarded generated/native/provider; GPU explicitly forced
+  -> private staging/output, checked completion/FP state, immutable value
   -> ordered host publication, owning observation, sticky failure prefix
 Reads snapshot at their frontier; snapshots are realization, not value identity.
 Private candidate DSO owns implementation; canonical Runtime owns provider policy.
@@ -31,36 +31,37 @@ Linux x64/ARM64 regions, standalone Windows and Linux Python/JIT are separate la
 
 ## Material change
 
-Three explicitly forced strict ISA candidates now preserve the same mathematical
-and structured recipe while producing actual YMM/ZMM arithmetic. Exact CPU/OS
-guards, private ownership and wide ASan controls accompany them; default dispatch
-and numerical permissions are unchanged. Hosted Release **229/229** and
-**230/230**, plus native ARM **97/97** and **99/99**, passed without skips.
-Global ASan/UBSan had **161 passes + 14 eligibility skips** on a different runner;
-local instrumented AVX512F execution is separate evidence. All qualifying hosted
-lanes passed. See [exact evidence and exclusions](agent-reports/strict-cpu-isa-candidates-v1.md#qualified-canonical-checkpoint).
+Authenticated source now executes explicitly forced strict GEMM on the actual
+RTX 4060 Laptop and Radeon 890M, through compiler-issued MLIR target kernels.
+Private staging, worker isolation, guarded completion and retained failure
+prefixes compose with the merged CPU/ARM paths; default dispatch is unchanged.
+Final combined local **379/379**, no skips; all qualifying hosted lanes passed.
+Metal strict arithmetic was falsified on the tested paravirtual device and was
+not integrated. See the [campaign/evidence map](MULTITARGET_CORRECTNESS_CAMPAIGN_V1.md#completed-correctness-campaign)
+and [exact final qualification](agent-reports/multitarget-composed-v1.md#qualified-canonical-checkpoint).
 
 ## Unsupported or unproven
 
-Experimental region execution is native Linux x86-64 / ARM64, coherent 21.1.8; syntax and
-API/ABI are unfrozen. No transformed whole-region execution, fusion, automatic
-reuse, general views, asynchronous/device/export effects or generated-region Windows.
-No canonical GPU/NPU, general rank-N execution, zero-copy, universal performance or
-BLAS-parity claim. These three recipes do not qualify every AVX extension or AMX.
-ARM legacy/provider and reassociate candidates, SVE/SME and
-cross-compiled execution remain unsupported. Opaque mathematical imports and cross-region optimization are unsupported. Valid caller
-objects/lifetimes, race-free storage, conforming allocation and trusted library
-loading remain preconditions; this is not a sandbox or crash-atomic transaction.
-Manual archive/object linking does not inherit the complete driver contract.
-Uncoordinated provider users/duplicate adapters are outside shared policy exclusion.
-Provider conformance is bounded, not universal. [#15](https://github.com/onlyxItachi/MatcoreDSL/issues/15)
+Syntax/API/ABI remain experimental; product semantic tooling is coherent 21.1.8.
+GPU support is opt-in Linux x64 with the [exact device/toolchain/work bounds](STAGED_GPU_CANDIDATES_V1.md),
+not arbitrary NVIDIA/AMD hardware. Real HIP + global host-ASan is unqualified
+and configure-refused. No Metal/NPU, whole-region transformation/fusion, automatic
+reuse, resident/asynchronous device values, general rank-N/views, zero-copy,
+generated-region Windows or performance/parity claim. Not every AVX extension,
+AMX, SVE/SME, ARM provider/reassociate or cross-compiled execution is qualified.
+Opaque mathematical imports and cross-region optimization remain unsupported.
+Valid caller objects/lifetimes, race-free storage, conforming runtimes/allocation
+and trusted loading remain preconditions; no sandbox or crash-atomic guarantee.
+Manual linking and uncoordinated provider adapters are outside the driver contract.
+Provider conformance is bounded. [#15](https://github.com/onlyxItachi/MatcoreDSL/issues/15)
 remains partial/open; [#20](https://github.com/onlyxItachi/MatcoreDSL/issues/20) remains design-only/open.
 
 ## Exactly one next boundary
 
-**Complete staged GPU candidate qualification and canonical integration.**
-The same checked private GEMM boundary must preserve source meaning while owning
-fallible device resources, transfers and completion. [PR #72](https://github.com/onlyxItachi/MatcoreDSL/pull/72)
-is a reviewed CPU/GPU composition with corrected-head local **379/379** passing,
-awaiting final hosted qualification; it remains noncanonical. No fusion, residency language, default
-GPU selection or performance policy follows from that integration.
+**One authenticated publication-to-read forwarding derivation.**
+Reuse a retained immutable value after a dominating successful publication to the
+same checked resource/version, with no intervening possibly aliasing write.
+Retain required checks and ordered observable/failure frontiers under the existing
+resource contract. This now tests one target-independent cross-operation
+optimization across the validated candidate mechanisms, without broad fusion or
+a residency language. [Required falsifiers and ownership](MULTITARGET_CORRECTNESS_CAMPAIGN_V1.md#ownership-and-exactly-one-next-frontier).

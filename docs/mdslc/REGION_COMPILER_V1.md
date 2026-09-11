@@ -1,7 +1,8 @@
 # Experimental C++ region compiler
 
 `mdslc-region` compiles an authenticated mathematical region inside ordinary
-C++ into a native CPU executable. The current implementation supports dense
+C++ into a native host executable with checked CPU or optional staged GPU
+candidates. The current implementation supports dense
 row-major rank-2 `float` GEMM, immutable logical values, and ordered host-storage
 effects. It is opt-in and experimental: **the source API, ABI and private
 compiler contracts are not frozen**. See [CURRENT_STATE](CURRENT_STATE.md) for
@@ -10,7 +11,7 @@ as a release tag.
 
 ## Build and install
 
-Use native Linux x86-64, CMake 3.24 or newer, Ninja, a C++20 standard library,
+Use native Linux x86-64 or ARM64, CMake 3.24 or newer, Ninja, a C++20 standard library,
 RapidJSON headers, GNU binutils, and coherent **Clang/LLVM/MLIR 21.1.8** development
 packages including shared `clang-cpp`. The installed compiler still needs its
 configured toolchain and shared libraries; this is not a self-contained binary
@@ -39,6 +40,12 @@ The feature defaults to `OFF`; production support does not depend on enabling
 tests. OpenBLAS is optional. Use an authenticated supported OpenBLAS build and
 the repository's provider configuration if that candidate is required; merely
 finding a library does not prove its numerical contract.
+
+ARM64 currently supports only `native-strict`, `generated-strict` and
+`automatic`; keep OpenBLAS OFF. It has a native `armv8-a` baseline with full
+FPCR/FPSR preservation, not ARM legacy/provider, reassociate, SVE or SME support.
+The optional GPU package and explicit x86 ISA candidates are Linux x86-64 only.
+See [native ARM qualification](agent-reports/arm64-strict-integration-v1.md).
 
 ## Compile and run a real program
 
@@ -130,6 +137,9 @@ machine exceptions, restoring caller FP controls and status on normal return.
 | --- | --- |
 | `automatic` (default) | Selects the linked generated-strict candidate in this package; no benchmark-derived cost model or crossover threshold. |
 | `generated-strict` | Compiler-owned strict GEMM lowered through MLIR/LLVM; legal for both profiles. |
+| `generated-strict-avx` | Isolated strict x86 row-contiguous realization with actual 256-bit arithmetic; requires its full CPU/OS-state feature closure. |
+| `generated-strict-avx2` | Isolated strict x86 realization with AVX2 instructions; does not acquire FMA permission. |
+| `generated-strict-avx512f` | Isolated strict x86 realization with actual 512-bit arithmetic and tails; requires the qualified AVX512F feature closure and OS-enabled opmask/ZMM state. Not all AVX512 extensions. |
 | `generated-reassociate` | Separately issued MLIR/LLVM GEMM with full-tile FMA and strict tails; requires each executed GEMM's `reassociate_f32` permission and directly discovered AVX2/FMA hardware plus OS-enabled vector state. |
 | `native-strict` | Matcore strict scalar implementation; legal for both profiles. |
 | `existing-native` | Existing Runtime's forced reference implementation; requires `reassociate_f32`. It is not the legacy planner's fastest-choice mode. |
@@ -142,6 +152,11 @@ dependencies and checked realization bounds. They allocate/copy private staging
 and complete synchronously; they do not expose persistent device residency,
 zero-copy or fusion. See the [exact staged GPU contract](STAGED_GPU_CANDIDATES_V1.md)
 for source authentication, LLVM/MLIR ownership, failure containment and evidence.
+
+Strict ISA choices retain the same pre-LLVM semantic/structured/buffer/Transform
+recipe and separate increasing-K multiply/add; hardware FMA availability is not
+numerical permission. They remain explicitly forced rather than a new default
+or cost model. See [ISA qualification and negative controls](agent-reports/strict-cpu-isa-candidates-v1.md).
 
 A forced unavailable/incompatible candidate returns checked failure; it does
 not silently fall back or change numerical permissions. Provider probes are

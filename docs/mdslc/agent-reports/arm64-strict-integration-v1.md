@@ -128,7 +128,7 @@ row ID `10265850509`, SHA-256
 [Native regression run 34601432432](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34601432432)
 completed all eight jobs successfully:
 
-| Configuration | Actually passed | Explicit hardware skips |
+| Configuration | Actually passed | Explicit eligibility skips |
 | --- | ---: | ---: |
 | Release, MLIR OFF, OpenBLAS OFF | 81 | 1 packed AVX512 |
 | Release, MLIR OFF, OpenBLAS ON | 82 | 1 packed AVX512 |
@@ -138,6 +138,9 @@ completed all eight jobs successfully:
 | Debug, MLIR ON | 184 | 1 packed AVX512 |
 | ASan + UBSan affected scope | 131 | 0 |
 | TSan runtime scope | 4 | 0 |
+
+The legacy packed eligibility gate combines hardware, OS state and compiler
+implementation facts; a skip does not independently isolate the failing fact.
 
 The production `BUILD_TESTING=OFF` installed checks also passed; their reported
 checks include Result 37, candidate 151805, private Value 85 and 32000 ownership
