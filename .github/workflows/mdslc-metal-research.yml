@@ -1,0 +1,72 @@
+name: Optional Metal research (not target qualification)
+
+on:
+  push:
+    branches: [research/mdslc-metal-feasibility-v1]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: compiler/experiments/multitarget_metal_v1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify exact reviewed MLIR-derived source artifacts
+        run: |
+          mkdir -p evidence
+          shasum -a 256 -c golden.sha256 | tee evidence/artifact-verification.txt
+          sw_vers > evidence/os.txt
+          xcodebuild -version > evidence/xcode.txt
+          xcrun clang++ --version > evidence/host-compiler.txt
+          system_profiler SPDisplaysDataType > evidence/display-devices.txt
+          git rev-parse HEAD > evidence/source-sha.txt
+      - name: Compile Metal sources when the optional compiler component exists
+        run: |
+          if xcrun --find metal > evidence/metal-tool.txt 2> evidence/metal-tool-error.txt; then
+            for variant in fill gemm gemm-required-fp; do
+              xcrun -sdk macosx metal -std=metal2.1 -fno-fast-math -ffp-contract=off \
+                -c "golden/$variant.metal" -o "evidence/$variant.air"
+            done
+            echo COMPILE_ONLY_PASS > evidence/offline-compile-status.txt
+          else
+            echo SKIP_NO_METAL_COMPILER_COMPONENT > evidence/offline-compile-status.txt
+          fi
+      - name: Build bounded research host
+        if: always()
+        run: |
+          xcrun clang++ -std=c++20 -O0 -fno-fast-math -ffp-contract=off -fobjc-arc \
+            -framework Foundation -framework Metal -framework CoreGraphics \
+            probe.mm -o evidence/metal-probe
+      - name: Discover actual Metal device and preserve numerical counterexamples
+        if: always()
+        run: |
+          for variant in gemm gemm-required-fp; do
+            set +e
+            evidence/metal-probe golden/fill.metal "golden/$variant.metal" \
+              "evidence/$variant-result.json"
+            result=$?
+            set -e
+            if [ "$result" -eq 77 ]; then
+              echo "::notice::Metal runtime probe explicitly skipped; read device report."
+            elif [ "$result" -ne 0 ]; then
+              exit "$result"
+            fi
+          done
+          echo 'Research completed, not target qualification. Inspect all mismatch counts.' >> "$GITHUB_STEP_SUMMARY"
+          for report in evidence/*-result.json; do
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat "$report" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: metal-research-${{ github.sha }}
+          path: compiler/experiments/multitarget_metal_v1/evidence
+          if-no-files-found: error
