@@ -94,3 +94,25 @@ are separately linked, never production hooks or physical execution evidence.
 Full frozen standalone/package qualification and independent final review remain
 required after this implementation checkpoint. Native hosted ARM qualification
 belongs to PR71; this lane adds no ARM ISA variant and preserves the ARM baseline.
+
+## Hosted count-gate correction
+
+The frozen connected implementation at `24d21930e136b93b813993e03bfe0d55e1e3b677`
+passed the full local standalone suite: 227/227, zero skips or failures. The closed
+installed source/build-inaccessible package control also passed (110.20 seconds).
+Independent review subsequently found stale exact test-count guards in the native
+workflow. [PR73 run 34604296914](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34604296914)
+at that same head confirms three Release jobs built successfully, then refused
+the expanded 13/12/12 candidate listings against stale 12/11/11 expectations before
+execution. These failed qualification controls are retained as negative evidence.
+
+Fresh configure-only checks with coherent LLVM/Clang/MLIR 21.1.8 confirm 12 closed
+candidate tests with OpenBLAS OFF, and 13 with the required 0.3.32 provider ON.
+The workflow's exact Debug ASan+UBSan, row-contiguous configuration registers 226
+tests and selects 175 with its unchanged combined sanitizer/region expression.
+All 43 new `generated_cpu.strict_isa.*` tests and `closed_candidates.strict_isa_guard`
+are selected: the previous 131-test sanitizer scope grows by exactly 44 tests.
+The separate region counts remain 41/42, private-Value count four and package count
+two. Only the three stale count constants change; no test, regex, skip behavior,
+execution option or production code changes. Configure/listing validation is not
+a new hosted or fully instrumented execution claim; fresh PR checks remain required.

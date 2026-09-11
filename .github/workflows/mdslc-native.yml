@@ -243,10 +243,10 @@ jobs:
             | tee build-mdslc/experimental-package-test-list.txt
           grep -Fx "Total Tests: 2" build-mdslc/experimental-package-test-list.txt
           if [[ "${{ matrix.mlir_enable }}" == "ON" ]]; then
-            expected_candidates=11
+            expected_candidates=12
             expected_region_tests=41
             if [[ "${{ matrix.openblas_require }}" == "ON" ]]; then
-              expected_candidates=12
+              expected_candidates=13
               expected_region_tests=42
             fi
             ctest --test-dir build-mdslc -N -R '^closed_candidates\.' \
@@ -471,7 +471,7 @@ jobs:
           sanitizer_tests="${sanitizer_tests}|${region_tests}"
           ctest --test-dir build-mdslc-asan-ubsan -N -R "${sanitizer_tests}" \
             | tee build-mdslc-asan-ubsan/focused-test-list.txt
-          grep -Fx "Total Tests: 131" \
+          grep -Fx "Total Tests: 175" \
             build-mdslc-asan-ubsan/focused-test-list.txt
           ctest --test-dir build-mdslc-asan-ubsan --output-on-failure -j1 \
             -R "${sanitizer_tests}"
