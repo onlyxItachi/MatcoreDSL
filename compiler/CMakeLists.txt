@@ -461,6 +461,9 @@ set(MDSLC_EXPERIMENTAL_REGION_PRIVATE_INCLUDEDIR
 string(TOUPPER "${CMAKE_BUILD_TYPE}" MDSLC_REGION_BUILD_TYPE)
 set(MDSLC_CLOSED_REGION_CXX_FLAGS
   "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${MDSLC_REGION_BUILD_TYPE}}")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/MatcoreDSLGpuQualification.cmake")
+mdslc_check_rocdl_sanitizer_qualification(
+  "${MDSLC_ENABLE_EXPERIMENTAL_ROCDL}" "${MDSLC_CLOSED_REGION_CXX_FLAGS}")
 
 configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/mdslc_config.h.in"
@@ -642,6 +645,10 @@ if(WIN32)
 endif()
 
 if(BUILD_TESTING)
+  add_test(NAME toolchain.gpu_sanitizer_qualification
+    COMMAND "${CMAKE_COMMAND}"
+      "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/gpu_sanitizer_qualification.cmake")
   if(NOT MDSLC_ENABLE_EXPERIMENTAL_REGIONS)
     add_test(NAME package.experimental_region_headers_uninstalled
       COMMAND "${CMAKE_COMMAND}"

@@ -72,6 +72,14 @@ Real HIP+ASan failed with an unresolved alternate-signal-stack teardown error;
 its failure is retained in the AMD report. Mock-driver ASan/UBSan passes do not
 prove the real HIP library is sanitizer-clean. The full suite includes real
 devices in a Release process, not an ASan-instrumented HIP runtime.
+The ROCDL build now rejects global host `-fsanitize=address` profiles at
+configuration time, including comma-separated sanitizer selections. CPU-only
+ASan, UBSan-only profiles and Release GPU builds with target-local mocked-driver
+ASan tests remain admitted by this gate; admission is not a new qualification
+claim for any real vendor runtime. Sixteen vendor-free CMake controls passed
+for the exact refusal and acceptance behavior. A fresh top-level configure with
+ROCDL enabled and global `-fsanitize=address,undefined` also returned exactly
+exit 1 at this gate, before vendor discovery.
 
 ## Exact local artifacts at the clean code checkpoint
 
