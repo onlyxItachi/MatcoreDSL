@@ -1,7 +1,7 @@
 # MDSLC current state
 
 Engineering checkpoint: canonical merge
-`bfbf0b36adc9998e948601735758b49b630c11f2`, [PR #67](https://github.com/onlyxItachi/MatcoreDSL/pull/67).
+`f69f13ac17e05da7b26f9f1d948a880b168f1265`, [PR #71](https://github.com/onlyxItachi/MatcoreDSL/pull/71).
 This identifies the latest engineering merge; documentation-only updates may follow.
 
 ## Architecture
@@ -16,8 +16,8 @@ Ordinary C++ host + explicit closed mathematical regions
 2–8 original source TUs -> per-file authentication -> checked host program link
 Original Clang host -> sealed ABI-checked entry thunk + isolated helper LLVM
 Strict GEMM primitive -> verified Linalg/One-Shot -> optional Transform M/K/N
-Permitted GEMM -> separate Transform/Linalg/Vector register-retained AVX2/FMA
-  -> LLVM (fresh output-data noalias, not input disjointness) -> generated x64
+Permitted GEMM -> separate Transform/Linalg/Vector AVX2/FMA (x64 only)
+  -> LLVM (fresh output noalias, not input disjointness) -> native x64 / ARM64
 Trusted registry -> generated/native strict or numerically legal legacy/provider
   -> private candidate output, checked completion/FP state, immutable value
   -> ordered host publication, owning observation, sticky failure prefix
@@ -26,29 +26,28 @@ Private candidate DSO owns implementation; canonical Runtime owns provider polic
 Installed mdslc-region pins artifacts; coherent dynamic loading remains trusted.
 Matcore owns meaning/legality; MLIR transformations; LLVM machine lowering.
 Legacy mutating GEMM -> IR v1/MLIR -> existing CPU/runtime route is unchanged.
-Linux region execution, standalone Windows and Linux Python/JIT are separate lanes.
+Linux x64/ARM64 regions, standalone Windows and Linux Python/JIT are separate lanes.
 ```
 
 ## Material change
 
-`mdslc-region --program` now compiles 2–8 real source files, including independent
-regions and ordinary header-free host utilities. Source closures, foreign call
-ABI/effects and protected symbol ownership are checked before linking. Both
-generated numerical policies compose without changing per-region failure/effect
-order, the default selector or the existing runtime/provider route.
-Combined local Release **184/184** and affected ASan/UBSan **129/129** passed at
-`e56e5a6`; ancestry-only reviewed head `c22ba079` then passed **21/21 hosted checks**.
-See [multi-source contract](MULTI_SOURCE_PROGRAMS_V1.md),
-[exact validation](agent-reports/authenticated-multi-source-v1.md) and
-[completed campaign, measurements and rejected alternatives](MLIR_HPC_EXECUTION_CAMPAIGN_V1.md).
+The same authenticated source-to-generated-executable path now runs natively on
+Linux ARM64: strict native/generated/automatic candidates, full FPCR/FPSR
+save/normalize/restore, native ELF ownership and installed-source execution.
+Hosted ARM scalar **93/93** and row-contiguous **95/95** passed with **zero skips**;
+x86 Release/Debug/sanitizers/OpenBLAS on/off, Windows and legacy checks are green.
+Four initial ARM fixture failures were preserved and repaired without weakening
+admission or execution gates. See [exact evidence and exclusions](agent-reports/arm64-strict-integration-v1.md#qualified-canonical-checkpoint)
+and the [correctness-first target campaign](MULTITARGET_CORRECTNESS_CAMPAIGN_V1.md).
 
 ## Unsupported or unproven
 
-Experimental region execution is Linux x86-64 / coherent 21.1.8 only; syntax and
+Experimental region execution is native Linux x86-64 / ARM64, coherent 21.1.8; syntax and
 API/ABI are unfrozen. No transformed whole-region execution, fusion, automatic
 reuse, general views, asynchronous/device/export effects or generated-region Windows.
-No GPU/NPU, general rank-N execution, zero-copy, universal performance or BLAS-parity
-claim. Opaque mathematical imports and cross-region optimization are unsupported. Valid caller
+No canonical GPU/NPU, general rank-N execution, zero-copy, universal performance or
+BLAS-parity claim. ARM legacy/provider and reassociate candidates, SVE/SME and
+cross-compiled execution remain unsupported. Opaque mathematical imports and cross-region optimization are unsupported. Valid caller
 objects/lifetimes, race-free storage, conforming allocation and trusted library
 loading remain preconditions; this is not a sandbox or crash-atomic transaction.
 Manual archive/object linking does not inherit the complete driver contract.
@@ -58,10 +57,9 @@ remains partial/open; [#20](https://github.com/onlyxItachi/MatcoreDSL/issues/20)
 
 ## Exactly one next boundary
 
-**One source-authenticated publication-to-read forwarding derivation.**
-Reuse a retained immutable value only after a dominating successful publication
-to the same checked resource/version, with no intervening possibly aliasing write.
-Keep the authoritative Program/witness unchanged and retain read guards, ordered
-frontiers and the adapter's failed-publication destination guarantee. This tests
-real optimization freedom by eliminating one redundant snapshot, without fusion
-or a general storage planner. [Required falsifiers and rationale](MLIR_HPC_EXECUTION_CAMPAIGN_V1.md#remaining-ownership-and-exactly-one-next-boundary).
+**Qualify explicit strict x86 ISA candidates without changing dispatch policy.**
+The native-target seam now provides a control for proving that AVX/AVX2/AVX512F
+machine realizations preserve the same strict mathematics, runtime capability
+guards and installed-source contract. [PR #73](https://github.com/onlyxItachi/MatcoreDSL/pull/73)
+is independently reviewed work awaiting complete hosted qualification, not yet
+canonical. GPU qualification proceeds independently in the linked campaign.

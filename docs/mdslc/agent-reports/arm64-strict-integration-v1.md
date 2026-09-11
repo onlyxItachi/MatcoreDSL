@@ -103,3 +103,56 @@ not LLVM pointer equality. The existing packing and ownership-attribute source
 rejection cases, host-thunk ABI tests and call-interface tests are now explicitly
 mandatory in the no-skip native qualifier. Recursive `sret` record and all actual
 pointer/calling-convention attributes remain checked on both targets.
+
+## Qualified canonical checkpoint
+
+Normal engineering merge [PR #71](https://github.com/onlyxItachi/MatcoreDSL/pull/71):
+`f69f13ac17e05da7b26f9f1d948a880b168f1265`.
+Pre-merge canonical parent: `9c2149a25e12f5192c168f3e047097505263fc1a`.
+Reviewed implementation head: `8157eabed52009038b5dfe584d9d7c3d52996b97`.
+Hosted PR merge specimen: `bb676af5d6157b927ec1fc5f1bb7eb75c1f25fba`,
+with the same two parents and identical tree
+`5f2fdacb34b06261b741cbc29f53e65b751be79c` (checked against GitHub's Git object).
+Earlier pending statements above record the sequence
+of evidence, not the final qualification status.
+
+[Native ARM run 34601432408](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34601432408)
+passed scalar **93/93** (756.29 s) and row-contiguous **95/95** (747.33 s),
+**zero skips**. The source/build-inaccessible installed-driver controls passed
+in 182.65 s and 175.00 s respectively. All four former failures are included.
+Artifacts: scalar ID `10265690624`, SHA-256
+`d9fe6d281a51c778d1c9e4674ae235adcaca2a5802b05ab9b3db236f623a15d5`;
+row ID `10265850509`, SHA-256
+`13e1a0e04bb6715c3c4d41e3f1b1916e119ba29bc3cfd6cd87cda448cad5433f`.
+
+[Native regression run 34601432432](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34601432432)
+completed all eight jobs successfully:
+
+| Configuration | Actually passed | Explicit hardware skips |
+| --- | ---: | ---: |
+| Release, MLIR OFF, OpenBLAS OFF | 81 | 1 packed AVX512 |
+| Release, MLIR OFF, OpenBLAS ON | 82 | 1 packed AVX512 |
+| Release, scalar MLIR, OpenBLAS OFF | 183 | 1 packed AVX512 |
+| Release, scalar MLIR, OpenBLAS ON | 185 | 1 packed AVX512 |
+| Release, row-contiguous, OpenBLAS OFF | 185 | 0 |
+| Debug, MLIR ON | 184 | 1 packed AVX512 |
+| ASan + UBSan affected scope | 131 | 0 |
+| TSan runtime scope | 4 | 0 |
+
+The production `BUILD_TESTING=OFF` installed checks also passed; their reported
+checks include Result 37, candidate 151805, private Value 85 and 32000 ownership
+cycles. [Windows 34601432462](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34601432462),
+[legacy CI 34601432392](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34601432392)
+and [hygiene 34601432417](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/34601432417)
+passed at the repaired head. Redundant push jobs were cancelled; none of the
+complete PR qualification jobs above was waived.
+
+Independent adversarial review at the exact head found no production blocker in
+FP state isolation, target/ELF matching, source/thunk ABI authentication, platform
+registry gates or installed-source qualification. Hostile cases include corrupt
+FP controls, wrong triples/machines, native sret/indirect/byval mutations,
+packed/trivial_abi records, unavailable-candidate refusal before publication,
+ordered late failure and untouched destinations. This is native ARM execution
+within the stated strict contract, **not** ARM legacy/provider, reassociate,
+SVE/SME, general cross-compilation, whole-runtime ARM sanitizer or performance
+qualification.
