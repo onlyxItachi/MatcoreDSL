@@ -22,6 +22,7 @@ endforeach()
 
 add_test(NAME closed_candidates.production_symbols COMMAND "${CMAKE_COMMAND}"
   "-DNM=${MDSLC_CANDIDATE_NM}"
+  "-DCPU_X86=${MDSLC_CLOSED_CPU_X86}"
   "-DARCHIVE=$<TARGET_FILE:matcore_closed_candidates_production_v1>"
   -P "${CMAKE_CURRENT_SOURCE_DIR}/symbol_contract.cmake")
 

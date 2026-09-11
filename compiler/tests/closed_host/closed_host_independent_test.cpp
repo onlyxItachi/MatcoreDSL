@@ -8,9 +8,7 @@
 #include <limits>
 #include <stdexcept>
 #include <vector>
-#if defined(__x86_64__)
-#include <xmmintrin.h>
-#endif
+#include "../support/closed_fp_fixture.h"
 #pragma STDC FENV_ACCESS ON
 namespace h = matcore::mdslc::runtime::closed_host_v1;
 static unsigned checks = 0, failures = 0;
@@ -232,10 +230,8 @@ static void fp_scope() {
   expect(fegetenv(&original)==0, "save environment for independent fixture");
   expect(fesetround(FE_DOWNWARD)==0 && feclearexcept(FE_ALL_EXCEPT)==0 &&
          feraiseexcept(FE_INVALID)==0, "construct nondefault caller environment");
-#if defined(__x86_64__)
-  _mm_setcsr(_mm_getcsr() | (1u<<15u) | (1u<<6u));
-  const auto mxcsr=_mm_getcsr();
-#endif
+  closed_fp_fixture::enableFlush();
+  const auto fp=closed_fp_fixture::snapshot();
   const auto flags=fetestexcept(FE_ALL_EXCEPT);
   float x[1]{std::numeric_limits<float>::max()};
   h::Session s; auto a=read(s,1,x,1,1,1);
@@ -244,9 +240,7 @@ static void fp_scope() {
          "closed math runs in its own default environment");
   expect(fegetround()==FE_DOWNWARD && fetestexcept(FE_ALL_EXCEPT)==flags,
          "caller rounding and preexisting flags restored after overflow math");
-#if defined(__x86_64__)
-  expect(_mm_getcsr()==mxcsr, "exact caller MXCSR restored including FTZ DAZ flags");
-#endif
+  expect(closed_fp_fixture::snapshot()==fp, "exact caller raw FP state restored including flush controls");
   float normal[1]{std::bit_cast<float>(std::uint32_t{0x00800000})};
   float half[1]{0.5f};
   h::Session gradual;
@@ -258,9 +252,7 @@ static void fp_scope() {
          "new scalar candidate preserves subnormal output bits");
   expect(fegetround()==FE_DOWNWARD && fetestexcept(FE_ALL_EXCEPT)==flags,
          "caller FP state remains exact after subnormal result and publication");
-#if defined(__x86_64__)
-  expect(_mm_getcsr()==mxcsr, "caller FTZ DAZ flags restored after gradual math");
-#endif
+  expect(closed_fp_fixture::snapshot()==fp, "caller raw FP state restored after gradual math");
   expect(fesetenv(&original)==0, "restore fixture environment");
 }
 int main() {

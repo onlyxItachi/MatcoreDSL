@@ -43,6 +43,10 @@ class RunnerChecks(unittest.TestCase):
   Machine: Advanced Micro Devices X86-64
 """
         self.assertEqual(run.relocatable_header(text)["Class"], "ELF64")
+        arm = text.replace("Advanced Micro Devices X86-64", "AArch64")
+        self.assertEqual(run.relocatable_header(arm, "AArch64")["Machine"], "AArch64")
+        with self.assertRaises(ValueError):
+            run.relocatable_header(text, "AArch64")
         for old, new in (("ELF64", "ELF32"), ("REL (Relocatable file)", "DYN (Shared object file)"),
                          ("Advanced Micro Devices X86-64", "AArch64")):
             with self.subTest(replacement=new), self.assertRaises(ValueError):

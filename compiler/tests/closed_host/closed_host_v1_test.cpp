@@ -12,8 +12,8 @@
 #include <stdexcept>
 #include <vector>
 
-#if defined(__linux__) && defined(__x86_64__)
-#include <xmmintrin.h>
+#if defined(__linux__) && (defined(__x86_64__) || defined(__aarch64__))
+#include "../support/closed_fp_fixture.h"
 #endif
 
 namespace ch = matcore::mdslc::runtime::closed_host_v1;
@@ -300,21 +300,21 @@ void zero_and_numerical_contract() {
 }
 
 void fp_isolation() {
-#if defined(__linux__) && defined(__x86_64__)
+#if defined(__linux__) && (defined(__x86_64__) || defined(__aarch64__))
   std::fenv_t original;
   expect(std::fegetenv(&original) == 0, "save original FP environment");
   std::feclearexcept(FE_ALL_EXCEPT);
   std::feraiseexcept(FE_INVALID);
   std::fesetround(FE_DOWNWARD);
-  _mm_setcsr(_mm_getcsr() | (1U << 15U) | (1U << 6U));
-  const auto csr = _mm_getcsr();
+  closed_fp_fixture::enableFlush();
+  const auto csr = closed_fp_fixture::snapshot();
   std::vector<float> a{std::numeric_limits<float>::max()}, b{2.0F};
   ch::Session s;
   ch::Value va,vb,vc;
   ok(s.read(1,view(a,1,1),va), "FP fixture read lhs preserves ambient state");
   ok(s.read(2,view(b,1,1),vb), "FP fixture read rhs preserves ambient state");
   ok(s.gemm(3,va,vb,ch::Numeric::strict_f32,vc), "overflow is IEEE value, not checked failure");
-  expect(_mm_getcsr() == csr && std::fegetround() == FE_DOWNWARD &&
+  expect(closed_fp_fixture::snapshot() == csr && std::fegetround() == FE_DOWNWARD &&
          std::fetestexcept(FE_ALL_EXCEPT) == FE_INVALID,
          "successful candidate restores complete caller FP state");
   expect(std::isinf(contents(vc)[0]), "candidate used nearest-even rather than caller downward rounding");
@@ -322,7 +322,7 @@ void fp_isolation() {
   failing.configureForTesting({0,changeFp,nullptr});
   expect(failing.gemm(4,va,vb,ch::Numeric::strict_f32,vc).code == ch::Code::candidate_failure,
          "post-call FP control mutation rejects candidate");
-  expect(_mm_getcsr() == csr && std::fegetround() == FE_DOWNWARD &&
+  expect(closed_fp_fixture::snapshot() == csr && std::fegetround() == FE_DOWNWARD &&
          std::fetestexcept(FE_ALL_EXCEPT) == FE_INVALID,
          "failing candidate restores complete caller FP state");
   std::fesetenv(&original);
@@ -331,7 +331,7 @@ void fp_isolation() {
 } // namespace
 
 int main() {
-#if !defined(__linux__) || !defined(__x86_64__)
+#if !defined(__linux__) || (!defined(__x86_64__) && !defined(__aarch64__))
   ch::Session s;
   ch::Value value;
   expect(s.read(1,{},value).code == ch::Code::unsupported_fp_environment,
