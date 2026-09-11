@@ -450,8 +450,13 @@ bool verifyReassociateGemmBufferizedV1(mlir::ModuleOp module, std::string &error
 }
 
 StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
-    bool address_sanitizer, StrictGemmScheduleV1 schedule) {
+    bool address_sanitizer, StrictGemmScheduleV1 schedule, CpuTargetV1 target) {
   StrictGemmArtifactV1 result;
+  const char *targetTriple = cpuTargetTripleV1(target);
+  if (!targetTriple) {
+    fail(result.error, "unknown strict GEMM CPU target");
+    return result;
+  }
   if (schedule != StrictGemmScheduleV1::ScalarMNK &&
       schedule != StrictGemmScheduleV1::RowContiguousMKN) {
     fail(result.error, "unknown strict GEMM schedule");
@@ -483,7 +488,7 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
   function.setType(builder.getFunctionType(function.getArgumentTypes(), {}));
   function->setAttr("llvm.emit_c_interface", builder.getUnitAttr());
   stages.bufferized->getOperation()->setAttr(
-      "llvm.target_triple", builder.getStringAttr(kCpuTargetV1));
+      "llvm.target_triple", builder.getStringAttr(targetTriple));
   mlir::PassManager passes(&context);
   passes.addNestedPass<mlir::func::FuncOp>(
       mlir::createConvertLinalgToLoopsPass());
@@ -553,7 +558,7 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
       "schema=matcore-builtin-strict-cpu-gemm-v1\nsource_authority=none_"
       "builtin_primitive_only\n"
       "toolchain=21.1.8\ntarget=" +
-      std::string(kCpuTargetV1) +
+      std::string(targetTriple) +
       "\nprofile=strict_f32\n"
       "shape=dynamic_nonnegative_M_N_K\ncaller_guards=retained_not_discharged\n"
       "tensor_allocations=0\ncopies=0\npublication=none\n"
