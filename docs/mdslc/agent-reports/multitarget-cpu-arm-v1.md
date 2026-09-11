@@ -98,6 +98,17 @@ Important negative finding: AVX2, AVX2+FMA and AVX512F requests produced the
 Therefore this does **not** demonstrate AVX512 or FMA instruction execution.
 No vector-width preference, tuning or timing was introduced.
 
+Root follow-up falsified the apparent AVX512 request, not strict arithmetic:
+Clang21 `-mavx512f -mno-fma` removes `__AVX512F__` from the effective target
+macros. Its AVX2 object is therefore explained by contradictory ISA options,
+not evidence that MLIR or LLVM declined an available AVX512 schedule. The
+reproducer now keeps that invocation as an explicit negative control. With
+`-mavx512f -mprefer-vector-width=512`, while retaining strict issued IR and
+`-ffp-contract=off`, the same source produces actual ZMM `vmulps`/`vaddps`,
+no FMA, and passes 174 strict plus 15,444 independent checks on the local CPU.
+Object SHA256 `18c27e2adcff08336e8748627e734fbd0630b4ef6f0c353efc5910df2f6a13aa`.
+This is still a leaf experiment, not a newly authenticated runtime candidate.
+
 AArch64 object SHA256:
 `fa4ed944828076b0eb35d790bc391ddee0e3b5fad9c8f5142f914286ae015c8f`.
 Its explicit Clang target override is experimental and does not change the

@@ -100,11 +100,21 @@ def main():
         "avx": ["-march=x86-64", "-mavx", "-mno-avx2", "-mno-fma"],
         "avx2": ["-march=x86-64", "-mavx2", "-mno-fma"],
         "avx2-fma": ["-march=x86-64", "-mavx2", "-mfma"],
-        "avx512f": ["-march=x86-64", "-mavx512f", "-mno-fma"],
+        # LLVM's x86 feature dependencies disable AVX512F with -mno-fma.
+        # ISA availability is not numerical contraction permission: strict IR
+        # and -ffp-contract=off forbid FMA while AVX512 instructions stay legal.
+        "avx512f": ["-march=x86-64", "-mavx512f", "-mprefer-vector-width=512"],
+        "avx512-disabled-by-no-fma": ["-march=x86-64", "-mavx512f", "-mno-fma"],
         "aarch64": ["--target=aarch64-unknown-linux-gnu", "-march=armv8-a"],
     }
     results = []
     for name, flags in variants.items():
+        effective = run([args.clang, "-dM", "-E", "-x", "c++", "/dev/null", *flags]).stdout
+        effective_avx512 = "#define __AVX512F__ 1" in effective.splitlines()
+        if name == "avx512f" and not effective_avx512:
+            raise RuntimeError("requested AVX512F is not actually enabled")
+        if name == "avx512-disabled-by-no-fma" and effective_avx512:
+            raise RuntimeError("negative feature-dependency control changed upstream")
         obj = output / f"{name}.o"
         run([args.clang, "-c", "-x", "ir", ir, "-O2", "-ffp-contract=off",
              *flags, "-o", obj])
@@ -114,15 +124,19 @@ def main():
                 run([args.nm, "--undefined-only", obj]).stdout, name == "aarch64")
         result = {"target_request": name, "object_sha256": sha(obj),
                   "requested_flags": flags, "strict_no_fma_object_check": "PASS",
+                  "effective_avx512f": effective_avx512,
                   "observed_ymm": bool(re.search(r"\bymm\d+\b", assembly)),
                   "observed_zmm": bool(re.search(r"\bzmm\d+\b", assembly))}
+        if name == "avx512f" and not result["observed_zmm"]:
+            raise RuntimeError("AVX512 recipe did not produce actual ZMM instructions")
         if name == "aarch64":
             result["execution"] = "NOT_RUN_cross_compile_only"
             result["target_override"] = "experimental_not_production_issuer_authority"
         else:
             executable = output / f"{name}-fixture"
             run([args.clang, fixture_object, obj, "-o", executable])
-            process = run([executable, name], allowed=(0, 77))
+            gate = "avx2" if name == "avx512-disabled-by-no-fma" else name
+            process = run([executable, gate], allowed=(0, 77))
             result["execution"] = "PASS" if process.returncode == 0 else "SKIP_capability_or_fp"
             result["stdout"] = process.stdout
         results.append(result)
