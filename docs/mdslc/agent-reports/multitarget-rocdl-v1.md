@@ -2,7 +2,10 @@
 
 Status: **PROVEN WITHIN A BOUNDED RESEARCH CONTRACT**, not integrated target
 support. Starting canonical SHA `9c2149a25e12f5192c168f3e047097505263fc1a`;
-branch `research/mdslc-rocdl-correctness-v1`. No production files changed.
+branch `research/mdslc-rocdl-correctness-v1`. Initial research commit:
+`c48ba6354902009ec28adea61972516313a1463d`. A subsequent, separately tested
+private runtime adapter is described below; registration/driver integration
+remains the integration owner's boundary.
 
 ## Observed environment and source identity
 
@@ -120,3 +123,87 @@ trusted artifact/symbol closure, preserve current device/context, reject
 unavailable/oversized/illegal requests without fallback, and make all failure
 paths leave public storage untouched. Then test it through authenticated region
 source, including later-operation failure after an earlier publication.
+
+## Private adapter implementation and adversarial follow-up
+
+New `closed_rocdl_candidate_v1.{h,cpp}` exports only two internal functions:
+`rocdlCandidateAvailable()` and `rocdlGemmCandidate(CandidateInput,
+CandidateInput, CandidateOutput)`. There is no runtime callback registration or
+caller-selected image. The shared compiler-owned image declarations and pure
+GPU shape qualification are supplied by the coordinated NVVM/integration lanes.
+
+The implementation deliberately differs from a naive HIP launch wrapper:
+
+- All HIP calls execute on a fresh joined helper thread. HIP's current device
+  and last-error state are thread-local, and AMD's context APIs are deprecated.
+  Saving/restoring a device number cannot restore arbitrary caller error state.
+  This is observable in the [upstream 7.2.1 implementation](https://github.com/ROCm/clr/blob/rocm-7.2.1/hipamd/src/hip_error.cpp).
+  The helper has a default FP environment; the caller's FP state and `errno`
+  remain unchanged. Thread creation is a checked allocation/resource failure,
+  not a new source scheduling or asynchronous language feature.
+- No device reset or device flags are changed. Each invocation owns its modules,
+  allocations and nonblocking stream. Other caller GPU activity is not completed
+  through a default-stream/device-wide synchronization.
+- Host inputs and output staging are heap-owned before asynchronous use.
+  Potentially pending work is marked **before** each async operation, even an
+  operation that returns an error. No caller buffer is exposed to unknown
+  in-flight device transfer lifetime after a checked return.
+- Successful stream completion precedes device/module/stream release; every
+  release is checked. Only then is complete staged output copied to the private
+  caller destination. Normal-return failures leave it unchanged.
+- Failed completion retains the entire owning frame in a reachable
+  process-lifetime quarantine and permanently poisons subsequent use of this
+  runtime instance's AMD candidate. It does not free potentially live buffers.
+  Already-in-flight concurrent requests may each retain their own frame; this
+  is a fail-closed exceptional resource cost, not a claim of device recovery.
+- Raw leaf arguments get shape, extent, representable range, alignment and
+  isolated-output checks; input/input overlap remains permitted. Qualification
+  is at most 65535 per dimension, `2^20` outputs and `2^26` scalar products.
+  These are bounds of this initial recipe, not semantic shape restrictions or
+  inferred planner/performance thresholds. Integration must run the same pure
+  gate before Session allocation and zero-K shortcuts, not only in this leaf.
+
+### Exact additional validation
+
+| Surface | Result |
+| --- | --- |
+| Direct production adapter with actual HIP + embedded canonical-derived HSACO | **76 cases, 17,761 strict comparisons, zero failures** |
+| Same real adapter with host UBSan, halt-on-error | **76 cases, 17,761 strict comparisons, zero failures** |
+| Fake HIP ABI state-machine/fault executable with host ASan + UBSan and leak detection | **34 process modes, 509 checks, zero failures** |
+| Independent NVVM-lane review of worker/frame/cleanup/quarantine edges | No concrete blocker found; driver identity/link closure retained as prerequisite |
+
+Each real case seeds the caller with downward rounding, FTZ/DAZ, inexact and
+underflow flags, `errno=EDOM`, a valid HIP current device and a genuine HIP
+invalid-device last error. All survive the call while device arithmetic still
+matches strict nearest-even/gradual-underflow semantics. NaN payload identity is
+not promised. Numerical cases match the 76-case research suite.
+
+The fake driver is **not physical error injection or a fallback implementation**.
+It links substituted HIP definitions in a separate executable, with no production
+injection hook. It fails each of the 23 normal API positions, rejects host alias,
+null, shape, extent and spoofing cases, checks output/work/zero-K limits, and
+holds completion unknown across retries. Tests prove no HIP call uses the caller
+thread, no release occurs before completion, no failure publishes partial private
+output, and quarantine prevents future attempts. Retained allocations in fault
+cases are explicitly checked as intentional quarantine.
+
+### Negative sanitizer evidence retained
+
+The actual HIP + host ASan/UBSan lane **did not pass**. At helper-thread teardown,
+ASan failed to unmap an alternate signal stack (`79040` bytes; `EINVAL`), with
+`UnsetAlternateSignalStack` / `AsanThread::Destroy` in the failure stack. This is
+not a generated-kernel ASan report and no GPU memory instrumentation is claimed.
+No sanitizer setting was disabled to relabel that result as passing.
+
+A separate tiny program containing only a joined thread calling
+`hipGetDeviceCount` also failed leak detection: `264` bytes in `4` allocations,
+all allocation stacks in `libhsa-runtime64`. That narrower reproducer does not
+by itself explain the alternate-stack failure. The installed real HIP + ASan
+combination therefore remains an unresolved external validation limitation;
+host-mocked ASan and real-HIP host UBSan remain distinct passing scopes.
+
+Normal standalone and UBSan real-adapter runs do not prove catastrophic device
+fault recovery, arbitrary interposition, hostile runtime replacement, process
+crash atomicity, generated-region GPU execution, public residency effects or
+runtime performance. Full source/driver identity and ordered-prefix testing
+remain required before advertising an integrated generated ROCDL candidate.
