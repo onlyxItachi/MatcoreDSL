@@ -77,11 +77,11 @@ neither uncompiled source nor review is passing-test evidence.
 
 ## Separate bounded fusion review
 
-The research row-panel schedule is not production authority. Default One-Shot
-bufferization was observed by the research owner to introduce unchecked
-`malloc`/`free` per panel. That is a blocking integration defect under the
-existing no-allocation generated-leaf contract; it needs separately verified,
-adapter-owned checked workspace before qualification.
+The research row-panel schedule is not production authority. Initially, default
+One-Shot bufferization was observed by the research owner to introduce unchecked
+`malloc`/`free` per panel. That was a blocking integration defect under the
+existing no-allocation generated-leaf contract. The later caller-workspace
+research refinement and remaining trust boundary are recorded below.
 
 For exactly a pure strict CPU lhs-chain interval, with all external reads before
 the pair and no surviving producer use, it is plausible to retire the first
@@ -173,3 +173,112 @@ published resource, so running it with the optimization flag alone cannot prove
 that a forwarding record was used. Qualification needs a compiled source case
 with a genuine publication-to-read edge and artifact/execution evidence across
 the claimed candidate routes.
+
+## Exact-commit forwarding review
+
+Verdict: **ACCEPT the bounded forwarding implementation for integration**.
+No blocking correctness defect remains in the reviewed changes. This is not
+complete qualification, merge authorization, a formal all-program proof or
+acceptance of future fusion.
+
+Reviewed exact commits:
+
+- Independent test cherry-pick:
+  `cc078cf769ded78d739ed1797e1dc119fdb4c9c6` (authorship origin `f381ef6`).
+- Implementation: `14367dc825333e8465299149a7250dc8ac889688`.
+- Plan, connected driver and installed tests:
+  `6548a2758442757be5b9f74b2b1b237fb9ea9581`.
+- Compiler subtree at the reviewed head:
+  `c3e25487ee6ce1d80a7afbb1d2108ea3f11eab7c`.
+- Independently reviewed CI registration change:
+  `2c66487a08000efc6bea20d1c76e8940160af616` in the qualification lane.
+
+The working compiler files matched the reviewed test head exactly. The two
+implementation/test commit diffs passed `git diff --check`. The reviewer did
+not compile or run tests during this review; the implementation owner separately
+reported its direct ASan/UBSan runtime execution of 67 independent checks with
+zero failures. Source-connected execution, composed/full suites and exact-head
+hosted results remain the integration owner's distinct qualification gates.
+
+### Final authority delta
+
+`ClosedHostDerivedPlan.cpp` lines 29-51 rebuild the original witness and replay
+exact source pairing. Lines 62-87 retain global MAY-alias invalidation and the
+conservative branch barriers. Lines 171-195 reauthenticate and compare complete
+identities and canonical records at consumption.
+
+Removing a redundant third witness replay from `ClosedHostEmitter` does not
+weaken the boundary: its line 121 calls `verifyClosedHostPlan` before reading the
+Program or consuming `semanticIdentity()` at line 128. The new getter returns
+only the immutable original digest and rejects moved-from access; it cannot
+construct or mutate a plan. Runtime lines 514-533 retain the original guard
+ordering before nonallocating ownership retention. No source/witness verifier
+was relaxed and no Session layout changed.
+
+### Connected test and CI review
+
+The new source specimen actually reads C after publishing C; it is not the old
+direct-value-carry example. Its partial-overlap branch publishes through D before
+reading C, which falsifies stale forwarding across a MAY-alias write. The other
+branch checks forwarding, a separate alias read's short capacity, requested
+shape/extent failures, retained observation ownership, exact source locations
+and branch-hole frontiers.
+
+The test inspects the actual executable with `nm --undefined-only --demangle`:
+the optimized executable must reference `readForwarded`, and the `none` binary
+must not. This rules out the test accidentally compiling two baseline
+realizations. The same source is then executed against independent exact-small-
+integer math and failure-prefix oracles. The two-TU program test verifies option
+propagation through the separate program compiler; the installed package repeats
+the connected discriminator using its installed driver and generated candidate.
+The initially defective host-less fixture now first admits a preprocessing-free
+inspection source and then rejects executable-plan issuance.
+
+Optional candidate tests deliberately permit six explicit first-GEMM
+`candidate_unavailable` refusals. That is fail-closed refusal evidence, not
+forwarding/candidate execution. Native-strict, generated-strict, automatic,
+multi-source and installed qualification require six actual executions. Physical
+ISA/provider/GPU claims must use the execution counts or force
+`REQUIRE_EXECUTION=ON`, not infer execution from a passing CTest alone.
+
+The CI count changes are consistent with the registered x64 test graph:
+
+- OpenBLAS OFF driver scope: previous 41 plus eight candidate policies and one
+  program test equals 50.
+- OpenBLAS ON driver scope: previous 42 plus nine policies and one program test
+  equals 52.
+- ASan/UBSan OFF-provider scope: previous 175 plus nine driver tests and two
+  proof/runtime tests equals 186. The installed forwarding check extends an
+  existing CTest and therefore adds no separate registry entry.
+
+The new expressions include both proof/runtime tests and all driver policy
+tests. Native qualification additionally requires the four mandatory connected
+execution tests to exist. These are static registration/count checks, not an
+assertion that the new hosted jobs have executed.
+
+## Refined fusion research trust boundary
+
+Research commit `198ee59` subsequently mapped the certified panel allocation to
+caller-owned workspace. The reviewer inspected its saved artifacts without
+building or executing them: `workspace.ll` SHA-256
+`56f108e0bb4ecefb74c854b9d02968d5281a0467d246fa62f69549082275d0e0`
+has only the `llvm.smin.i64` intrinsic and C-interface-to-leaf call;
+`workspace.o` SHA-256
+`02067bbea0241541eef823de874eab20dd3654ebd9127185db4c15a360461eac`
+has exactly the undefined symbol `memset`. The research owner's 6,786 executed
+checks are its evidence, not an independently rerun result here.
+
+Thus the earlier call-free condition is a sufficient initial model, not an
+accurate blanket machine-code description or a necessary prohibition on known
+memory helpers. LLVM's lowered zero fill invokes libc. The bounded deferred-
+arithmetic argument needs an explicitly trusted conforming `memset` contract:
+writes stay within checked private storage, no recoverable failure or arbitrary
+host effect occurs, and FP controls are preserved. Arbitrary interposition is
+outside that trust boundary. A production issuer must verify/allowlist the
+actual helper boundary and retain adapter-owned checked workspace; pre-
+optimization LLVM alone cannot establish those machine/library facts.
+
+The caller-workspace experiment resolves the previously observed research
+allocation defect, not source authority, runtime source-frontier retirement,
+production artifact ownership or sanitizer qualification. No production fused
+candidate is accepted by this review.
