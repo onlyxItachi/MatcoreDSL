@@ -115,6 +115,17 @@ int main(int argc, char **argv) {
                                                   headers, "example::pipeline");
   check(bool(admitted) && admitted.syntax_valid, "real public source admission: " + admitted.error);
   if (!admitted) return 1;
+  auto baseline_emission = cg::emitExperimentalRegion(*admitted.evidence,
+      cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None);
+  auto optimized_emission = cg::emitExperimentalRegion(*admitted.evidence,
+      cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::PublicationReadForwarding);
+  check(baseline_emission && optimized_emission &&
+        baseline_emission.emission->host_symbol == optimized_emission.emission->host_symbol &&
+        baseline_emission.emission->helper_symbol != optimized_emission.emission->helper_symbol &&
+        baseline_emission.emission->contract.symbol != optimized_emission.emission->contract.symbol &&
+        baseline_emission.emission->contract.semantic_sha256 ==
+          optimized_emission.emission->contract.semantic_sha256,
+        "same original source has distinct candidate/optimization-owned private helper identities");
   auto runtime_artifact = llvm::MemoryBuffer::getFile(argv[5]);
   auto candidate_artifact = llvm::MemoryBuffer::getFile(argv[4]);
   if (!runtime_artifact || !candidate_artifact) throw std::runtime_error("missing trusted test runtime artifacts");

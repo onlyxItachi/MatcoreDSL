@@ -9,8 +9,10 @@ struct Invocation {
   fs::path source, output;
   std::string region;
   codegen::ClosedCpuPolicy policy = codegen::ClosedCpuPolicy::Automatic;
+  codegen::ClosedHostOptimization optimization = codegen::ClosedHostOptimization::None;
   std::vector<std::string> host_options;
   bool compile_only = false;
+  bool optimization_seen = false;
 };
 Invocation parse(int argc, char **argv) {
   Invocation args;
@@ -25,6 +27,10 @@ Invocation parse(int argc, char **argv) {
     else if (argument == "-c") args.compile_only = true;
     else if (argument == "--candidate") {
       args.policy = parseCandidatePolicy(value());
+    } else if (argument == "--optimization") {
+      if (args.optimization_seen) reject("duplicate --optimization");
+      args.optimization_seen = true;
+      args.optimization = parseOptimization(value());
     } else if (argument == "--") {
       for (++i; i < argc; ++i) {
         const std::string option = argv[i];
@@ -35,7 +41,7 @@ Invocation parse(int argc, char **argv) {
     else reject("unknown or unsupported argument: " + argument);
   }
   if (args.source.empty() || args.output.empty() || args.region.empty())
-    reject(std::string("usage: mdslc-region source.mdsl --region qualified_name [-c] [--candidate ") + candidatePolicyUsage() + "] -o NEW_OUTPUT [-- bounded C++ include/macro options]");
+    reject(std::string("usage: mdslc-region source.mdsl --region qualified_name [-c] [--candidate ") + candidatePolicyUsage() + "] [--optimization " + optimizationUsage() + "] -o NEW_OUTPUT [-- bounded C++ include/macro options]");
   return args;
 }
 
@@ -64,7 +70,7 @@ int run(int argc, char **argv) {
       {installation.public_header.path.string(), installation.storage_header.path.string()}, args.region);
   if (!admitted) reject(admitted.error);
   auto compilation = codegen::compileExperimentalRegionToLLVM(*admitted.evidence,
-      installation.compilerInputs(staging.path / "helper"), args.policy);
+      installation.compilerInputs(staging.path / "helper"), args.policy, args.optimization);
   if (!compilation) reject(compilation.error);
   auto unchanged = [&] {
     std::string error;

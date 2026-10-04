@@ -99,8 +99,10 @@ struct TestHooks {
 
 // Valid ordinary host float objects, declared capacity/lifetime/access and no
 // concurrent conflicting access are caller preconditions, not pointer proofs.
-// All external views MAY overlap. A read eagerly snapshots in this initial
-// realization; immutable value semantics do not require eager copies generally.
+// All external views MAY overlap. A normal read eagerly snapshots; the private
+// derived forwarding route retains an already-published immutable value only
+// after the compiler proves the same resource/version and this adapter repeats
+// every required read guard. No pointer/descriptor inequality proves no-alias.
 // A successful publish replaces its complete destination under normal-return
 // semantics. All fallible preparation precedes its byte copy. This is neither
 // concurrent atomicity nor crash recovery, and does not cover device/file export.
@@ -132,6 +134,12 @@ public:
   Status read(Frontier, ResourceView, Value &) noexcept;
   Status read(Frontier, ResourceView, std::uint64_t requested_rows,
               std::uint64_t requested_columns, Value &) noexcept;
+  // Compiler-derived same-resource/current-version reuse. This method alone
+  // grants no source authority or alias proof. Validate the original read in
+  // its original order before retaining the value; never hide a snapshot fallback.
+  Status readForwarded(Frontier, ResourceView, std::uint64_t requested_rows,
+                       std::uint64_t requested_columns, const Value &published,
+                       Value &) noexcept;
   Status gemm(Frontier, const Value &, const Value &, Numeric, Value &) noexcept;
   Status publish(Frontier, const Value &, ResourceView) noexcept;
   // Observation captures immutable contents at this frontier. It is not an

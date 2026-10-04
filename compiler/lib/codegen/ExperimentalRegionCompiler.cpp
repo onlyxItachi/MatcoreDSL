@@ -40,14 +40,15 @@ bool ExperimentalLLVMCompilation::inputsUnchanged(std::string &error) const {
 static ExperimentalLLVMCompilationResult compileRegion(
     const frontend::AuthenticatedClosedRegionEvidence &evidence,
     const ExperimentalCompilerInputs &inputs, ClosedCpuPolicy policy,
-    const std::function<void()> &after_staging) {
+    const std::function<void()> &after_staging,
+    ClosedHostOptimization optimization) {
   ExperimentalLLVMCompilationResult result;
   if (std::count_if(inputs.symbol_artifacts.begin(), inputs.symbol_artifacts.end(),
           [](const auto &artifact) { return artifact.owner == SymbolArtifactOwner::PrivateCandidates; }) != 1) {
     result.error = "region execution compilation requires its isolated private candidate DSO";
     return result;
   }
-  auto emitted = emitExperimentalRegion(evidence, policy);
+  auto emitted = emitExperimentalRegion(evidence, policy, optimization);
   if (!emitted) { result.error = emitted.error; return result; }
   auto original = frontend::detail::ClosedRegionCompilationAccess::host(evidence);
   if (!original || !original->unchanged(result.error)) return result;
@@ -147,14 +148,15 @@ static ExperimentalLLVMCompilationResult compileRegion(
 
 ExperimentalLLVMCompilationResult compileExperimentalRegionToLLVM(
     const frontend::AuthenticatedClosedRegionEvidence &evidence,
-    const ExperimentalCompilerInputs &inputs, ClosedCpuPolicy policy) {
-  return compileRegion(evidence, inputs, policy, {});
+    const ExperimentalCompilerInputs &inputs, ClosedCpuPolicy policy,
+    ClosedHostOptimization optimization) {
+  return compileRegion(evidence, inputs, policy, {}, optimization);
 }
 
 ExperimentalLLVMCompilationResult compileExperimentalRegionToLLVMForTesting(
     const frontend::AuthenticatedClosedRegionEvidence &evidence,
     const ExperimentalCompilerInputs &inputs, ClosedCpuPolicy policy,
-    const std::function<void()> &after_staging) {
-  return compileRegion(evidence, inputs, policy, after_staging);
+    const std::function<void()> &after_staging, ClosedHostOptimization optimization) {
+  return compileRegion(evidence, inputs, policy, after_staging, optimization);
 }
 } // namespace matcore::mdslc::codegen

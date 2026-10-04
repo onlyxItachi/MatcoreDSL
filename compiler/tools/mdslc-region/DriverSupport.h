@@ -38,6 +38,8 @@ void write(const fs::path &, const std::string &);
 void validateNewOutput(const fs::path &);
 codegen::ClosedCpuPolicy parseCandidatePolicy(const std::string &);
 const char *candidatePolicyUsage();
+codegen::ClosedHostOptimization parseOptimization(const std::string &);
+const char *optimizationUsage();
 struct Installation {
   // Declaration order is the original driver's exact capture order.
   Layout installed;

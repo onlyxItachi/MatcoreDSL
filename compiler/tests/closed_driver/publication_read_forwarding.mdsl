@@ -1,0 +1,158 @@
+#include <matcore/region.h>
+#include <array>
+#include <bit>
+#include <cfenv>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <limits>
+
+namespace md = matcore::mdsl;
+
+MATCORE_REGION md::Result forwarding_pipeline(
+    md::Storage A, md::Storage B, md::Storage C, md::Storage D, md::Storage E,
+    md::Shape m, md::Shape n, md::Shape k, md::Shape requested_rows,
+    md::Shape requested_columns, md::Shape clobber) noexcept {
+  auto old = md::read(C, m, n);
+  auto a = md::read(A, m, k);
+  auto b = md::read(B, k, n);
+  auto first = md::gemm(a, b, md::Numerics::strict_f32);
+  if (clobber == 1) {
+    md::publish(first, C);
+    md::observe(C);
+    md::publish(old, D);
+    auto late = md::read(C, requested_rows, requested_columns);
+    auto external = md::read(D, m, n);
+    auto next = md::gemm(old, late, md::Numerics::strict_f32);
+    auto last = md::gemm(next, external, md::Numerics::strict_f32);
+    md::publish(last, E);
+    md::observe(E);
+  } else {
+    md::publish(first, C);
+    md::observe(C);
+    auto late = md::read(C, requested_rows, requested_columns);
+    auto external = md::read(D, m, n);
+    auto next = md::gemm(old, late, md::Numerics::strict_f32);
+    auto last = md::gemm(next, external, md::Numerics::strict_f32);
+    md::publish(last, E);
+    md::observe(E);
+  }
+  return md::complete();
+}
+
+#pragma STDC FENV_ACCESS ON
+namespace {
+unsigned checks = 0, failures = 0, executions = 0, refusals = 0;
+void check(bool condition, const char *label) {
+  ++checks;
+  if (!condition) { ++failures; std::fprintf(stderr, "FAIL: %s\n", label); }
+}
+bool same(float lhs, float rhs) {
+  return std::bit_cast<std::uint32_t>(lhs) == std::bit_cast<std::uint32_t>(rhs);
+}
+using Matrix = std::array<float, 4>;
+Matrix multiply(const Matrix &lhs, const Matrix &rhs) {
+  Matrix result{};
+  for (unsigned i = 0; i < 2; ++i)
+    for (unsigned j = 0; j < 2; ++j) {
+      double sum = 0;
+      for (unsigned k = 0; k < 2; ++k) sum += double(lhs[2*i+k]) * rhs[2*k+j];
+      result[2*i+j] = static_cast<float>(sum);
+    }
+  return result;
+}
+md::Storage view(float *data, std::uint64_t capacity = 4) {
+  return {data, 2, 2, capacity, md::Access::read_write};
+}
+void run(unsigned kind) {
+  Matrix a{1,2,3,4}, b{5,6,7,8}, d{1,0,0,1};
+  std::array<float, 7> c{-701,9,10,11,12,-702,-703};
+  std::array<float, 6> e{-801,-802,-802,-802,-802,-803};
+  const Matrix old{9,10,11,12};
+  const auto first = multiply(a,b);
+  const bool clobber = kind == 1;
+  const bool alias = kind == 2 || kind == 5;
+  float *external = clobber ? c.data()+2 : (alias ? c.data()+1 : d.data());
+  Matrix after = clobber ? Matrix{first[0],old[0],old[1],old[2]} : first;
+  Matrix external_value = clobber ? old : (alias ? first : d);
+  const auto expected = multiply(multiply(old,after),external_value);
+  const auto rows = kind == 3 ? std::uint64_t{3} : std::uint64_t{2};
+  const auto columns = kind == 4 ? std::numeric_limits<std::uint64_t>::max()
+                               : std::uint64_t{2};
+  const auto capacity = kind == 5 ? std::uint64_t{3} : std::uint64_t{4};
+  md::Observation retained;
+  {
+    std::fenv_t original{}, before{}, after_environment{};
+    check(std::fegetenv(&original) == 0, "capture original floating-point environment");
+    check(std::fesetround(FE_DOWNWARD) == 0 &&
+          std::feraiseexcept(FE_INEXACT|FE_UNDERFLOW) == 0,
+          "set caller rounding and sticky status");
+    check(std::fegetenv(&before) == 0, "capture caller floating-point environment");
+    auto result = forwarding_pipeline(view(a.data()), view(b.data()), view(c.data()+1),
+        view(external, capacity), view(e.data()+1), 2, 2, 2, rows, columns, clobber);
+    check(std::fegetenv(&after_environment) == 0 &&
+          std::memcmp(&before,&after_environment,sizeof(before)) == 0,
+          "optimized and baseline preserve complete caller FP controls/status");
+    check(std::fesetenv(&original) == 0, "restore test caller floating-point environment");
+    if (result.error() == md::Error::candidate_unavailable) {
+      ++refusals;
+      check(result.failed_frontier() == 4 && result.completed_frontier() == 3 &&
+            result.completed_effect_frontier() == 0 &&
+            result.publication_count() == 0 && result.observation_count() == 0,
+            "unavailable forced candidate explicitly fails before any publication");
+      check(std::memcmp(c.data()+1,old.data(),sizeof(old)) == 0,
+            "forced unavailable path never falls back or mutates source destination");
+      check(result.failure_location().line == 19 && result.failure_location().column == 16,
+            "unavailable candidate keeps original physical source identity");
+      return;
+    }
+    ++executions;
+    const bool failed = kind >= 3;
+    check(bool(result) == !failed, "expected same-source checked success or failure");
+    check(result.publication_count() == (failed ? 1U : (clobber ? 3U : 2U)) &&
+          result.observation_count() == (failed ? 1U : 2U),
+          "ordered publication/observation prefix remains exact");
+    if (failed) {
+      const auto error = kind == 3 ? md::Error::shape_mismatch :
+                         (kind == 4 ? md::Error::extent_overflow : md::Error::insufficient_capacity);
+      const auto frontier = kind == 5 ? std::uint64_t{18} : std::uint64_t{17};
+      check(result.error() == error && result.failed_frontier() == frontier &&
+            result.completed_frontier() == frontier-1 &&
+            result.completed_effect_frontier() == 16,
+            "forwarding retains requested extent/shape and distinct-alias capacity checks");
+      check(result.failure_location().line == (kind == 5 ? 34U : 33U) &&
+            result.failure_location().column == (kind == 5 ? 21U : 17U),
+            "late failure retains original physical read source site");
+      for (unsigned i = 1; i < 5; ++i)
+        check(e[i] == -802, "later failure does not publish or retire later effects");
+    } else {
+      check(result.ok() && result.completed_frontier() == 23,
+            "source completion retains branch-hole frontier enumeration");
+      for (unsigned i = 0; i < 4; ++i)
+        check(same(e[i+1],expected[i]),
+              "independent exact math preserves old value and intervening partial-alias writes");
+    }
+    retained = result.observation(0);
+    check(retained.valid() && retained.rows() == 2 && retained.columns() == 2,
+          "owning observation retains its original checked dimensions");
+    for (unsigned i = 0; i < 4; ++i)
+      check(same(retained.data()[i],first[i]),
+            "earlier observation is immutable across alias publication and later failure");
+  }
+  c[1] = 9000;
+  check(retained.valid() && same(retained.data()[0],first[0]),
+        "owning observation outlives invocation and later host mutation");
+  check(c.front() == -701 && c.back() == -703 && e.front() == -801 && e.back() == -803,
+        "external publication boundary sentinels preserved");
+}
+} // namespace
+
+int main(int argc, char **argv) {
+  const bool require_execution = argc == 2 && std::strcmp(argv[1],"--require-execution") == 0;
+  for (unsigned kind = 0; kind < 6; ++kind) run(kind);
+  check(executions == 6 || refusals == 6, "forced policy cannot inconsistently execute or hide fallback");
+  if (require_execution) check(executions == 6, "this qualification requires actual candidate execution");
+  std::printf("Publication forwarding source: %u checks; %u failures; %u executed cases; %u explicit refusals\n",
+              checks, failures, executions, refusals);
+  return failures ? 1 : 0;
+}

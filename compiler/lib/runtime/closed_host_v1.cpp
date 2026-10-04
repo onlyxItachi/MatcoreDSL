@@ -511,6 +511,27 @@ Status SessionAbiV2::read(Frontier frontier, ResourceView view,
   result = std::move(storage);
   return succeed(frontier);
 }
+Status SessionAbiV2::readForwarded(Frontier frontier, ResourceView view,
+                                std::uint64_t rows, std::uint64_t columns,
+                                const Value &published, Value &result) noexcept {
+  if (!begin(frontier)) return status_;
+  ActiveCall active(*this);
+  std::size_t count = 0;
+  const auto requested = extent(rows, columns, count);
+  if (requested != Code::ok) return fail(requested, frontier);
+  if (view.rows != rows || view.columns != columns)
+    return fail(Code::shape_mismatch, frontier);
+  const auto code = validate(view, false, count);
+  if (code != Code::ok) return fail(code, frontier);
+  // These are compiler-realization sanity checks, not substitutes for the
+  // source read predicates above. Copying the ownership handle cannot allocate
+  // or inspect host resource bytes. The original result survives every failure.
+  if (!published.valid()) return fail(Code::invalid_value, frontier);
+  if (published.rows() != rows || published.columns() != columns)
+    return fail(Code::shape_mismatch, frontier);
+  result = published;
+  return succeed(frontier);
+}
 Status SessionAbiV2::gemm(Frontier frontier, const Value &lhs, const Value &rhs,
                      Numeric numeric, Value &result) noexcept {
   if (!begin(frontier)) return status_;

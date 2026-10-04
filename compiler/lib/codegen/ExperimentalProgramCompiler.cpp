@@ -75,7 +75,8 @@ bool distinctSourceIdentities(const std::vector<fs::path> &paths, std::string &e
 ExperimentalProgramCompilation compileProgram(
     const std::vector<ExperimentalProgramSource> &sources, const std::string &cwd,
     const ExperimentalCompilerInputs &inputs, ClosedCpuPolicy policy,
-    const std::function<void()> &after_interface_capture) {
+    const std::function<void()> &after_interface_capture,
+    ClosedHostOptimization optimization) {
   if (sources.size() < 2 || sources.size() > 8)
     reject("program requires 2..8 source translation units");
   if (std::count_if(inputs.symbol_artifacts.begin(), inputs.symbol_artifacts.end(),
@@ -121,7 +122,7 @@ ExperimentalProgramCompilation compileProgram(
     const auto &binding = *unit.evidence->entryBinding();
     if (!entries.emplace(binding.mangled_name, fe::detail::ProgramRegionOwner{i, binding}).second)
       reject("OWNERSHIP: multiple admitted owners for one region symbol");
-    auto emitted = cg::emitExperimentalRegion(*unit.evidence, policy);
+    auto emitted = cg::emitExperimentalRegion(*unit.evidence, policy, optimization);
     if (!emitted) reject(emitted.error);
     unit.emission = std::move(*emitted.emission);
     if (!helpers.insert(unit.emission->helper_symbol).second) reject("OWNERSHIP: duplicate issued helper");
@@ -300,7 +301,7 @@ ExperimentalProgramCompilation compileProgram(
     if (unit.evidence) {
       auto region_inputs = inputs;
       region_inputs.staging_directory = helper_directories[i];
-      auto compiled = cg::compileExperimentalRegionToLLVM(*unit.evidence, region_inputs, policy);
+      auto compiled = cg::compileExperimentalRegionToLLVM(*unit.evidence, region_inputs, policy, optimization);
       if (!compiled) reject(compiled.error);
       unit.compilation = std::move(*compiled.compilation);
       module = parseIr(unit.compilation->llvm_ir, context);
@@ -356,15 +357,17 @@ bool ExperimentalProgramCompilation::inputsUnchanged(std::string &error) const {
 ExperimentalProgramCompilationResult compileExperimentalProgramToLLVMForTesting(
     const std::vector<ExperimentalProgramSource> &sources, const std::string &cwd,
     const ExperimentalCompilerInputs &inputs, ClosedCpuPolicy policy,
-    const std::function<void()> &after_interface_capture) {
+    const std::function<void()> &after_interface_capture,
+    ClosedHostOptimization optimization) {
   ExperimentalProgramCompilationResult result;
-  try { result.compilation = compileProgram(sources, cwd, inputs, policy, after_interface_capture); }
+  try { result.compilation = compileProgram(sources, cwd, inputs, policy, after_interface_capture, optimization); }
   catch (const std::exception &error) { result.error = error.what(); }
   return result;
 }
 ExperimentalProgramCompilationResult compileExperimentalProgramToLLVM(
     const std::vector<ExperimentalProgramSource> &sources, const std::string &cwd,
-    const ExperimentalCompilerInputs &inputs, ClosedCpuPolicy policy) {
-  return compileExperimentalProgramToLLVMForTesting(sources, cwd, inputs, policy, {});
+    const ExperimentalCompilerInputs &inputs, ClosedCpuPolicy policy,
+    ClosedHostOptimization optimization) {
+  return compileExperimentalProgramToLLVMForTesting(sources, cwd, inputs, policy, {}, optimization);
 }
 } // namespace matcore::mdslc::codegen

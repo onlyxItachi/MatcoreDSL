@@ -68,6 +68,15 @@ in `context.md`.
   source-pair verification. Preserve the frozen original host, checked ABI thunk,
   issued-helper isolation and candidate DSO ownership. Arbitrary manual linking
   of `-c` output is outside the driver's complete execution-link contract.
+  Publication-to-read forwarding is separately opt-in through
+  `--optimization publication-read-forwarding`; `none` remains the default,
+  independent of candidate selection. Its immutable in-process derived plan
+  binds the unchanged original Program/witness and is rechecked against source.
+  Every publication invalidates previous MAY-alias bindings; branch entry/join
+  conservatively invalidate them. Forwarded reads keep original requested
+  extent/shape and descriptor guard order, frontier/source identity and owning
+  observations. A diagnostic proposal verifier is not a plan issuer; serialized
+  attributes confer no authority. See `docs/mdslc/PUBLICATION_READ_FORWARDING_V1.md`.
   Pure source-visible mathematical helpers may be defined in ordinary included
   headers under the same closed grammar, including its existing bounded
   Sema-resolved template instantiations. Each body is owned by its actual Clang

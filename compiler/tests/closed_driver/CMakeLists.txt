@@ -44,6 +44,35 @@ add_test(NAME frontend.experimental_source_generated_execution
 set_tests_properties(frontend.experimental_source_generated_execution PROPERTIES TIMEOUT 180)
 
 if(TARGET mdslc-region)
+  set(forwarding_policies native-strict generated-strict automatic)
+  if(MDSLC_CLOSED_CPU_X86)
+    list(APPEND forwarding_policies generated-strict-avx generated-strict-avx2
+      generated-strict-avx512f generated-reassociate existing-native)
+  endif()
+  if(MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS)
+    list(APPEND forwarding_policies openblas)
+  endif()
+  if(MDSLC_ENABLE_EXPERIMENTAL_NVVM)
+    list(APPEND forwarding_policies generated-nvvm)
+  endif()
+  if(MDSLC_ENABLE_EXPERIMENTAL_ROCDL)
+    list(APPEND forwarding_policies generated-rocdl)
+  endif()
+  foreach(policy IN LISTS forwarding_policies)
+    set(require_execution OFF)
+    if(policy MATCHES "^(native-strict|generated-strict|automatic)$")
+      set(require_execution ON)
+    endif()
+    add_test(NAME driver.publication_read_forwarding.${policy}
+      COMMAND "${CMAKE_COMMAND}" "-DDRIVER=$<TARGET_FILE:mdslc-region>"
+        "-DPOLICY=${policy}" "-DREQUIRE_EXECUTION=${require_execution}" "-DNM=${CMAKE_NM}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/publication_read_forwarding.cmake")
+    set_tests_properties(driver.publication_read_forwarding.${policy} PROPERTIES TIMEOUT 180)
+  endforeach()
+  add_test(NAME driver.publication_read_forwarding.program
+    COMMAND "${CMAKE_COMMAND}" "-DDRIVER=$<TARGET_FILE:mdslc-region>" "-DNM=${CMAKE_NM}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/publication_read_forwarding_program.cmake")
+  set_tests_properties(driver.publication_read_forwarding.program PROPERTIES TIMEOUT 240)
   foreach(library_case repeated_include escaped_address escaped_wrapper)
     add_test(NAME driver.source_library_${library_case}
       COMMAND "${CMAKE_COMMAND}"

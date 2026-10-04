@@ -33,6 +33,7 @@ struct ExperimentalRegionEmissionResult {
 // connects only its authenticated function to this generated implementation.
 ExperimentalRegionEmissionResult emitExperimentalRegion(
     const frontend::AuthenticatedClosedRegionEvidence &evidence,
-    ClosedCpuPolicy policy = ClosedCpuPolicy::Automatic);
+    ClosedCpuPolicy policy = ClosedCpuPolicy::Automatic,
+    ClosedHostOptimization optimization = ClosedHostOptimization::None);
 
 } // namespace matcore::mdslc::codegen

@@ -1,7 +1,7 @@
 #ifndef MATCORE_MDSLC_CLOSED_HOST_EMITTER_H
 #define MATCORE_MDSLC_CLOSED_HOST_EMITTER_H
 
-#include "../frontend/ClosedRegionAdmission.h"
+#include "ClosedHostDerivedPlan.h"
 #include <optional>
 #include <string>
 #include <vector>
@@ -25,6 +25,8 @@ struct ClosedHostEmission {
   std::string source_sha256;
   std::string host_context_sha256;
   std::string semantic_sha256;
+  std::string plan_sha256;
+  ClosedHostOptimization optimization = ClosedHostOptimization::None;
   std::vector<ClosedHostFrontier> frontiers;
   std::uint64_t completion_frontier = 0;
 };
@@ -40,6 +42,11 @@ struct ClosedHostEmissionResult {
 // mapping. It does not grant the old inspection dialect generic execution.
 ClosedHostEmissionResult emitClosedHostV1(
     const frontend::AuthenticatedClosedRegionEvidence &evidence);
+// Consume only a source-issued immutable plan after exact source pairing and
+// bounded legality have been recomputed. Original Program/witness stay intact.
+ClosedHostEmissionResult emitClosedHostV1(
+    const frontend::AuthenticatedClosedRegionEvidence &evidence,
+    const ClosedHostDerivedPlan &plan);
 
 } // namespace matcore::mdslc::codegen
 #endif
