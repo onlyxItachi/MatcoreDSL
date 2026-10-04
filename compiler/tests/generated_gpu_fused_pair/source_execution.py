@@ -13,6 +13,12 @@ import subprocess
 import tempfile
 
 
+def require(condition, evidence):
+    # Qualification gates must survive inherited PYTHONOPTIMIZE/-O settings.
+    if not condition:
+        raise RuntimeError(str(evidence))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--driver", type=Path, required=True)
@@ -36,7 +42,7 @@ def main():
         commands.append({"argv": command, "exit": result.returncode,
                          "stdout": result.stdout, "stderr": result.stderr})
         (work / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
-        assert (result.returncode == 0) == success, commands[-1]
+        require((result.returncode == 0) == success, commands[-1])
         return result
 
     if args.install_build:
@@ -48,7 +54,7 @@ def main():
     def compile(text, name, optimization, success=True):
         source = work / f"{name}.mdsl"
         if args.program:
-            assert "int main()" in text
+            require("int main()" in text, "program fixture lacks its host entry")
             text = text.replace("int main()", "int math_main()")
             host = work / f"{name}-main.cpp"
             host.write_text("extern int math_main(); int main(){return math_main();}\n")
@@ -61,11 +67,11 @@ def main():
         result = run([args.driver, *invocation, "--candidate", "generated-" + args.target,
                       "--optimization", optimization, "-o", output], success)
         if not success:
-            assert not output.exists(), "rejected host published an executable"
+            require(not output.exists(), "rejected host published an executable")
             return output, result
         symbols = run([args.nm, "--undefined-only", "--demangle", output]).stdout
         connected = "closed_host_v1::SessionAbiV2::gemmStrictFusedPair(" in symbols
-        assert connected == (optimization == "strict-fused-pair"), symbols
+        require(connected == (optimization == "strict-fused-pair"), symbols)
         return output, result
 
     if args.enabled:
@@ -75,16 +81,17 @@ def main():
         for optimization in ("none", "strict-fused-pair"):
             binary, _ = compile(text, "math-" + optimization, optimization)
             result = run([binary])
-            assert "0 failures; 22 executed cases" in result.stdout, result.stdout
+            require("0 failures; 22 executed cases" in result.stdout, result.stdout)
             outcomes.append(result.stdout)
-        assert outcomes[0] == outcomes[1], outcomes
+        require(outcomes[0] == outcomes[1], outcomes)
         api = "cuLaunchKernel" if args.target == "nvvm" else "hipModuleLaunchKernel"
         for index, symbol in enumerate((api, "pthread_create", "pthread_join")):
             forged = text + f'\nextern "C" int innocent() asm("{symbol}");\n' + \
                 'extern "C" int innocent() { return 0; }\n'
             _, rejected = compile(forged, f"interposed-{index}", "strict-fused-pair", False)
-            assert "original host defines symbol owned by trusted artifact" in rejected.stderr
-            assert symbol in rejected.stderr
+            require("original host defines symbol owned by trusted artifact" in rejected.stderr,
+                    rejected.stderr)
+            require(symbol in rejected.stderr, rejected.stderr)
 
     # The same eligible source must refuse missing hardware/image before any
     # result publication, preserving its earlier ordinary publication/observation.
@@ -92,8 +99,9 @@ def main():
     binary, _ = compile(unavailable, "unavailable", "strict-fused-pair")
     visibility = "CUDA_VISIBLE_DEVICES" if args.target == "nvvm" else "HIP_VISIBLE_DEVICES"
     result = run([binary], extra_env={visibility: "-1"} if args.enabled else None)
-    assert "GPU fused pair unavailable: PASS" in result.stdout, result.stdout
-    assert hashlib.sha256(args.driver.read_bytes()).hexdigest() == driver_hash
+    require("GPU fused pair unavailable: PASS" in result.stdout, result.stdout)
+    require(hashlib.sha256(args.driver.read_bytes()).hexdigest() == driver_hash,
+            "driver changed during source qualification")
     (work / "result.json").write_text(json.dumps({
         "driver_sha256": driver_hash, "target": args.target,
         "installed": bool(args.install_build), "program": args.program,
