@@ -311,8 +311,8 @@ jobs:
   clang-21-debug-mlir:
     name: Clang 21.1.8 Debug (Matcore MLIR enabled, OpenBLAS disabled)
     runs-on: ubuntu-24.04
-    # PR80's 45-minute run reached test 253/257 without a testcase failure.
-    # Keep the full Debug scope and allow its increasing bounded proof suite.
+    # PR80's 45-minute runs timed out near the end without a testcase failure.
+    # Preserve the complete Debug scope; do not turn an incomplete run green.
     timeout-minutes: 60
 
     steps:
