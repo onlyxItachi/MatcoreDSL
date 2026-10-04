@@ -1,8 +1,7 @@
 # MDSLC current state
 
-Engineering checkpoint: canonical merge
-`bb5cc1dd80f79ac2dc09259b6d85a04c14f39a34`, [PR #85](https://github.com/onlyxItachi/MatcoreDSL/pull/85).
-This identifies the latest engineering merge; documentation-only updates may follow.
+Canonical engineering checkpoint: `523f8637bb135b7b5e6b4f08f563a2c93a2ebfee`, the normal merge of
+[PR #86](https://github.com/onlyxItachi/MatcoreDSL/pull/86) from exact premerge head `fb70f7d`.
 
 ## Architecture
 
@@ -20,8 +19,8 @@ Original Clang host -> sealed ABI-checked entry thunk + isolated helper LLVM
 Build-issued GEMM -> Linalg/One-Shot -> CPU Transform or GPU outlining
   -> LLVM x64 baseline/AVX/AVX2/AVX512F, ARM64; NVVM sm_89 / ROCDL gfx1150
 Per-operation permission -> separate AVX2/FMA realization (x64 only)
-Build-issued GPU pair -> serial row-panel4 kernel; no source/runtime authority
-Opt-in strict CPU lhs pair -> authenticated plan -> issued row-panel4 leaf
+Linux x64 opt-in strict lhs pair -> row-panel4 CPU / NVVM sm_89 / ROCDL gfx1150
+GPU combined candidate -> f1 guards only; f2 invocation/completion/quarantine
 Trusted registry -> guarded candidates, private staging/output, checked completion
   -> ordered host publication, owning observation, sticky failure prefix
 Private DSO owns implementation; Runtime owns provider policy; driver pins artifacts.
@@ -31,46 +30,34 @@ Legacy mutating GEMM and separate Linux/ARM64/Windows/Python lanes remain intact
 
 ## Material change
 
-The closed strict two-GEMM GPU issuer/images are now canonical, bounded to
-NVVM sm_89 and ROCDL gfx1150. Upstream row-panel4 derivation preserves strict
-reductions and intermediate f32 rounding in one deliberately serial kernel.
-The merged compiler tree equals the physically tested isolated issuer; all 23
-hosted checks succeeded, with existing AVX512 skips retained. This is an
-issuer/image boundary only: source/runtime still refuses GPU `strict-fused-pair`.
-See the [merge qualification checkpoint](agent-reports/gpu-pair-issuer-merged-checkpoint-v1.md)
-and [component evidence](agent-reports/gpu-fused-pair-issuer-v1.md).
-
-CPU [PR #80](https://github.com/onlyxItachi/MatcoreDSL/pull/80) (`c478e49`) remains connected only through explicit Linux x64 `generated-strict` strict-pair opt-in.
-Its unchanged Program/witness, both guards/full C extent and checked row-panel4 remain.
-See the [contract](STRICT_FUSED_PAIR_SOURCE_V1.md), [CPU qualification checkpoint](https://github.com/onlyxItachi/MatcoreDSL/pull/87) and [issued-leaf record](agent-reports/strict-fused-pair-issuer-qualified-v1.md).
-Default execution and independent [forwarding](PUBLICATION_READ_FORWARDING_V1.md) stay unchanged.
+PR86 connects `--optimization strict-fused-pair` with explicit
+`generated-nvvm`/`generated-rocdl` to one closed strict two-GEMM kernel on Linux x64
+sm_89/gfx1150. It retains the immutable Program/witness, both original guard bundles,
+full logical C extent, private panel/output and prior effects. Shared poison/quarantine
+prevents output or sibling reuse after uncertain completion; K=0 still evaluates `+0*D`.
+This is deliberately serial correctness, not performance or general GPU fusion.
+See the [qualified source/runtime checkpoint](agent-reports/gpu-pair-source-qualification-checkpoint-v1.md)
+and [combined realization contract](GPU_STRICT_FUSED_PAIR_V1.md).
+Local qualification belongs to compiler/AGENTS-identical clean `9f7f9af`; final `fb70f7d`
+hosted acceptance includes the [Release budget-only correction](agent-reports/gpu-pair-release-ci-budget-v1.md), not removed commands or scope.
+Earlier [CPU source](STRICT_FUSED_PAIR_SOURCE_V1.md) and [issuer/image qualification](agent-reports/gpu-pair-issuer-merged-checkpoint-v1.md) retain their independent evidence.
+Default/native/provider routes and independent [forwarding](PUBLICATION_READ_FORWARDING_V1.md) are unchanged.
 
 ## Unsupported or unproven
 
-Syntax/API/ABI remain experimental; product semantic tooling is coherent 21.1.8.
-GPU source support stays opt-in Linux x64 under the [exact device/toolchain/work bounds](STAGED_GPU_CANDIDATES_V1.md),
-not arbitrary NVIDIA/AMD hardware. Real CUDA host-ASan for the pair remains unqualified
-after prelaunch cuInit status2; real HIP + global host-ASan is unqualified and configure-refused.
-API mock sanitizers, device Memcheck and normal physical execution are separate evidence.
-No Metal/NPU, broad fusion/whole-region witness transformation, automatic
-reuse policy, resident/asynchronous device values, general rank-N/views, zero-copy,
-generated-region Windows or performance/parity claim. Not every AVX extension,
-AMX, SVE/SME, ARM provider/reassociate or cross-compiled execution is qualified.
-Opaque mathematical imports and cross-region optimization remain unsupported.
-Valid caller objects/lifetimes, race-free storage, conforming runtimes/allocation
-and trusted loading remain preconditions; no sandbox or crash-atomic guarantee.
-Manual linking and uncoordinated provider adapters are outside the driver contract.
-Provider conformance is bounded. [#15](https://github.com/onlyxItachi/MatcoreDSL/issues/15)
-remains partial/open; [#20](https://github.com/onlyxItachi/MatcoreDSL/issues/20) remains design-only/open.
+Experimental API/ABI and coherent 21.1.8 remain; GPU recipes obey [exact target/work limits](STAGED_GPU_CANDIDATES_V1.md), not arbitrary hardware.
+Real CUDA pair host-ASan failed prelaunch at cuInit2; real HIP/global host-ASan remains unqualified/configure-refused.
+API mocks, CUDA device Memcheck and normal physical execution are separate scopes; AMD has no device-sanitizer claim.
+No performance/parity, broad fusion, automatic reuse, residency/asynchrony, zero-copy, general rank-N/views, Metal/NPU or generated-region Windows claim.
+Other ISA/provider/toolchain paths require their own qualification; opaque imports and cross-region optimization remain unsupported.
+Caller lifetimes/race freedom, conforming runtimes/allocation and trusted loading remain prerequisites, not sandbox/crash-atomic guarantees.
+Provider/manual-link boundaries remain; [#15](https://github.com/onlyxItachi/MatcoreDSL/issues/15) is partial/open, [#20](https://github.com/onlyxItachi/MatcoreDSL/issues/20) design-only/open and [#77](https://github.com/onlyxItachi/MatcoreDSL/issues/77) has no performance qualification.
 
 ## Exactly one next boundary
 
-**Qualify and admit the strict pair's combined GPU source/runtime law in [PR #86](https://github.com/onlyxItachi/MatcoreDSL/pull/86).**
-Bound it to NVVM sm_89 and ROCDL gfx1150, with original source guards/full C
-extent, checked private workspace, launch/completion/cleanup and shared
-poison/quarantine semantics. The CPU guard-retirement proof alone does not
-authorize fallible GPU execution. The issuer/image is merged; the combined
-source/runtime connection remains draft. Its [local/package receipt](https://github.com/onlyxItachi/MatcoreDSL/pull/86#issuecomment-5983601325)
-is accepted at compiler-identical `9f7f9af`; exact `954a8e6` hosted qualification
-and final integration acceptance remain pending. Main has no combined GPU
-pair source authority yet; this is not broad fusion or performance work.
+**[Issue #89](https://github.com/onlyxItachi/MatcoreDSL/issues/89): qualify a closed parameterized bounded static-shape SPIR-V strict GEMM issuer.**
+Fixed 2x3x4 is only its control; declare/falsify the reusable positive rank-2 family,
+complete graph/ABI/strict controls and independent target evidence. No source/runtime authority in this milestone.
+[Research PR #84](https://github.com/onlyxItachi/MatcoreDSL/pull/84) remains draft;
+the [d214 source-frontier audit](https://github.com/onlyxItachi/MatcoreDSL/blob/d214b017cad93ede7445148988f7aad36bd4573f/docs/mdslc/agent-reports/spirv-source-frontier-audit-v1.md)
+separates issuer proof from later Vulkan failure/identity/artifact obligations. GPU pair qualification does not transfer.
