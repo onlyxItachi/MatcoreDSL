@@ -1,0 +1,73 @@
+cmake_minimum_required(VERSION 3.24)
+foreach(required IN ITEMS DRIVER POLICY)
+  if(NOT DEFINED ${required})
+    message(FATAL_ERROR "Missing publication-read forwarding input ${required}")
+  endif()
+endforeach()
+if(NOT NM)
+  find_program(NM NAMES llvm-nm-21 nm REQUIRED)
+endif()
+string(RANDOM LENGTH 12 ALPHABET 0123456789abcdef suffix)
+set(root "${CMAKE_CURRENT_BINARY_DIR}/publication-forwarding-${suffix}")
+file(MAKE_DIRECTORY "${root}")
+file(READ "${CMAKE_CURRENT_LIST_DIR}/publication_read_forwarding.mdsl" source)
+# The same-source pair uses identical explicit numerical permission. A forced
+# permitted candidate never weakens strict source implicitly. Exact-integer
+# oracles here remain independent of the permissible reassociation realization.
+if(POLICY MATCHES "^(generated-reassociate|existing-native|openblas)$")
+  string(REPLACE "strict_f32" "reassociate_f32" source "${source}")
+endif()
+file(WRITE "${root}/source.mdsl" "${source}")
+set(outputs)
+set(invocation)
+if(REQUIRE_EXECUTION)
+  list(APPEND invocation --require-execution)
+endif()
+foreach(optimization IN ITEMS none publication-read-forwarding)
+  execute_process(COMMAND "${DRIVER}" "${root}/source.mdsl" --region forwarding_pipeline
+    --candidate "${POLICY}" --optimization "${optimization}" -o "${root}/${optimization}"
+    RESULT_VARIABLE status OUTPUT_VARIABLE stdout ERROR_VARIABLE stderr)
+  if(NOT status EQUAL 0 OR NOT EXISTS "${root}/${optimization}")
+    message(FATAL_ERROR "${POLICY}/${optimization} source compilation failed: ${stdout}\n${stderr}")
+  endif()
+  execute_process(COMMAND "${NM}" --undefined-only --demangle "${root}/${optimization}"
+    RESULT_VARIABLE symbol_status OUTPUT_VARIABLE symbols ERROR_VARIABLE symbol_error)
+  if(NOT symbol_status EQUAL 0)
+    message(FATAL_ERROR "Cannot inspect source-connected orchestration: ${symbol_error}")
+  endif()
+  if(optimization STREQUAL "publication-read-forwarding")
+    if(NOT symbols MATCHES "closed_host_v1::SessionAbiV2::readForwarded")
+      message(FATAL_ERROR "Optimized driver did not connect the checked readForwarded call")
+    endif()
+  elseif(symbols MATCHES "closed_host_v1::SessionAbiV2::readForwarded")
+    message(FATAL_ERROR "No-optimization baseline unexpectedly calls readForwarded")
+  endif()
+  execute_process(COMMAND "${root}/${optimization}" ${invocation}
+    RESULT_VARIABLE status OUTPUT_VARIABLE stdout ERROR_VARIABLE stderr)
+  if(NOT status EQUAL 0 OR NOT stdout MATCHES
+      "^Publication forwarding source: [1-9][0-9]* checks; 0 failures; (6 executed cases; 0 explicit refusals|0 executed cases; 6 explicit refusals)\n$")
+    message(FATAL_ERROR "${POLICY}/${optimization} source oracle failed: ${stdout}\n${stderr}")
+  endif()
+  list(APPEND outputs "${stdout}")
+  message(STATUS "${POLICY}/${optimization}: ${stdout}")
+endforeach()
+list(GET outputs 0 baseline)
+list(GET outputs 1 optimized)
+if(NOT baseline STREQUAL optimized)
+  message(FATAL_ERROR "Same-source realization outcomes differ: ${baseline}\n${optimized}")
+endif()
+foreach(invalid IN ITEMS unknown publication-forwarding)
+  execute_process(COMMAND "${DRIVER}" "${root}/source.mdsl" --region forwarding_pipeline
+    --optimization "${invalid}" -o "${root}/invalid-${invalid}"
+    RESULT_VARIABLE status OUTPUT_VARIABLE stdout ERROR_VARIABLE stderr)
+  if(status EQUAL 0 OR EXISTS "${root}/invalid-${invalid}" OR
+      NOT stderr MATCHES "unknown region optimization")
+    message(FATAL_ERROR "Unknown optimization acquired authority: ${stdout}\n${stderr}")
+  endif()
+endforeach()
+execute_process(COMMAND "${DRIVER}" "${root}/source.mdsl" --region forwarding_pipeline
+  --optimization none --optimization publication-read-forwarding -o "${root}/duplicate"
+  RESULT_VARIABLE status OUTPUT_VARIABLE stdout ERROR_VARIABLE stderr)
+if(status EQUAL 0 OR EXISTS "${root}/duplicate" OR NOT stderr MATCHES "duplicate --optimization")
+  message(FATAL_ERROR "Duplicate optimization selection was not rejected: ${stdout}\n${stderr}")
+endif()

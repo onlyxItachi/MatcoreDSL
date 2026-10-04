@@ -24,6 +24,16 @@ add_test(NAME frontend.closed_source_execution_v1
     ${closed_source_child_flags})
 set_tests_properties(frontend.closed_source_execution_v1 PROPERTIES TIMEOUT 180)
 
+add_executable(matcore_closed_host_derived_plan_tests derived_plan_test.cpp)
+target_link_libraries(matcore_closed_host_derived_plan_tests PRIVATE
+  matcore_closed_host_emitter MatcoreDSL::PlatformSupportV1)
+mdslc_target_enable_warnings(matcore_closed_host_derived_plan_tests WERROR)
+mdslc_target_match_llvm_rtti(matcore_closed_host_derived_plan_tests)
+add_test(NAME frontend.closed_host_derived_plan_v1
+  COMMAND matcore_closed_host_derived_plan_tests
+    "${MDSLC_CLANGXX_EXECUTABLE}" "${closed_source_resource_dir}")
+set_tests_properties(frontend.closed_host_derived_plan_v1 PROPERTIES TIMEOUT 180)
+
 # Exercise the same admitted source programs through the real compile-trusted
 # registry. Its archive already contains the issued LLVM object: linking another
 # copy would conceal an integration error behind duplicate kernel definitions.

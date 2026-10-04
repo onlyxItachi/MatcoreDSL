@@ -30,6 +30,9 @@ endfunction()
 
 mdslc_closed_host_test(matcore_closed_host_tests closed_host_v1_test.cpp
   matcore_closed_host_test_v1 runtime.closed_host.contract_v1)
+mdslc_closed_host_test(matcore_closed_host_forwarded_independent_tests
+  forwarded_read_independent_test.cpp matcore_closed_host_test_v1
+  runtime.closed_host.forwarded_read_independent_v1)
 mdslc_closed_host_test(matcore_experimental_region_result_tests
   ../experimental_region/result_test.cpp matcore_closed_host_v1
   runtime.experimental_region.owning_result)

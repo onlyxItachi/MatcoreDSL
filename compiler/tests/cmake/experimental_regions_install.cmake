@@ -200,4 +200,12 @@ if(NOT status EQUAL 0)
   message(FATAL_ERROR "Installed source compiler contract failed: ${output}\n${error}")
 endif()
 message(STATUS "${output}")
+execute_process(COMMAND "${CMAKE_COMMAND}" "-DDRIVER=${driver}" "-DNM=${NM}"
+  -DPOLICY=generated-strict -DREQUIRE_EXECUTION=ON
+  -P "${SOURCE_DIR}/tests/closed_driver/publication_read_forwarding.cmake"
+  RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
+if(NOT status EQUAL 0)
+  message(FATAL_ERROR "Installed publication-read forwarding contract failed: ${output}\n${error}")
+endif()
+message(STATUS "${output}")
 message(STATUS "Feature-ON install: authenticated source-to-executable driver and isolated candidate DSO; separate archive consumers; no public LLVM/MLIR dependency")
