@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 
@@ -84,6 +85,20 @@ def main():
             require("0 failures; 22 executed cases" in result.stdout, result.stdout)
             outcomes.append(result.stdout)
         require(outcomes[0] == outcomes[1], outcomes)
+        # The shared serial qualification cap is deliberately stricter than
+        # either original GEMM. Its refusal must retain the earlier effect
+        # prefix and second-call identity, not manufacture matching outcomes.
+        cap_text = (fixtures / "work_cap.mdsl").read_text()
+        for optimization in ("none", "strict-fused-pair"):
+            fused = optimization == "strict-fused-pair"
+            expectation = "#define MDSLC_EXPECT_COMBINED_WORK_REFUSAL 1\n" if fused else ""
+            binary, _ = compile(expectation + cap_text, "work-cap-" + optimization,
+                                optimization)
+            result = run([binary])
+            suffix = "over-cap refused at f2" if fused else "over-cap executed"
+            require(re.fullmatch(
+                r"GPU fused pair work cap: [1-9][0-9]* checks; 0 failures; "
+                r"boundary executed; " + suffix + r"\n", result.stdout), result.stdout)
         api = "cuLaunchKernel" if args.target == "nvvm" else "hipModuleLaunchKernel"
         for index, symbol in enumerate((api, "pthread_create", "pthread_join")):
             forged = text + f'\nextern "C" int innocent() asm("{symbol}");\n' + \
