@@ -1,6 +1,0 @@
-ptxas info    : 0 bytes gmem
-ptxas info    : Compiling entry function '__matcore_research_strict_fused_pair_kernel' for 'sm_89'
-ptxas info    : Function properties for __matcore_research_strict_fused_pair_kernel
-    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
-ptxas info    : Used 30 registers, used 0 barriers, 632 bytes cmem[0]
-ptxas info    : Compile time = 10.421 ms

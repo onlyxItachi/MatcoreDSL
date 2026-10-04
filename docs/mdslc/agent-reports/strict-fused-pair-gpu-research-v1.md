@@ -1,7 +1,8 @@
 # Isolated strict two-GEMM GPU feasibility research v1
 
-Status: bounded isolated compiler/physical feasibility PASS; no production,
-source/runtime, independent final acceptance or performance claim.
+Status: bounded isolated compiler/physical feasibility PASS, independently
+accepted at research head `40cac19fbe0157ab9ed92536612e090aa4385581`;
+no production, source/runtime or performance claim.
 Base: `6e25df7e85ae3419d9e688541065433ff3151151`.
 Owned branch: `research/mdslc-gpu-strict-fused-pair-v1`.
 Targets: physical RTX 4060 `sm_89` and Radeon 890M `gfx1150`, exact LLVM/MLIR
@@ -174,11 +175,26 @@ instrumented CUDA diagnostic; never treat it as a supported kernel precondition.
 All builds are one compiler process at a time under the shared heavy-link lock,
 external SSD TMPDIR, no LLVM/CUDA/toolchain build or system change.
 
-Exact bufferized/outlined/LLVM stages, losing IR, object report and
-physical/memcheck logs are retained in the
+Exact reviewed bufferized/outlined/LLVM golden stages, losing IR and object
+report are retained in the
 [research evidence snapshots](../../../compiler/tests/research/gpu-fused-pair/evidence)
-and all stages locally in
+and all stages and raw logs locally in
 `/home/hamza-usta/mdslc-work/region-optimization-v1/builds/gpu-fused-pair-research`.
+The first frozen research head above inadvertently tracked five raw `.log`
+files, contrary to repository hygiene. The follow-up removes only their Git
+tracking, preserves local files and the pre-cleanup commit, and does not rename
+logs or weaken hygiene. Raw local evidence identities:
+
+| File under that external build directory | SHA256 |
+|---|---|
+| `physical-nvvm.log` | `b590c693e718aebee639288119318bae9de79d5e118e52aa097b9b6d25a2a37b` |
+| `physical-rocdl.log` | `d4254713a817c8f3e7d98fb01ca66a9420f30786e44e9fb65500172b62a15057` |
+| `memcheck-normal.log` | `a6fc811ed056238255349923292e6cf97ebb561673ed37d1d4fd1323a08c0552` |
+| `memcheck-negative.log` | `5eac62c374d56368c794c6a8ff8d44c037dbc8a1c005a95dc6f0032401269ebf` |
+| `ptxas.log` | `e86daffcc5440eabad598b23e6ea1d1d7abbfba0721f49fdf4769aeea989e540` |
+
+The external negative log retains its original blank lines; the historical
+tracked copy was whitespace-normalized and has a different identity.
 No benchmark was run. No source gate, CLI refusal, runtime dispatch or original
 single-GEMM candidate changed. The next engineering boundary, if separately
 approved, is a closed build-issued GPU pair primitive with pinned structural
