@@ -118,5 +118,20 @@ stdout/stderr; the final AMD and refusal records have empty stderr. The manifest
 binds MLIR tools, SPIRV-Tools and every generated stage. The observation report
 retains the refusal-result hashes. Raw artifacts remain external, not committed.
 
-Final independent lineage/control/oracle/descriptor/barrier review is the next
-research gate. Its acceptance would still not issue source execution authority.
+## Independent review and fresh reproduction
+
+Independent Astra review accepted `ce9cb97b89aae098f31999a210a9585a27d5cc7f`
+(unchanged code `706e44e`) after full source, saved-artifact, control, oracle,
+descriptor/barrier and identity review. The reviewer performed no builds or
+device reruns; the three direct negative exit codes remain author-execution
+evidence. Acceptance is bounded research only, not general SPIR-V arithmetic,
+noncoherent physical qualification or source execution authority.
+
+Root independently reran the derivation in
+`/home/hamza-usta/mdslc-work/region-optimization-v1/builds/spirv-root-reproduction.OC37zUVs`:
+all 22 tool commands returned 0, all 13 metadata negatives passed, and both strict
+shader hashes exactly matched the physical-run inputs above. No hardware call
+was made. The author verified the saved record and hashes read-only; its manifest
+SHA256 is `b5135ed6c20291be013506206cd9f46ec32efa60f25a3bebfb744b814473812b`.
+Product qualification remains false; any new source/runtime authority needs its
+own reviewed derivation and execution/failure qualification.
