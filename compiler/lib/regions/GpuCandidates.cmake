@@ -51,6 +51,7 @@ set(gpu_sources)
 set(gpu_libraries)
 set(gpu_definitions)
 set(gpu_includes "${region_compiler_dir}/lib/runtime")
+include(StrictGpuFusedPair.cmake)
 
 foreach(kind IN ITEMS nvvm rocdl)
   string(TOUPPER "${kind}" upper)
@@ -141,6 +142,12 @@ foreach(kind IN ITEMS nvvm rocdl)
   add_custom_target(matcore_${kind}_images DEPENDS "${embedded}")
   add_dependencies(matcore_closed_gpu_leaf matcore_${kind}_images)
   list(APPEND gpu_sources "${embedded}")
+  # A distinct closed issuer/image owns the combined recipe. Existing fill and
+  # single-GEMM artifacts and their default route remain unchanged.
+  matcore_define_strict_gpu_fused_pair_images("${kind}" fused_pair_embedded)
+  list(APPEND gpu_sources "${fused_pair_embedded}")
+  list(APPEND gpu_definitions "MDSLC_CLOSED_HOST_GENERATED_${upper}_FUSED_PAIR")
+  add_dependencies(matcore_closed_gpu_leaf matcore_${kind}_fused_pair_images)
 endforeach()
 set_target_properties(matcore_gpu_gemm_candidate PROPERTIES
   MDSLC_GPU_SOURCES "${gpu_sources}" MDSLC_GPU_LIBRARIES "${gpu_libraries}"
