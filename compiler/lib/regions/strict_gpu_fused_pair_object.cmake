@@ -67,9 +67,12 @@ if(TARGET_KIND STREQUAL "nvvm")
       message(FATAL_ERROR "NVVM relative NOINC transfer does not target same-kernel EXIT")
     endif()
   endforeach()
-  string(REGEX MATCHALL "Ordinal : 0x[0-9a-fA-F]+[ \t]+Offset  : 0x[0-9a-fA-F]+[ \t]+Size    : 0x8([ \t\r\n]|$)" parameters "${metadata}")
+  string(REGEX MATCHALL "EIATTR_KPARAM_INFO([ \t\r\n]|$)" parameter_attributes "${metadata}")
+  list(LENGTH parameter_attributes parameter_attribute_count)
+  string(REGEX MATCHALL "Ordinal : 0x[0-9a-fA-F]+[ \t]+Offset  : 0x[0-9a-fA-F]+[ \t]+Size    : 0x[0-9a-fA-F]+([ \t\r\n]|$)" parameters "${metadata}")
   list(LENGTH parameters parameter_count)
-  if(NOT parameter_count EQUAL 35 OR NOT metadata MATCHES "EIATTR_CBANK_PARAM_SIZE[^<]*Value:[ \t]*0x118([ \t\r\n]|$)" OR
+  if(NOT parameter_attribute_count EQUAL 35 OR NOT parameter_count EQUAL 35 OR
+     NOT metadata MATCHES "EIATTR_CBANK_PARAM_SIZE[^<]*Value:[ \t]*0x118([ \t\r\n]|$)" OR
      NOT metadata MATCHES "frame size: 0x0([ \t\r\n]|$)" OR NOT metadata MATCHES "min stack size: 0x0([ \t\r\n]|$)")
     message(FATAL_ERROR "NVVM pair35x8-byte ABI or zero stack contract changed")
   endif()

@@ -94,6 +94,9 @@ def main():
         reject("extra-disassembled-function", assembly,
                lambda text: text + "\nFunction : arbitrary_local\n/*1f40*/ EXIT ;\n")
         reject("field-size-prefix", "--dump-elf", lambda text: text.replace("Size    : 0x8", "Size    : 0x80", 1))
+        reject("extra-non8-parameter", "--dump-elf",
+               lambda text: text + "\nAttribute:\tEIATTR_KPARAM_INFO\nFormat:\tEIFMT_SVAL\n"
+                   "Value:\tIndex : 0x0\tOrdinal : 0x23\tOffset  : 0x118\tSize    : 0x4\n")
         reject("cbank-size-prefix", "--dump-elf", lambda text: text.replace("Value:\t0x118\n", "Value:\t0x1180\n", 1))
         reject("field-offset", "--dump-elf", lambda text: text.replace("Offset  : 0x110", "Offset  : 0x118", 1))
         reject("stack", "--dump-elf", lambda text: text.replace("frame size: 0x0", "frame size: 0x10", 1))
