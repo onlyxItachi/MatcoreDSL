@@ -99,3 +99,77 @@ equivalent boundary. It does not extend to provider, GPU or test callbacks.
 One combined post-call failure cannot simply be attributed to the second GEMM
 without this argument. No all-program theorem, broad fusion, residency or
 performance/parity claim follows.
+
+### Split guard/retirement argument and counterexamples
+
+The existing runtime enters `ClosedFpEnvironmentV1` only after GEMM value,
+profile, shape and candidate checks and output allocation. It then checks
+`valid()`, runs the candidate, checks `controlsUnchanged()`, restores the complete
+environment, and issues the result only on success. The Linux x64 scope saves
+libc state, MXCSR and x87 control/status; the ARM64 scope saves full FPCR/FPSR.
+Restoration failure terminates rather than returning a contract-breaking status.
+The post-call control check deliberately ignores arithmetic sticky flags, which
+are internal and restored before normal return.
+
+The current strict CPU issuer rejects leaf calls and fast-math flags. Under that
+specific trusted, call-free arithmetic realization, ordinary multiply/add does
+not modify FP controls or return a recoverable candidate error. This supplies
+the missing bounded argument for deferring first physical arithmetic across the
+second guard, not a general permission to defer arbitrary candidates. The fused
+issuer must independently verify the corresponding no-call/no-allocation,
+numerical-order and control-preservation boundary after its own derivation.
+
+An admissible split therefore has these obligations:
+
+1. At the first original GEMM frontier, validate both original values, its
+   original numerical profile, contraction relation, selected-candidate legality
+   and the full logical producer extent/product. Perform a valid original FP
+   enter/control-check/restore before retiring that frontier. Do not report that
+   the full producer was physically materialized when it was not.
+2. Only then validate the second GEMM at its original frontier. A second shape,
+   candidate, FP or private-allocation failure leaves the first required checks
+   completed and retains all effects preceding the pure interval.
+3. Allocate the bounded panel and final output through checked adapter-owned
+   resources. The removed full-producer allocation may remove an exhaustion
+   opportunity. It cannot remove required extent checks, introduce hidden
+   unchecked allocation, or retire a second failure before an earlier effect.
+4. Execute exactly the issued strict pair and retain the producer's f32 rounding
+   boundary and each contraction's separate increasing-order multiply/add.
+   Restore caller FP controls and status on all defined normal returns.
+
+A concrete required extent falsifier is `A[INT64_MAX,0]`, `B[0,2]`, `D[2,0]`.
+Each input read is empty and the final output has zero columns, but the first
+logical `C[INT64_MAX,2]` is not representable. The first GEMM must fail before the
+empty consumer can shortcut computation; checking only panel/final extents
+would incorrectly succeed.
+
+A candidate that can change controls, call a provider, invoke an injected
+callback, or report failure after partial computation is a counterexample to
+the simple split. One combined post-call failure would lose whether the original
+first or second candidate failed. Such candidates need a stage checkpoint or
+remain ineligible. No independent fusion tests were added before a production
+API and derivation exist.
+
+## Provisional staged implementation review
+
+After freezing the independent test authorship, this reviewer inspected the
+forwarding agent's uncommitted plan/runtime/emitter and single-/multi-source
+driver changes. No blocking correctness defect was found in those inspected
+versions: plan issuance is closed and immutable, consumption replays the exact
+original witness and recomputes all records, every publication replaces the
+single MAY-alias fact, branch entry/join clears it, and emitted forwarded reads
+repeat the original runtime guard ordering. Optimization remains independent of
+candidate choice and defaults to `None`. The added exact export demangles to
+the agreed six-argument private method without changing Session layout.
+
+One test-fixture defect was reported: the host-less inspection admission control
+used a helper that adds `#include`, while the hermetic inspection route rejects
+all preprocessing. The test must first establish successful preprocessing-free
+inspection admission before checking that it cannot issue executable authority.
+
+This is not final exact-commit acceptance or executed validation. In particular,
+the existing two-GEMM example carries `c` directly rather than reading the
+published resource, so running it with the optimization flag alone cannot prove
+that a forwarding record was used. Qualification needs a compiled source case
+with a genuine publication-to-read edge and artifact/execution evidence across
+the claimed candidate routes.
