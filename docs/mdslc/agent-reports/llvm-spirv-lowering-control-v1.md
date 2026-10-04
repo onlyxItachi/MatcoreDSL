@@ -153,3 +153,23 @@ result follows. No LLVM issue was created. This control separates LLVM-SPIR-V
 Kernel lowering from the independently bounded MLIR-SPIR-V shader research;
 future authority must verify the complete required mode set and the actual
 execution environment, not infer it from a compiler flag or one decoration.
+
+## Independent reproduction and review
+
+The integration owner independently replayed all five llc/validation/disassembly
+controls into `/var/tmp/mdslc-llvm-spirv-root.d86UbaKC`, with child-only core dumps
+disabled and a 30-second compiler timeout for each. Every command returned0 and
+each emitted binary compared byte-identical to the author artifact and SHA above.
+This reproduction used the original input files after checking their hashes;
+it did not execute kernels or validate a runtime numerical contract.
+
+Independent adversarial review read the full inputs/disassemblies, rehashed both
+artifact sets and the tools, and inspected the pinned upstream source. It
+accepted the report within its compile-only scope without performing a reviewer
+compiler/device run.
+
+**INFERRED future falsifier, not a sixth executed control:** named execution-mode
+metadata is module-wide, so its presence can suppress the automatic default for
+another Kernel entry too. A future issuer must bind each required mode to the
+exact intended entrypoint and f32 width; finding a ContractionOff record somewhere
+in the module is insufficient. The present five controls each have one entry.
