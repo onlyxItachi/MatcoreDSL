@@ -1,7 +1,7 @@
 # MDSLC current state
 
 Engineering checkpoint: canonical merge
-`355e281fe0de4e54c03243d332eafbbe2095591b`, [PR #78](https://github.com/onlyxItachi/MatcoreDSL/pull/78).
+`f55b86e5d0fbeaa8d10d5857bc2bf2ce71168df4`, [PR #79](https://github.com/onlyxItachi/MatcoreDSL/pull/79).
 This identifies the latest engineering merge; documentation-only updates may follow.
 
 ## Architecture
@@ -14,13 +14,13 @@ Ordinary C++ host + explicit closed mathematical regions
   -> exact untransformed Matcore MLIR paired witness
   -> static orchestration from the unchanged sealed Program (no interpreter)
 Compiler-private immutable derived plan -> source replay + exact consumption check
-Reads snapshot at their frontier; opt-in forwarding retains the checked value.
-Every publication invalidates older MAY-alias bindings; branch entry/join barriers.
+Opt-in forwarding retains values; publications/branches invalidate MAY-alias facts.
 2–8 original source TUs -> per-file authentication -> checked host program link
 Original Clang host -> sealed ABI-checked entry thunk + isolated helper LLVM
 Build-issued GEMM -> Linalg/One-Shot -> CPU Transform or GPU outlining
   -> LLVM x64 baseline/AVX/AVX2/AVX512F, ARM64; NVVM sm_89 / ROCDL gfx1150
 Per-operation permission -> separate AVX2/FMA realization (x64 only)
+Isolated strict two-GEMM CPU issuer -> upstream row-panel fusion + checked workspace
 Trusted registry -> guarded candidates, private staging/output, checked completion
   -> ordered host publication, owning observation, sticky failure prefix
 Private candidate DSO owns implementation; canonical Runtime owns provider policy.
@@ -31,20 +31,18 @@ Legacy mutating GEMM and separate Linux/ARM64/Windows/Python lanes remain intact
 
 ## Material change
 
-One authenticated publication-to-read forwarding derivation is now qualified.
-`--optimization publication-read-forwarding` reuses a retained immutable value
-after its dominating successful publication to the same checked resource/version;
-`none` stays the default, orthogonal to candidate/target selection. Required read
-guards, source/frontier identity, observations and failure prefixes remain intact.
-The original Program/witness and per-GEMM f32 boundaries are unchanged.
+The compiler now issues a checked strict CPU leaf for `C=A*B; E=C*D`, using
+upstream MLIR Transform fusion and One-Shot bufferization. Caller-owned C scratch
+is bounded to `min(4,M)*N`; each increasing-order reduction and the intermediate
+f32 rounding boundary remain intact. This is an isolated primitive proof, not
+authenticated source fusion or a new runtime candidate.
 
-Final local qualification covered **393/393 distinct tests, no skips**, in
-separate 391-test and 2-package-test runs; exact-head hosted lanes passed.
-See the [forwarding contract](PUBLICATION_READ_FORWARDING_V1.md),
-[independent review](agent-reports/publication-forwarding-independent-v1.md#exact-commit-forwarding-review)
-and [exact merge/qualification record](agent-reports/publication-forwarding-qualified-v1.md).
-Previously qualified CPU/ARM64 and staged GPU bounds remain unchanged; forwarding
-adds no new mathematical operation, residency, fusion or performance claim.
+Local qualification: **402/402 distinct tests, no skips**, in 400-test and
+2-package-test runs; focused normal/ASan execution and all qualifying hosted
+lanes passed. See the [issuer contract and falsifiers](agent-reports/strict-fused-pair-issuer-v1.md)
+and [exact qualification](agent-reports/strict-fused-pair-issuer-qualified-v1.md).
+Merged [forwarding](PUBLICATION_READ_FORWARDING_V1.md) and existing CPU/provider/GPU
+execution remain unchanged. No performance claim follows.
 
 ## Unsupported or unproven
 
@@ -64,11 +62,10 @@ remains partial/open; [#20](https://github.com/onlyxItachi/MatcoreDSL/issues/20)
 
 ## Exactly one next boundary
 
-**Compiler-issued strict two-GEMM CPU row-panel derivation.**
-First qualify an isolated upstream Transform/Linalg/One-Shot/LLVM realization of
-the pure lhs-chain `C=A*B; E=C*D`, with each producer element computed once,
-separate increasing f32 reductions and the intermediate f32 rounding boundary.
-Bound caller-owned C scratch to `min(4,M)*N`, preserve original logical extents,
-and prove no hidden tensor allocation/copy or uncontrolled call in the leaf.
-This isolated proof precedes any source/runtime authority; the original Program
-and paired witness must remain exact. No broader fusion or new operation follows.
+**Authenticated source connection for the strict two-GEMM CPU leaf.**
+Derive only adjacent pure strict lhs pairs with dominating immutable inputs and
+a single-use unobserved intermediate. Preserve both original guard/source
+frontiers, full logical C extent checks, earlier effects and FP state while
+removing the full C allocation. Require checked private workspace and the exact
+issued leaf, fail closed on incompatible candidates, and qualify installed
+source execution. The CPU proof does not authorize fallible GPU/provider fusion.
