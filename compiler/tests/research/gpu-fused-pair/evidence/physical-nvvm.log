@@ -1,0 +1,3 @@
+host-falsifiers=full-C-overflow,K0-Inf-not-finalzero,FMA,order; f32-C-boundary,pair-work-overcap; no huge shape enters GPU
+physical=NVVM device=NVIDIA GeForce RTX 4060 Laptop GPU sm=89 driver=13040
+PASS launched=281 host-bypassed=264 strict-output-checks=17305 canary-checks=2554 immutable-input-checks=79676 caller-FP-errno=preserved; NaN-classification otherwise bitwise; no source-authority/speed claim
