@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,7 @@ def main():
                  "clang", "llvm-dir", "clang-dir", "mlir-dir", "schedule"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--linker-launcher", default="")
+    parser.add_argument("--nm", default="nm")
     args = parser.parse_args()
     repository = Path(args.repository).resolve(strict=True)
     commit = authenticate_repository(args.git, repository, args.expected_commit,
@@ -50,6 +52,9 @@ def main():
         clone_clean_commit(args.git, repository, source, commit)
         consumer = root / "consumer.mdsl"
         shutil.copyfile(source / "compiler/examples/experimental/two_gemm.mdsl", consumer)
+        forwarding_consumer = root / "forwarding-consumer.mdsl"
+        shutil.copyfile(source / "compiler/tests/closed_driver/publication_read_forwarding.mdsl",
+                        forwarding_consumer)
         configure = [args.cmake, "-S", source / "compiler", "-B", build, "-G", "Ninja",
                      "-DBUILD_TESTING=OFF", "-DCMAKE_BUILD_TYPE=Release",
                      "-DCMAKE_C_COMPILER=" + args.clang.replace("clang++", "clang"),
@@ -81,12 +86,36 @@ def main():
             run([executable], stdout="22 28 49 64 -> 120 156 49 64\n")
             run([executable, "late-failure"],
                 stdout="checked failure; first publication and observation retained\n")
+        forwarding_outputs = []
+        for optimization in ("none", "publication-read-forwarding"):
+            executable = root / ("forwarding-" + optimization)
+            # Both consumer copies outlive producer removal. Never locate the
+            # oracle/runner or a private helper in the deleted source/build.
+            run([driver, forwarding_consumer, "--region", "forwarding_pipeline",
+                 "--candidate", "generated-strict", "--optimization", optimization,
+                 "-o", executable])
+            symbols = run([args.nm, "--undefined-only", "--demangle", executable]).stdout
+            connected = "closed_host_v1::SessionAbiV2::readForwarded(" in symbols
+            if connected != (optimization == "publication-read-forwarding"):
+                print(json.dumps(log, indent=2))
+                raise RuntimeError("source-inaccessible optimization did not connect its checked read")
+            output = run([executable, "--require-execution"]).stdout
+            if not re.fullmatch(
+                    r"Publication forwarding source: [1-9][0-9]* checks; 0 failures; "
+                    r"6 executed cases; 0 explicit refusals\n", output):
+                print(json.dumps(log, indent=2))
+                raise RuntimeError("source-inaccessible forwarding did not execute its exact oracle")
+            forwarding_outputs.append(output)
+        if forwarding_outputs[0] != forwarding_outputs[1]:
+            print(json.dumps(log, indent=2))
+            raise RuntimeError("source-inaccessible same-source optimization outcomes differ")
         if hashlib.sha256(driver.read_bytes()).hexdigest() != digest:
             raise RuntimeError("installed driver changed during package acceptance")
         if source.exists() or build.exists() or stage.exists():
             raise RuntimeError("installed driver recreated producer trees")
         print(f"PASS closed source/build-inaccessible package at {commit}: "
               "3 policies, exact math, retained observations and ordered late failure; "
+              "same-source none/forwarding executed after producer removal with checked call reference; "
               f"installed driver sha256={digest}")
 
 

@@ -1029,7 +1029,7 @@ if(BUILD_TESTING)
             --clang "${MDSLC_CLANGXX_EXECUTABLE}"
             --llvm-dir "${LLVM_DIR}" --clang-dir "${Clang_DIR}" --mlir-dir "${MLIR_DIR}"
             --schedule "${MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE}"
-            --linker-launcher "${CMAKE_CXX_LINKER_LAUNCHER}")
+            --linker-launcher "${CMAKE_CXX_LINKER_LAUNCHER}" --nm "${CMAKE_NM}")
         set_tests_properties(package.experimental_regions.closed_source_inaccessible
           PROPERTIES RUN_SERIAL TRUE TIMEOUT 1200)
       endif()

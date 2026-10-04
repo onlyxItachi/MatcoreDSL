@@ -125,6 +125,9 @@ the actual executable's undefined `readForwarded` reference: present only in the
 optimized artifact. Distinct alias reads cannot erase insufficient-capacity
 checks, and an intervening partial-overlap publication cannot reuse stale values.
 The multi-source and installed package routes repeat that connected discriminator.
+The installed source/build-inaccessible test copies the genuine consumer fixture
+before deleting only its disposable producer trees, then compiles and executes
+both optimization modes using the relocated installed driver without those trees.
 Forced candidate unavailability is explicitly reported separately; qualification
 may require actual execution rather than accept a fail-closed refusal.
 

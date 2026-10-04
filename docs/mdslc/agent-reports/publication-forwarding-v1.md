@@ -88,6 +88,12 @@ qualification.
 - Existing feature-ON package test additionally runs installed driver same-source
   forwarding controls. Existing experimental compile test checks different
   optimization-owned private helper identities for the same callable source.
+- Existing source/build-inaccessible package test copies the genuine forwarding
+  fixture out before deleting its disposable producer source/build, then uses
+  only the relocated installed driver and copied consumer to compile both modes,
+  requires actual execution and checks optimized-only `readForwarded` references.
+  No runner is found through a deleted producer path; the installed driver digest
+  and continued producer-tree absence are rechecked afterward.
 
 For permitted candidates, the runner materializes an owned fixture with explicit
 existing `reassociate_f32` permissions before compiling both opt modes. It never
