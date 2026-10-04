@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 SCOPE = (r"^(platform\.closed_fp_environment\.v1|generated_cpu\..*|closed_candidates\..*|"
          r"runtime\.(closed_host|experimental_region)\..*|private_runtime\..*|"
          r"frontend\.(closed_.*|experimental_.*|frozen_host_.*|program_input_mutation)|"
-         r"driver\.(program_.*|source_library_.*|generated_reassociate\..*|"
+         r"driver\.(program_.*|source_library_.*|generated_reassociate\..*|publication_read_forwarding\..*|"
          r"experimental_region_contract|implementation_ownership|storage_conformance(_runner)?)|"
          r"codegen\.(artifact_symbol_ownership_v1|authenticated_host_thunk_v1|program_call_interface_v1)|"
          r"mlir\.closed_region_semantics|package\.experimental_regions\..*)$")
@@ -28,10 +28,16 @@ REQUIRED = {
     "closed_candidates.production", "closed_candidates.provider_negative.partial_failure",
     "closed_candidates.provider_negative.control_corruption", "runtime.closed_host.contract_v1",
     "runtime.closed_host.independent_v1", "runtime.closed_host.authority_v1",
+    "runtime.closed_host.forwarded_read_independent_v1",
     "runtime.closed_host.private_value_abi_v2", "frontend.closed_source_generated_execution_v1",
+    "frontend.closed_host_derived_plan_v1",
     "frontend.experimental_region_admission", "codegen.authenticated_host_thunk_v1",
     "codegen.program_call_interface_v1",
     "driver.program_core", "driver.program_reassociate", "driver.program_installed",
+    "driver.publication_read_forwarding.native-strict",
+    "driver.publication_read_forwarding.generated-strict",
+    "driver.publication_read_forwarding.automatic",
+    "driver.publication_read_forwarding.program",
     "driver.storage_conformance", "driver.implementation_ownership",
     "driver.generated_reassociate.generated-reassociate",
     "codegen.artifact_symbol_ownership_v1", "private_runtime.symbol_contract",
