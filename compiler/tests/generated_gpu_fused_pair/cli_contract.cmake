@@ -1,0 +1,6 @@
+foreach(arguments IN ITEMS "" "--input;manual.mlir" "--output-prefix;x;--target;sm_90" "--output-prefix;x;--target;nvvm-sm89;--transform;manual.mlir")
+  execute_process(COMMAND "${ISSUER}" ${arguments} RESULT_VARIABLE status OUTPUT_VARIABLE out ERROR_VARIABLE error)
+  if(status EQUAL 0 OR NOT error MATCHES "No source/MLIR/LLVM/Transform input or execution authority")
+    message(FATAL_ERROR "Private GPU pair issuer admitted unsupported input: ${arguments}: ${error}")
+  endif()
+endforeach()
