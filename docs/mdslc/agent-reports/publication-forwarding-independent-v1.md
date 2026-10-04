@@ -282,3 +282,64 @@ The caller-workspace experiment resolves the previously observed research
 allocation defect, not source authority, runtime source-frontier retirement,
 production artifact ownership or sanitizer qualification. No production fused
 candidate is accepted by this review.
+
+## Integration harness failures and bounded corrections
+
+Integration execution subsequently exposed test-harness defects missed by the
+earlier static test review. The integration owner reported that the coherent
+focused runtime test passed 67 checks and the plan test passed 130 checks; these
+are owner-executed results, not additional independent runs. The first connected
+driver attempts did not execute their source oracles and must not be counted as
+forwarding execution evidence.
+
+The single-source harness used `if(POLICY MATCHES ...)`. CMake interprets the
+literal `POLICY` as its reserved policy-query form, so the test failed before
+compilation. The integration owner's test-only correction quotes the variable's
+value, `if("${POLICY}" MATCHES ...)`. Independent follow-up inspection also
+found that both CMake runners appended complete oracle summaries to a list even
+though the summaries contain semicolons. Consequently, `list(GET outputs 0)`
+and `list(GET outputs 1)` select segments of the first summary, not the complete
+baseline and optimized summaries. The inspected scalar `baseline`/`optimized`
+assignments preserve the complete text and are the bounded correction. Neither
+issue requires a compiler/runtime change. These root-owned changes were still
+uncommitted at this review snapshot; the exact integrated head and rerun results
+remain the integration owner's qualification evidence.
+
+### Existing strict-FP multi-source admission boundary
+
+The original multi-source fixture failed even with optimization `none`:
+`CALLSITE: region call ABI or effect promises differ from compiler witness`.
+The independent reviewer inspected the implementation owner's already-emitted
+Clang 21 IR without using another compiler slot:
+
+- `builds/forwarding-callsite.87IiCa/strict-host.ll`, SHA-256
+  `43e159eddafd338fcc70e529c1e9bdbe31c1ae182647d580ae2bb8eb7a604df8`:
+  protected region call at line 622 has function attributes
+  `nounwind strictfp` (attribute set 14, line 1797).
+- `builds/forwarding-callsite.87IiCa/witness.ll`, SHA-256
+  `8a66e7bb068c9bf5abd74f0a3a28f6ad7e6e06705643acd30f158c625fbdec1c`:
+  the corresponding canonical pragma-free call at line 43 has `nounwind`
+  (attribute set 3, line 56). Its return, argument, `sret` and `byval` attributes
+  match the protected host call.
+
+The extra `strictfp` comes from the fixture's `FENV_ACCESS ON` call context.
+`sameAuthenticatedHostCallInterface` deliberately compares complete function
+attributes as well as the rest of the ABI, so this is the existing exact-call
+admission bound, not an optimization-dependent failure. Ignoring `strictfp` in
+the comparator would change that production authority boundary and is not an
+acceptable test repair.
+
+Test-only commit `929cb18dce0944cb637f9cd24dc2aa1ec0328a7a` is accepted for
+integration. It keeps the original direct-strict-FP fixture as a negative in
+both optimization modes, requires the exact `CALLSITE` diagnostic and requires
+that no executable was published. For the positive program fixture it inserts
+an ordinary `noexcept` forwarding wrapper immediately after the unchanged
+region body and before `FENV_ACCESS ON`. The wrapper performs no arithmetic and
+makes the protected direct call in the existing admissible context. `run()`
+still has the full strict-FP before/after environment oracle; single-source and
+independent runtime FP tests are unchanged. Inserting the wrapper after the
+region also preserves the original region line/column failure assertions.
+
+The commit passed static diff inspection and `git diff --check`; this reviewer
+did not compile or execute it. Acceptance of this bounded test correction does
+not replace the required connected, installed and hosted qualification reruns.
