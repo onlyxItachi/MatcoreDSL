@@ -40,7 +40,8 @@ remain; checked private C scratch is `min(4,M)*N`, not a full C allocation.
 Increasing reductions and intermediate f32 rounding are preserved. Default
 execution and independent [forwarding](PUBLICATION_READ_FORWARDING_V1.md) are unchanged.
 
-Exact premerge head `9a4dfeff70db57f3522e66fe9e13e8602c5a167c`: local qualification
+Exact premerge head `9a4dfeff70db57f3522e66fe9e13e8602c5a167c`; local qualification
+at compiler-identical frozen `6e25df7` (only the final Debug timeout changed):
 **406/406 distinct tests, zero skips**, in disjoint 404-test and 2-package runs.
 All **22 hosted checks passed**; hosted Debug had **243 passed and 14 existing
 AVX512 capability skips**, not a zero-skip result. See the
