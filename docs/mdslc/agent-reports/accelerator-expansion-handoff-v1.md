@@ -65,9 +65,11 @@ See the [independent law and losing objection](accelerator-fusion-authority-revi
 
 Production issuer unresolved gates are in its WIP report. In particular:
 default-false memref attribute normalization needs final exact review; the NVVM
-same-kernel CALL.REL.NOINC-to-EXIT allowance is not qualified; the newly added
-real HIP physical-ASan registration must be removed/deferred absent independent
-justification. Do not confuse HIP API-mock ASan with real HIP/global host-ASan.
+same-kernel CALL.REL.NOINC-to-EXIT allowance is not qualified. Re-entry inspection
+confirmed that the issuer's final pre-interruption edit already removed real
+HIP physical-ASan registration before snapshot60622b0; the initial handoff's
+claim that removal remained pending was stale. Do not confuse HIP API-mock ASan
+with real HIP/global host-ASan, which remains unqualified.
 Skinny maximum-dimension production-image cases and composed actual adapters
 remain pending. Neither a manifest nor the research images grant source authority.
 
