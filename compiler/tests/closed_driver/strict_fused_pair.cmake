@@ -56,11 +56,11 @@ if(NOT baseline STREQUAL optimized)
   message(FATAL_ERROR "Same-source fused/unfused math/status/effect/FP outcomes differ")
 endif()
 
-# Neither automatic selection nor any other forced route may silently dispatch
-# this new recipe. Check these before any final output artifact is published.
+# Neither automatic selection nor an unrelated forced route may silently
+# dispatch this recipe. GPU combined source is qualified separately.
 foreach(policy IN ITEMS automatic native-strict generated-strict-avx
     generated-strict-avx2 generated-strict-avx512f generated-reassociate
-    existing-native openblas generated-nvvm generated-rocdl)
+    existing-native openblas)
   execute_process(COMMAND "${DRIVER}" ${invocation} --candidate "${policy}"
     --optimization strict-fused-pair -o "${root}/incompatible-${policy}"
     RESULT_VARIABLE status OUTPUT_VARIABLE stdout ERROR_VARIABLE stderr TIMEOUT 60)

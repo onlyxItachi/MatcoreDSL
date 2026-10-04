@@ -1,5 +1,10 @@
 # Bounded source-connected strict fused pair v1
 
+This document records the CPU realization and its original qualification. The
+separately qualified [GPU combined realization](GPU_STRICT_FUSED_PAIR_V1.md)
+reuses source eligibility but has its own fallible execution/completion law;
+none of the CPU leaf's no-error arguments automatically apply to it.
+
 ## Scope and authority
 
 This explicit realization is selected with

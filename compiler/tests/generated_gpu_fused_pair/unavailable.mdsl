@@ -1,0 +1,31 @@
+#include <matcore/region.h>
+#include <cstdio>
+
+namespace md = matcore::mdsl;
+static constexpr unsigned first_line = __LINE__ + 8;
+MATCORE_REGION md::Result strict_fused_pipeline(md::Storage A, md::Storage B,
+    md::Storage D, md::Storage Prefix, md::Storage E) noexcept {
+  auto a = md::read(A, 1, 1);
+  auto b = md::read(B, 1, 1);
+  auto d = md::read(D, 1, 1);
+  md::publish(a, Prefix);
+  md::observe(Prefix);
+  auto c = md::gemm(a, b, md::Numerics::strict_f32);
+  auto e = md::gemm(c, d, md::Numerics::strict_f32);
+  md::publish(e, E);
+  return md::complete();
+}
+
+int main() {
+  float a=2, b=3, d=4, prefix=-1, e=-2;
+  auto result = strict_fused_pipeline(
+      {&a,1,1,1,md::Access::read_only}, {&b,1,1,1,md::Access::read_only},
+      {&d,1,1,1,md::Access::read_only}, {&prefix,1,1,1,md::Access::read_write},
+      {&e,1,1,1,md::Access::read_write});
+  if (result.error()!=md::Error::candidate_unavailable || result.failed_frontier()!=6 ||
+      result.completed_frontier()!=5 || result.completed_effect_frontier()!=5 ||
+      result.publication_count()!=1 || result.observation_count()!=1 ||
+      result.failure_location().line!=first_line || prefix!=2 || e!=-2 ||
+      !result.observation(0).valid() || result.observation(0).data()[0]!=2) return 1;
+  std::puts("GPU fused pair unavailable: PASS");
+}
