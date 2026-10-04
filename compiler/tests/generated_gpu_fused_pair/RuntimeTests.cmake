@@ -4,6 +4,7 @@ if(NOT TARGET mdslc-region OR NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
    NOT MDSLC_CLOSED_CPU_X86)
   return()
 endif()
+find_package(Threads REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_executable(matcore_gpu_fused_frontier_test frontier_test.cpp
   ../../lib/runtime/closed_host_v1.cpp ../../lib/platform/closed_fp_environment_v1.cpp)
