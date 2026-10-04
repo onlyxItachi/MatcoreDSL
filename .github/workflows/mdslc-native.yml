@@ -24,7 +24,9 @@ jobs:
   clang-21-release:
     name: Clang 21.1.8 Release (${{ matrix.openblas_label }}, ${{ matrix.mlir_label }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Full Release plus installed production qualification exceeded 45 minutes
+    # on hosted runners; preserve every check and allow the complete scope.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
