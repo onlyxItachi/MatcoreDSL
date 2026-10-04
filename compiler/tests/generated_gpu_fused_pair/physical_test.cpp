@@ -311,7 +311,9 @@ static std::vector<Case> cases() {
     result.push_back({s,randomValues(extent(s.m,s.k)),randomValues(extent(s.k,s.n)),
                        randomValues(extent(s.n,s.p)),"seeded-mixed"});
   }
-  for (Shape s: {Shape{8,128,128,128},Shape{64,32,64,32},Shape{65,31,64,32},\n                Shape{1,65535,1,1},Shape{1,0,65535,1},Shape{65535,1,1,1},\n                Shape{1,0,1,65535}})
+  for (Shape s: {Shape{8,128,128,128},Shape{64,32,64,32},Shape{65,31,64,32},
+                Shape{1,65535,1,1},Shape{1,0,65535,1},Shape{65535,1,1,1},
+                Shape{1,0,1,65535}})
     result.push_back({s,randomValues(extent(s.m,s.k)),randomValues(extent(s.k,s.n)),
                        randomValues(extent(s.n,s.p)),"pair-work-cap-boundary/tail"});
   float inf=std::numeric_limits<float>::infinity(),nan=std::numeric_limits<float>::quiet_NaN();
@@ -357,7 +359,14 @@ static void hostFalsifiers() {
   bool workRejected=false;
   try { workBound({65,32,64,32}); }
   catch (const std::exception &e) { workRejected=std::string(e.what())=="research pair-work bound"; }
-  require(workRejected,"pair work over-cap was accepted");\n  for (Shape shape: {Shape{65536,1,1,1},Shape{1,65536,1,1},\n                      Shape{1,0,65536,1},Shape{1,0,1,65536}}) {\n    bool refused=false;\n    try { workBound(shape); }\n    catch (const std::exception &) { refused=true; }\n    require(refused,"dimension65536 was accepted");\n  }
+  require(workRejected,"pair work over-cap was accepted");
+  for (Shape shape: {Shape{65536,1,1,1},Shape{1,65536,1,1},
+                      Shape{1,0,65536,1},Shape{1,0,1,65536}}) {
+    bool refused=false;
+    try { workBound(shape); }
+    catch (const std::exception &) { refused=true; }
+    require(refused,"dimension65536 was accepted");
+  }
   auto rounded=oracle({1,2,2,1},{1+0x1p-23f,1},{1-0x1p-23f,0,0,1},{1,-1});
   volatile double exactC=(1+0x1p-23)*(1-0x1p-23);
   volatile double unrounded=exactC-1;
