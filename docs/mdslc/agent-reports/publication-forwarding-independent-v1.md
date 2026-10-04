@@ -343,3 +343,66 @@ region also preserves the original region line/column failure assertions.
 The commit passed static diff inspection and `git diff --check`; this reviewer
 did not compile or execute it. Acceptance of this bounded test correction does
 not replace the required connected, installed and hosted qualification reruns.
+
+## Contract-first independent strict-pair runtime falsifiers
+
+The integration owner next authorized a separate independent test,
+`compiler/tests/closed_host/strict_fused_pair_independent_test.cpp`. It was
+authored against the agreed private API before inspecting any fused runtime
+implementation. Existing unfused runtime semantics, the public resource
+contract and the issuer's arithmetic stages were available to the reviewer;
+this is independent runtime test authorship, not independence from all design
+discussion or the issuer review.
+
+The agreed API is `gemmStrictFusedPair(f1, f2, A, B, D, first, second, E)`.
+The frontiers are consecutive without wrap; both profiles are `strict_f32` and
+the request is explicitly `generated_strict`. An unknown candidate is invalid;
+the otherwise legal automatic/native requests and a configured test callback
+cannot silently substitute for the trusted pair. Allocation-only fault
+injection remains supported. The test requires a separate matched test runtime
+with genuine single-GEMM and fused issued objects, not a callback, native
+fallback or changes to the existing native-only test runtime's availability.
+
+The new test covers:
+
+- Original f1/f2 guard precedence and sticky status, including the full logical
+  C signed-element and byte-span extents. `A[INT64_MAX,0]`, `B[0,2]`, `D[2,0]`
+  must fail f1 even though all reads and final E are empty. Conversely,
+  `A[INT64_MAX,0]`, `B[0,0]`, `D[0,2]` must retire f1 and fail E extent at f2.
+- Legal enormous empty outputs, including `M=INT64_MAX,K=N=P=0`, must complete
+  without entering the row loop. A finite CTest timeout is required to catch
+  accidental traversal. A nonempty E with `N=0` contains positive zero; a
+  nonempty E with `K=0,N>0` still executes the consumer, including `0*Inf` and
+  `0*NaN`, and honestly reports physical invocation.
+- An independent two-stage volatile-f32 oracle, noncommuting matrices, both
+  reduction orders, FMA discrimination, intermediate f32 rounding and forbidden
+  cross-GEMM reassociation. Full and tail row panels, identical input storage,
+  output assignment aliasing each input handle, preceding external alias
+  publication and later result publication/lifetime are checked.
+- Preserved earlier publication/observation prefixes, unchanged caller result
+  handles on failure, retired sessions, nonadjacent/wrapped frontiers, callback
+  refusal and reentry through an existing outer test candidate.
+- Every allocation fault in the actual successful pair's measured allocation
+  range. No removed full-C allocation may replace a required f2 failure; no
+  extra allocation may occur after sticky failure. The tests do not prescribe
+  a realization-independent allocation count.
+- Complete raw caller FP controls/status across success, each guard stage and
+  every actual pair allocation-failure point. Caller downward rounding, flush
+  modes and sticky flags discriminate normalization to nearest-even/gradual
+  underflow and exact restoration.
+
+The source-neutral shape-use question was also resolved by code inspection.
+`ClosedRegionAdmission.cpp` represents canonical `rows`/`cols` calls as pure
+Shape bindings and returns before appending an operation. Discarded bindings
+have no baseline runtime action, ordered failure or observation. Only retained
+`Dimension::ValueRows`/`ValueColumns` references become semantic dimension
+operations in read dimensions or shape-control operands. A recursive whole-
+Program liveness/use check therefore preserves the bounded no-live-C-shape-use
+gate; an additional Sema query ledger is unnecessary frontend coupling. Dead
+pure queries may remain eligible, while live references anywhere in either
+control arm must block this first fused segment.
+
+This test source has not been compiled or executed by its author. Registration,
+actual generated-leaf execution and sanitizer instrumentation are distinct
+pending gates. No production fused source path is accepted merely because these
+falsifiers have been written.
