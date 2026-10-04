@@ -472,3 +472,117 @@ new namespace; the existing `generated_cpu\.` expression does not match
 195. Issuer files in that integrated commit match the reviewed issuer bytes.
 Hosted, composed/full, installed and later source/runtime qualification remain
 the integration owner's distinct gates.
+
+## Exact-commit source-connected strict pair review
+
+Verdict: **ACCEPT for composed qualification** the bounded source/runtime
+implementation at `de5d09f4c59ec035482121086f0422b2476a76ff`. No blocking
+correctness or authority defect was found in this exact clean checkpoint. This
+acceptance now includes inspection of the owner's actual connected single- and
+multi-source executions, not just emitted text or an inspection verifier. Full
+integration, installed/source-inaccessible execution and exact-head hosted
+qualification remain pending; this is not yet a source-fusion merge
+recommendation, a universal proof or performance evidence.
+
+The reviewer froze the independent runtime test at `d7b0571` before reading the
+new runtime implementation, then reviewed that implementation and its final
+wiring separately. Test authorship was independent of the implementation, but
+the test author and this reviewer are the same agent. No compile, test execution,
+GitHub mutation or implementation-worktree write was performed by the reviewer.
+
+The complete retained semantic use count includes Read dimensions, both
+ShapeIf operands/arms and every GEMM/publication use. A pair requires the
+adjacent strict lhs chain and exactly one intermediate use, with all three
+external values defined by dominating immutable Reads. Branch-local read maps
+are copied rather than leaked into siblings or continuation. Multiple windows
+are disjoint; the exact original operation/frontier enumeration, including
+untaken-arm holes and helper call stacks, is retained by both derivation and
+emission. The plan still owns original authenticated evidence, recomputes its
+complete ordered records/identities when consumed and gives no issuance
+authority to caller proposal vectors. Neither the original Program nor its
+whole-region witness is transformed.
+
+Runtime review confirms the full logical C signed/product/byte extent at f1,
+before D/second-profile inspection. The original first FP enter/control check
+and complete restoration occur before retiring f1; separate ActiveCall scopes
+permit the original second begin. At f2 the original input/profile/contraction/
+candidate precedence precedes E and bounded workspace allocation. Output
+assignment is last, so every failure preserves the previous handle even when
+it aliases A, B or D. Immutable snapshots survive external MAY-alias writes.
+The huge legal empty E route retires both logical guard frontiers without a
+row loop; N=0 is positive zero, but K=0 with N>0/nonempty E still invokes the
+consumer and can produce NaN from zero times Inf/NaN.
+
+Removing full-C allocation is the explicit resource-contract item 8 permission,
+not permission to remove C's required checks. Deferring its physical arithmetic
+uses the pinned no-recoverable-error, control-preserving strict leaf and the
+explicit bounded-private-write conforming memset obligation. No arbitrary
+provider, callback, interposer or two-stage candidate-failure attribution is
+covered by this argument. Callback injection is rejected before invocation;
+allocation-only controls remain. f1 honestly reports no intermediate Value or
+invocation, and f2 reports only the realization actually performed. The final
+runtime/header delta from `5f34a25` consists only of these trusted-helper comments.
+
+The `8fccd8a` wiring places the genuine issued normal object and its generation
+dependency in the production registry and a separate matched testing registry;
+it does not change the old native-only test registry. That native-only control
+now also rejects the pair as unavailable without output mutation and preserves
+sticky failure. Installed source compilation retains exact header/private DSO
+ownership. The package additions copy the genuine source fixture before deleting
+their owned disposable producer directories, use the relocated installed driver,
+require the real executable's pair reference only for the optimized form, and
+require all 22 source oracle cases plus a finite huge-empty execution timeout.
+Those new installed paths have been reviewed, not executed by this reviewer.
+
+The saved direct ASan+UBSan command in `strict-fused-pair-source-v1.md` compiles
+the actual runtime/FP sources and the unchanged independent test, with genuine
+single-GEMM and pair ASan objects. The reviewer inspected the executable's
+actual method/two leaf definitions and both objects' ASan read/write imports.
+The executable SHA-256 is
+`1cd3717bf363d263372f51900c7f3dcfd1120a9e3faf227f02a86f1819dd130c`;
+the pair object is the previously reviewed
+`10892a501e67ebdb741f01cd4c96fe7ee15b95c7b3a4389dfa93bf155147d095`.
+The owner's combined stdout/stderr repeat log records 204 checks, zero failures
+and no sanitizer diagnostics; its SHA-256 is
+`b3dbfd4215733646f28f02fba3e0aad666be1ea66cb9bcecb121030032fc6c16`.
+The owner confirms exit zero under a 30-second timeout and pipefail. This is
+independent artifact/log inspection of owner execution, not a reviewer rerun.
+
+A fresh separate Release build's generated CTest configuration records clean
+source `de5d09f`. Its saved combined focused log has SHA-256
+`6793d583c9baae6540c17e9b05d49217f196651ecf64f5ead51bd006975e94d2` and records
+five of five passing: 283 plan checks, 204 independent runtime checks, the
+native-only production control, and both connected driver forms. Each form
+executes the baseline and optimized program with 659 checks, zero failures and
+22 cases. The reviewer also inspected both actual executable pairs with nm:
+only optimized executables import `gemmStrictFusedPair`, and baseline executables
+import the original `gemm`. These tests exercise strict reduction/rounding,
+source-failure locations and retained effect prefixes, not only equality of
+successful output. The test harness's exact whole-output scalar comparison
+does not reintroduce the earlier CMake semicolon-list defect.
+
+Root owns CI integration: preserve the isolated issuer's mandatory nine-test
+gate and add the four source registrations explicitly. Existing focused regexes
+do not accidentally select those four names. Adding all four to the reviewed
+195-test ASan scope requires 199; the two driver names increase the driver
+presence count by two. This is a static registration calculation, not hosted
+execution evidence. Source docs/AGENTS correctly keep pending qualification,
+explicit-only Linux x64 policy, original witness/frontiers and lack of broad
+fusion/performance claims distinct.
+
+## Forwarding qualification closure
+
+The final recommendation for forwarding PR #78 is **MERGE exact head
+`20c8473fae24d7396d384612064e9b69be0a0c29`**, under the integration owner's
+normal exact-head merge procedure. A live clean candidate-tree check and diff
+confirm that its compiler library/tool/include production bytes are identical
+to the independently reviewed `14367dc8`; subsequent changes are the reviewed
+tests, qualification harness corrections, CI and documentation. No host
+callsite/effect verifier was weakened to admit the strictfp fixture.
+
+The integration owner reports local 393/393 with zero skips and all exact-head
+hosted lanes green, including Debug and the alternate schedule. Those results
+close the formerly pending forwarding qualification gates; they were not
+rerun or fetched from GitHub by this reviewer. This recommendation neither
+authorizes broader optimizations nor implies acceptance of pending fused-source
+package/full/hosted qualification.
