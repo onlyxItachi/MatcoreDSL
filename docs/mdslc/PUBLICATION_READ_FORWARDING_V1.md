@@ -1,9 +1,10 @@
 # Authenticated publication-to-read forwarding
 
-Status: implemented on the isolated `mdslc/publication-forwarding-v1` branch;
-integration, exact-head complete qualification, hosted checks and canonical merge
-are still pending. The [implementation report](agent-reports/publication-forwarding-v1.md)
-separates executed tests from tests that have only been authored. This is one
+Status: qualified and normally merged through [PR #78](https://github.com/onlyxItachi/MatcoreDSL/pull/78).
+The [canonical qualification record](agent-reports/publication-forwarding-qualified-v1.md)
+pins the exact merge/head/compiler tree and local/hosted outcomes. Detailed
+[implementation](agent-reports/publication-forwarding-v1.md) and independent
+reports preserve their historical results and pending snapshots. This is one
 bounded target-independent resource optimization, not whole-region fusion,
 residency, a new mathematical surface or a performance claim.
 
