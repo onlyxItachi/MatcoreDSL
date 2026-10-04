@@ -162,6 +162,7 @@ set(MDSLC_CLOSED_GEMM_NORMAL_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/strict-normal.o
 add_custom_target(matcore_closed_candidates_leaf)
 add_dependencies(matcore_closed_candidates_leaf matcore_generated_cpu_normal_object)
 include(StrictCpuIsa.cmake)
+include(StrictCpuFusedPair.cmake)
 if(MDSLC_CLOSED_CPU_X86)
   set(MDSLC_CLOSED_REASSOCIATE_NORMAL_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/reassociate-normal.o")
   add_dependencies(matcore_closed_candidates_leaf matcore_generated_reassociate_normal_object)

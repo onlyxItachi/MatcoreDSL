@@ -1,0 +1,48 @@
+# Gate on the actual compiler-owned optimized object, not an importer or source
+# execution certificate. Conforming memset is trusted only for bounded private
+# fill writes, with no recoverable failure, arbitrary host effects or FP-control
+# changes. Exact ASan instrumentation/bookkeeping is separately allowed.
+execute_process(COMMAND "${NM}" -g --defined-only "${OBJECT}" RESULT_VARIABLE status OUTPUT_VARIABLE symbols ERROR_VARIABLE error)
+if(NOT status EQUAL 0)
+  message(FATAL_ERROR "Cannot inspect pair object: ${error}")
+endif()
+foreach(symbol IN ITEMS __matcore_strict_fused_gemm_f32_v1 _mlir_ciface___matcore_strict_fused_gemm_f32_v1)
+  if(NOT symbols MATCHES " T ${symbol}(\n|$)")
+    message(FATAL_ERROR "Missing exact strong pair ABI symbol: ${symbol}\n${symbols}")
+  endif()
+  string(REGEX REPLACE "[^\n]* T ${symbol}(\n|$)" "" symbols "${symbols}")
+endforeach()
+if(SANITIZED)
+  if(NOT symbols MATCHES "0000000000000008 C ___asan_globals_registered(\n|$)")
+    message(FATAL_ERROR "Missing exact ASan registration definition: ${symbols}")
+  endif()
+  string(REGEX REPLACE "[^\n]* C ___asan_globals_registered(\n|$)" "" symbols "${symbols}")
+endif()
+string(STRIP "${symbols}" symbols)
+if(NOT symbols STREQUAL "")
+  message(FATAL_ERROR "Unexpected exported pair definition: ${symbols}")
+endif()
+execute_process(COMMAND "${NM}" --undefined-only "${OBJECT}" RESULT_VARIABLE status OUTPUT_VARIABLE imports ERROR_VARIABLE error)
+if(NOT status EQUAL 0)
+  message(FATAL_ERROR "Cannot inspect pair imports: ${error}")
+endif()
+set(allowed memset)
+if(SANITIZED)
+  list(APPEND allowed __asan_init __asan_memset __asan_register_elf_globals
+    __asan_report_load4 __asan_report_load8 __asan_report_store4
+    __asan_version_mismatch_check_v8 __start_asan_globals __stop_asan_globals)
+endif()
+foreach(symbol IN LISTS allowed)
+  string(REGEX REPLACE "[^\n]*[ \t]${symbol}(\n|$)" "" imports "${imports}")
+endforeach()
+string(STRIP "${imports}" imports)
+if(NOT imports STREQUAL "")
+  message(FATAL_ERROR "Unexpected allocation/provider/import in pair object: ${imports}")
+endif()
+execute_process(COMMAND "${OBJDUMP}" -d "${OBJECT}" RESULT_VARIABLE status OUTPUT_VARIABLE assembly ERROR_VARIABLE error)
+if(NOT status EQUAL 0 OR NOT assembly MATCHES "file format elf64-x86-64" OR
+   assembly MATCHES "[ \t]v?f(madd|msub|nmadd|nmsub)" OR
+   NOT assembly MATCHES "[ \t]mulss" OR NOT assembly MATCHES "[ \t]addss")
+  message(FATAL_ERROR "Pair baseline lost separate scalar arithmetic: ${error}\n${assembly}")
+endif()
+message(STATUS "Exact five-descriptor pair symbols, scalar strict arithmetic and explicit bounded imports")
