@@ -200,7 +200,8 @@ function(mdslc_add_closed_candidate_runtime target)
     target_compile_definitions(${target} PRIVATE MDSLC_CLOSED_HOST_GENERATED_STRICT)
     if(MDSLC_CLOSED_CPU_X86)
       target_compile_definitions(${target} PRIVATE MDSLC_CLOSED_HOST_LEGACY_CANDIDATES
-        MDSLC_CLOSED_HOST_GENERATED_REASSOCIATE MDSLC_CLOSED_HOST_GENERATED_STRICT_ISA)
+        MDSLC_CLOSED_HOST_GENERATED_REASSOCIATE MDSLC_CLOSED_HOST_GENERATED_STRICT_ISA
+        MDSLC_HAS_FUSED_PAIR_CPU_V1=1)
     endif()
     if(MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS)
       target_compile_definitions(${target} PRIVATE MDSLC_CLOSED_HOST_OPENBLAS)
@@ -210,12 +211,14 @@ function(mdslc_add_closed_candidate_runtime target)
     target_sources(${target} PRIVATE "${MDSLC_CLOSED_GEMM_NORMAL_OBJECT}")
     if(MDSLC_CLOSED_CPU_X86)
       target_sources(${target} PRIVATE "${MDSLC_CLOSED_REASSOCIATE_NORMAL_OBJECT}"
+        "${MDSLC_FUSED_PAIR_NORMAL_OBJECT}"
         "${MDSLC_CLOSED_STRICT_AVX_NORMAL_OBJECT}"
         "${MDSLC_CLOSED_STRICT_AVX2_NORMAL_OBJECT}"
         "${MDSLC_CLOSED_STRICT_AVX512F_NORMAL_OBJECT}"
         "${compiler_dir}/lib/platform/closed_cpu_isa_v1.cpp"
         "${compiler_dir}/lib/platform/cpu_capability_v2.cpp"
         "${compiler_dir}/lib/platform/platform.cpp")
+      add_dependencies(${target} matcore_generated_fused_pair_normal_object)
     endif()
     target_include_directories(${target} PRIVATE "${compiler_dir}/lib")
     add_dependencies(${target} matcore_closed_candidates_leaf)

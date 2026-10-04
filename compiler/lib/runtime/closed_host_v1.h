@@ -150,6 +150,9 @@ public:
   // Leaf invocation additionally requires nonempty E and N>0, exact dense
   // descriptors and runtime-owned disjoint E/workspace[min(4,M),N]. K may be
   // zero: producer +0 must still multiply D (including Inf/NaN) in the consumer.
+  // The trusted optimized object may use conforming memset for bounded private
+  // zero fills: no recoverable failure/arbitrary host effects or FP-control
+  // changes. Arbitrary libc interposition is excluded, like allocator hooks.
   Status gemmStrictFusedPair(Frontier f1, Frontier f2, const Value &a,
                             const Value &b, const Value &d, Numeric first,
                             Numeric second, Value &result) noexcept;

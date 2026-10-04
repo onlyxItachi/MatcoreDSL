@@ -1,0 +1,189 @@
+#include <matcore/region.h>
+#include <bit>
+#include <cfenv>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <limits>
+#include <vector>
+
+namespace md = matcore::mdsl;
+
+static constexpr unsigned first_gemm_line = __LINE__ + 10;
+MATCORE_REGION md::Result strict_fused_pipeline(
+    md::Storage A, md::Storage B, md::Storage D, md::Storage Prefix, md::Storage E,
+    md::Shape m, md::Shape k, md::Shape b_rows, md::Shape n,
+    md::Shape d_rows, md::Shape p) noexcept {
+  auto a = md::read(A, m, k);
+  auto b = md::read(B, b_rows, n);
+  auto d = md::read(D, d_rows, p);
+  md::publish(a, Prefix);
+  md::observe(Prefix);
+  auto c = md::gemm(a, b, md::Numerics::strict_f32);
+  auto e = md::gemm(c, d, md::Numerics::strict_f32);
+  md::publish(e, E);
+  md::observe(E);
+  return md::complete();
+}
+
+// Ordinary no-math call context matches the existing exact program-call ABI.
+// Full FP assertions below remain in the strict caller, not on the region call.
+static md::Result invoke_strict_fused_pipeline(
+    md::Storage a, md::Storage b, md::Storage d, md::Storage prefix, md::Storage e,
+    md::Shape m, md::Shape k, md::Shape b_rows, md::Shape n,
+    md::Shape d_rows, md::Shape p) noexcept {
+  return strict_fused_pipeline(a,b,d,prefix,e,m,k,b_rows,n,d_rows,p);
+}
+
+#pragma STDC FENV_ACCESS ON
+#pragma STDC FP_CONTRACT OFF
+namespace {
+unsigned checks = 0, failures = 0, cases = 0;
+void check(bool condition, const char *label) {
+  ++checks;
+  if (!condition) { ++failures; std::fprintf(stderr,"FAIL: %s\n",label); }
+}
+bool same(float a, float b) {
+  return std::isnan(a) ? std::isnan(b)
+      : std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b);
+}
+struct Matrix {
+  md::Shape rows, columns;
+  std::vector<float> cells;
+};
+Matrix matrix(md::Shape rows, md::Shape columns) {
+  return {rows,columns,std::vector<float>(static_cast<std::size_t>(rows*columns))};
+}
+Matrix strictMultiply(const Matrix &a, const Matrix &b) {
+  Matrix result = matrix(a.rows,b.columns);
+  if (result.cells.empty()) return result; // Includes enormous legal empty shapes.
+  for (md::Shape i=0;i<a.rows;++i)
+    for (md::Shape j=0;j<b.columns;++j) {
+      volatile float sum = 0.0f;
+      for (md::Shape k=0;k<a.columns;++k) {
+        volatile float product = a.cells[i*a.columns+k]*b.cells[k*b.columns+j];
+        sum = sum+product;
+      }
+      result.cells[i*b.columns+j] = sum;
+    }
+  return result;
+}
+md::Storage input(const Matrix &value) {
+  return {const_cast<float*>(value.cells.data()),value.rows,value.columns,
+          value.cells.size(),md::Access::read_only};
+}
+void run(const Matrix &a, const Matrix &b, const Matrix &d,
+         md::Error expected_error=md::Error::ok, unsigned failed_frontier=0,
+         bool identical_inputs=false) {
+  ++cases;
+  const auto &b_value = identical_inputs ? a : b;
+  const auto &d_value = identical_inputs ? a : d;
+  std::vector<float> prefix(a.cells.size()+2,-701.0f);
+  // A failed result extent is never eagerly validated or allocated by the host.
+  const auto output_elements = expected_error==md::Error::extent_overflow
+      ? std::size_t{0} : static_cast<std::size_t>(a.rows*d_value.columns);
+  std::vector<float> output(output_elements+2,-801.0f);
+  md::Observation retained_prefix, retained_output;
+  std::fenv_t original{}, caller{}, after{};
+  check(std::fegetenv(&original)==0,"capture caller FP environment");
+  check(std::fesetround(FE_DOWNWARD)==0 &&
+        std::feraiseexcept(FE_INEXACT|FE_UNDERFLOW)==0,"set rounding and sticky status");
+  check(std::fegetenv(&caller)==0,"capture complete modified caller environment");
+  {
+    auto result=invoke_strict_fused_pipeline(input(a),input(b_value),input(d_value),
+        {prefix.data()+1,a.rows,a.columns,a.cells.size(),md::Access::read_write},
+        {output.data()+1,a.rows,d_value.columns,output_elements,md::Access::read_write},
+        a.rows,a.columns,b_value.rows,b_value.columns,d_value.rows,d_value.columns);
+    check(std::fegetenv(&after)==0 && std::memcmp(&caller,&after,sizeof(caller))==0,
+          "both source realizations restore whole FP controls and sticky status");
+    check(std::fesetenv(&original)==0,"restore test caller environment");
+    check(result.error()==expected_error,"original strict source error is exact");
+    check(result.publication_count()==(failed_frontier?1U:2U) &&
+          result.observation_count()==(failed_frontier?1U:2U),
+          "earlier publication/owning observation prefix and later effects preserved");
+    retained_prefix=result.observation(0);
+    check(retained_prefix.valid() && retained_prefix.rows()==a.rows &&
+          retained_prefix.columns()==a.columns,"earlier owning observation dimensions survive");
+    for (std::size_t i=0;i<a.cells.size();++i) {
+      check(same(prefix[i+1],a.cells[i]),"earlier publication contents retained");
+      if (retained_prefix.valid())
+        check(same(retained_prefix.data()[i],a.cells[i]),"earlier owning contents exact");
+    }
+    if (failed_frontier) {
+      check(!result.ok() && result.failed_frontier()==failed_frontier &&
+            result.completed_frontier()==failed_frontier-1 && result.completed_effect_frontier()==5,
+            "split producer/consumer preserves exact original failure frontier");
+      const auto location=result.failure_location();
+      check(location.file && std::strcmp(location.file,__FILE__)==0 &&
+            location.line==first_gemm_line+(failed_frontier==7?1U:0U) && location.column==12,
+            "failure reports original physical GEMM source identity");
+      for (float item:output) check(item==-801.0f,"failure never publishes final output");
+    } else {
+      check(result.ok() && result.completed_frontier()==10 && result.completed_effect_frontier()==9,
+            "success retains all original frontiers and checked completion");
+      // Independent full intermediate oracle, not the private row-panel recipe.
+      // Force nearest/gradual arithmetic separately from the modified caller.
+      check(std::fesetround(FE_TONEAREST)==0,"normalize independent oracle rounding");
+      const auto c=strictMultiply(a,b_value);
+      const auto expected=strictMultiply(c,d_value);
+      check(std::fesetenv(&original)==0,"restore oracle environment");
+      check(expected.cells.size()==output_elements,"independent two-stage result dimensions");
+      retained_output=result.observation(1);
+      check(retained_output.valid() && retained_output.rows()==a.rows &&
+            retained_output.columns()==d_value.columns,"final owning observation dimensions exact");
+      for (std::size_t i=0;i<output_elements;++i) {
+        check(same(output[i+1],expected.cells[i]),"strict two-stage f32 arithmetic/order/rounding oracle");
+        if (retained_output.valid())
+          check(same(retained_output.data()[i],expected.cells[i]),"owning result arithmetic exact");
+      }
+    }
+  }
+  check(prefix.front()==-701.0f && prefix.back()==-701.0f &&
+        output.front()==-801.0f && output.back()==-801.0f,"publication boundary canaries intact");
+  if (!a.cells.empty()) {
+    prefix[1]=-999.0f;
+    check(retained_prefix.valid() && same(retained_prefix.data()[0],a.cells[0]),
+          "owning prefix outlives Session and host mutation");
+  }
+  if (retained_output.valid() && output_elements) {
+    const float saved=retained_output.data()[0]; output[1]=-999.0f;
+    check(same(retained_output.data()[0],saved),"owning final output outlives invocation/host mutation");
+  }
+}
+} // namespace
+
+int main() {
+  for (md::Shape m: {md::Shape{1},md::Shape{4},md::Shape{5},md::Shape{9}}) {
+    auto a=matrix(m,3), b=matrix(3,5), d=matrix(5,3);
+    for (std::size_t i=0;i<a.cells.size();++i) a.cells[i]=float(int(i%7)-3);
+    for (std::size_t i=0;i<b.cells.size();++i) b.cells[i]=float(int(i%5)-2);
+    for (std::size_t i=0;i<d.cells.size();++i) d.cells[i]=float(int(i%3)-1);
+    run(a,b,d);
+  }
+  const float e=0x1p-12f;
+  run({1,1,{1+e}},{1,2,{1-e,1}},{2,1,{1,-1}}); // Intermediate f32 rounding.
+  run({1,1,{std::numeric_limits<float>::max()}},
+      {1,1,{std::numeric_limits<float>::max()}},{1,1,{0}}); // No cross reassociation.
+  run({1,3,{1,1,1}},{3,1,{0x1p24f,1,-0x1p24f}},{1,1,{1}}); // Producer order.
+  run({1,1,{1}},{1,3,{0x1p24f,1,-0x1p24f}},{3,1,{1,1,1}}); // Consumer order.
+  run({1,2,{-1,1+e}},{2,1,{1,1-e}},{1,1,{1}}); // Non-FMA producer.
+  run({1,1,{1}},{1,2,{-1,1+e}},{2,1,{1,1-e}}); // Non-FMA consumer.
+  run({1,1,{std::numeric_limits<float>::denorm_min()}},{1,1,{1}},{1,1,{1}});
+  run({2,0,{}},{0,2,{}},{2,2,{std::numeric_limits<float>::infinity(),
+      std::numeric_limits<float>::quiet_NaN(),1,-1}}); // K0 does not shortcut consumer.
+  run({2,3,{1,2,3,4,5,6}},{3,0,{}},{0,2,{}}); // N0 final positive zero.
+  run({0,3,{}},{3,2,{1,2,3,4,5,6}},{2,2,{1,2,3,4}});
+  run({2,3,{1,2,3,4,5,6}},{3,2,{1,2,3,4,5,6}},{2,0,{}});
+  run({2,2,{1,2,3,4}},{2,2,{1,2,3,4}},{2,2,{1,2,3,4}},md::Error::ok,0,true);
+  run({1,2,{1,2}},{3,1,{1,2,3}},{1,1,{1}},md::Error::shape_mismatch,6);
+  run({1,1,{1}},{1,2,{1,2}},{3,1,{1,2,3}},md::Error::shape_mismatch,7);
+  constexpr auto huge=std::uint64_t(std::numeric_limits<std::int64_t>::max());
+  run({huge,0,{}},{0,2,{}},{2,0,{}},md::Error::extent_overflow,6);
+  run({huge,0,{}},{0,1,{}},{1,0,{}},md::Error::extent_overflow,6); // Byte bound too.
+  run({huge,0,{}},{0,0,{}},{0,2,{}},md::Error::extent_overflow,7);
+  run({huge,0,{}},{0,0,{}},{0,0,{}}); // Must finish, no huge empty row loop.
+  std::printf("Strict fused pair source: %u checks; %u failures; %u executed cases\n",
+              checks,failures,cases);
+  return failures?1:0;
+}

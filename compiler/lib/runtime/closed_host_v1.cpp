@@ -764,6 +764,9 @@ Status SessionAbiV2::gemmStrictFusedPair(
     // dimension/product/byte guards or original FP entry/control/restore.
     // C is unobservable and pure; the issued no-error control-preserving leaf
     // may defer its physical arithmetic until after consumer preconditions.
+    // The optimized object's allowed conforming memset has bounded private
+    // writes and no recoverable error/arbitrary effects/control changes. This
+    // argument does not locate failures of arbitrary providers or interposers.
     ScopedFp environment;
     if (!environment.valid()) return rejected(Code::unsupported_fp_environment);
     const bool unchanged = environment.controlsUnchanged();

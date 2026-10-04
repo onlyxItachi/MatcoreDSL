@@ -33,6 +33,21 @@ int main() {
       status.completed_frontier != 6 || status.completed_effect_frontier != 5 ||
       !status.completed || !session.observation(0).valid())
     return 1;
+  // This native-only object has no issued generated leaf. The new pair entry
+  // must stay unavailable even when every shape/Value is otherwise valid.
+  const auto original_result = result.data();
+  ch::Session unavailable(ch::Options{ch::Candidate::generated_strict});
+  const auto refused = unavailable.gemmStrictFusedPair(
+      1,2,lhs,rhs,result,ch::Numeric::strict_f32,ch::Numeric::strict_f32,result);
+  const auto report = unavailable.candidateReport();
+  if (refused.code != ch::Code::candidate_unavailable || refused.failed_frontier != 1 ||
+      refused.completed_frontier != 0 || result.data() != original_result ||
+      report.actual != ch::Implementation::none || report.invocation_attempted || report.value_issued)
+    return 1;
+  const auto sticky = unavailable.gemmStrictFusedPair(
+      3,4,lhs,rhs,result,ch::Numeric::strict_f32,ch::Numeric::strict_f32,result);
+  if (sticky.code != refused.code || sticky.failed_frontier != 1 || result.data() != original_result)
+    return 1;
   std::cout << "production scalar adapter source-free API execution passed\n";
   return 0;
 #endif

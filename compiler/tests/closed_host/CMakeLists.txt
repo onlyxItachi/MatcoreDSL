@@ -33,6 +33,16 @@ mdslc_closed_host_test(matcore_closed_host_tests closed_host_v1_test.cpp
 mdslc_closed_host_test(matcore_closed_host_forwarded_independent_tests
   forwarded_read_independent_test.cpp matcore_closed_host_test_v1
   runtime.closed_host.forwarded_read_independent_v1)
+if(MDSLC_CLOSED_CPU_X86)
+  # Preserve native-only test baselines above. This matched registry contains
+  # both genuine single-GEMM and pair leaves; injection cannot replace the pair.
+  mdslc_add_closed_candidate_runtime(matcore_closed_fused_pair_test_v1 TESTING)
+  mdslc_closed_host_test(matcore_closed_host_strict_fused_pair_independent_tests
+    strict_fused_pair_independent_test.cpp matcore_closed_fused_pair_test_v1
+    runtime.closed_host.strict_fused_pair_independent_v1)
+  set_tests_properties(runtime.closed_host.strict_fused_pair_independent_v1
+    PROPERTIES TIMEOUT 60)
+endif()
 mdslc_closed_host_test(matcore_experimental_region_result_tests
   ../experimental_region/result_test.cpp matcore_closed_host_v1
   runtime.experimental_region.owning_result)

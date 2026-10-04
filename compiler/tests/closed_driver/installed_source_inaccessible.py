@@ -22,6 +22,7 @@ def main():
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--linker-launcher", default="")
     parser.add_argument("--nm", default="nm")
+    parser.add_argument("--has-fused-pair", choices=("ON", "OFF"), default="OFF")
     args = parser.parse_args()
     repository = Path(args.repository).resolve(strict=True)
     commit = authenticate_repository(args.git, repository, args.expected_commit,
@@ -55,6 +56,10 @@ def main():
         forwarding_consumer = root / "forwarding-consumer.mdsl"
         shutil.copyfile(source / "compiler/tests/closed_driver/publication_read_forwarding.mdsl",
                         forwarding_consumer)
+        fused_consumer = root / "fused-consumer.mdsl"
+        if args.has_fused_pair == "ON":
+            shutil.copyfile(source / "compiler/tests/closed_driver/strict_fused_pair.mdsl",
+                            fused_consumer)
         configure = [args.cmake, "-S", source / "compiler", "-B", build, "-G", "Ninja",
                      "-DBUILD_TESTING=OFF", "-DCMAKE_BUILD_TYPE=Release",
                      "-DCMAKE_C_COMPILER=" + args.clang.replace("clang++", "clang"),
@@ -109,6 +114,33 @@ def main():
         if forwarding_outputs[0] != forwarding_outputs[1]:
             print(json.dumps(log, indent=2))
             raise RuntimeError("source-inaccessible same-source optimization outcomes differ")
+        if args.has_fused_pair == "ON":
+            fused_outputs = []
+            for optimization in ("none", "strict-fused-pair"):
+                executable = root / ("fused-" + optimization)
+                run([driver, fused_consumer, "--region", "strict_fused_pipeline",
+                     "--candidate", "generated-strict", "--optimization", optimization,
+                     "-o", executable])
+                symbols = run([args.nm, "--undefined-only", "--demangle", executable]).stdout
+                connected = "closed_host_v1::SessionAbiV2::gemmStrictFusedPair(" in symbols
+                if connected != (optimization == "strict-fused-pair"):
+                    print(json.dumps(log, indent=2))
+                    raise RuntimeError("source-inaccessible strict pair option did not connect checked runtime")
+                # The source includes an INT64_MAX legal empty shape: prevent
+                # an erroneous generated empty row loop from hanging the gate.
+                result = subprocess.run([str(executable)], cwd=root, env=environment,
+                                        text=True, capture_output=True, timeout=20)
+                log.append({"argv": [str(executable)], "exit": result.returncode,
+                            "stdout": result.stdout, "stderr": result.stderr})
+                if result.returncode != 0 or not re.fullmatch(
+                        r"Strict fused pair source: [1-9][0-9]* checks; 0 failures; "
+                        r"22 executed cases\n", result.stdout):
+                    print(json.dumps(log, indent=2))
+                    raise RuntimeError("source-inaccessible strict pair exact source oracle failed")
+                fused_outputs.append(result.stdout)
+            if fused_outputs[0] != fused_outputs[1]:
+                print(json.dumps(log, indent=2))
+                raise RuntimeError("source-inaccessible fused/unfused outcomes differ")
         if hashlib.sha256(driver.read_bytes()).hexdigest() != digest:
             raise RuntimeError("installed driver changed during package acceptance")
         if source.exists() or build.exists() or stage.exists():
@@ -116,6 +148,8 @@ def main():
         print(f"PASS closed source/build-inaccessible package at {commit}: "
               "3 policies, exact math, retained observations and ordered late failure; "
               "same-source none/forwarding executed after producer removal with checked call reference; "
+              + ("same-source none/strict-pair executed after producer removal with checked call reference; "
+                 if args.has_fused_pair == "ON" else "") +
               f"installed driver sha256={digest}")
 
 
