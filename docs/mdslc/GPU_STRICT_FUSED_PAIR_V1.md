@@ -73,15 +73,16 @@ CUDA Compute Sanitizer passed its normal run and detected the deliberately
 under-sized panel in its exact negative control; AMD oracle/canary evidence is
 not device-sanitizer evidence.
 
-Connected qualification at compiler checkpoint `9f7f9af80d96c8f38d4f66097a5c8779fb185464`
-adds real-Session/mocked-device and normal/ASan API-fault tests (151 CTest cases),
-four actual NVVM/ROCDL source/program tests and genuine producer-deleted package
-execution. The source tests check the original 22-case oracle in both modes,
+Completed focused connected qualification uses production files preserved
+unchanged through `cb2bb730693aedd1d469e73e2fd943fb955b4f3d` and
+`9f7f9af80d96c8f38d4f66097a5c8779fb185464`: real-Session/mocked-device and
+normal/ASan API-fault tests (151 CTest cases), plus four actual NVVM/ROCDL
+source/program tests. The source tests check the original 22-case oracle in both modes,
 actual combined-call linkage, host interposition refusals and unavailable-target
 failure. The private work-cap fixture distinguishes legal unoptimized execution
 from combined f2 refusal while preserving the prior effect/observation prefix,
 original source identity, final-output sentinel and caller FP/errno state.
-The relocated installation ran both GPU targets and both source/program routes
+At clean checkpoint `9f7f9af`, the relocated installation ran both GPU targets and both source/program routes
 after deleting its temporary producer source/build trees; its unchanged driver
 SHA-256 was `0d14d7a716e8ddf191b319a6358e935aad4bc956d033e672b57d801dcba5956f`.
 These scopes and retained counterexamples have a separate
