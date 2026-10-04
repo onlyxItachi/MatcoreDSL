@@ -267,6 +267,9 @@ jobs:
               -R '^(frontend\.closed_host_derived_plan_v1|runtime\.closed_host\.forwarded_read_independent_v1)$' \
               | tee build-mdslc/forwarding-proof-test-list.txt
             grep -Fx "Total Tests: 2" build-mdslc/forwarding-proof-test-list.txt
+            ctest --test-dir build-mdslc -N -R '^generated_cpu_fused_pair\.' \
+              | tee build-mdslc/fused-pair-test-list.txt
+            grep -Fx "Total Tests: 9" build-mdslc/fused-pair-test-list.txt
           fi
           if [[ "${{ matrix.vector_readiness_enable }}" == "ON" ]]; then
             ctest --test-dir build-mdslc --output-on-failure -j1 \
@@ -476,10 +479,11 @@ jobs:
           region_tests='^(private_runtime\..*|frontend\.(frozen_host_(codegen|independent)|experimental_source_generated_execution|program_input_mutation)|driver\.(program_.*|experimental_region_contract|implementation_ownership|generated_reassociate\..*|storage_conformance(_runner)?|source_library_(repeated_include|escaped_address|escaped_wrapper|template_(specialization|macro_type|macro_body|hidden_effect|escaped_specialization|split_body)))|codegen\.(artifact_symbol_ownership_v1|authenticated_host_thunk_v1|program_call_interface_v1))$'
           region_tests="${region_tests}|^driver\\.publication_read_forwarding\\..*$"
           forwarding_tests='^(frontend\.closed_host_derived_plan_v1|runtime\.closed_host\.forwarded_read_independent_v1)$'
-          sanitizer_tests="${sanitizer_tests}|${region_tests}|${forwarding_tests}"
+          fused_pair_tests='^generated_cpu_fused_pair\..*$'
+          sanitizer_tests="${sanitizer_tests}|${region_tests}|${forwarding_tests}|${fused_pair_tests}"
           ctest --test-dir build-mdslc-asan-ubsan -N -R "${sanitizer_tests}" \
             | tee build-mdslc-asan-ubsan/focused-test-list.txt
-          grep -Fx "Total Tests: 186" \
+          grep -Fx "Total Tests: 195" \
             build-mdslc-asan-ubsan/focused-test-list.txt
           ctest --test-dir build-mdslc-asan-ubsan --output-on-failure -j1 \
             -R "${sanitizer_tests}"
