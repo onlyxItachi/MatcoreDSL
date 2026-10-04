@@ -43,7 +43,7 @@ const char *candidate(ClosedCpuPolicy policy) {
 
 ExperimentalRegionEmissionResult emitExperimentalRegion(
     const frontend::AuthenticatedClosedRegionEvidence &evidence,
-    ClosedCpuPolicy policy) {
+    ClosedCpuPolicy policy, ClosedHostOptimization optimization) {
   ExperimentalRegionEmissionResult result;
   if (!evidence.hasHostContext() || !evidence.entryBinding() || !candidate(policy)) {
     result.error = "experimental implementation requires a sealed named entry and known candidate policy";
@@ -51,7 +51,9 @@ ExperimentalRegionEmissionResult emitExperimentalRegion(
   }
   // This replays the complete original host/semantic witness. No caller-provided
   // mutable graph, source range, symbol binding or certificate is accepted.
-  auto closed = emitClosedHostV1(evidence);
+  auto derived = deriveClosedHostPlan(evidence, optimization);
+  if (!derived) { result.error = derived.error; return result; }
+  auto closed = emitClosedHostV1(evidence, *derived.plan);
   if (!closed) {
     result.error = closed.error;
     return result;
@@ -80,7 +82,9 @@ ExperimentalRegionEmissionResult emitExperimentalRegion(
   emission.contract = std::move(*closed.emission);
   emission.host_symbol = binding.mangled_name;
   const auto identity = emission.contract.semantic_sha256 + ":" +
-                        binding.signature_sha256 + ":" + candidate(policy);
+                        binding.signature_sha256 + ":" + candidate(policy) + ":" +
+                        closedHostOptimizationName(optimization) + ":" +
+                        emission.contract.plan_sha256;
   emission.helper_symbol = "__matcore_region_" + llvm::toHex(
       llvm::SHA256::hash(llvm::arrayRefFromStringRef(identity)), true);
   // Helper removal names are copied from sealed frontend bindings, never

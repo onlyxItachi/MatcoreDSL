@@ -138,6 +138,13 @@ codegen::ClosedCpuPolicy parseCandidatePolicy(const std::string &name) {
 const char *candidatePolicyUsage() {
   return "automatic|native-strict|generated-strict|generated-strict-avx|generated-strict-avx2|generated-strict-avx512f|generated-reassociate|generated-nvvm|generated-rocdl|existing-native|openblas";
 }
+codegen::ClosedHostOptimization parseOptimization(const std::string &name) {
+  if (name == "none") return codegen::ClosedHostOptimization::None;
+  if (name == "publication-read-forwarding")
+    return codegen::ClosedHostOptimization::PublicationReadForwarding;
+  reject("unknown region optimization: " + name);
+}
+const char *optimizationUsage() { return "none|publication-read-forwarding"; }
 Installation::Installation()
     : installed(layout()), clang(Artifact::capture(REGION_CLANG, REGION_CLANG_SHA)),
       linker(Artifact::capture(REGION_LINKER, REGION_LINKER_SHA)),

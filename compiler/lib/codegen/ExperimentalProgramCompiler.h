@@ -23,10 +23,12 @@ struct ExperimentalProgramCompilationResult {
 // module argument is accepted. No cross-region mathematical transform occurs.
 ExperimentalProgramCompilationResult compileExperimentalProgramToLLVM(
     const std::vector<ExperimentalProgramSource> &, const std::string &working_directory,
-    const ExperimentalCompilerInputs &, ClosedCpuPolicy = ClosedCpuPolicy::Automatic);
+    const ExperimentalCompilerInputs &, ClosedCpuPolicy = ClosedCpuPolicy::Automatic,
+    ClosedHostOptimization = ClosedHostOptimization::None);
 // Compiler test-only deterministic mutation seam, not source or CLI authority.
 ExperimentalProgramCompilationResult compileExperimentalProgramToLLVMForTesting(
     const std::vector<ExperimentalProgramSource> &, const std::string &working_directory,
     const ExperimentalCompilerInputs &, ClosedCpuPolicy,
-    const std::function<void()> &after_interface_capture);
+    const std::function<void()> &after_interface_capture,
+    ClosedHostOptimization = ClosedHostOptimization::None);
 } // namespace matcore::mdslc::codegen

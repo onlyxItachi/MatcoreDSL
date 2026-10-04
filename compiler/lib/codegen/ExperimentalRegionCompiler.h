@@ -41,13 +41,15 @@ struct ExperimentalLLVMCompilationResult {
 ExperimentalLLVMCompilationResult compileExperimentalRegionToLLVM(
     const frontend::AuthenticatedClosedRegionEvidence &,
     const ExperimentalCompilerInputs &,
-    ClosedCpuPolicy policy = ClosedCpuPolicy::Automatic);
+    ClosedCpuPolicy policy = ClosedCpuPolicy::Automatic,
+    ClosedHostOptimization optimization = ClosedHostOptimization::None);
 
 // Noninstalled deterministic staging test seam. No runtime/source option or
 // driver argument exposes this callback; all issued-byte checks still apply.
 ExperimentalLLVMCompilationResult compileExperimentalRegionToLLVMForTesting(
     const frontend::AuthenticatedClosedRegionEvidence &,
     const ExperimentalCompilerInputs &, ClosedCpuPolicy,
-    const std::function<void()> &after_staging);
+    const std::function<void()> &after_staging,
+    ClosedHostOptimization optimization = ClosedHostOptimization::None);
 
 } // namespace matcore::mdslc::codegen

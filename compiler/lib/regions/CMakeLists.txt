@@ -47,7 +47,8 @@ target_link_libraries(matcore_closed_region_admission PUBLIC
 mdslc_target_enable_warnings(matcore_closed_region_admission)
 mdslc_target_match_llvm_rtti(matcore_closed_region_admission)
 
-add_library(matcore_closed_host_emitter STATIC ../codegen/ClosedHostEmitter.cpp)
+add_library(matcore_closed_host_emitter STATIC ../codegen/ClosedHostEmitter.cpp
+  ../codegen/ClosedHostDerivedPlan.cpp)
 target_compile_features(matcore_closed_host_emitter PUBLIC cxx_std_20)
 target_include_directories(matcore_closed_host_emitter PUBLIC ../codegen)
 target_link_libraries(matcore_closed_host_emitter PUBLIC matcore_closed_region_admission)

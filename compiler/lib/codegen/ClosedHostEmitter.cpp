@@ -1,8 +1,4 @@
 #include "ClosedHostEmitter.h"
-#include "llvm/ADT/StringExtras.h"
-#include "llvm/Support/SHA256.h"
-
-#include <algorithm>
 #include <array>
 #include <map>
 #include <sstream>
@@ -11,13 +7,6 @@
 namespace matcore::mdslc::codegen {
 namespace {
 namespace cr = closed_region;
-
-bool digest(const std::string &value) {
-  return value.size() == 64 &&
-         std::all_of(value.begin(), value.end(), [](char c) {
-           return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
-         });
-}
 
 std::string value(cr::Id id) { return "value_" + std::to_string(id); }
 std::string resource(cr::Id id) { return "resource_" + std::to_string(id); }
@@ -42,7 +31,11 @@ std::string dimension(const cr::Dimension &dim) {
 
 class Emitter {
 public:
-  explicit Emitter(ClosedHostEmission &result) : result_(result) {}
+  Emitter(ClosedHostEmission &result, const ClosedHostDerivedPlan &plan)
+      : result_(result) {
+    for (const auto &read : plan.forwardedReads())
+      forwarding_.emplace(read.read_frontier, read.value);
+  }
 
   void body(const std::vector<cr::Operation> &operations, unsigned depth) {
     const std::string indent(depth * 2, ' ');
@@ -55,9 +48,15 @@ public:
       switch (op.kind) {
       case cr::Operation::Kind::Read:
         output_ << indent << "mch::Value " << value(op.result) << ";\n";
-        call = "read(" + at + ", " + resource(op.resource) + ", " +
-               dimension(op.rows) + ", " + dimension(op.columns) + ", " +
-               value(op.result) + ")";
+        if (const auto forwarded = forwarding_.find(frontier);
+            forwarded != forwarding_.end())
+          call = "readForwarded(" + at + ", " + resource(op.resource) + ", " +
+                 dimension(op.rows) + ", " + dimension(op.columns) + ", " +
+                 value(forwarded->second) + ", " + value(op.result) + ")";
+        else
+          call = "read(" + at + ", " + resource(op.resource) + ", " +
+                 dimension(op.rows) + ", " + dimension(op.columns) + ", " +
+                 value(op.result) + ")";
         break;
       case cr::Operation::Kind::Gemm:
         output_ << indent << "mch::Value " << value(op.result) << ";\n";
@@ -102,6 +101,7 @@ public:
 
 private:
   ClosedHostEmission &result_;
+  std::map<std::uint64_t, cr::Id> forwarding_;
   std::ostringstream output_;
   std::uint64_t next_frontier_ = 1;
 };
@@ -109,39 +109,29 @@ private:
 
 ClosedHostEmissionResult emitClosedHostV1(
     const frontend::AuthenticatedClosedRegionEvidence &evidence) {
+  auto derived = deriveClosedHostPlan(evidence, ClosedHostOptimization::None);
+  if (!derived) return {{}, std::move(derived.error)};
+  return emitClosedHostV1(evidence, *derived.plan);
+}
+
+ClosedHostEmissionResult emitClosedHostV1(
+    const frontend::AuthenticatedClosedRegionEvidence &evidence,
+    const ClosedHostDerivedPlan &plan) {
   ClosedHostEmissionResult result;
-  if (!evidence.hasHostContext()) {
-    result.error = "closed host emission requires authenticated real host context";
-    return result;
-  }
+  if (!verifyClosedHostPlan(evidence, plan, result.error)) return result;
   const auto &program = evidence.program();
   const auto &host_identity = evidence.hostContextIdentity();
-  if (program.regions.size() != 1 || !digest(program.source_sha256) ||
-      !host_identity.starts_with("sha256:") ||
-      !digest(host_identity.substr(7))) {
-    result.error = "closed host emission requires one region and complete identities";
-    return result;
-  }
-  mlir::MLIRContext context;
-  auto witness = cr::buildModule(program, context);
-  if (!witness) {
-    result.error = witness.error;
-    return result;
-  }
-  if (!frontend::verifyClosedRegionMatchesEvidence(
-          evidence, *witness.module, result.error))
-    return result;
 
   ClosedHostEmission emission;
   emission.source_sha256 = program.source_sha256;
   emission.host_context_sha256 = host_identity.substr(7);
-  const auto semantic_text = cr::printModule(*witness.module);
-  emission.semantic_sha256 = llvm::toHex(
-      llvm::SHA256::hash(llvm::arrayRefFromStringRef(semantic_text)), true);
+  emission.semantic_sha256 = plan.semanticIdentity();
   // A TU may contain multiple selected regions under the same source/context
   // hashes. Bind the complete paired graph, including its selected function and
   // source sites, rather than allowing those different functions to collide.
-  emission.symbol = "region_" + emission.semantic_sha256;
+  emission.plan_sha256 = plan.identity();
+  emission.optimization = plan.optimization();
+  emission.symbol = "region_" + emission.semantic_sha256 + "_" + emission.plan_sha256;
 
   // By-value descriptor bindings match the source parameter boundary. Resource
   // validity is deliberately NOT checked here: a late or untaken-arm resource
@@ -186,7 +176,7 @@ ClosedHostEmissionResult emitClosedHostV1(
     unused_bindings += "  (void)" + resource(item.id) + ";\n";
   for (const auto &item : region.shape_parameters)
     unused_bindings += "  (void)" + shape(item.id) + ";\n";
-  Emitter emitter(emission);
+  Emitter emitter(emission, plan);
   emitter.body(region.body, 1);
   emission.implementation = prefix + signature + " {\n" + pristine + unused_bindings +
                             emitter.takeBody() + "}\n}\n";

@@ -10,8 +10,10 @@ struct ProgramInvocation {
   std::vector<Source> sources;
   fs::path output;
   codegen::ClosedCpuPolicy policy = codegen::ClosedCpuPolicy::Automatic;
+  codegen::ClosedHostOptimization optimization = codegen::ClosedHostOptimization::None;
   std::vector<std::string> host_options;
   bool compile_only = false;
+  bool optimization_seen = false;
 };
 ProgramInvocation parseProgram(int argc, char **argv) {
   ProgramInvocation result;
@@ -30,6 +32,11 @@ ProgramInvocation parseProgram(int argc, char **argv) {
       result.output = fs::absolute(next());
     } else if (argument == "-c") result.compile_only = true;
     else if (argument == "--candidate") result.policy = parseCandidatePolicy(next());
+    else if (argument == "--optimization") {
+      if (result.optimization_seen) reject("duplicate --optimization");
+      result.optimization_seen = true;
+      result.optimization = parseOptimization(next());
+    }
     else if (argument == "--") {
       for (++i; i < argc; ++i) {
         const std::string option = argv[i];
@@ -41,7 +48,7 @@ ProgramInvocation parseProgram(int argc, char **argv) {
   if (result.sources.size() < 2 || result.sources.size() > 8 || result.output.empty())
     reject(std::string("usage: mdslc-region --program --host SOURCE --region SOURCE NAME "
       "[--host SOURCE | --region SOURCE NAME ...] [-c] [--candidate ") +
-      candidatePolicyUsage() + "] -o NEW_OUTPUT [-- bounded C++ include/macro options]; 2..8 TUs");
+      candidatePolicyUsage() + "] [--optimization " + optimizationUsage() + "] -o NEW_OUTPUT [-- bounded C++ include/macro options]; 2..8 TUs");
   return result;
 }
 } // namespace
@@ -56,7 +63,7 @@ int runProgram(int argc, char **argv) {
   for (const auto &source : args.sources)
     sources.push_back({installation.options(source.path, args.host_options), source.region});
   auto compilation = codegen::compileExperimentalProgramToLLVM(sources, fs::current_path().string(),
-      installation.compilerInputs(staging.path / "helper"), args.policy);
+      installation.compilerInputs(staging.path / "helper"), args.policy, args.optimization);
   if (!compilation) reject(compilation.error);
   auto unchanged = [&] {
     std::string error;
