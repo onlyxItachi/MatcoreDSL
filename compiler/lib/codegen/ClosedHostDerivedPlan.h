@@ -9,7 +9,7 @@ namespace matcore::mdslc::codegen {
 
 // Private compilation choice, orthogonal to candidate/target selection. None
 // retains the original read-at-frontier snapshot realization.
-enum class ClosedHostOptimization { None, PublicationReadForwarding };
+enum class ClosedHostOptimization { None, PublicationReadForwarding, StrictFusedPair };
 const char *closedHostOptimizationName(ClosedHostOptimization) noexcept;
 
 struct ClosedHostForwardedRead {
@@ -20,6 +20,16 @@ struct ClosedHostForwardedRead {
   closed_region::Id resource = 0;
   closed_region::Id value = 0;
   bool operator==(const ClosedHostForwardedRead &) const = default;
+};
+// Original semantic IDs/frontiers only. The private issuer's row-panel recipe
+// is a HOW decision, not a new mathematical operation or serialized authority.
+struct ClosedHostStrictFusedPair {
+  std::uint64_t first_frontier = 0;
+  std::uint64_t second_frontier = 0;
+  closed_region::Id a = 0, b = 0, d = 0;
+  closed_region::Id intermediate = 0, result = 0;
+  std::uint64_t a_read_frontier = 0, b_read_frontier = 0, d_read_frontier = 0;
+  bool operator==(const ClosedHostStrictFusedPair &) const = default;
 };
 struct ClosedHostDerivedPlanResult;
 
@@ -34,6 +44,7 @@ public:
   // Moved-from queries diagnose invalid use rather than dereference a payload.
   ClosedHostOptimization optimization() const;
   const std::vector<ClosedHostForwardedRead> &forwardedReads() const;
+  const std::vector<ClosedHostStrictFusedPair> &strictFusedPairs() const;
   const std::string &identity() const;
   const std::string &semanticIdentity() const;
 
@@ -66,6 +77,9 @@ bool verifyClosedHostPlan(const frontend::AuthenticatedClosedRegionEvidence &,
 bool verifyClosedHostForwardingProposal(
     const frontend::AuthenticatedClosedRegionEvidence &, ClosedHostOptimization,
     const std::vector<ClosedHostForwardedRead> &, std::string &error);
+bool verifyClosedHostFusedPairProposal(
+    const frontend::AuthenticatedClosedRegionEvidence &, ClosedHostOptimization,
+    const std::vector<ClosedHostStrictFusedPair> &, std::string &error);
 
 } // namespace matcore::mdslc::codegen
 #endif

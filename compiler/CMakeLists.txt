@@ -687,6 +687,7 @@ if(BUILD_TESTING)
       "-DINSTALL_BINDIR=${CMAKE_INSTALL_BINDIR}"
       "-DENABLED=${MDSLC_ENABLE_EXPERIMENTAL_REGIONS}"
       "-DHAS_OPENBLAS=${MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS}"
+      "-DHAS_FUSED_PAIR=${MDSLC_CLOSED_CPU_X86}"
       "-DPROVIDER=${region_package_provider}"
       "-DACCELERATORS=${region_package_accelerators}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/experimental_regions_install.cmake")
@@ -1030,7 +1031,8 @@ if(BUILD_TESTING)
             --clang "${MDSLC_CLANGXX_EXECUTABLE}"
             --llvm-dir "${LLVM_DIR}" --clang-dir "${Clang_DIR}" --mlir-dir "${MLIR_DIR}"
             --schedule "${MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE}"
-            --linker-launcher "${CMAKE_CXX_LINKER_LAUNCHER}" --nm "${CMAKE_NM}")
+            --linker-launcher "${CMAKE_CXX_LINKER_LAUNCHER}" --nm "${CMAKE_NM}"
+            --has-fused-pair "${MDSLC_CLOSED_CPU_X86}")
         set_tests_properties(package.experimental_regions.closed_source_inaccessible
           PROPERTIES RUN_SERIAL TRUE TIMEOUT 1200)
       endif()

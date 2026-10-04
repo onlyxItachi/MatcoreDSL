@@ -77,6 +77,16 @@ in `context.md`.
   extent/shape and descriptor guard order, frontier/source identity and owning
   observations. A diagnostic proposal verifier is not a plan issuer; serialized
   attributes confer no authority. See `docs/mdslc/PUBLICATION_READ_FORWARDING_V1.md`.
+  The separately explicit `--optimization strict-fused-pair` is bounded to
+  adjacent pure strict lhs-chain GEMMs with dominating immutable Read inputs
+  and no other retained intermediate use, including semantic dimensions and
+  both control arms. Linux x64 `generated-strict` is the only eligible forced
+  candidate; automatic/default selection does not dispatch this recipe. Keep
+  the unchanged original witness, both original source/frontier guard retirements
+  and full logical intermediate extent even for empty final output. Private
+  row-panel scratch/output are checked by the adapter, not allocated in MLIR;
+  no materialized-intermediate/two-invocation claim follows from guard retirement.
+  See `docs/mdslc/STRICT_FUSED_PAIR_SOURCE_V1.md`.
   Pure source-visible mathematical helpers may be defined in ordinary included
   headers under the same closed grammar, including its existing bounded
   Sema-resolved template instantiations. Each body is owned by its actual Clang

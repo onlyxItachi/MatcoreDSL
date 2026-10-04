@@ -44,6 +44,19 @@ add_test(NAME frontend.experimental_source_generated_execution
 set_tests_properties(frontend.experimental_source_generated_execution PROPERTIES TIMEOUT 180)
 
 if(TARGET mdslc-region)
+  if(MDSLC_CLOSED_CPU_X86)
+    foreach(pair_mode IN ITEMS generated-strict program)
+      set(program OFF)
+      if(pair_mode STREQUAL "program")
+        set(program ON)
+      endif()
+      add_test(NAME driver.strict_fused_pair.${pair_mode}
+        COMMAND "${CMAKE_COMMAND}" "-DDRIVER=$<TARGET_FILE:mdslc-region>"
+          "-DNM=${CMAKE_NM}" "-DPROGRAM=${program}"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/strict_fused_pair.cmake")
+      set_tests_properties(driver.strict_fused_pair.${pair_mode} PROPERTIES TIMEOUT 300)
+    endforeach()
+  endif()
   set(forwarding_policies native-strict generated-strict automatic)
   if(MDSLC_CLOSED_CPU_X86)
     list(APPEND forwarding_policies generated-strict-avx generated-strict-avx2

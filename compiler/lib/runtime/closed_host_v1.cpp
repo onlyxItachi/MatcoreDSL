@@ -4,6 +4,7 @@
 #include "../platform/closed_cpu_isa_v1.h"
 
 #include <cfenv>
+#include <algorithm>
 #include <cerrno>
 #include <array>
 #include <bit>
@@ -110,7 +111,8 @@ SessionAbiV2::~SessionAbiV2() noexcept { release(observations_); }
 namespace {
 #if defined(MDSLC_CLOSED_HOST_GENERATED_STRICT) || \
     defined(MDSLC_CLOSED_HOST_GENERATED_REASSOCIATE) || \
-    defined(MDSLC_CLOSED_HOST_GENERATED_STRICT_ISA)
+    defined(MDSLC_CLOSED_HOST_GENERATED_STRICT_ISA) || \
+    defined(MDSLC_HAS_FUSED_PAIR_CPU_V1)
 // Private pinned MLIR 21 Linux LP64 identity-memref ABI, never an installed type.
 struct GeneratedMemref {
   float *allocated;
@@ -125,6 +127,11 @@ static_assert(offsetof(GeneratedMemref, sizes) == 24 &&
 #if defined(MDSLC_CLOSED_HOST_GENERATED_STRICT)
 extern "C" void _mlir_ciface___matcore_strict_gemm_f32_v1(
     GeneratedMemref *, GeneratedMemref *, GeneratedMemref *);
+#endif
+#if defined(MDSLC_HAS_FUSED_PAIR_CPU_V1)
+extern "C" void _mlir_ciface___matcore_strict_fused_gemm_f32_v1(
+    GeneratedMemref *, GeneratedMemref *, GeneratedMemref *, GeneratedMemref *,
+    GeneratedMemref *);
 #endif
 #if defined(MDSLC_CLOSED_HOST_GENERATED_STRICT_ISA)
 extern "C" void _mlir_ciface___matcore_strict_gemm_f32_avx_v1(
@@ -709,6 +716,125 @@ Status SessionAbiV2::gemm(Frontier frontier, const Value &lhs, const Value &rhs,
   candidate_report_.value_issued = true;
   return succeed(frontier);
 }
+Status SessionAbiV2::gemmStrictFusedPair(
+    Frontier f1, Frontier f2, const Value &a, const Value &b, const Value &d,
+    Numeric first, Numeric second, Value &result) noexcept {
+  std::uint64_t m = 0, n = 0;
+  const auto pairLegality = [&](Numeric numeric) noexcept {
+    // Retain original candidate legality before any logical result extent.
+    auto code = candidateLegality(options_.candidate, numeric);
+    if (code != Code::ok) return code;
+    if (options_.candidate != Candidate::generated_strict ||
+        numeric != Numeric::strict_f32)
+      return Code::candidate_incompatible;
+#if defined(MDSLC_CLOSED_HOST_TESTING)
+    // Arbitrary code/status/control changes cannot satisfy the trusted no-error
+    // strict pair contract. In particular never inherit single-GEMM injection.
+    if (test_candidate_ != nullptr) return Code::candidate_incompatible;
+#endif
+#if !defined(MDSLC_HAS_FUSED_PAIR_CPU_V1)
+    return Code::candidate_unavailable;
+#else
+    return Code::ok;
+#endif
+  };
+  {
+    if (!begin(f1)) return status_;
+    ActiveCall active(*this);
+    candidate_report_ = {f1, options_.candidate, Implementation::none, first};
+    const auto rejected = [&](Code code) noexcept {
+      candidate_report_.code = code;
+      return fail(code, f1);
+    };
+    // Sanity of this private two-frontier protocol, not a new source predicate.
+    if (f1 == std::numeric_limits<Frontier>::max() || f2 != f1 + 1)
+      return rejected(Code::invalid_frontier);
+    if (!a.valid() || !b.valid()) return rejected(Code::invalid_value);
+    if (first != Numeric::strict_f32 && first != Numeric::reassociate_f32)
+      return rejected(Code::invalid_value);
+    if (a.columns() != b.rows()) return rejected(Code::shape_mismatch);
+    auto code = pairLegality(first);
+    if (code != Code::ok) return rejected(code);
+    m = a.rows();
+    n = b.columns();
+    std::size_t logical_c_elements = 0;
+    code = extent(m, n, logical_c_elements);
+    if (code != Code::ok) return rejected(code);
+    // The original full C allocation opportunity is removed, not its signed
+    // dimension/product/byte guards or original FP entry/control/restore.
+    // C is unobservable and pure; the issued no-error control-preserving leaf
+    // may defer its physical arithmetic until after consumer preconditions.
+    // The optimized object's allowed conforming memset has bounded private
+    // writes and no recoverable error/arbitrary effects/control changes. This
+    // argument does not locate failures of arbitrary providers or interposers.
+    ScopedFp environment;
+    if (!environment.valid()) return rejected(Code::unsupported_fp_environment);
+    const bool unchanged = environment.controlsUnchanged();
+    environment.restore();
+    if (!unchanged) return rejected(Code::candidate_failure);
+    if (!status_) { candidate_report_.code = status_.code; return status_; }
+    // Deliberately no invocation_attempted or value_issued claim for guard-only C.
+    succeed(f1);
+  }
+  if (!begin(f2)) return status_;
+  ActiveCall active(*this);
+  candidate_report_ = {f2, options_.candidate, Implementation::none, second};
+  const auto rejected = [&](Code code) noexcept {
+    candidate_report_.code = code;
+    return fail(code, f2);
+  };
+  // Do not inspect D or second profile before f1's complete guard retirement.
+  if (!d.valid()) return rejected(Code::invalid_value);
+  if (second != Numeric::strict_f32 && second != Numeric::reassociate_f32)
+    return rejected(Code::invalid_value);
+  if (n != d.rows()) return rejected(Code::shape_mismatch);
+  auto code = pairLegality(second);
+  if (code != Code::ok) return rejected(code);
+  Value output, workspace;
+  code = allocate(m, d.columns(), output);
+  if (code != Code::ok) return rejected(code);
+  // Only nonempty work needs scratch. All original logical C checks already
+  // occurred even if E or C is empty; never enter a huge zero-output panel loop.
+  if (!output.storage_->elements.empty() && n != 0) {
+    code = allocate(std::min(std::uint64_t{4}, m), n, workspace);
+    if (code != Code::ok) return rejected(code);
+  }
+  ScopedFp environment;
+  if (!environment.valid()) return rejected(Code::unsupported_fp_environment);
+  if (output.storage_->elements.empty()) {
+    candidate_report_.actual = Implementation::empty_output;
+  } else if (n == 0) {
+    // Consumer zero reduction, not producer K==0. Initialization is +0.
+    candidate_report_.actual = Implementation::zero_reduction;
+  } else {
+#if defined(MDSLC_HAS_FUSED_PAIR_CPU_V1)
+    auto a_descriptor = descriptor(*a.storage_);
+    auto b_descriptor = descriptor(*b.storage_);
+    auto d_descriptor = descriptor(*d.storage_);
+    auto e_descriptor = descriptor(*output.storage_);
+    auto scratch_descriptor = descriptor(*workspace.storage_);
+    candidate_report_.actual = Implementation::generated_strict_fused_pair;
+    candidate_report_.invocation_attempted = true;
+    candidate_report_.actual_threads = 1;
+    // Checked dense private buffers are mutually disjoint and input-disjoint.
+    // Inputs may alias. K==0 is legal with empty/null A/B and still computes
+    // +0 * D in the consumer; this leaf has no recoverable error/callback.
+    _mlir_ciface___matcore_strict_fused_gemm_f32_v1(
+        &a_descriptor, &b_descriptor, &d_descriptor, &e_descriptor,
+        &scratch_descriptor);
+#else
+    code = Code::candidate_unavailable;
+#endif
+  }
+  if (!environment.controlsUnchanged()) code = Code::candidate_failure;
+  environment.restore();
+  if (!status_) { candidate_report_.code = status_.code; return status_; }
+  if (code != Code::ok) return rejected(code);
+  // Preserve old output on every failure and support output/input handle alias.
+  result = std::move(output);
+  candidate_report_.value_issued = true;
+  return succeed(f2);
+}
 Status SessionAbiV2::publish(Frontier frontier, const Value &value,
                         ResourceView destination) noexcept {
   if (!begin(frontier)) return status_;
@@ -838,6 +964,8 @@ const char *implementationName(Implementation implementation) noexcept {
   case Implementation::generated_strict_avx512f: return "closed.generated.strict_f32.mlir21.avx512f.v1";
   case Implementation::generated_reassociate:
     return "closed.generated.reassociate_f32.avx2_fma.mlir21.v1";
+  case Implementation::generated_strict_fused_pair:
+    return "closed.generated.strict_fused_pair_f32.mlir21.row_panel4.v1";
   case Implementation::existing_reference: return "cpu.reference.f32.v1";
   case Implementation::authenticated_openblas: return "cpu.external.openblas.f32.v1";
   case Implementation::empty_output: return "closed.semantic.empty_output.v1";

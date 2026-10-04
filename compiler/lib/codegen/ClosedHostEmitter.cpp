@@ -35,11 +35,14 @@ public:
       : result_(result) {
     for (const auto &read : plan.forwardedReads())
       forwarding_.emplace(read.read_frontier, read.value);
+    for (const auto &pair : plan.strictFusedPairs())
+      pairs_.emplace(pair.first_frontier, pair);
   }
 
   void body(const std::vector<cr::Operation> &operations, unsigned depth) {
     const std::string indent(depth * 2, ' ');
-    for (const auto &op : operations) {
+    for (std::size_t index = 0; index < operations.size(); ++index) {
+      const auto &op = operations[index];
       const auto frontier = next_frontier_++;
       result_.frontiers.push_back(
           {frontier, op.kind, op.site, op.helper_calls});
@@ -59,6 +62,21 @@ public:
                  value(op.result) + ")";
         break;
       case cr::Operation::Kind::Gemm:
+        if (const auto selected = pairs_.find(frontier); selected != pairs_.end()) {
+          const auto &pair = selected->second;
+          // The verified canonical plan selects the immediately following
+          // operation, but BOTH unchanged original source ledgers survive.
+          const auto &consumer = operations.at(++index);
+          result_.frontiers.push_back(
+              {next_frontier_++, consumer.kind, consumer.site, consumer.helper_calls});
+          output_ << indent << "mch::Value " << value(pair.result) << ";\n";
+          call = "gemmStrictFusedPair(" + at + ", " +
+                 std::to_string(pair.second_frontier) + ", " + value(pair.a) + ", " +
+                 value(pair.b) + ", " + value(pair.d) +
+                 ", mch::Numeric::strict_f32, mch::Numeric::strict_f32, " +
+                 value(pair.result) + ")";
+          break;
+        }
         output_ << indent << "mch::Value " << value(op.result) << ";\n";
         call = "gemm(" + at + ", " + value(op.lhs) + ", " + value(op.rhs) +
                ", mch::Numeric::" +
@@ -102,6 +120,7 @@ public:
 private:
   ClosedHostEmission &result_;
   std::map<std::uint64_t, cr::Id> forwarding_;
+  std::map<std::uint64_t, ClosedHostStrictFusedPair> pairs_;
   std::ostringstream output_;
   std::uint64_t next_frontier_ = 1;
 };
