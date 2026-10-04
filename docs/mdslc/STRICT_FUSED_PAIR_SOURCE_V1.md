@@ -120,21 +120,28 @@ plan hash; installed header snapshots and intrinsic private DSO ownership remain
 The contract-first independent runtime test was authored before reading this
 adapter implementation. It ran 204 checks with ASan/UBSan and genuine issued
 single/pair ASan objects, zero failures and no sanitizer diagnostics. This is
-focused private runtime evidence, not yet source-connected or package acceptance.
+focused private runtime evidence, not by itself source-connected or package acceptance.
 
-Required source qualification uses the same .mdsl source with none versus
+Focused source qualification uses the same .mdsl source with none versus
 strict-fused-pair, requires the optimized executable's actual undefined reference
 to `gemmStrictFusedPair` and its absence in the baseline, then executes independent
 two-stage strict-f32 oracles, original failure/source/effect prefixes and whole FP
 checks. The 22 source cases include panel tails, reduction/FMA/intermediate-rounding
 discriminators, first-K0 Inf/NaN, N0 +0, M0/P0, identical input views, both source
 contraction failures, full-C overflow, byte overflow, final extent overflow and
-huge legal empty termination. Single-/multi-source, installed driver and relocated
-source/build-inaccessible package paths must be physically checked. Plan tests
+huge legal empty termination. Single-/multi-source paths have now been physically
+checked on the exact fresh `de5d09f4c59ec035482121086f0422b2476a76ff` build: each
+mode ran 659 checks and 22 cases with zero failures; both actual call-reference
+discriminators passed. The five-test set also passed the independent runtime's
+204 checks, the plan's 283 checks and the native-only macro-off control.
+Installed driver and relocated source/build-inaccessible package paths remain
+pending integration gates. Plan tests
 cover dead/live/helper dimensions, branch holes, helper ledgers and multiple
 nonoverlapping windows; diagnostic/manual proposal acceptance is not authority.
 
-Integration/full local, clean build, exact-head hosted and independent final
-review evidence are pending. The integration owner records actual results and
+Independent exact-commit review accepted `de5d09f` for composed qualification
+without blocking findings; it inspected saved execution evidence without reruns.
+Integration/full local, clean build and exact-head hosted evidence are pending.
+The integration owner records actual results and
 canonical checkpoint here after qualification; no merge or production-fusion
 acceptance is implied by this implementation/design document.

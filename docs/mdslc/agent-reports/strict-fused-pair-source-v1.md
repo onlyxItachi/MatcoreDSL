@@ -46,7 +46,11 @@ Details: [STRICT_FUSED_PAIR_SOURCE_V1.md](../STRICT_FUSED_PAIR_SOURCE_V1.md).
   `d7b0571744daf3ba2c2813708f25e6a0aa1803d9`. The only conflict was additive report
   context; both complete sections were preserved. Authorship was frozen before
   the reviewer read this runtime.
-- Later focused test/wiring/docs checkpoints: pending exact commit handoff.
+- Focused test/wiring: `8fccd8a`; contract/AGENTS: `c80b319`.
+- Root forwarding harness corrections were preserved by focused cherry-picks
+  `41d24e7` (origin `fdcde9e`) and `de5d09f` (origin `9a613c5`). No reset/rebase
+  was used. The complete fresh focused source head is
+  `de5d09f4c59ec035482121086f0422b2476a76ff`.
 
 ## Executed focused evidence
 
@@ -73,12 +77,88 @@ failures: 0`, no sanitizer diagnostics. Both generated arithmetic objects were
 genuinely ASan-instrumented, not only the host wrapper. This does not claim a
 full production registry build or authenticated source route.
 
+The initial actual tool output captured both streams and exit 0. A later saved
+repeat used `timeout 30s ... 2>&1 | tee runtime-run-combined.log` with shell
+`pipefail`, also exit 0 and 204/0, no diagnostics. The earlier
+`runtime-run.log` saves stdout only and must not alone be described as captured
+sanitizer stderr. Both logs are under `builds/fused-runtime.6WJlHf`; combined-log
+SHA-256 is `b3dbfd4215733646f28f02fba3e0aad666be1ea66cb9bcecb121030032fc6c16`.
+
 Actual nm confirmed the exact appended private method export:
 `_ZN7matcore5mdslc7runtime14closed_host_v112SessionAbiV219gemmStrictFusedPairEmmRKNS2_10ValueAbiV2ES6_S6_NS2_7NumericES7_RS4_`,
 and the genuine issued fused C-interface definition. Clang21 strict fixture
 `-std=c++20 -fsyntax-only -Wall -Wextra -Werror` passed separately.
 
-## Focused registrations and pending execution
+## Fresh composed focused qualification
+
+A new `builds/fused-source` directory was configured from the clean exact source
+head above using Release, Clang21, native/bootstrap, coherent MLIR21.1.8,
+experimental regions and the existing BLAS/NVVM/ROCDL candidate set. These extra
+candidates do not dispatch the pair. All source/production/test inputs remained
+frozen during configure, build and execution. Exact configure:
+
+```
+env TMPDIR=/home/hamza-usta/mdslc-work/region-optimization-v1/tmp \
+cmake -S compiler -B /home/hamza-usta/mdslc-work/region-optimization-v1/builds/fused-source \
+-G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=/usr/bin/clang-21 \
+-DCMAKE_CXX_COMPILER=/usr/bin/clang++-21 -DMDSLC_CLANGXX_EXECUTABLE=/usr/bin/clang++-21 \
+-DMDSLC_ENABLE_NATIVE_FRONTEND=ON -DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=ON \
+-DMDSLC_ENABLE_MATCORE_MLIR=ON -DMDSLC_ENABLE_EXPERIMENTAL_REGIONS=ON \
+-DMDSLC_ENABLE_EXPERIMENTAL_GPU_ISSUER=ON -DMDSLC_ENABLE_EXPERIMENTAL_NVVM=ON \
+-DMDSLC_ENABLE_EXPERIMENTAL_ROCDL=ON -DMDSLC_ENABLE_OPENBLAS=ON \
+-DMDSLC_REQUIRE_OPENBLAS=OFF -DMDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE=scalar \
+-DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm -DClang_DIR=/usr/lib/cmake/clang-21 \
+-DMLIR_DIR=/home/hamza-usta/.local/toolchains/mlir-21.1.8-6ubuntu1/usr/lib/llvm-21/lib/cmake/mlir \
+'-DCMAKE_CXX_LINKER_LAUNCHER=flock;/home/hamza-usta/mdslc-work/region-optimization-v1/builds/heavy-link.lock'
+```
+
+One-job build of `matcore_closed_host_strict_fused_pair_plan_tests`,
+`matcore_closed_host_strict_fused_pair_independent_tests`,
+`matcore_closed_host_production_tests` and `mdslc-region` passed 140/140 steps.
+This is a focused build, not the full standalone target graph. Generated MLIR
+and existing CUDA-header warnings were inherited; no build error occurred.
+The actual fused object gate ran as part of production DSO assembly.
+
+The exact focused run, with the shared lock also covering child compiler/link
+commands, was:
+
+```
+env TMPDIR=/home/hamza-usta/mdslc-work/region-optimization-v1/tmp \
+flock /home/hamza-usta/mdslc-work/region-optimization-v1/builds/heavy-link.lock \
+ctest --test-dir /home/hamza-usta/mdslc-work/region-optimization-v1/builds/fused-source \
+--parallel 1 -V \
+-R '^(frontend.closed_host_strict_fused_pair_plan_v1|runtime.closed_host.strict_fused_pair_independent_v1|runtime.closed_host.production_v1|driver.strict_fused_pair.generated-strict|driver.strict_fused_pair.program)$'
+```
+
+Combined stdout/stderr was saved through `2>&1 | tee composed-focused.log` with
+`pipefail`. Exit 0, **5/5 passed**, 79.89 seconds, no skipped tests or failures:
+
+- Independent runtime: 204 checks, zero failures, actual matched production
+  registry with genuine issued normal single/pair objects.
+- Native-only production control: existing scalar execution plus macro-off
+  pair unavailable/sticky/no-output-mutation assertions.
+- Derived plan: 283 checks, zero failures, including helper ledgers, dead/live
+  dimensions, unequal branch holes and independent windows.
+- Single-source: both none and strict-fused-pair each passed 659 checks,
+  22 executed cases, zero failures. Actual executable undefined-reference
+  discriminator and all incompatible/default/zero-pair/duplicate negatives passed.
+- Multi-source: both modes likewise passed 659 checks and 22 cases; the genuine
+  program compiler path, call-reference discriminator and negative gates passed.
+
+Logs are under `builds/fused-runtime.6WJlHf`:
+
+- `composed-build.log`, SHA-256
+  `0efd62fb6d93392a69a3db0464678972f61485d53cd8873e63e78777c350139a`.
+- `composed-focused.log`, SHA-256
+  `6793d583c9baae6540c17e9b05d49217f196651ecf64f5ead51bd006975e94d2`.
+
+The independent reviewer accepted exact `de5d09f` for composed qualification,
+no blocking code/authority findings, in report commit `499862e`. It inspected
+fresh configure/artifact binding and saved execution evidence but did not rerun
+tests. Review, physical focused execution, package and full/hosted qualification
+remain distinct evidence categories.
+
+## Focused registrations and remaining gates
 
 - `frontend.closed_host_strict_fused_pair_plan_v1`: canonical legality/proposal
   falsifiers, whole Program dimensions/control arms, dead pure queries,
@@ -95,7 +175,10 @@ and the genuine issued fused C-interface definition. Clang21 strict fixture
   copy their genuine fixture before producer removal and never use deleted
   source paths. No nested package tests have been run by this agent.
 
-Connected source, coherent composed builds/tests, independent exact-commit review,
-clean full suite, hosted lanes and canonical integration remain separate pending
-gates. The forwarding qualification predecessor must complete before this branch
-can merge. Issuer-only experiments and inspection do not substitute for these.
+Connected source and focused coherent composition/review now pass as recorded.
+Installed/source-inaccessible, clean full suite, hosted lanes and canonical
+integration remain separate pending gates. The forwarding predecessor merged
+normally in PR #78 at `355e281fe0de4e54c03243d332eafbbe2095591b`; this does not
+merge or qualify the new pair. Issuer-only experiments and inspection do not
+substitute for the remaining composed gates. No further code edits/builds were
+started after the focused run; root owns the next integration/full qualification.
