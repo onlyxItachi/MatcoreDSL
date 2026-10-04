@@ -1,3 +1,4 @@
+include(RuntimeTests.cmake)
 if(NOT TARGET matcore_gpu_fused_gemm_candidate)
   return()
 endif()
