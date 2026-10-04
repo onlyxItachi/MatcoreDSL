@@ -14,6 +14,12 @@ extern const unsigned char mdslc_rocdl_fill_image_v1[];
 extern const std::size_t mdslc_rocdl_fill_image_v1_size;
 extern const unsigned char mdslc_rocdl_gemm_image_v1[];
 extern const std::size_t mdslc_rocdl_gemm_image_v1_size;
+extern const unsigned char mdslc_nvvm_fused_pair_image_v1[];
+extern const std::size_t mdslc_nvvm_fused_pair_image_v1_size;
+extern const unsigned char mdslc_rocdl_fused_pair_image_v1[];
+extern const std::size_t mdslc_rocdl_fused_pair_image_v1_size;
 inline constexpr char kGpuStrictGemmKernelV1[] = "__matcore_strict_gemm_f32_v1_kernel";
+inline constexpr char kGpuStrictFusedPairKernelV1[] =
+    "__matcore_strict_fused_gemm_f32_v1_kernel";
 } // namespace matcore::mdslc::runtime::closed_host_v1::detail
 #endif

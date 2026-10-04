@@ -51,6 +51,26 @@ void numericalKernel(void **args, bool fill, unsigned m, unsigned n) {
         }
   }
 }
+#if defined(MDSLC_TEST_GPU_FUSED_PAIR)
+void numericalPair(void **args) {
+  auto data = [&](int offset) { return *static_cast<float **>(args[offset + 1]); };
+  auto dim = [&](int offset) { return *static_cast<std::int64_t *>(args[offset]); };
+  const auto m = dim(3), k = dim(4), n = dim(11), p = dim(18);
+  if (dim(31) != (m < 4 ? m : 4) || dim(32) != n) std::abort();
+  for (std::int64_t i = 0; i < m; ++i) {
+    for (std::int64_t j = 0; j < n; ++j) {
+      float sum = 0;
+      for (std::int64_t r = 0; r < k; ++r) sum += data(0)[i*k+r]*data(7)[r*n+j];
+      data(28)[(i%4)*n+j] = sum;
+    }
+    for (std::int64_t j = 0; j < p; ++j) {
+      float sum = 0;
+      for (std::int64_t r = 0; r < n; ++r) sum += data(28)[(i%4)*n+r]*data(14)[r*p+j];
+      data(21)[i*p+j] = sum;
+    }
+  }
+}
+#endif
 } // namespace
 
 namespace matcore::mdslc::runtime::closed_host_v1::detail {
@@ -58,6 +78,10 @@ const unsigned char mdslc_rocdl_fill_image_v1[] = {1};
 const unsigned char mdslc_rocdl_gemm_image_v1[] = {2};
 const std::size_t mdslc_rocdl_fill_image_v1_size = 1;
 const std::size_t mdslc_rocdl_gemm_image_v1_size = 1;
+#if defined(MDSLC_TEST_GPU_FUSED_PAIR)
+extern const unsigned char mdslc_rocdl_fused_pair_image_v1[64] = {3};
+extern const std::size_t mdslc_rocdl_fused_pair_image_v1_size = 64;
+#endif
 }
 extern "C" {
 hipError_t hipGetDeviceCount(int *count) {
@@ -79,11 +103,22 @@ hipError_t hipStreamCreateWithFlags(hipStream_t *stream, unsigned flags) {
 }
 hipError_t hipModuleLoadData(hipModule_t *module, const void *image) {
   auto e = step(); if (e != hipSuccess) return e;
+#if defined(MDSLC_TEST_GPU_FUSED_PAIR)
+  if (image == detail::mdslc_rocdl_fused_pair_image_v1) {
+    *module = fake<hipModule_t>(4); return e;
+  }
+#endif
   *module = fake<hipModule_t>(image == detail::mdslc_rocdl_fill_image_v1 ? 2 : 3);
   return e;
 }
 hipError_t hipModuleGetFunction(hipFunction_t *fn, hipModule_t module, const char *name) {
   auto e = step(); if (e != hipSuccess) return e;
+#if defined(MDSLC_TEST_GPU_FUSED_PAIR)
+  if (module == fake<hipModule_t>(4)) {
+    if (std::strcmp(name, detail::kGpuStrictFusedPairKernelV1)) return hipErrorInvalidValue;
+    *fn = fake<hipFunction_t>(4); return e;
+  }
+#endif
   if (std::strcmp(name, "__matcore_strict_gemm_f32_v1_kernel")) return hipErrorInvalidValue;
   *fn = fake<hipFunction_t>(reinterpret_cast<std::uintptr_t>(module)); return e;
 }
@@ -106,6 +141,12 @@ hipError_t hipModuleLaunchKernel(hipFunction_t fn, unsigned x, unsigned y,
   if (e != hipSuccess) return e;
   if (z != 1 || tx != 1 || ty != 1 || tz != 1 || shared || !stream)
     return hipErrorInvalidValue;
+#if defined(MDSLC_TEST_GPU_FUSED_PAIR)
+  if (fn == fake<hipFunction_t>(4)) {
+    if (x != 1 || y != 1) return hipErrorInvalidValue;
+    numericalPair(args); return e;
+  }
+#endif
   numericalKernel(args, fn == fake<hipFunction_t>(2), x, y); return e;
 }
 hipError_t hipStreamSynchronize(hipStream_t) {
@@ -138,6 +179,17 @@ int main(int argc, char **argv) {
   std::array<float, 12> output; output.fill(-77);
   const auto originalA = a;
   const auto originalB = b;
+#if defined(MDSLC_TEST_GPU_FUSED_PAIR)
+  std::array<float, 16> d{1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+  const auto originalD = d;
+  const auto invoke = [&](detail::CandidateInput lhs, detail::CandidateInput rhs,
+                          detail::CandidateOutput result) {
+    return detail::rocdlFusedPairCandidate(lhs, rhs,
+        {d.data(), rhs.columns, result.columns}, result);
+  };
+#else
+  const auto invoke = detail::rocdlGemmCandidate;
+#endif
   std::fenv_t original;
   std::fegetenv(&original);
   std::fesetround(FE_DOWNWARD);
@@ -149,31 +201,31 @@ int main(int argc, char **argv) {
 
   ch::Code code;
   if (!std::strcmp(mode, "shape")) {
-    code = detail::rocdlGemmCandidate({a.data(),3,2}, {b.data(),3,4},
+    code = invoke({a.data(),3,2}, {b.data(),3,4},
                                      {output.data(),3,4});
     check(code == ch::Code::shape_mismatch && steps == 0, "shape rejected before HIP");
   } else if (!std::strcmp(mode, "oversize")) {
-    code = detail::rocdlGemmCandidate({a.data(),65536,2}, {b.data(),2,4},
+    code = invoke({a.data(),65536,2}, {b.data(),2,4},
                                      {output.data(),65536,4});
     check(code == ch::Code::candidate_incompatible && steps == 0,
           "schedule extent rejected before storage access");
   } else if (!std::strcmp(mode, "output-alias")) {
-    code = detail::rocdlGemmCandidate({a.data(),3,2}, {b.data(),2,4},
+    code = invoke({a.data(),3,2}, {b.data(),2,4},
                                      {a.data(),3,4});
     check(code == ch::Code::invalid_view && steps == 0, "overlapping destination rejected");
   } else if (!std::strcmp(mode, "output-limit") || !std::strcmp(mode, "zero-K-limit")) {
     const auto k = !std::strcmp(mode, "zero-K-limit") ? 0U : 1U;
-    code = detail::rocdlGemmCandidate({a.data(),1025,k}, {b.data(),k,1025},
+    code = invoke({a.data(),1025,k}, {b.data(),k,1025},
                                      {output.data(),1025,1025});
     check(code == ch::Code::candidate_incompatible && steps == 0,
           "bounded output-grid qualification includes zero-K fill");
   } else if (!std::strcmp(mode, "work-limit")) {
-    code = detail::rocdlGemmCandidate({a.data(),1024,65}, {b.data(),65,1024},
+    code = invoke({a.data(),1024,65}, {b.data(),65,1024},
                                      {output.data(),1024,1024});
     check(code == ch::Code::candidate_incompatible && steps == 0,
           "serial-K work limit checked before allocation or launch");
   } else if (!std::strcmp(mode, "null")) {
-    code = detail::rocdlGemmCandidate({nullptr,3,2}, {b.data(),2,4},
+    code = invoke({nullptr,3,2}, {b.data(),2,4},
                                      {output.data(),3,4});
     check(code == ch::Code::invalid_view && steps == 0, "nonempty null rejected");
   } else if (!std::strcmp(mode, "environment")) {
@@ -183,7 +235,7 @@ int main(int argc, char **argv) {
     check(code == ch::Code::candidate_unavailable && steps == 0,
           "spoofing cannot authorize even matching target");
   } else {
-    code = detail::rocdlGemmCandidate({a.data(),3,2}, {b.data(),2,4},
+    code = invoke({a.data(),3,2}, {b.data(),2,4},
                                      {output.data(),3,4});
     if (!std::strcmp(mode, "good")) {
       check(code == ch::Code::ok, "mock numerical request succeeds");
@@ -196,7 +248,11 @@ int main(int argc, char **argv) {
     }
   }
   if (unknownCompletion) {
+#if defined(MDSLC_TEST_GPU_FUSED_PAIR)
+    check(allocations == 5 && pending, "unknown completion retains all five pair buffers");
+#else
     check(allocations == 3 && pending, "unknown completion retains all device buffers");
+#endif
     const auto oldSteps = steps;
     check(detail::rocdlCandidateAvailable() == ch::Code::candidate_failure,
           "quarantine poisons future availability");
@@ -211,6 +267,9 @@ int main(int argc, char **argv) {
         std::fetestexcept(FE_ALL_EXCEPT) == originalFlags,
         "caller errno and complete FP state preserved");
   check(a == originalA && b == originalB, "inputs remain immutable");
+#if defined(MDSLC_TEST_GPU_FUSED_PAIR)
+  check(d == originalD, "combined third input remains immutable");
+#endif
   std::fesetenv(&original);
   std::printf("MOCK %s checks=%d failures=%d api_steps=%d retained_buffers=%d\n",
                mode, checks, failures, steps, allocations);

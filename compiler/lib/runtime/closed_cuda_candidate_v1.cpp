@@ -3,6 +3,7 @@
 #include "closed_gpu_capability_v1.h"
 #include <cuda.h>
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <cfenv>
@@ -85,8 +86,11 @@ std::array<std::uint64_t, 7> descriptor(CUdeviceptr pointer, std::uint64_t rows,
 struct Resources {
   CUcontext context = nullptr, previous = nullptr;
   CUmodule fill = nullptr, gemm = nullptr;
-  std::array<CUdeviceptr, 3> memory{};
-  std::vector<float> hostA, hostB, hostC;
+  // The original route uses slots 0..2 only. The separately issued combined
+  // route uses A/B/D/E/panel; cleanup and uncertain-completion ownership are
+  // shared, including the adapter-wide poison state.
+  std::array<CUdeviceptr, 5> memory{};
+  std::vector<float> hostA, hostB, hostC, hostD;
   Resources *quarantineNext = nullptr;
 
   // GPU transfers refer only to heap-owned staging, never caller memory. On
@@ -217,6 +221,84 @@ Code execute(CandidateInput a, CandidateInput b, CandidateOutput c, CUdevice dev
   if (status == Code::ok) std::memcpy(c.data, resources.hostC.data(), sizes[2]);
   return status;
 }
+
+#if defined(MDSLC_CLOSED_HOST_GENERATED_NVVM_FUSED_PAIR)
+Code executePair(CandidateInput a, CandidateInput b, CandidateInput d,
+                 CandidateOutput e, CUdevice device) {
+  if (a.columns != b.rows || b.columns != d.rows || e.rows != a.rows ||
+      e.columns != d.columns) return Code::shape_mismatch;
+  if (!closedGpuFusedPairCompatibleV1(a.rows, a.columns, b.columns, d.columns))
+    return Code::candidate_incompatible;
+  std::array<std::size_t, 5> sizes{};
+  const auto panelRows = std::min(std::uint64_t{4}, a.rows);
+  if (!bytes(a.rows, a.columns, sizes[0]) || !bytes(b.rows, b.columns, sizes[1]) ||
+      !bytes(d.rows, d.columns, sizes[2]) || !bytes(e.rows, e.columns, sizes[3]) ||
+      !bytes(panelRows, b.columns, sizes[4])) return Code::extent_overflow;
+  const std::array<const void *, 4> pointers{a.data, b.data, d.data, e.data};
+  std::array<std::uintptr_t, 4> begin{}, end{};
+  for (std::size_t index = 0; index < pointers.size(); ++index)
+    if (!range(pointers[index], sizes[index], begin[index], end[index]))
+      return Code::invalid_view;
+  for (std::size_t index = 0; index < 3; ++index)
+    if (sizes[3] && sizes[index] && begin[3] < end[index] && begin[index] < end[3])
+      return Code::invalid_view;
+  if (cudaFusedPairImageAvailable() != Code::ok) return Code::candidate_unavailable;
+  // The source adapter suppresses empty-E and N=0 invocation. Keeping this
+  // direct private leaf bounded also prevents a huge empty-output panel loop.
+  if (!sizes[3]) return Code::ok;
+
+  auto owned = std::make_unique<Resources>();
+  auto &resources = *owned;
+  if (sizes[0]) resources.hostA.assign(a.data, a.data + sizes[0] / sizeof(float));
+  if (sizes[1]) resources.hostB.assign(b.data, b.data + sizes[1] / sizeof(float));
+  if (sizes[2]) resources.hostD.assign(d.data, d.data + sizes[2] / sizeof(float));
+  resources.hostC.resize(sizes[3] / sizeof(float));
+  if (cuCtxGetCurrent(&resources.previous) != CUDA_SUCCESS) return Code::candidate_failure;
+  if (cuCtxCreate(&resources.context, nullptr, 0, device) != CUDA_SUCCESS)
+    return Code::candidate_failure;
+  const auto run = [&]() noexcept -> Code {
+    if (cuModuleLoadData(&resources.gemm, mdslc_nvvm_fused_pair_image_v1) != CUDA_SUCCESS)
+      return Code::candidate_failure;
+    CUfunction combined = nullptr;
+    if (cuModuleGetFunction(&combined, resources.gemm, kGpuStrictFusedPairKernelV1) != CUDA_SUCCESS)
+      return Code::candidate_failure;
+    for (std::size_t index = 0; index < sizes.size(); ++index) {
+      const auto status = cuMemAlloc(&resources.memory[index], sizes[index] ? sizes[index] : sizeof(float));
+      if (status != CUDA_SUCCESS)
+        return status == CUDA_ERROR_OUT_OF_MEMORY ? Code::allocation_failure : Code::candidate_failure;
+    }
+    if ((sizes[0] && cuMemcpyHtoD(resources.memory[0], resources.hostA.data(), sizes[0]) != CUDA_SUCCESS) ||
+        (sizes[1] && cuMemcpyHtoD(resources.memory[1], resources.hostB.data(), sizes[1]) != CUDA_SUCCESS) ||
+        (sizes[2] && cuMemcpyHtoD(resources.memory[2], resources.hostD.data(), sizes[2]) != CUDA_SUCCESS))
+      return Code::candidate_failure;
+    std::array<std::array<std::uint64_t, 7>, 5> descriptors{
+      descriptor(resources.memory[0], a.rows, a.columns),
+      descriptor(resources.memory[1], b.rows, b.columns),
+      descriptor(resources.memory[2], d.rows, d.columns),
+      descriptor(resources.memory[3], e.rows, e.columns),
+      descriptor(resources.memory[4], panelRows, b.columns)};
+    std::array<void *, 35> arguments{};
+    for (unsigned index = 0; index < descriptors.size(); ++index)
+      for (unsigned field = 0; field < 7; ++field)
+        arguments[index * 7 + field] = &descriptors[index][field];
+    // One serial row-panel owner. Launching one block per panel with this
+    // single shared workspace would race and is explicitly not this recipe.
+    if (cuLaunchKernel(combined, 1, 1, 1, 1, 1, 1, 0, nullptr,
+                       arguments.data(), nullptr) != CUDA_SUCCESS ||
+        cuCtxSynchronize() != CUDA_SUCCESS) return Code::candidate_failure;
+    if (cuMemcpyDtoH(resources.hostC.data(), resources.memory[3], sizes[3]) != CUDA_SUCCESS)
+      return Code::candidate_failure;
+    return Code::ok;
+  };
+  const auto status = run();
+  if (!resources.finish()) {
+    quarantine(owned);
+    return Code::candidate_failure;
+  }
+  if (status == Code::ok) std::memcpy(e.data, resources.hostC.data(), sizes[3]);
+  return status;
+}
+#endif
 } // namespace
 
 Code cudaCandidateAvailable() noexcept {
@@ -229,5 +311,25 @@ Code cudaGemmCandidate(CandidateInput a, CandidateInput b, CandidateOutput c) no
     const auto status = discover(device);
     return status == Code::ok ? execute(a, b, c, device) : status;
   });
+}
+Code cudaFusedPairImageAvailable() noexcept {
+#if defined(MDSLC_CLOSED_HOST_GENERATED_NVVM_FUSED_PAIR)
+  return mdslc_nvvm_fused_pair_image_v1_size >= 64 ? Code::ok : Code::candidate_unavailable;
+#else
+  return Code::candidate_unavailable;
+#endif
+}
+Code cudaFusedPairCandidate(CandidateInput a, CandidateInput b, CandidateInput d,
+                           CandidateOutput e) noexcept {
+#if defined(MDSLC_CLOSED_HOST_GENERATED_NVVM_FUSED_PAIR)
+  return isolated([&] {
+    CUdevice device;
+    const auto status = discover(device);
+    return status == Code::ok ? executePair(a, b, d, e, device) : status;
+  });
+#else
+  (void)a; (void)b; (void)d; (void)e;
+  return Code::candidate_unavailable;
+#endif
 }
 } // namespace matcore::mdslc::runtime::closed_host_v1::detail

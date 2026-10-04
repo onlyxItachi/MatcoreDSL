@@ -22,7 +22,8 @@ enum class Implementation : std::uint8_t {
   authenticated_openblas = 4, empty_output = 5, zero_reduction = 6, test_only = 7,
   generated_reassociate = 8, generated_strict_avx = 9, generated_strict_avx2 = 10,
   generated_strict_avx512f = 11, generated_nvvm = 12, generated_rocdl = 13,
-  generated_strict_fused_pair = 14
+  generated_strict_fused_pair = 14, generated_nvvm_fused_pair = 15,
+  generated_rocdl_fused_pair = 16
 };
 struct Options { Candidate candidate = Candidate::native_strict; };
 struct CandidateReport {
@@ -145,14 +146,18 @@ public:
   // Compiler-derived adjacent C=A*B; E=C*D only, with private single-use C.
   // This entry grants no source authority. f2 must be f1+1 without wrap. It
   // retains full original f1 checks/FP scope before f2 checks and allocations;
-  // no C Value is issued. Only explicit generated_strict + strict/strict is
-  // eligible, with the pinned compile-trusted fused leaf, never a callback.
+  // no C Value is issued. Explicit generated_strict/generated_nvvm/generated_rocdl
+  // + strict/strict require their separately issued combined realization, never
+  // a callback. GPU shared implementation failure belongs to f2, not a fictitious
+  // producer launch; actual f1 guards/discovery remain fallible at f1. Unknown
+  // device completion quarantines owned resources and poisons the GPU adapter.
   // Leaf invocation additionally requires nonempty E and N>0, exact dense
   // descriptors and runtime-owned disjoint E/workspace[min(4,M),N]. K may be
   // zero: producer +0 must still multiply D (including Inf/NaN) in the consumer.
   // The trusted optimized object may use conforming memset for bounded private
   // zero fills: no recoverable failure/arbitrary host effects or FP-control
-  // changes. Arbitrary libc interposition is excluded, like allocator hooks.
+  // changes. That CPU leaf property is not ascribed to fallible GPU workers.
+  // Arbitrary libc interposition is excluded, like allocator hooks.
   Status gemmStrictFusedPair(Frontier f1, Frontier f2, const Value &a,
                             const Value &b, const Value &d, Numeric first,
                             Numeric second, Value &result) noexcept;

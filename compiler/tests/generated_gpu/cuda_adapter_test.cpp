@@ -19,6 +19,10 @@ extern const unsigned char mdslc_nvvm_fill_image_v1[64] = {};
 extern const unsigned char mdslc_nvvm_gemm_image_v1[64] = {};
 extern const std::size_t mdslc_nvvm_fill_image_v1_size = 64;
 extern const std::size_t mdslc_nvvm_gemm_image_v1_size = 64;
+#if defined(MDSLC_TEST_GPU_FUSED_PAIR)
+extern const unsigned char mdslc_nvvm_fused_pair_image_v1[64] = {};
+extern const std::size_t mdslc_nvvm_fused_pair_image_v1_size = 64;
+#endif
 }
 namespace {
 std::thread::id caller;
@@ -108,6 +112,31 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction function, unsigned m, unsigned n, uns
   pending = true;
   ENTRY;
   auto field = [&](unsigned index) { return *static_cast<std::uint64_t *>(params[index]); };
+#if defined(MDSLC_TEST_GPU_FUSED_PAIR)
+  if (reinterpret_cast<const void *>(function) == detail::mdslc_nvvm_fused_pair_image_v1) {
+    if (m != 1 || n != 1) std::abort();
+    const auto rows = field(3), k = field(4), middle = field(11), p = field(18);
+    const auto *a = reinterpret_cast<const float *>(field(1));
+    const auto *b = reinterpret_cast<const float *>(field(8));
+    const auto *d = reinterpret_cast<const float *>(field(15));
+    auto *e = reinterpret_cast<float *>(field(22));
+    auto *panel = reinterpret_cast<float *>(field(29));
+    if (field(31) != (rows < 4 ? rows : 4) || field(32) != middle) std::abort();
+    for (std::uint64_t i = 0; i < rows; ++i) {
+      for (std::uint64_t j = 0; j < middle; ++j) {
+        float sum = 0;
+        for (std::uint64_t r = 0; r < k; ++r) sum += a[i*k+r]*b[r*middle+j];
+        panel[(i%4)*middle+j] = sum;
+      }
+      for (std::uint64_t j = 0; j < p; ++j) {
+        float sum = 0;
+        for (std::uint64_t r = 0; r < middle; ++r) sum += panel[(i%4)*middle+r]*d[r*p+j];
+        e[i*p+j] = sum;
+      }
+    }
+    return CUDA_SUCCESS;
+  }
+#endif
   const bool fill = reinterpret_cast<const void *>(function) == detail::mdslc_nvvm_fill_image_v1;
   if (fill) {
     auto *c = reinterpret_cast<float *>(field(1));
@@ -139,15 +168,24 @@ int main(int argc, char **argv) {
   std::array<float, 12> b{2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
   std::array<float, 8> output;
   output.fill(9876.0f);
+#if defined(MDSLC_TEST_GPU_FUSED_PAIR)
+  std::array<float, 16> d{};
+  d.fill(3.0f);
+  const auto result = detail::cudaFusedPairCandidate(
+      {a.data(), 2, 3}, {b.data(), 3, 4}, {d.data(), 4, 4}, {output.data(), 2, 4});
+  const float correct = 72.0f;
+#else
   const auto result = detail::cudaGemmCandidate({a.data(), 2, 3}, {b.data(), 3, 4}, {output.data(), 2, 4});
+  const float correct = 6.0f;
+#endif
   if (current != reinterpret_cast<CUcontext>(0xbeef) || errno != EBUSY ||
       std::fegetround() != FE_DOWNWARD || std::fetestexcept(FE_ALL_EXCEPT) != FE_DIVBYZERO)
     return 1;
   const bool fault = failedAt || neverComplete;
   if ((result == Code::ok) == fault) return 2;
-  for (float value : output) if (value != (fault ? 9876.0f : 6.0f)) return 3;
+  for (float value : output) if (value != (fault ? 9876.0f : correct)) return 3;
   if (neverComplete) {
-    if (frees != 0 || !retainedTransfer || retainedTransfer[0] != (pendingDownload ? 6.0f : 1.0f)) return 4;
+    if (frees != 0 || !retainedTransfer || retainedTransfer[0] != (pendingDownload ? correct : 1.0f)) return 4;
     const auto previousCalls = calls;
     if (detail::cudaCandidateAvailable() == Code::ok || calls != previousCalls) return 5;
   }

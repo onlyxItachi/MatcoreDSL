@@ -11,5 +11,11 @@ namespace matcore::mdslc::runtime::closed_host_v1::detail {
 // only after checked execution, copy-back and resource cleanup all succeed.
 Code cudaCandidateAvailable() noexcept;
 Code cudaGemmCandidate(CandidateInput, CandidateInput, CandidateOutput) noexcept;
+// Separate compiler-issued combined realization. Uses the same poison domain
+// as the single-GEMM route; one private device panel, one kernel, no C Value.
+// These entry points do not grant source authority or permit image injection.
+Code cudaFusedPairImageAvailable() noexcept;
+Code cudaFusedPairCandidate(CandidateInput a, CandidateInput b, CandidateInput d,
+                           CandidateOutput e) noexcept;
 } // namespace matcore::mdslc::runtime::closed_host_v1::detail
 #endif
