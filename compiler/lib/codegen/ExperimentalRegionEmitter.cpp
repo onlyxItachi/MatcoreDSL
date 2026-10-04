@@ -50,12 +50,13 @@ ExperimentalRegionEmissionResult emitExperimentalRegion(
     return result;
   }
   if (optimization == ClosedHostOptimization::StrictFusedPair) {
-    if (policy != ClosedCpuPolicy::GeneratedStrict) {
-      result.error = "strict-fused-pair requires explicit --candidate generated-strict; automatic and other candidates are incompatible";
+    if (policy != ClosedCpuPolicy::GeneratedStrict &&
+        policy != ClosedCpuPolicy::GeneratedNvvm && policy != ClosedCpuPolicy::GeneratedRocdl) {
+      result.error = "strict-fused-pair requires explicit --candidate generated-strict, generated-nvvm or generated-rocdl; automatic and other candidates are incompatible";
       return result;
     }
 #if !defined(__linux__) || !defined(__x86_64__)
-    result.error = "strict-fused-pair is available only on the checked Linux x64 generated-strict route";
+    result.error = "strict-fused-pair is available only on the checked Linux x64 generated routes";
     return result;
 #endif
   }

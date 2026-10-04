@@ -724,20 +724,38 @@ Status SessionAbiV2::gemmStrictFusedPair(
     // Retain original candidate legality before any logical result extent.
     auto code = candidateLegality(options_.candidate, numeric);
     if (code != Code::ok) return code;
-    if (options_.candidate != Candidate::generated_strict ||
-        numeric != Numeric::strict_f32)
+    if (numeric != Numeric::strict_f32)
       return Code::candidate_incompatible;
 #if defined(MDSLC_CLOSED_HOST_TESTING)
-    // Arbitrary code/status/control changes cannot satisfy the trusted no-error
-    // strict pair contract. In particular never inherit single-GEMM injection.
+    // An arbitrary callback is not the separately issued combined realization.
+    // In particular never inherit single-GEMM injection or assume its failure
+    // law matches the CPU leaf or the separately owned fallible GPU worker.
     if (test_candidate_ != nullptr) return Code::candidate_incompatible;
 #endif
-#if !defined(MDSLC_HAS_FUSED_PAIR_CPU_V1)
-    return Code::candidate_unavailable;
+    switch (options_.candidate) {
+    case Candidate::generated_strict:
+#if defined(MDSLC_HAS_FUSED_PAIR_CPU_V1)
+      return Code::ok;
 #else
-    return Code::ok;
+      return Code::candidate_unavailable;
 #endif
+    case Candidate::generated_nvvm:
+#if defined(MDSLC_CLOSED_HOST_GENERATED_NVVM_FUSED_PAIR)
+      return detail::cudaFusedPairImageAvailable();
+#else
+      return Code::candidate_unavailable;
+#endif
+    case Candidate::generated_rocdl:
+#if defined(MDSLC_CLOSED_HOST_GENERATED_ROCDL_FUSED_PAIR)
+      return detail::rocdlFusedPairImageAvailable();
+#else
+      return Code::candidate_unavailable;
+#endif
+    default: return Code::candidate_incompatible;
+    }
   };
+  const bool gpu = options_.candidate == Candidate::generated_nvvm ||
+                   options_.candidate == Candidate::generated_rocdl;
   {
     if (!begin(f1)) return status_;
     ActiveCall active(*this);
@@ -760,10 +778,16 @@ Status SessionAbiV2::gemmStrictFusedPair(
     std::size_t logical_c_elements = 0;
     code = extent(m, n, logical_c_elements);
     if (code != Code::ok) return rejected(code);
+    if (gpu && !detail::closedGpuShapeCompatibleV1(m, n, a.columns()))
+      return rejected(Code::candidate_incompatible);
     // The original full C allocation opportunity is removed, not its signed
     // dimension/product/byte guards or original FP entry/control/restore.
-    // C is unobservable and pure; the issued no-error control-preserving leaf
-    // may defer its physical arithmetic until after consumer preconditions.
+    // C is unobservable and pure; the combined realization may defer its
+    // physical arithmetic until after consumer preconditions. The CPU leaf is
+    // no-error/control-preserving. The separately declared GPU realization has
+    // one actual fallible shared invocation at f2, not two hidden invocations
+    // whose existing errors are relabelled. No hypothetical first launch or
+    // failure is claimed; every actual original capability guard stays here.
     // The optimized object's allowed conforming memset has bounded private
     // writes and no recoverable error/arbitrary effects/control changes. This
     // argument does not locate failures of arbitrary providers or interposers.
@@ -790,12 +814,20 @@ Status SessionAbiV2::gemmStrictFusedPair(
   if (n != d.rows()) return rejected(Code::shape_mismatch);
   auto code = pairLegality(second);
   if (code != Code::ok) return rejected(code);
+  if (gpu) {
+    std::size_t logical_e_elements = 0;
+    code = extent(m, d.columns(), logical_e_elements);
+    if (code != Code::ok) return rejected(code);
+    if (!detail::closedGpuShapeCompatibleV1(m, d.columns(), n) ||
+        !detail::closedGpuFusedPairCompatibleV1(m, a.columns(), n, d.columns()))
+      return rejected(Code::candidate_incompatible);
+  }
   Value output, workspace;
   code = allocate(m, d.columns(), output);
   if (code != Code::ok) return rejected(code);
   // Only nonempty work needs scratch. All original logical C checks already
   // occurred even if E or C is empty; never enter a huge zero-output panel loop.
-  if (!output.storage_->elements.empty() && n != 0) {
+  if (!gpu && !output.storage_->elements.empty() && n != 0) {
     code = allocate(std::min(std::uint64_t{4}, m), n, workspace);
     if (code != Code::ok) return rejected(code);
   }
@@ -806,6 +838,28 @@ Status SessionAbiV2::gemmStrictFusedPair(
   } else if (n == 0) {
     // Consumer zero reduction, not producer K==0. Initialization is +0.
     candidate_report_.actual = Implementation::zero_reduction;
+  } else if (options_.candidate == Candidate::generated_nvvm) {
+#if defined(MDSLC_CLOSED_HOST_GENERATED_NVVM_FUSED_PAIR)
+    candidate_report_.actual = Implementation::generated_nvvm_fused_pair;
+    candidate_report_.invocation_attempted = true;
+    code = detail::cudaFusedPairCandidate(
+        {a.data(), a.rows(), a.columns()}, {b.data(), b.rows(), b.columns()},
+        {d.data(), d.rows(), d.columns()},
+        {output.storage_->elements.data(), m, d.columns()});
+#else
+    code = Code::candidate_unavailable;
+#endif
+  } else if (options_.candidate == Candidate::generated_rocdl) {
+#if defined(MDSLC_CLOSED_HOST_GENERATED_ROCDL_FUSED_PAIR)
+    candidate_report_.actual = Implementation::generated_rocdl_fused_pair;
+    candidate_report_.invocation_attempted = true;
+    code = detail::rocdlFusedPairCandidate(
+        {a.data(), a.rows(), a.columns()}, {b.data(), b.rows(), b.columns()},
+        {d.data(), d.rows(), d.columns()},
+        {output.storage_->elements.data(), m, d.columns()});
+#else
+    code = Code::candidate_unavailable;
+#endif
   } else {
 #if defined(MDSLC_HAS_FUSED_PAIR_CPU_V1)
     auto a_descriptor = descriptor(*a.storage_);
@@ -966,6 +1020,10 @@ const char *implementationName(Implementation implementation) noexcept {
     return "closed.generated.reassociate_f32.avx2_fma.mlir21.v1";
   case Implementation::generated_strict_fused_pair:
     return "closed.generated.strict_fused_pair_f32.mlir21.row_panel4.v1";
+  case Implementation::generated_nvvm_fused_pair:
+    return "closed.generated.strict_fused_pair_f32.nvvm.sm89.staged.mlir21.row_panel4.v1";
+  case Implementation::generated_rocdl_fused_pair:
+    return "closed.generated.strict_fused_pair_f32.rocdl.gfx1150.staged.mlir21.row_panel4.v1";
   case Implementation::existing_reference: return "cpu.reference.f32.v1";
   case Implementation::authenticated_openblas: return "cpu.external.openblas.f32.v1";
   case Implementation::empty_output: return "closed.semantic.empty_output.v1";

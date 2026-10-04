@@ -81,7 +81,11 @@ void run(const Matrix &a, const Matrix &b, const Matrix &d,
   const auto &d_value = identical_inputs ? a : d;
   std::vector<float> prefix(a.cells.size()+2,-701.0f);
   // A failed result extent is never eagerly validated or allocated by the host.
-  const auto output_elements = expected_error==md::Error::extent_overflow
+  const auto output_elements = (expected_error==md::Error::extent_overflow
+#if defined(MDSLC_TEST_FUSED_GPU)
+      || expected_error==md::Error::candidate_incompatible
+#endif
+      )
       ? std::size_t{0} : static_cast<std::size_t>(a.rows*d_value.columns);
   std::vector<float> output(output_elements+2,-801.0f);
   md::Observation retained_prefix, retained_output;
@@ -181,8 +185,15 @@ int main() {
   constexpr auto huge=std::uint64_t(std::numeric_limits<std::int64_t>::max());
   run({huge,0,{}},{0,2,{}},{2,0,{}},md::Error::extent_overflow,6);
   run({huge,0,{}},{0,1,{}},{1,0,{}},md::Error::extent_overflow,6); // Byte bound too.
+#if defined(MDSLC_TEST_FUSED_GPU)
+  // The original GPU candidate envelope remains a guard even for empty C/E.
+  // Neither none nor combined may import the CPU huge-empty permission.
+  run({huge,0,{}},{0,0,{}},{0,2,{}},md::Error::candidate_incompatible,6);
+  run({huge,0,{}},{0,0,{}},{0,0,{}},md::Error::candidate_incompatible,6);
+#else
   run({huge,0,{}},{0,0,{}},{0,2,{}},md::Error::extent_overflow,7);
   run({huge,0,{}},{0,0,{}},{0,0,{}}); // Must finish, no huge empty row loop.
+#endif
   std::printf("Strict fused pair source: %u checks; %u failures; %u executed cases\n",
               checks,failures,cases);
   return failures?1:0;

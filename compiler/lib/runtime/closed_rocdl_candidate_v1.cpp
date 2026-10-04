@@ -5,6 +5,7 @@
 #include <hip/hip_runtime_api.h>
 
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <cfenv>
@@ -34,7 +35,10 @@ struct Frame {
   hipModule_t fillModule = nullptr, gemmModule = nullptr;
   hipFunction_t fill = nullptr, gemm = nullptr;
   float *a = nullptr, *b = nullptr, *c = nullptr;
-  std::vector<float> hostA, hostB, hostC;
+  // Null for the original two-kernel single-GEMM realization. The combined
+  // route reuses the same owned lifetime/quarantine machinery and poison domain.
+  float *d = nullptr, *panel = nullptr;
+  std::vector<float> hostA, hostB, hostC, hostD;
   bool workMayBePending = false;
   Frame *quarantineNext = nullptr;
 };
@@ -123,7 +127,7 @@ bool range(const float *pointer, std::size_t count,
 // failed resource release poisons the candidate; no success value is issued.
 bool release(Frame &frame) noexcept {
   bool okay = true;
-  for (auto **pointer : {&frame.a, &frame.b, &frame.c}) {
+  for (auto **pointer : {&frame.a, &frame.b, &frame.c, &frame.d, &frame.panel}) {
     if (*pointer && hipFree(*pointer) != hipSuccess) okay = false;
     else *pointer = nullptr;
   }
@@ -224,6 +228,80 @@ Code execute(CandidateInput lhs, CandidateInput rhs, CandidateOutput output,
   std::memcpy(output.data, frame->hostC.data(), cc * sizeof(float));
   return Code::ok;
 }
+
+#if defined(MDSLC_CLOSED_HOST_GENERATED_ROCDL_FUSED_PAIR)
+Code executePair(CandidateInput a, CandidateInput b, CandidateInput d,
+                 CandidateOutput e, std::size_t ac, std::size_t bc,
+                 std::size_t dc, std::size_t ec, std::size_t pc) {
+  int selected = -1;
+  if (auto code = discover(selected); code != Code::ok) return code;
+  if (hipSetDevice(selected) != hipSuccess) return Code::candidate_unavailable;
+  if (rocdlFusedPairImageAvailable() != Code::ok) return Code::candidate_unavailable;
+  if (!ec) return Code::ok;
+  if (b.columns == 0) return Code::candidate_incompatible;
+  auto frame = std::make_unique<Frame>();
+  if (ac) frame->hostA.assign(a.data, a.data + ac);
+  if (bc) frame->hostB.assign(b.data, b.data + bc);
+  if (dc) frame->hostD.assign(d.data, d.data + dc);
+  frame->hostC.resize(ec);
+  const auto failed = [&](Code code = Code::candidate_failure) noexcept {
+    if (frame->workMayBePending && hipStreamSynchronize(frame->stream) != hipSuccess) {
+      quarantine(frame);
+      return code;
+    }
+    frame->workMayBePending = false;
+    if (!release(*frame)) quarantine(frame);
+    return code;
+  };
+  if (hipStreamCreateWithFlags(&frame->stream, hipStreamNonBlocking) != hipSuccess)
+    return failed();
+  if (hipModuleLoadData(&frame->gemmModule, mdslc_rocdl_fused_pair_image_v1) != hipSuccess ||
+      hipModuleGetFunction(&frame->gemm, frame->gemmModule, kGpuStrictFusedPairKernelV1) != hipSuccess)
+    return failed();
+  const auto allocate = [](float **pointer, std::size_t count) {
+    return count ? hipMalloc(reinterpret_cast<void **>(pointer), count * sizeof(float))
+                 : hipSuccess;
+  };
+  if (allocate(&frame->a, ac) != hipSuccess || allocate(&frame->b, bc) != hipSuccess ||
+      allocate(&frame->d, dc) != hipSuccess || allocate(&frame->c, ec) != hipSuccess ||
+      allocate(&frame->panel, pc) != hipSuccess)
+    return failed(Code::allocation_failure);
+  // An error return may still have queued a transfer. Owned staging and device
+  // storage must remain reachable until actual completion has been established.
+  frame->workMayBePending = true;
+  if ((ac && hipMemcpyAsync(frame->a, frame->hostA.data(), ac * sizeof(float),
+                            hipMemcpyHostToDevice, frame->stream) != hipSuccess) ||
+      (bc && hipMemcpyAsync(frame->b, frame->hostB.data(), bc * sizeof(float),
+                            hipMemcpyHostToDevice, frame->stream) != hipSuccess) ||
+      (dc && hipMemcpyAsync(frame->d, frame->hostD.data(), dc * sizeof(float),
+                            hipMemcpyHostToDevice, frame->stream) != hipSuccess))
+    return failed();
+  Descriptor da(frame->a, a.rows, a.columns);
+  Descriptor db(frame->b, b.rows, b.columns);
+  Descriptor dd(frame->d, d.rows, d.columns);
+  Descriptor de(frame->c, e.rows, e.columns);
+  Descriptor dp(frame->panel, std::min(std::uint64_t{4}, a.rows), b.columns);
+  std::array<void *, 35> arguments{};
+  da.append(arguments.data()); db.append(arguments.data() + 7);
+  dd.append(arguments.data() + 14); de.append(arguments.data() + 21);
+  dp.append(arguments.data() + 28);
+  // Exactly one serial owner of the bounded panel. This is not a parallel
+  // mapping or a promise of performance/resident source values.
+  if (hipModuleLaunchKernel(frame->gemm, 1, 1, 1, 1, 1, 1, 0, frame->stream,
+                            arguments.data(), nullptr) != hipSuccess ||
+      hipMemcpyAsync(frame->hostC.data(), frame->c, ec * sizeof(float),
+                       hipMemcpyDeviceToHost, frame->stream) != hipSuccess)
+    return failed();
+  if (hipStreamSynchronize(frame->stream) != hipSuccess) return failed();
+  frame->workMayBePending = false;
+  if (!release(*frame)) {
+    quarantine(frame);
+    return Code::candidate_failure;
+  }
+  std::memcpy(e.data, frame->hostC.data(), ec * sizeof(float));
+  return Code::ok;
+}
+#endif
 } // namespace
 
 Code rocdlCandidateAvailable() noexcept {
@@ -248,5 +326,40 @@ Code rocdlGemmCandidate(CandidateInput lhs, CandidateInput rhs,
       (cc && ((ac && cb < ae && ab < ce) || (bc && cb < be && bb < ce))))
     return Code::invalid_view;
   return isolated([&] { return execute(lhs, rhs, output, ac, bc, cc); });
+}
+Code rocdlFusedPairImageAvailable() noexcept {
+#if defined(MDSLC_CLOSED_HOST_GENERATED_ROCDL_FUSED_PAIR)
+  return mdslc_rocdl_fused_pair_image_v1_size >= 64 ? Code::ok : Code::candidate_unavailable;
+#else
+  return Code::candidate_unavailable;
+#endif
+}
+Code rocdlFusedPairCandidate(CandidateInput a, CandidateInput b, CandidateInput d,
+                            CandidateOutput e) noexcept {
+#if defined(MDSLC_CLOSED_HOST_GENERATED_ROCDL_FUSED_PAIR)
+  ErrnoRestore preserve;
+  if (a.columns != b.rows || b.columns != d.rows || e.rows != a.rows ||
+      e.columns != d.columns) return Code::shape_mismatch;
+  if (!closedGpuFusedPairCompatibleV1(a.rows, a.columns, b.columns, d.columns))
+    return Code::candidate_incompatible;
+  std::size_t ac = 0, bc = 0, dc = 0, ec = 0, pc = 0;
+  if (!footprint(a.rows, a.columns, ac) || !footprint(b.rows, b.columns, bc) ||
+      !footprint(d.rows, d.columns, dc) || !footprint(e.rows, e.columns, ec) ||
+      !footprint(std::min(std::uint64_t{4}, a.rows), b.columns, pc))
+    return Code::candidate_incompatible;
+  std::array<const float *, 4> pointers{a.data, b.data, d.data, e.data};
+  std::array<std::size_t, 4> counts{ac, bc, dc, ec};
+  std::array<std::uintptr_t, 4> begin{}, end{};
+  for (std::size_t index = 0; index < pointers.size(); ++index)
+    if (!range(pointers[index], counts[index], begin[index], end[index]))
+      return Code::invalid_view;
+  for (std::size_t index = 0; index < 3; ++index)
+    if (ec && counts[index] && begin[3] < end[index] && begin[index] < end[3])
+      return Code::invalid_view;
+  return isolated([&] { return executePair(a, b, d, e, ac, bc, dc, ec, pc); });
+#else
+  (void)a; (void)b; (void)d; (void)e;
+  return Code::candidate_unavailable;
+#endif
 }
 } // namespace matcore::mdslc::runtime::closed_host_v1::detail

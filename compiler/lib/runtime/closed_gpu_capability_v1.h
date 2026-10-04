@@ -12,5 +12,19 @@ constexpr bool closedGpuShapeCompatibleV1(std::uint64_t m, std::uint64_t n,
   return output <= (std::uint64_t{1} << 20) &&
          (k == 0 || output <= (std::uint64_t{1} << 26) / k);
 }
+// Separate qualification envelope for a single-thread combined row-panel
+// recipe, not a source restriction, cost model or dispatch crossover. Both
+// original per-GEMM envelopes must still hold before this tighter shared-work
+// predicate. The caller checks their source frontiers in order; this aggregate
+// predicate belongs only to the second frontier.
+constexpr bool closedGpuFusedPairCompatibleV1(std::uint64_t m, std::uint64_t k,
+                                              std::uint64_t n,
+                                              std::uint64_t p) noexcept {
+  if (!closedGpuShapeCompatibleV1(m, n, k) ||
+      !closedGpuShapeCompatibleV1(m, p, n)) return false;
+  // All four dimensions are <=65535 and m*n<=2^20, so even the sum of
+  // both contraction work counts is representable in uint64_t.
+  return m * n * (k + p) <= (std::uint64_t{1} << 18);
+}
 }
 #endif

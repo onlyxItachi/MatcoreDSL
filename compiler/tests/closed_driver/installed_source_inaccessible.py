@@ -23,6 +23,8 @@ def main():
     parser.add_argument("--linker-launcher", default="")
     parser.add_argument("--nm", default="nm")
     parser.add_argument("--has-fused-pair", choices=("ON", "OFF"), default="OFF")
+    parser.add_argument("--has-nvvm", choices=("ON", "OFF"), default="OFF")
+    parser.add_argument("--has-rocdl", choices=("ON", "OFF"), default="OFF")
     args = parser.parse_args()
     repository = Path(args.repository).resolve(strict=True)
     commit = authenticate_repository(args.git, repository, args.expected_commit,
@@ -60,6 +62,26 @@ def main():
         if args.has_fused_pair == "ON":
             shutil.copyfile(source / "compiler/tests/closed_driver/strict_fused_pair.mdsl",
                             fused_consumer)
+        gpu_kinds = [kind for kind in ("nvvm", "rocdl") if getattr(args, "has_" + kind) == "ON"]
+        gpu_consumer = root / "gpu-fused-consumer.mdsl"
+        gpu_program = root / "gpu-fused-program.mdsl"
+        gpu_host = root / "gpu-fused-main.cpp"
+        gpu_cap_consumers = {}
+        gpu_cap_programs = {}
+        if gpu_kinds:
+            gpu_text = "#define MDSLC_TEST_FUSED_GPU 1\n" + fused_consumer.read_text()
+            gpu_consumer.write_text(gpu_text)
+            gpu_program.write_text(gpu_text.replace("int main()", "int math_main()"))
+            gpu_host.write_text("extern int math_main(); int main(){return math_main();}\n")
+            cap_text = (source / "compiler/tests/generated_gpu_fused_pair/work_cap.mdsl").read_text()
+            for optimization, expect_refusal in (("none", 0), ("strict-fused-pair", 1)):
+                # The private macro changes only the ordinary host expectation;
+                # the admitted region body is identical in both copies.
+                text = f"#define MDSLC_EXPECT_COMBINED_WORK_REFUSAL {expect_refusal}\n" + cap_text
+                gpu_cap_consumers[optimization] = root / f"gpu-cap-{optimization}.mdsl"
+                gpu_cap_programs[optimization] = root / f"gpu-cap-{optimization}-program.mdsl"
+                gpu_cap_consumers[optimization].write_text(text)
+                gpu_cap_programs[optimization].write_text(text.replace("int main()", "int math_main()"))
         configure = [args.cmake, "-S", source / "compiler", "-B", build, "-G", "Ninja",
                      "-DBUILD_TESTING=OFF", "-DCMAKE_BUILD_TYPE=Release",
                      "-DCMAKE_C_COMPILER=" + args.clang.replace("clang++", "clang"),
@@ -68,6 +90,8 @@ def main():
                      "-DMDSLC_ENABLE_NATIVE_FRONTEND=ON", "-DMDSLC_ENABLE_BOOTSTRAP_FRONTEND=ON",
                      "-DMDSLC_ENABLE_MATCORE_MLIR=ON", "-DMDSLC_ENABLE_EXPERIMENTAL_REGIONS=ON",
                      "-DMDSLC_ENABLE_OPENBLAS=OFF", "-DMDSLC_REQUIRE_OPENBLAS=OFF",
+                     "-DMDSLC_ENABLE_EXPERIMENTAL_NVVM=" + args.has_nvvm,
+                     "-DMDSLC_ENABLE_EXPERIMENTAL_ROCDL=" + args.has_rocdl,
                      "-DMDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE=" + args.schedule,
                      "-DLLVM_DIR=" + args.llvm_dir, "-DClang_DIR=" + args.clang_dir,
                      "-DMLIR_DIR=" + args.mlir_dir]
@@ -141,6 +165,55 @@ def main():
             if fused_outputs[0] != fused_outputs[1]:
                 print(json.dumps(log, indent=2))
                 raise RuntimeError("source-inaccessible fused/unfused outcomes differ")
+        for kind in gpu_kinds:
+            for route in ("source", "program"):
+                outputs = []
+                invocation = [gpu_consumer, "--region", "strict_fused_pipeline"]
+                if route == "program":
+                    invocation = ["--program", "--host", gpu_host,
+                                  "--region", gpu_program, "strict_fused_pipeline"]
+                for optimization in ("none", "strict-fused-pair"):
+                    executable = root / f"gpu-{kind}-{route}-{optimization}"
+                    run([driver, *invocation, "--candidate", "generated-" + kind,
+                         "--optimization", optimization, "-o", executable])
+                    symbols = run([args.nm, "--undefined-only", "--demangle", executable]).stdout
+                    connected = "closed_host_v1::SessionAbiV2::gemmStrictFusedPair(" in symbols
+                    if connected != (optimization == "strict-fused-pair"):
+                        raise RuntimeError("source-inaccessible GPU pair call discriminator failed")
+                    output = run([executable]).stdout
+                    if not re.fullmatch(
+                            r"Strict fused pair source: [1-9][0-9]* checks; 0 failures; "
+                            r"22 executed cases\n", output):
+                        print(json.dumps(log, indent=2))
+                        raise RuntimeError("source-inaccessible GPU pair physical oracle failed")
+                    outputs.append(output)
+                if outputs[0] != outputs[1]:
+                    raise RuntimeError("source-inaccessible GPU fused/unfused trace differs")
+                # Keep the 22-case parity oracle above independent. This
+                # additional source case intentionally differs: original
+                # per-GEMM envelopes allow M65, but the combined private work
+                # cap must refuse at f2 after retaining the earlier effects.
+                for optimization in ("none", "strict-fused-pair"):
+                    invocation = [gpu_cap_consumers[optimization], "--region", "strict_fused_pipeline"]
+                    if route == "program":
+                        invocation = ["--program", "--host", gpu_host,
+                                      "--region", gpu_cap_programs[optimization], "strict_fused_pipeline"]
+                    executable = root / f"gpu-cap-{kind}-{route}-{optimization}"
+                    run([driver, *invocation, "--candidate", "generated-" + kind,
+                         "--optimization", optimization, "-o", executable])
+                    symbols = run([args.nm, "--undefined-only", "--demangle", executable]).stdout
+                    connected = "closed_host_v1::SessionAbiV2::gemmStrictFusedPair(" in symbols
+                    if connected != (optimization == "strict-fused-pair"):
+                        print(json.dumps(log, indent=2))
+                        raise RuntimeError("source-inaccessible GPU work cap call discriminator failed")
+                    output = run([executable]).stdout
+                    outcome = ("over-cap refused at f2" if optimization == "strict-fused-pair"
+                               else "over-cap executed")
+                    if not re.fullmatch(
+                            r"GPU fused pair work cap: [1-9][0-9]* checks; 0 failures; "
+                            r"boundary executed; " + re.escape(outcome) + r"\n", output):
+                        print(json.dumps(log, indent=2))
+                        raise RuntimeError("source-inaccessible GPU work cap exact source oracle failed")
         if hashlib.sha256(driver.read_bytes()).hexdigest() != digest:
             raise RuntimeError("installed driver changed during package acceptance")
         if source.exists() or build.exists() or stage.exists():
@@ -150,6 +223,9 @@ def main():
               "same-source none/forwarding executed after producer removal with checked call reference; "
               + ("same-source none/strict-pair executed after producer removal with checked call reference; "
                  if args.has_fused_pair == "ON" else "") +
+              (f"physical GPU none/strict-pair single/multi-source after producer removal: {gpu_kinds}, "
+               "22-case parity plus shared-work boundary execution and f2 refusal; "
+                 if gpu_kinds else "") +
               f"installed driver sha256={digest}")
 
 

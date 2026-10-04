@@ -80,13 +80,22 @@ in `context.md`.
   The separately explicit `--optimization strict-fused-pair` is bounded to
   adjacent pure strict lhs-chain GEMMs with dominating immutable Read inputs
   and no other retained intermediate use, including semantic dimensions and
-  both control arms. Linux x64 `generated-strict` is the only eligible forced
-  candidate; automatic/default selection does not dispatch this recipe. Keep
+  both control arms. Linux x64 `generated-strict` and the separately qualified
+  `generated-nvvm`/`generated-rocdl` combined realizations are eligible forced
+  candidates; automatic/default selection does not dispatch this recipe. Keep
   the unchanged original witness, both original source/frontier guard retirements
   and full logical intermediate extent even for empty final output. Private
   row-panel scratch/output are checked by the adapter, not allocated in MLIR;
   no materialized-intermediate/two-invocation claim follows from guard retirement.
   See `docs/mdslc/STRICT_FUSED_PAIR_SOURCE_V1.md`.
+  GPU combined execution follows its own recoverable-failure realization law,
+  not the CPU leaf's no-error property. Retain both original capability checks,
+  full extents, numerical scopes and target bounds in source order; retire f1
+  guards only and assign the actual shared invocation to f2. Completion and
+  cleanup must precede E issuance. Shared adapter poison/quarantine covers both
+  original and combined routes; no counterfactual first launch is invented.
+  See `docs/mdslc/GPU_STRICT_FUSED_PAIR_V1.md`. The serial pair's private work cap
+  is a qualification envelope, not a semantic dimension limit or cost policy.
   Pure source-visible mathematical helpers may be defined in ordinary included
   headers under the same closed grammar, including its existing bounded
   Sema-resolved template instantiations. Each body is owned by its actual Clang
@@ -97,7 +106,7 @@ in `context.md`.
   reuse the built-in strict GEMM structured seam, then upstream GPU outlining
   and target lowering. They do not transform the whole-region paired witness.
   Their documented synchronous staged realization owns temporary device and
-  host allocations/copies; it confers no source residency, zero-copy, fusion or
+  host allocations/copies; it confers no source residency, zero-copy, automatic fusion or
   automatic target-selection claim. Preserve original source/artifact/worker
   symbol ownership, caller state, checked completion and earlier successful
   publications. Unknown device completion retains possibly live resources and

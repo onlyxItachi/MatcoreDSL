@@ -1033,7 +1033,9 @@ if(BUILD_TESTING)
             --llvm-dir "${LLVM_DIR}" --clang-dir "${Clang_DIR}" --mlir-dir "${MLIR_DIR}"
             --schedule "${MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE}"
             --linker-launcher "${CMAKE_CXX_LINKER_LAUNCHER}" --nm "${CMAKE_NM}"
-            --has-fused-pair "${MDSLC_CLOSED_CPU_X86}")
+            --has-fused-pair "${MDSLC_CLOSED_CPU_X86}"
+            --has-nvvm "${MDSLC_ENABLE_EXPERIMENTAL_NVVM}"
+            --has-rocdl "${MDSLC_ENABLE_EXPERIMENTAL_ROCDL}")
         set_tests_properties(package.experimental_regions.closed_source_inaccessible
           PROPERTIES RUN_SERIAL TRUE TIMEOUT 1200)
       endif()

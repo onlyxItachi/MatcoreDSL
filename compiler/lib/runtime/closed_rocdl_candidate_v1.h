@@ -15,6 +15,12 @@ Code rocdlCandidateAvailable() noexcept;
 // device/host buffers, silently falls back, resets a device or changes its flags.
 Code rocdlGemmCandidate(CandidateInput lhs, CandidateInput rhs,
                         CandidateOutput output) noexcept;
+// Shares discovery, caller isolation and poison/quarantine domain with the
+// original route, but selects one separately issued combined device image.
+// Nonempty E requires N>0; Session owns the semantic N=0 positive-zero bypass.
+Code rocdlFusedPairImageAvailable() noexcept;
+Code rocdlFusedPairCandidate(CandidateInput a, CandidateInput b, CandidateInput d,
+                            CandidateOutput e) noexcept;
 } // namespace matcore::mdslc::runtime::closed_host_v1::detail
 
 #endif
