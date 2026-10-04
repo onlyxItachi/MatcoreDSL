@@ -1,7 +1,7 @@
 # MDSLC current state
 
 Engineering checkpoint: canonical merge
-`f55b86e5d0fbeaa8d10d5857bc2bf2ce71168df4`, [PR #79](https://github.com/onlyxItachi/MatcoreDSL/pull/79).
+`c478e49d56719caaa898ff517a09bc0379d31aa6`, [PR #80](https://github.com/onlyxItachi/MatcoreDSL/pull/80).
 This identifies the latest engineering merge; documentation-only updates may follow.
 
 ## Architecture
@@ -20,7 +20,7 @@ Original Clang host -> sealed ABI-checked entry thunk + isolated helper LLVM
 Build-issued GEMM -> Linalg/One-Shot -> CPU Transform or GPU outlining
   -> LLVM x64 baseline/AVX/AVX2/AVX512F, ARM64; NVVM sm_89 / ROCDL gfx1150
 Per-operation permission -> separate AVX2/FMA realization (x64 only)
-Isolated strict two-GEMM CPU issuer -> upstream row-panel fusion + checked workspace
+Opt-in strict CPU lhs pair -> authenticated plan -> issued row-panel4 leaf
 Trusted registry -> guarded candidates, private staging/output, checked completion
   -> ordered host publication, owning observation, sticky failure prefix
 Private candidate DSO owns implementation; canonical Runtime owns provider policy.
@@ -31,25 +31,31 @@ Legacy mutating GEMM and separate Linux/ARM64/Windows/Python lanes remain intact
 
 ## Material change
 
-The compiler now issues a checked strict CPU leaf for `C=A*B; E=C*D`, using
-upstream MLIR Transform fusion and One-Shot bufferization. Caller-owned C scratch
-is bounded to `min(4,M)*N`; each increasing-order reduction and the intermediate
-f32 rounding boundary remain intact. This is an isolated primitive proof, not
-authenticated source fusion or a new runtime candidate.
+Authenticated source now connects strict `C=A*B; E=C*D` to the issued CPU leaf
+through explicit `--optimization strict-fused-pair --candidate generated-strict`
+on Linux x64. Only adjacent pure lhs pairs with dominating immutable Read inputs
+and a private single-use intermediate qualify. The original Program/witness,
+both source guard frontiers, full logical C extent, prior effects and FP state
+remain; checked private C scratch is `min(4,M)*N`, not a full C allocation.
+Increasing reductions and intermediate f32 rounding are preserved. Default
+execution and independent [forwarding](PUBLICATION_READ_FORWARDING_V1.md) are unchanged.
 
-Local qualification: **402/402 distinct tests, no skips**, in 400-test and
-2-package-test runs; focused normal/ASan execution and all qualifying hosted
-lanes passed. See the [issuer contract and falsifiers](agent-reports/strict-fused-pair-issuer-v1.md)
-and [exact qualification](agent-reports/strict-fused-pair-issuer-qualified-v1.md).
-Merged [forwarding](PUBLICATION_READ_FORWARDING_V1.md) and existing CPU/provider/GPU
-execution remain unchanged. No performance claim follows.
+Exact premerge head `9a4dfeff70db57f3522e66fe9e13e8602c5a167c`; local qualification
+at compiler-identical frozen `6e25df7` (only the final Debug timeout changed):
+**406/406 distinct tests, zero skips**, in disjoint 404-test and 2-package runs.
+All **22 hosted checks passed**; hosted Debug had **243 passed and 14 existing
+AVX512 capability skips**, not a zero-skip result. See the
+[source contract](STRICT_FUSED_PAIR_SOURCE_V1.md),
+[implementation/review](agent-reports/strict-fused-pair-source-v1.md) and
+[issued-leaf qualification](agent-reports/strict-fused-pair-issuer-qualified-v1.md).
+No GPU fusion or performance inference follows from this CPU connection.
 
 ## Unsupported or unproven
 
 Syntax/API/ABI remain experimental; product semantic tooling is coherent 21.1.8.
 GPU support stays opt-in Linux x64 under the [exact device/toolchain/work bounds](STAGED_GPU_CANDIDATES_V1.md),
 not arbitrary NVIDIA/AMD hardware. Real HIP + global host-ASan is unqualified
-and configure-refused. No Metal/NPU, whole-region transformation/fusion, automatic
+and configure-refused. No Metal/NPU, broad fusion/whole-region witness transformation, automatic
 reuse policy, resident/asynchronous device values, general rank-N/views, zero-copy,
 generated-region Windows or performance/parity claim. Not every AVX extension,
 AMX, SVE/SME, ARM provider/reassociate or cross-compiled execution is qualified.
@@ -62,10 +68,11 @@ remains partial/open; [#20](https://github.com/onlyxItachi/MatcoreDSL/issues/20)
 
 ## Exactly one next boundary
 
-**Authenticated source connection for the strict two-GEMM CPU leaf.**
-Derive only adjacent pure strict lhs pairs with dominating immutable inputs and
-a single-use unobserved intermediate. Preserve both original guard/source
-frontiers, full logical C extent checks, earlier effects and FP state while
-removing the full C allocation. Require checked private workspace and the exact
-issued leaf, fail closed on incompatible candidates, and qualify installed
-source execution. The CPU proof does not authorize fallible GPU/provider fusion.
+**Separately qualify the strict pair's combined GPU source/runtime law.**
+Bound it to NVVM sm_89 and ROCDL gfx1150, with original source guards/full C
+extent, checked private workspace, launch/completion/cleanup and shared
+poison/quarantine semantics. The CPU guard-retirement proof alone does not
+authorize fallible GPU execution. Draft [#85](https://github.com/onlyxItachi/MatcoreDSL/pull/85)
+owns the isolated issuer/image; draft [#86](https://github.com/onlyxItachi/MatcoreDSL/pull/86)
+owns the combined source/runtime connection. Neither is canonical GPU pair
+authority yet; this next boundary is not broad fusion or performance work.
