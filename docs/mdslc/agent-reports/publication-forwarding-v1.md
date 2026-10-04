@@ -107,3 +107,33 @@ export. They were corrected before runtime validation; no false passing result
 was reported. Remaining complete/affected builds, source admission/execution,
 sanitizer negative controls, physical ISA/GPU qualification, review, hosted CI and
 canonical merge are pending the integration owner's exact-head evidence.
+
+## First coherent integration run: retained failures and fixture correction
+
+The integration owner reported the first focused run as **2/14 passed**: runtime
+67 checks and plan 130 checks passed; driver checks failed. Two independent
+CMake harness defects were identified by root/reviewer: reserved `POLICY` keyword
+used unquoted in `if`, and semicolon-delimited stdout inadvertently serialized
+through a CMake list. Root owns those test-only corrections in the candidate;
+this branch does not duplicate them. Root subsequently executed the single-source
+generated-strict pair: **119 checks, zero failures, six executed cases and zero
+refusals** per mode, and its executable-symbol gate passed before the list defect.
+
+The program baseline additionally refused the direct region call with
+`CALLSITE: region call ABI or effect promises differ from compiler witness`.
+Two expressly authorized tiny Clang 21 `-O0 -S -emit-llvm` probes confirmed the
+exact difference: the original fixture's protected call under `FENV_ACCESS ON`
+has **`nounwind strictfp`**, whereas the same by-value signature called through
+a pragma-free witness has **`nounwind`**. Parameter/return attributes match.
+Saved probe artifacts are under task-owned
+`builds/forwarding-callsite.87IiCa/{strict-host.ll,witness.ll}`. This diagnoses an
+existing exact-interface bound, not an optimization-dependent failure.
+
+The program runner now preserves the original strictfp direct-call source and
+requires its exact CALLSITE refusal in both modes. For the positive program it
+inserts an ordinary noexcept forwarding wrapper after the region body but before
+the FP pragma and routes only the host invocation through that wrapper. The
+region's body and source lines remain unchanged; the ordinary host oracle retains
+`FENV_ACCESS ON` and full caller FP comparisons. No production ABI/effect verifier
+was relaxed. Actual corrected program/source/complete qualification remains with
+the integration owner; the tiny attribute probes are not that execution evidence.
