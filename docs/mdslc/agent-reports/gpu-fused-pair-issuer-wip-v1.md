@@ -39,9 +39,11 @@ branch is `mdslc/gpu-strict-fused-pair-runtime-v1`.
 2. Run issuer/CLI/adversarial object tests from a clean composed build. Confirm
    full LLVM pins on the exact supported 21.1.8 tuple, never relax them merely
    because a new artifact differs.
-3. Defer/remove the currently registered real HIP `physical.asan` test unless
-   separately justified. Real HIP/global host-ASan remains unqualified; HIP
-   API mocks under ASan do not prove physical HIP sanitizer compatibility.
+3. The real HIP `physical.asan` registration was already removed before
+   `60622b0`: HIP is normal-only; NVVM separately registers normal/ASan. Real
+   HIP/global host-ASan remains unqualified; HIP API mocks under ASan do not
+   prove physical HIP sanitizer compatibility. Qualify the declared narrow
+   physical modes, not an unsupported HIP sanitizer configuration.
 4. Execute the production images and skinny dimension-boundary fixtures on the
    actual GPUs, then normal CUDA Compute Sanitizer and its isolated negative.
 5. Compose with the separately reviewed runtime/source branch. Include its
@@ -53,3 +55,26 @@ branch is `mdslc/gpu-strict-fused-pair-runtime-v1`.
 
 No source/default execution, public API, performance, residency, arbitrary GPU,
 or merge authority follows from this preservation commit.
+
+## Resumed issuer checks (2026-10-04)
+
+These results supersede only the pending component checks above, not the
+research/production distinction or the unqualified integration checkpoint.
+
+- The NVIDIA rejection was a CMake semicolon/list-splitting defect: the captured
+  instruction's semicolon disappeared before its per-call regex. The corrected
+  parser excludes semicolons, retains the exact `CALL.REL.NOINC` spelling, and
+  requires its destination to name an unpredicated EXIT in exactly the sole
+  expected disassembled kernel. Both global and local extra executable symbols
+  are rejected. This bounded internal transfer is not a blanket call-free claim.
+- Fresh tiny issuer test: **147 checks, 48 valid-IR corruption rejections PASS**.
+  Its first run failed because the scratch-GEP mutation anchor omitted LLVM's
+  actual `inbounds nuw` spelling; fixing that fixture did not change the issuer
+  graph or its pins. Private CLI unsupported-input tests also passed.
+- Actual NVIDIA and AMD production-image gates each passed **16** captured
+  inspector corruption controls, including local extra functions; NVIDIA also
+  covers a genuine redirected non-EXIT destination and a second disassembly
+  section. These are synthetic gate attacks, not mutated image execution.
+- The physical harness now computes all independent strict oracle expectations
+  before any device API, protecting the oracle from vendor-library FP changes.
+  Production-image physical execution remains pending at this checkpoint.
