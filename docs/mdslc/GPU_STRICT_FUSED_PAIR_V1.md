@@ -1,7 +1,10 @@
 # Bounded staged GPU strict pair v1
 
-Engineering candidate, not yet a qualified canonical source route. This record
-must be updated with composed/physical/package/hosted evidence before merge.
+This specifies the bounded combined realization, not a general GPU-fusion or
+performance guarantee. The exact canonical engineering checkpoint is recorded
+in [CURRENT_STATE.md](CURRENT_STATE.md). Integration, full-regression receipts
+and hosted merge gates are tracked in [PR #86](https://github.com/onlyxItachi/MatcoreDSL/pull/86),
+separately from the [isolated issuer PR #85](https://github.com/onlyxItachi/MatcoreDSL/pull/85).
 
 ## Meaning and authority
 
@@ -59,10 +62,37 @@ launch failure is not invented for a launch that the combined realization omits.
 
 ## Evidence and limitations
 
-Initial isolated GPU research at `40cac19fbe0157ab9ed92536612e090aa4385581` passed
-physical independent arithmetic on both available devices. CUDA memory checking
-and its malformed-scratch detection are separate from AMD oracle/canary checks.
-These results do not alone establish source/runtime/package authority.
+The production issuer at `21aad61e21fbc3e86687fd35e3290a77a7d0c401`
+(compiler-identical isolated integration `950e5cabcaf42b0f22b09160fa140a0015a85729`)
+has separate [image qualification](agent-reports/gpu-fused-pair-issuer-v1.md):
+147 issuer checks, 48 valid-IR refusals, 17 NVVM/16 ROCDL machine-gate negatives,
+and actual execution on both qualified devices. Each device performed 285
+launches plus 264 explicitly counted host bypasses, checking 148377 strict
+outputs, 2586 canaries and 407354 immutable inputs. Bypasses are not GPU launches.
+CUDA Compute Sanitizer passed its normal run and detected the deliberately
+under-sized panel in its exact negative control; AMD oracle/canary evidence is
+not device-sanitizer evidence.
+
+Connected qualification at compiler checkpoint `9f7f9af80d96c8f38d4f66097a5c8779fb185464`
+adds real-Session/mocked-device and normal/ASan API-fault tests (151 CTest cases),
+four actual NVVM/ROCDL source/program tests and genuine producer-deleted package
+execution. The source tests check the original 22-case oracle in both modes,
+actual combined-call linkage, host interposition refusals and unavailable-target
+failure. The private work-cap fixture distinguishes legal unoptimized execution
+from combined f2 refusal while preserving the prior effect/observation prefix,
+original source identity, final-output sentinel and caller FP/errno state.
+The relocated installation ran both GPU targets and both source/program routes
+after deleting its temporary producer source/build trees; its unchanged driver
+SHA-256 was `0d14d7a716e8ddf191b319a6358e935aad4bc956d033e672b57d801dcba5956f`.
+These scopes and retained counterexamples have a separate
+[independent review](agent-reports/gpu-fused-pair-independent-review-v1.md).
+
+Real vendor-driver host-ASan remains unqualified: the CUDA attempt failed at
+cuInit status 2 before any image load/launch, while real HIP/global host-ASan
+remains configure-refused. Neither outcome is a passing sanitizer result.
+The passing API mocks and CUDA device instrumentation have different scopes.
+An auxiliary broad run with Python `-O` is not assertion-enabled regression
+qualification; the final full-regression gate must run with PYTHONOPTIMIZE unset.
 
 The independent real-Session/mocked-device test and API fault harnesses address
 the ordered guard/completion law. See [runtime qualification commands and
