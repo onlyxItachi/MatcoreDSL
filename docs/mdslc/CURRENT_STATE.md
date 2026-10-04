@@ -40,25 +40,10 @@ issuer/image boundary only: source/runtime still refuses GPU `strict-fused-pair`
 See the [merge qualification checkpoint](agent-reports/gpu-pair-issuer-merged-checkpoint-v1.md)
 and [component evidence](agent-reports/gpu-fused-pair-issuer-v1.md).
 
-Earlier CPU [PR #80](https://github.com/onlyxItachi/MatcoreDSL/pull/80), merge
-`c478e49d56719caaa898ff517a09bc0379d31aa6`, connects strict `C=A*B; E=C*D` to the issued CPU leaf
-through explicit `--optimization strict-fused-pair --candidate generated-strict`
-on Linux x64. Only adjacent pure lhs pairs with dominating immutable Read inputs
-and a private single-use intermediate qualify. The original Program/witness,
-both source guard frontiers, full logical C extent, prior effects and FP state
-remain; checked private C scratch is `min(4,M)*N`, not a full C allocation.
-Increasing reductions and intermediate f32 rounding are preserved. Default
-execution and independent [forwarding](PUBLICATION_READ_FORWARDING_V1.md) are unchanged.
-
-Exact premerge head `9a4dfeff70db57f3522e66fe9e13e8602c5a167c`; local qualification
-at compiler-identical frozen `6e25df7` (only the final Debug timeout changed):
-**406/406 distinct tests, zero skips**, in disjoint 404-test and 2-package runs.
-All **22 hosted checks passed**; hosted Debug had **243 passed and 14 existing
-AVX512 capability skips**, not a zero-skip result. See the
-[source contract](STRICT_FUSED_PAIR_SOURCE_V1.md),
-[implementation/review](agent-reports/strict-fused-pair-source-v1.md) and
-[issued-leaf qualification](agent-reports/strict-fused-pair-issuer-qualified-v1.md).
-No GPU fusion or performance inference follows from this CPU connection.
+CPU [PR #80](https://github.com/onlyxItachi/MatcoreDSL/pull/80) (`c478e49`) remains connected only through explicit Linux x64 `generated-strict` strict-pair opt-in.
+Its unchanged Program/witness, both guards/full C extent and checked row-panel4 remain.
+See the [contract](STRICT_FUSED_PAIR_SOURCE_V1.md), [CPU qualification checkpoint](https://github.com/onlyxItachi/MatcoreDSL/pull/87) and [issued-leaf record](agent-reports/strict-fused-pair-issuer-qualified-v1.md).
+Default execution and independent [forwarding](PUBLICATION_READ_FORWARDING_V1.md) stay unchanged.
 
 ## Unsupported or unproven
 
@@ -85,6 +70,7 @@ Bound it to NVVM sm_89 and ROCDL gfx1150, with original source guards/full C
 extent, checked private workspace, launch/completion/cleanup and shared
 poison/quarantine semantics. The CPU guard-retirement proof alone does not
 authorize fallible GPU execution. The issuer/image is merged; the combined
-source/runtime connection remains draft, pending its own exact-head hosted,
-complete local, package and independent qualification. Main has no combined GPU
+source/runtime connection remains draft. Its [local/package receipt](https://github.com/onlyxItachi/MatcoreDSL/pull/86#issuecomment-5983601325)
+is accepted at compiler-identical `9f7f9af`; exact `954a8e6` hosted qualification
+and final integration acceptance remain pending. Main has no combined GPU
 pair source authority yet; this is not broad fusion or performance work.

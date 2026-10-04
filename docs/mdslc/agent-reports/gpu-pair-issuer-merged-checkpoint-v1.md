@@ -52,15 +52,18 @@ not qualified by these green jobs.
 ## Authority retained and exactly one next boundary
 
 This merge changes no source/runtime dispatch: GPU `strict-fused-pair` remains
-refused. CPU source PR80 and its unchanged truthful 406-distinct-test/hosted-skip
-evidence remain documented in [CURRENT_STATE](../CURRENT_STATE.md) and the
-[CPU source contract](../STRICT_FUSED_PAIR_SOURCE_V1.md).
+refused. CPU source PR80 and its unchanged truthful local/hosted-skip evidence
+remain in the [CPU checkpoint](https://github.com/onlyxItachi/MatcoreDSL/pull/87)
+and [CPU source contract](../STRICT_FUSED_PAIR_SOURCE_V1.md).
 
 Next is separately qualifying/admitting [draft PR #86](https://github.com/onlyxItachi/MatcoreDSL/pull/86),
 the combined GPU source/runtime law. At this checkpoint its head is
-`954a8e6b6fea232db53146a64ef824f3b51e6739`, base main; its own exact-head hosted,
-complete assertion-enabled local, package and independent qualification remain
-pending. The immutable Program/witness, both original guards/full C extent,
+`954a8e6b6fea232db53146a64ef824f3b51e6739`, base main. Its independently accepted
+[local/package receipt](https://github.com/onlyxItachi/MatcoreDSL/pull/86#issuecomment-5983601325)
+records 571/571 zero-skip tests at `9f7f9af80d96c8f38d4f66097a5c8779fb185464`,
+whose compiler/workflow/AGENTS identities equal head954; this was not a run at954.
+Exact954 hosted qualification and final integration acceptance remain pending.
+The immutable Program/witness, both original guards/full C extent,
 private output/workspace, fallible launch/completion and shared poison/quarantine
 law require that separate acceptance. CPU guard retirement does not authorize it.
 Issues [#15](https://github.com/onlyxItachi/MatcoreDSL/issues/15) and
