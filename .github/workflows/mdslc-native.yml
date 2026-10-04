@@ -311,7 +311,9 @@ jobs:
   clang-21-debug-mlir:
     name: Clang 21.1.8 Debug (Matcore MLIR enabled, OpenBLAS disabled)
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # PR80's 45-minute run reached test 253/257 without a testcase failure.
+    # Keep the full Debug scope and allow its increasing bounded proof suite.
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -487,10 +489,11 @@ jobs:
           forwarding_tests='^(frontend\.closed_host_derived_plan_v1|runtime\.closed_host\.forwarded_read_independent_v1)$'
           fused_pair_tests='^generated_cpu_fused_pair\..*$'
           fused_pair_source_tests='^(frontend\.closed_host_strict_fused_pair_plan_v1|runtime\.closed_host\.strict_fused_pair_independent_v1)$'
-          sanitizer_tests="${sanitizer_tests}|${region_tests}|${forwarding_tests}|${fused_pair_tests}|${fused_pair_source_tests}"
+          gpu_fused_frontier_tests='^generated_gpu_fused_pair\.frontiers$'
+          sanitizer_tests="${sanitizer_tests}|${region_tests}|${forwarding_tests}|${fused_pair_tests}|${fused_pair_source_tests}|${gpu_fused_frontier_tests}"
           ctest --test-dir build-mdslc-asan-ubsan -N -R "${sanitizer_tests}" \
             | tee build-mdslc-asan-ubsan/focused-test-list.txt
-          grep -Fx "Total Tests: 199" \
+          grep -Fx "Total Tests: 200" \
             build-mdslc-asan-ubsan/focused-test-list.txt
           ctest --test-dir build-mdslc-asan-ubsan --output-on-failure -j1 \
             -R "${sanitizer_tests}"

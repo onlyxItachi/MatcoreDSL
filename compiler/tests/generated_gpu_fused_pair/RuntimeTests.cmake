@@ -14,6 +14,7 @@ target_compile_definitions(matcore_gpu_fused_frontier_test PRIVATE MDSLC_CLOSED_
   MDSLC_CLOSED_HOST_GENERATED_ROCDL MDSLC_CLOSED_HOST_GENERATED_ROCDL_FUSED_PAIR)
 target_compile_options(matcore_gpu_fused_frontier_test PRIVATE
   -fno-fast-math -ffp-contract=off -frounding-math)
+target_link_libraries(matcore_gpu_fused_frontier_test PRIVATE Threads::Threads)
 add_test(NAME generated_gpu_fused_pair.frontiers COMMAND matcore_gpu_fused_frontier_test)
 
 foreach(kind IN ITEMS nvvm rocdl)

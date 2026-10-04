@@ -33,6 +33,11 @@ upload, launch and download plus shared sibling poisoning and direct N=0 refusal
 **36 CUDA + 39 HIP processes passed**, no diagnostics. These are a new 75-process
 run, not 75 additional distinct baseline cases. The saved extended log is
 `gpu-pair-runtime-final-api-mocks.log`; executable suffixes are `-pair-final`.
+These process cases inject driver/API and device-allocation failures, not C++
+host allocation or thread creation/join failures. New host D staging is prepared
+before context/stream/async setup, and the existing isolated-worker boundary
+catches allocation failure. That safety argument was inspected; it is not
+host-allocation fault-injection evidence.
 
 Saved raw logs under the evidence directory beside that build root:
 `gpu-pair-runtime-independent-frontiers.log`,
