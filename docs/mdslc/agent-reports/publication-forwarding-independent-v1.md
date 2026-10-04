@@ -406,3 +406,69 @@ This test source has not been compiled or executed by its author. Registration,
 actual generated-leaf execution and sanitizer instrumentation are distinct
 pending gates. No production fused source path is accepted merely because these
 falsifiers have been written.
+
+## Exact-commit isolated fused issuer review
+
+Verdict: **ACCEPT the isolated compiler-owned strict CPU pair issuer** at
+`8ce0bcd349cf2339162ce423c82377d3c827d642`. No blocking correctness defect
+remains in the reviewed bounded component. This is not acceptance of the
+pending source plan/runtime implementation, merge authorization, a formal
+all-program theorem, performance evidence or all-target fusion.
+
+The working tree was clean and matched that exact commit. The reviewer read
+the complete issuer, its private contract, CMake integration, CLI and tests;
+`git diff --check` passed. Exact producer/consumer graphs are built inside the
+closed issuer. Actual scheduling and bufferization use upstream Transform and
+One-Shot, with exactly one checked row-panel allocation request mapped to
+caller workspace. The textual stage references compare the resulting graph;
+they are not executable loop payloads or an external import path. Both strict
+reductions retain their ordered separate f32 operations and the intermediate
+rounding boundary. Inputs remain MAY-alias; E and scratch require private
+disjoint storage.
+
+The earlier preoptimization LLVM provenance/count checks alone did not cover
+every integer IV, branch, address expression or function attribute. The final
+commit supplements them with pinned complete normal/ASan LLVM graph hashes,
+ignoring only the diagnostic ModuleID comment, plus concrete IV/GEP/unsafe-FP-
+attribute corruptions. This is an exact coherent-21.1.8 drift gate. Neither a
+successful bool verifier nor a manifest issues source/runtime authority; the
+only executable artifact factory accepts its MLIR context and sanitizer mode,
+not supplied IR or a caller Transform program.
+
+The initially overbroad empty-output leaf precondition was corrected. The
+unchecked row loop must not receive empty E; the future adapter must still
+retire both original required guard frontiers before taking that shortcut.
+For nonempty E, its validated byte extent bounds M and makes the row increment
+by four representable. The full logical C extent remains mandatory at f1 even
+when E is empty. K=0 is not a final-output-zero condition; N>0/nonempty E still
+executes the consumer. The independent runtime test covers these distinctions.
+
+The optimized-object gate runs as part of object generation, not only CTest.
+It requires both exact strong ABI exports, permits only the normal `memset`
+import or the explicit ASan instrumentation set, and checks separate scalar
+arithmetic without FMA. The trusted memset contract explicitly requires bounded
+private writes, no recoverable failure/arbitrary host effects, and preserved FP
+controls. Arbitrary interposition is outside that boundary.
+
+Without compiling or executing, the reviewer independently checked the saved
+normal/ASan LLVM hashes `bc1cdf4c...b237c` / `02432a53...8ea52` and object hashes
+`c1644975...243a6` / `10892a50...7d095` against the owner's full hashes in
+`strict-fused-pair-issuer-v1.md`. `llvm-nm` confirms the stated actual imports.
+Disassembly shows fixed stack-frame adjustments for both leaf/wrapper modes;
+the preoptimization loop-local descriptor metadata allocas do not survive as
+an accumulating per-panel stack allocation in these checked objects. The
+owner's saved CTest log records 9/9 passed: 61 candidate checks, 13,617 checks
+per normal/ASan execution mode, and actual generated A/B/D ASan read controls.
+Those runs were not independently repeated here. Of 3,360 exhaustive geometries,
+840 empty-E cases intentionally do not invoke the leaf; the owner's recorded
+2,561 total invocations per mode include the additional nonempty specimens.
+
+The separate CI delta `31401bf6002e10d09213f2e613ab2f29734def4f` is also
+accepted by static inspection. The nine registered tests are one candidate,
+one CLI, two execution, two object and three ASan input-read controls. Release
+requires all nine before its full suite. The ASan expression adds exactly this
+new namespace; the existing `generated_cpu\.` expression does not match
+`generated_cpu_fused_pair.`. Therefore the selected count changes from 186 to
+195. Issuer files in that integrated commit match the reviewed issuer bytes.
+Hosted, composed/full, installed and later source/runtime qualification remain
+the integration owner's distinct gates.
