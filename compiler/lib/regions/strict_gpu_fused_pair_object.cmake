@@ -33,7 +33,7 @@ if(NOT imports STREQUAL "")
   message(FATAL_ERROR "GPU pair image acquired imports: ${imports}")
 endif()
 inspect(symbols "${NM}" --defined-only "${IMAGE}")
-string(REGEX MATCHALL "[0-9a-fA-F]+ T [^\n]+" functions "${symbols}")
+string(REGEX MATCHALL "[0-9a-fA-F]+ [Tt] [^\n]+" functions "${symbols}")
 list(LENGTH functions function_count)
 if(NOT function_count EQUAL 1 OR NOT functions MATCHES " T ${kernel}$")
   message(FATAL_ERROR "GPU pair image executable exports changed: ${functions}")
@@ -41,6 +41,15 @@ endif()
 if(TARGET_KIND STREQUAL "nvvm")
   inspect(assembly "${CUOBJDUMP}" --dump-sass "${IMAGE}")
   inspect(metadata "${CUOBJDUMP}" --dump-elf "${IMAGE}")
+  # Addresses in cuobjdump are function-relative. Resolve internal transfers
+  # only after binding the entire disassembly to the single expected kernel;
+  # another local function's EXIT must not authenticate a destination.
+  string(REGEX MATCHALL "Function[ \t]*:[ \t]*[^\n]+" disassembled_functions "${assembly}")
+  list(LENGTH disassembled_functions disassembled_function_count)
+  if(NOT disassembled_function_count EQUAL 1 OR
+     NOT disassembled_functions MATCHES "^Function[ \t]*:[ \t]*${kernel}[ \t\r]*$")
+    message(FATAL_ERROR "NVVM pair disassembled function identity changed")
+  endif()
   if(NOT assembly MATCHES "sm_89" OR assembly MATCHES "(FFMA|HFMA|HMMA|IMMA|MMA|[.]FTZ)" OR
      NOT assembly MATCHES "FMUL " OR NOT assembly MATCHES "FADD ")
     message(FATAL_ERROR "NVVM pair lost separate f32/gradual/import-free arithmetic")
@@ -48,9 +57,9 @@ if(TARGET_KIND STREQUAL "nvvm")
   # Pinned ptxas emits CALL.REL.NOINC as a conditional transfer to EXIT in this
   # same sole kernel, with zero stack. This is NOT a blanket machine-call-free
   # claim or permission for arbitrary device calls/imports.
-  string(REGEX MATCHALL "[^\n]*CALL[^\n]*" calls "${assembly}")
+  string(REGEX MATCHALL "[^\n;]*CALL[^\n;]*" calls "${assembly}")
   foreach(call IN LISTS calls)
-    if(NOT call MATCHES "CALL[.]REL[.]NOINC +0x([0-9a-f]+) +;")
+    if(NOT call MATCHES "CALL[.]REL[.]NOINC +0x([0-9a-f]+) +$")
       message(FATAL_ERROR "NVVM pair acquired an unknown machine call")
     endif()
     set(exit_target "${CMAKE_MATCH_1}")

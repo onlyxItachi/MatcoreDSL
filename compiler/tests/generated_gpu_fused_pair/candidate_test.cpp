@@ -66,7 +66,8 @@ int main() {
     llvmNegative("row-active-extent","i64 %56, i64 4","i64 %56, i64 3");
     llvmNegative("IV","add i64","sub i64");
     llvmNegative("GEP-permission","getelementptr float","getelementptr inbounds float");
-    llvmNegative("workspace-to-output","getelementptr float, ptr %29","getelementptr float, ptr %22");
+    llvmNegative("workspace-to-output","getelementptr inbounds nuw float, ptr %29",
+                                      "getelementptr inbounds nuw float, ptr %22");
     llvmNegative("FP-context","\"denormal-fp-math-f32\"=\"ieee,ieee\"","\"denormal-fp-math-f32\"=\"preserve-sign,preserve-sign\"");
     llvmNegative("unknown-call","  br label %36","  call void @external_effect()\n  br label %36");
     // The unknown call needs a declaration, so separately authenticate extra

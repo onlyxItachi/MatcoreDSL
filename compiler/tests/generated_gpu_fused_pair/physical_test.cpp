@@ -215,12 +215,12 @@ struct Case {
   std::string name;
   bool aliasAll = false;
 };
-static void runCase(Function function, const Case &test) {
+static void runCase(Function function, const Case &test, const std::vector<float> &expected) {
   const auto s = test.s;
   guards(s);
   require(extent(s.m,s.k) == test.a.size() && extent(s.k,s.n) == test.b.size() &&
           extent(s.n,s.p) == test.d.size(), "input extent differs: " + test.name);
-  auto expected = oracle(s,test.a,test.b,test.d);
+  require(expected.size()==extent(s.m,s.p),"frozen oracle extent differs");
   if (expected.empty() || s.n == 0) {
     // Empty E: no loop. N=0: strict +0 second empty reduction, no leaf.
     for (float value : expected) require(std::bit_cast<uint32_t>(value)==0,
@@ -392,16 +392,23 @@ int main(int argc,char **argv) {
   std::thread worker([&] {
     try {
       std::fesetround(FE_TONEAREST); _mm_setcsr(_mm_getcsr()&~0x8040u);
-      hostFalsifiers(); initialize();
+      hostFalsifiers();
+      // Freeze every independent expected bit BEFORE any GPU/runtime API can
+      // change worker FP controls. Never derive the oracle after device calls.
+      auto tests=cases();
+      if(negativeWorkspace) tests={Case{{5,1,3,2},std::vector<float>(5,1),
+          std::vector<float>(3,1),std::vector<float>(6,1),"intentional-undercapacity-scratch"}};
+      std::vector<std::vector<float>> expected;
+      for(const auto &test:tests) expected.push_back(oracle(test.s,test.a,test.b,test.d));
+      initialize();
       Module module{}; Function function{}; load(module,function,image.data());
       if (negativeWorkspace) {
         std::printf("NEGATIVE CUDA memcheck-only: forged4x3scratch descriptor, "
                     "physical1float+2canaries; separate bounded context/process\n");
-        Case bad{{5,1,3,2},std::vector<float>(5,1),std::vector<float>(3,1),
-                 std::vector<float>(6,1),"intentional-undercapacity-scratch"};
-        runCase(function,bad);
+        std::fflush(stdout);
+        runCase(function,tests.front(),expected.front());
         throw std::runtime_error("negative workspace escaped all instrumentation/checks");
-      } else for (const auto &test:cases()) runCase(function,test);
+      } else for(size_t i=0;i<tests.size();++i) runCase(function,tests[i],expected[i]);
       shutdown(module); success=true;
     } catch (const std::exception &error) {
       std::fprintf(stderr,"FAIL research arithmetic/ABI: %s\n",error.what());

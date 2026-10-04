@@ -78,6 +78,7 @@ def main():
 
     reject("unknown-import", "--undefined-only", lambda text: text + " U arbitrary_device_effect\n")
     reject("extra-executable", "--defined-only", lambda text: text + "0000000000000000 T arbitrary_kernel\n")
+    reject("extra-local-executable", "--defined-only", lambda text: text + "0000000000000000 t arbitrary_local\n")
     assembly = "--dump-sass" if args.target == "nvvm" else "-d"
     reject("FMA", assembly, lambda text: text + ("\nFFMA R0,R1,R2,R3;\n" if args.target == "nvvm"
                                                 else "\nv_fma_f32 v0,v1,v2,v3\n"))
@@ -87,7 +88,11 @@ def main():
         reject("half-FMA32I", assembly, lambda text: text + "\nHFMA2_32I R0,R1,0.5,R3;\n")
         reject("FTZ", assembly, lambda text: text + "\nFMUL.FTZ R0,R1,R2;\n")
         reject("unknown-call", assembly, lambda text: text + "\nCALL R0;\n")
-        reject("relative-call-nonexit", assembly, lambda text: text.replace("CALL.REL.NOINC", "CALL.REL", 1))
+        reject("relative-call-modifier", assembly, lambda text: text.replace("CALL.REL.NOINC", "CALL.REL", 1))
+        reject("relative-call-nonexit", assembly,
+               lambda text: re.sub(r"(CALL\.REL\.NOINC +)0x[0-9a-f]+", r"\g<1>0x0", text, count=1))
+        reject("extra-disassembled-function", assembly,
+               lambda text: text + "\nFunction : arbitrary_local\n/*1f40*/ EXIT ;\n")
         reject("field-size-prefix", "--dump-elf", lambda text: text.replace("Size    : 0x8", "Size    : 0x80", 1))
         reject("cbank-size-prefix", "--dump-elf", lambda text: text.replace("Value:\t0x118\n", "Value:\t0x1180\n", 1))
         reject("field-offset", "--dump-elf", lambda text: text.replace("Offset  : 0x110", "Offset  : 0x118", 1))
