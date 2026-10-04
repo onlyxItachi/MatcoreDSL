@@ -1,0 +1,4 @@
+passes=PASS
+gpu.launch-sites=4
+scf.for-sites=3
+selected=no; separate kernels inside host row loop, not one fused GPU kernel

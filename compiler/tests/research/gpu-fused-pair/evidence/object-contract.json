@@ -1,0 +1,49 @@
+{
+  "status": "PASS",
+  "artifacts": [
+    {
+      "target": "nvvm",
+      "path": "/home/hamza-usta/mdslc-work/region-optimization-v1/builds/gpu-fused-pair-research/nvvm.cubin",
+      "bytes": 12200,
+      "sha256": "58e6562902d68aa161a60d80239ad63b8f1cde22a8fdf32f2dded351d888ba85",
+      "imports": "",
+      "llvm_sha256": "11006b35cb5c33050bec957c8d06baa316f43713a4df736c3e5908ee614f4f13",
+      "kernel": "__matcore_research_strict_fused_pair_kernel",
+      "expanded_memref_fields": 35,
+      "amdhsa_descriptor": null
+    },
+    {
+      "target": "rocdl",
+      "path": "/home/hamza-usta/mdslc-work/region-optimization-v1/builds/gpu-fused-pair-research/rocdl.hsaco",
+      "bytes": 7976,
+      "sha256": "c39b0089ab811392be0151e2ab394b129bcb52a4d0c7b8ab19f39ee06de1fd3f",
+      "imports": "",
+      "llvm_sha256": "418d95e7311221915f8b7876a3f164e0b47844b05969b2eda3276bd736671fe7",
+      "kernel": "__matcore_research_strict_fused_pair_kernel",
+      "expanded_memref_fields": 35,
+      "amdhsa_descriptor": {
+        "file_offset": 3904,
+        "compute_pgm_rsrc1": "0xe0af01c0",
+        "f32_round": "nearest-even",
+        "f32_denorm": "flush-none",
+        "ieee_mode": true,
+        "group_segment_bytes": 0,
+        "private_segment_bytes": 0,
+        "kernarg_bytes_including_hidden": 536
+      }
+    }
+  ],
+  "negative_controls": [
+    "nvvm:cpu-image",
+    "nvvm:FMA",
+    "nvvm:FTZ",
+    "nvvm:missing-multiply",
+    "rocdl:cpu-image",
+    "rocdl:FMA",
+    "rocdl:missing-multiply",
+    "rocdl:wrong-rounding-descriptor",
+    "rocdl:FTZ-descriptor",
+    "rocdl:not-IEEE-descriptor"
+  ],
+  "authority": "none; research artifact inspection only"
+}
