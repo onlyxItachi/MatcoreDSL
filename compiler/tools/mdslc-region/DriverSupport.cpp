@@ -142,9 +142,11 @@ codegen::ClosedHostOptimization parseOptimization(const std::string &name) {
   if (name == "none") return codegen::ClosedHostOptimization::None;
   if (name == "publication-read-forwarding")
     return codegen::ClosedHostOptimization::PublicationReadForwarding;
+  if (name == "strict-fused-pair")
+    return codegen::ClosedHostOptimization::StrictFusedPair;
   reject("unknown region optimization: " + name);
 }
-const char *optimizationUsage() { return "none|publication-read-forwarding"; }
+const char *optimizationUsage() { return "none|publication-read-forwarding|strict-fused-pair"; }
 Installation::Installation()
     : installed(layout()), clang(Artifact::capture(REGION_CLANG, REGION_CLANG_SHA)),
       linker(Artifact::capture(REGION_LINKER, REGION_LINKER_SHA)),

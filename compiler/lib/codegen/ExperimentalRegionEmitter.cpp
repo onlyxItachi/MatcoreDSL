@@ -49,6 +49,16 @@ ExperimentalRegionEmissionResult emitExperimentalRegion(
     result.error = "experimental implementation requires a sealed named entry and known candidate policy";
     return result;
   }
+  if (optimization == ClosedHostOptimization::StrictFusedPair) {
+    if (policy != ClosedCpuPolicy::GeneratedStrict) {
+      result.error = "strict-fused-pair requires explicit --candidate generated-strict; automatic and other candidates are incompatible";
+      return result;
+    }
+#if !defined(__linux__) || !defined(__x86_64__)
+    result.error = "strict-fused-pair is available only on the checked Linux x64 generated-strict route";
+    return result;
+#endif
+  }
   // This replays the complete original host/semantic witness. No caller-provided
   // mutable graph, source range, symbol binding or certificate is accepted.
   auto derived = deriveClosedHostPlan(evidence, optimization);
