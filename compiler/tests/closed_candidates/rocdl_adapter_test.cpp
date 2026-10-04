@@ -20,6 +20,9 @@ namespace detail = ch::detail;
 namespace {
 int steps = 0, failStep = 0, failures = 0, allocations = 0, checks = 0;
 bool unknownCompletion = false, pending = false, cleanupBeforeCompletion = false;
+bool unknownThirdUpload = false, unknownLaunch = false, unknownDownload = false;
+unsigned uploads = 0;
+const float *retainedHost = nullptr;
 bool wrongThread = false, unavailable = false;
 const std::thread::id owner = std::this_thread::get_id();
 thread_local int currentDevice = 123;
@@ -128,10 +131,18 @@ hipError_t hipMalloc(void **out, std::size_t size) {
   ++allocations; return e;
 }
 hipError_t hipMemcpyAsync(void *to, const void *from, std::size_t size,
-                          hipMemcpyKind, hipStream_t stream) {
+                          hipMemcpyKind kind, hipStream_t stream) {
   auto e = step(); pending = true;
   if (!stream) return hipErrorInvalidValue;
+  if (kind == hipMemcpyHostToDevice) {
+    ++uploads;
+    retainedHost = static_cast<const float *>(from);
+    if (unknownThirdUpload && uploads == 3) return hipErrorUnknown;
+  } else {
+    retainedHost = static_cast<const float *>(to);
+  }
   if (e == hipSuccess) std::memcpy(to, from, size);
+  if (kind == hipMemcpyDeviceToHost && unknownDownload) return hipErrorUnknown;
   return e;
 }
 hipError_t hipModuleLaunchKernel(hipFunction_t fn, unsigned x, unsigned y,
@@ -139,6 +150,7 @@ hipError_t hipModuleLaunchKernel(hipFunction_t fn, unsigned x, unsigned y,
     hipStream_t stream, void **args, void **) {
   auto e = step(); pending = true;
   if (e != hipSuccess) return e;
+  if (unknownLaunch) return hipErrorUnknown;
   if (z != 1 || tx != 1 || ty != 1 || tz != 1 || shared || !stream)
     return hipErrorInvalidValue;
 #if defined(MDSLC_TEST_GPU_FUSED_PAIR)
@@ -173,6 +185,11 @@ int main(int argc, char **argv) {
   const char *mode = argv[1];
   if (std::strncmp(mode, "fault-", 6) == 0) failStep = std::atoi(mode + 6);
   if (!std::strcmp(mode, "unknown-completion")) unknownCompletion = true;
+#if defined(MDSLC_TEST_GPU_FUSED_PAIR)
+  if (!std::strcmp(mode, "unknown-D")) unknownCompletion = unknownThirdUpload = true;
+  if (!std::strcmp(mode, "unknown-launch")) unknownCompletion = unknownLaunch = true;
+  if (!std::strcmp(mode, "unknown-download")) unknownCompletion = unknownDownload = true;
+#endif
   if (!std::strcmp(mode, "unavailable")) unavailable = true;
   std::array<float, 6> a{1,2,3,4,5,6};
   std::array<float, 8> b{1,2,3,4,5,6,7,8};
@@ -200,6 +217,14 @@ int main(int argc, char **argv) {
   errno = EDOM;
 
   ch::Code code;
+#if defined(MDSLC_TEST_GPU_FUSED_PAIR)
+  if (!std::strcmp(mode, "zero-N")) {
+    code = invoke({a.data(),3,2}, {b.data(),2,0}, {output.data(),3,4});
+    check(code == ch::Code::candidate_incompatible && allocations == 0,
+          "nonempty N=0 never enters issuer leaf; Session owns positive-zero bypass");
+    for (float value : output) check(value == -77, "N=0 private leaf refusal retains output");
+  } else
+#endif
   if (!std::strcmp(mode, "shape")) {
     code = invoke({a.data(),3,2}, {b.data(),3,4},
                                      {output.data(),3,4});
@@ -250,6 +275,12 @@ int main(int argc, char **argv) {
   if (unknownCompletion) {
 #if defined(MDSLC_TEST_GPU_FUSED_PAIR)
     check(allocations == 5 && pending, "unknown completion retains all five pair buffers");
+    if (unknownThirdUpload || unknownLaunch)
+      check(retainedHost && retainedHost != d.data() && retainedHost[0] == 1 &&
+            retainedHost[15] == 1, "possibly live third-input transfer owns retained host staging");
+    else
+      check(retainedHost && retainedHost != output.data() && retainedHost[0] == 11,
+            "possibly live download owns retained private staging");
 #else
     check(allocations == 3 && pending, "unknown completion retains all device buffers");
 #endif
@@ -257,6 +288,11 @@ int main(int argc, char **argv) {
     check(detail::rocdlCandidateAvailable() == ch::Code::candidate_failure,
           "quarantine poisons future availability");
     check(steps == oldSteps, "poisoned candidate never touches HIP again");
+#if defined(MDSLC_TEST_GPU_FUSED_PAIR)
+    check(detail::rocdlGemmCandidate({a.data(),3,2}, {b.data(),2,4},
+          {output.data(),3,4}) == ch::Code::candidate_failure && steps == oldSteps,
+          "combined uncertainty also poisons the original sibling route");
+#endif
   }
   check(!cleanupBeforeCompletion, "never release resources before completion proof");
   check(!wrongThread, "HIP calls run only on isolated worker thread");

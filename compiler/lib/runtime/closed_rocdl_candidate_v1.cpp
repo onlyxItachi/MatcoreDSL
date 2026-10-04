@@ -238,6 +238,7 @@ Code executePair(CandidateInput a, CandidateInput b, CandidateInput d,
   if (hipSetDevice(selected) != hipSuccess) return Code::candidate_unavailable;
   if (rocdlFusedPairImageAvailable() != Code::ok) return Code::candidate_unavailable;
   if (!ec) return Code::ok;
+  if (b.columns == 0) return Code::candidate_incompatible;
   auto frame = std::make_unique<Frame>();
   if (ac) frame->hostA.assign(a.data, a.data + ac);
   if (bc) frame->hostB.assign(b.data, b.data + bc);

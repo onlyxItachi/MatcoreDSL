@@ -246,6 +246,7 @@ Code executePair(CandidateInput a, CandidateInput b, CandidateInput d,
   // The source adapter suppresses empty-E and N=0 invocation. Keeping this
   // direct private leaf bounded also prevents a huge empty-output panel loop.
   if (!sizes[3]) return Code::ok;
+  if (b.columns == 0) return Code::candidate_incompatible;
 
   auto owned = std::make_unique<Resources>();
   auto &resources = *owned;

@@ -22,7 +22,8 @@ constexpr bool closedGpuFusedPairCompatibleV1(std::uint64_t m, std::uint64_t k,
                                               std::uint64_t p) noexcept {
   if (!closedGpuShapeCompatibleV1(m, n, k) ||
       !closedGpuShapeCompatibleV1(m, p, n)) return false;
-  // Each factor is <=65535, so the complete sum is representable in uint64_t.
+  // All four dimensions are <=65535 and m*n<=2^20, so even the sum of
+  // both contraction work counts is representable in uint64_t.
   return m * n * (k + p) <= (std::uint64_t{1} << 18);
 }
 }

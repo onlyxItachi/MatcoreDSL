@@ -14,6 +14,7 @@ Code cudaGemmCandidate(CandidateInput, CandidateInput, CandidateOutput) noexcept
 // Separate compiler-issued combined realization. Uses the same poison domain
 // as the single-GEMM route; one private device panel, one kernel, no C Value.
 // These entry points do not grant source authority or permit image injection.
+// Nonempty E requires N>0; Session owns the semantic N=0 positive-zero bypass.
 Code cudaFusedPairImageAvailable() noexcept;
 Code cudaFusedPairCandidate(CandidateInput a, CandidateInput b, CandidateInput d,
                            CandidateOutput e) noexcept;
