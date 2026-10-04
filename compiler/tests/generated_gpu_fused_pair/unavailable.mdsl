@@ -28,4 +28,5 @@ int main() {
       result.failure_location().line!=first_line || prefix!=2 || e!=-2 ||
       !result.observation(0).valid() || result.observation(0).data()[0]!=2) return 1;
   std::puts("GPU fused pair unavailable: PASS");
+  return 0;
 }
