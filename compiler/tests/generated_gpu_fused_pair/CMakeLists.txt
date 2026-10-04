@@ -23,10 +23,10 @@ foreach(kind IN ITEMS nvvm rocdl)
     "${CMAKE_CURRENT_SOURCE_DIR}/object_contract.py" --image "${image}" --target "${kind}"
     --gate "${PROJECT_SOURCE_DIR}/lib/regions/strict_gpu_fused_pair_object.cmake"
     --build "${CMAKE_CURRENT_BINARY_DIR}/${kind}-object-falsifiers")
+  # Real vendor DSOs with host ASan remain unqualified. Device instrumentation
+  # is separately exercised by CUDA Compute Sanitizer below; adapter API mocks
+  # own their independent host-ASan/UBSan scope in RuntimeTests.cmake.
   set(physical_modes normal)
-  if(kind STREQUAL "nvvm")
-    list(APPEND physical_modes asan)
-  endif()
   foreach(mode IN LISTS physical_modes)
     set(executable matcore_gpu_fused_pair_${kind}_${mode}_test)
     add_executable(${executable} physical_test.cpp)

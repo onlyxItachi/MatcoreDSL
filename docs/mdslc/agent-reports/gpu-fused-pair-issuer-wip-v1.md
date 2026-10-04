@@ -3,6 +3,9 @@
 Status: **WIP, not qualified, not merge-ready**. The agent service exhausted its
 usage allowance on 2026-10-04 before composed testing and independent review.
 No active compiler/CTest process remained when the root preserved this snapshot.
+This is the historical interruption record; see the subsequent
+[component qualification](gpu-fused-pair-issuer-v1.md) for resumed results and
+the retained failed real-CUDA host-ASan attempt. Integration is still separate.
 Base: CPU source head `6e25df7e85ae3419d9e688541065433ff3151151` plus shared
 integration hooks `b0fe264` (equivalent to root runtime hook commit `3e168a1`).
 
