@@ -2,12 +2,14 @@
 #include "MatcoreCpuReassociateGemmCandidate.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
+#include <charconv>
 #include <string>
 
 int main(int argc, char **argv) {
   namespace candidate = matcore::mdslc::cpu_candidate;
   bool asan = false;
   auto schedule = candidate::StrictGemmScheduleV1::ScalarMNK;
+  matcore::mdslc::gemm_pattern::OutputTilePatternV1 tiles;
   bool valid = argc >= 3 && argc <= 7 && std::string(argv[1]) == "--output";
   bool has_schedule = false;
   bool has_target = false;
@@ -22,6 +24,23 @@ int main(int argc, char **argv) {
     else if (option == "--schedule=row-contiguous" && !has_schedule) {
       has_schedule = true;
       schedule = candidate::StrictGemmScheduleV1::RowContiguousMKN;
+    } else if (option.starts_with("--output-tiles=") && !has_schedule) {
+      has_schedule = true;
+      schedule = candidate::StrictGemmScheduleV1::OutputTiledMKN;
+      const auto value = option.substr(15);
+      const auto comma = value.find(',');
+      auto parse = [](const std::string &text, std::int64_t &out) {
+        if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos)
+          return false;
+        const auto result = std::from_chars(text.data(), text.data() + text.size(), out);
+        return result.ec == std::errc{} && result.ptr == text.data() + text.size();
+      };
+      std::string error;
+      if (comma == std::string::npos ||
+          !parse(value.substr(0, comma), tiles.tile_m) ||
+          !parse(value.substr(comma + 1), tiles.tile_n) ||
+          !matcore::mdslc::gemm_pattern::validateOutputTilePatternV1(tiles, error))
+        valid = false;
     } else if (option == "--candidate=reassociate-register" && !reassociate) {
       reassociate = true;
     } else if (option == "--target=linux-x86_64" && !has_target) {
@@ -48,17 +67,18 @@ int main(int argc, char **argv) {
   if (!valid) {
     llvm::errs()
         << "private built-in candidate generator: --output FILE [--asan] "
-           "[--schedule=row-contiguous | --candidate=reassociate-register] "
+           "[--schedule=row-contiguous | --output-tiles=M,N | --candidate=reassociate-register] "
            "[--target=linux-x86_64 | --target=linux-aarch64]\n"
            "[--isa=baseline | --isa=avx | --isa=avx2 | --isa=avx512f]\n"
-           "Nonbaseline ISA requires x86 row-contiguous strict, not reassociate.\n"
+           "Output tiles are integers in [1,64]; K remains untiled and ordered.\n"
+           "Nonbaseline ISA requires x86 row-contiguous or output-tiled strict.\n"
            "AArch64 is a strict-only target; target selection is not runtime legality.\n"
            "No source/MLIR input is accepted. This does not admit a program.\n";
     return 2;
   }
   mlir::MLIRContext context;
   auto artifact = reassociate ? candidate::issueReassociateGemmArtifactV1(context, asan)
-                             : candidate::issueStrictGemmArtifactV1(context, asan, schedule, target, isa);
+                             : candidate::issueStrictGemmArtifactV1(context, asan, schedule, target, isa, tiles);
   if (!artifact) {
     llvm::errs() << artifact.error << '\n';
     return 1;

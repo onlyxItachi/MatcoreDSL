@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/Linalg/TransformOps/DialectExtension.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Transform/Transforms/TransformInterpreterUtils.h"
@@ -26,8 +27,10 @@
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
+#include "mlir/Transforms/Passes.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/Verifier.h"
@@ -451,7 +454,7 @@ bool verifyReassociateGemmBufferizedV1(mlir::ModuleOp module, std::string &error
 
 StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
     bool address_sanitizer, StrictGemmScheduleV1 schedule, CpuTargetV1 target,
-    StrictCpuIsaV1 isa) {
+    StrictCpuIsaV1 isa, gemm_pattern::OutputTilePatternV1 tiles) {
   StrictGemmArtifactV1 result;
   const char *targetTriple = cpuTargetTripleV1(target);
   if (!targetTriple) {
@@ -459,15 +462,24 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
     return result;
   }
   if (schedule != StrictGemmScheduleV1::ScalarMNK &&
-      schedule != StrictGemmScheduleV1::RowContiguousMKN) {
+      schedule != StrictGemmScheduleV1::RowContiguousMKN &&
+      schedule != StrictGemmScheduleV1::OutputTiledMKN) {
     fail(result.error, "unknown strict GEMM schedule");
+    return result;
+  }
+  const bool outputTiled = schedule == StrictGemmScheduleV1::OutputTiledMKN;
+  if (outputTiled) {
+    if (!gemm_pattern::validateOutputTilePatternV1(tiles, result.error))
+      return result;
+  } else if (tiles.tile_m != 0 || tiles.tile_n != 0) {
+    fail(result.error, "output tile parameters require the output-tiled schedule");
     return result;
   }
   if (!strictCpuFeaturesV1(isa) ||
       (isa != StrictCpuIsaV1::Baseline &&
        (target != CpuTargetV1::LinuxX86_64 ||
-        schedule != StrictGemmScheduleV1::RowContiguousMKN))) {
-    fail(result.error, "strict ISA candidates require a closed x86 row-contiguous realization");
+        (schedule != StrictGemmScheduleV1::RowContiguousMKN && !outputTiled)))) {
+    fail(result.error, "strict ISA candidates require a closed x86 MKN realization");
     return result;
   }
   auto stages = buildStrictGemmStagesV1(context);
@@ -484,6 +496,15 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
     if (!stages.bufferized)
       return result;
     result.transform_ir = rowContiguousTransform.str();
+  } else if (outputTiled) {
+    stages.bufferized = gemm_pattern::deriveStrictGemmOutputTiledV1(
+        *stages.bufferized, tiles, result.error);
+    if (!stages.bufferized)
+      return result;
+    result.transform_ir = gemm_pattern::strictGemmOutputTileTransformV1(
+        tiles, result.error);
+    if (result.transform_ir.empty())
+      return result;
   }
   result.scheduled_ir = print(*stages.bufferized);
   auto function = *stages.bufferized->getOps<mlir::func::FuncOp>().begin();
@@ -500,6 +521,10 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
   mlir::PassManager passes(&context);
   passes.addNestedPass<mlir::func::FuncOp>(
       mlir::createConvertLinalgToLoopsPass());
+  if (outputTiled) {
+    passes.addPass(mlir::memref::createFoldMemRefAliasOpsPass());
+    passes.addPass(mlir::createCanonicalizerPass());
+  }
   passes.addPass(mlir::createLowerAffinePass());
   passes.addPass(mlir::createSCFToControlFlowPass());
   passes.addPass(mlir::createArithToLLVMConversionPass());
@@ -521,6 +546,12 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
   }
   unsigned multiplies = 0, adds = 0, definitions = 0;
   for (auto &fn : *lowered) {
+    if (outputTiled && fn.isDeclaration() &&
+        fn.getIntrinsicID() == llvm::Intrinsic::smin &&
+        fn.getReturnType()->isIntegerTy(64) && fn.arg_size() == 2 &&
+        fn.getArg(0)->getType()->isIntegerTy(64) &&
+        fn.getArg(1)->getType()->isIntegerTy(64))
+      continue;
     if (fn.isDeclaration() || (fn.getName() != kStrictGemmSymbolV1 &&
                                fn.getName() != kStrictGemmCInterfaceV1)) {
       fail(result.error, "unexpected declaration or executable symbol");
@@ -539,6 +570,13 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
         multiplies += instruction.getOpcode() == llvm::Instruction::FMul;
         adds += instruction.getOpcode() == llvm::Instruction::FAdd;
         if (auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction)) {
+          auto *callee = call->getCalledFunction();
+          if (outputTiled && fn.getName() == kStrictGemmSymbolV1 && callee &&
+              callee->getIntrinsicID() == llvm::Intrinsic::smin &&
+              call->getType()->isIntegerTy(64) && call->arg_size() == 2 &&
+              call->getArgOperand(0)->getType()->isIntegerTy(64) &&
+              call->getArgOperand(1)->getType()->isIntegerTy(64))
+            continue;
           if (fn.getName() != kStrictGemmCInterfaceV1 ||
               !call->getCalledFunction() ||
               call->getCalledFunction()->getName() != kStrictGemmSymbolV1) {
@@ -553,7 +591,14 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
     fail(result.error, "LLVM strict scalar arithmetic footprint changed");
     return result;
   }
-  if (!preserveStrictGemmOutputStorageV1(*lowered, result.error) ||
+  // The tiled leaf may additionally contain the checked pure i64 tail-min
+  // intrinsic. Definitions and calls were checked above; preserve the same
+  // descriptor/output-only fact without relaxing the original two-symbol API.
+  const bool outputPreserved = outputTiled ?
+      detail::preserveGemmOutputData(*lowered->getFunction(kStrictGemmSymbolV1),
+          *lowered->getFunction(kStrictGemmCInterfaceV1), result.error) :
+      preserveStrictGemmOutputStorageV1(*lowered, result.error);
+  if (!outputPreserved ||
       llvm::verifyModule(*lowered)) {
     if (result.error.empty())
       fail(result.error, "LLVM output-data fact preservation failed verification");
@@ -590,18 +635,29 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
       "output_alias_fact=llvm_leaf_aligned_c_only\ninput_input_alias=permitted\n"
       "pipeline=one-shot-bufferize," +
       (schedule == StrictGemmScheduleV1::ScalarMNK ? std::string{} :
-          "transform-generalize-interchange-mkn,") +
-      "linalg-loops,affine-scf-cf-llvm,llvm-translation\n"
+          outputTiled ? "transform-output-tile-mn-generalize-interchange-mkn," :
+                        "transform-generalize-interchange-mkn,") +
+      "linalg-loops," +
+      (outputTiled ? std::string("fold-memref-alias,canonicalize,") : std::string{}) +
+      "affine-scf-cf-llvm,llvm-translation\n"
       "address_sanitizer=" +
       std::string(address_sanitizer ? "function_attributes" : "off") +
       "\nschedule=" +
-      (schedule == StrictGemmScheduleV1::ScalarMNK ? "scalar-mnk" : "row-contiguous-mkn") +
+      (schedule == StrictGemmScheduleV1::ScalarMNK ? "scalar-mnk" :
+          outputTiled ? "output-tiled-mkn" : "row-contiguous-mkn") +
       "\nsemantic_sha256=" + digest(result.semantic_ir) +
       "\nstructured_sha256=" + digest(result.structured_ir) +
       "\nbufferized_sha256=" + digest(result.bufferized_ir) +
       "\ntransform_sha256=" + digest(result.transform_ir) +
       "\nscheduled_sha256=" + digest(result.scheduled_ir) +
       "\nllvm_sha256=" + digest(result.llvm_ir) + "\n";
+  if (outputTiled)
+    result.manifest += "pattern=matcore-gemm-output-tile-v1\npattern_parameters=M:" +
+        std::to_string(tiles.tile_m) + ",N:" + std::to_string(tiles.tile_n) +
+        ",K:untiled\npattern_bounds=1..64_each\n"
+        "pattern_derivation=parameter-bound-pinned-upstream-replay-and-scalar-envelope\n"
+        "pattern_step_precondition=M<=INT64_MAX-(tile_m-1);N<=INT64_MAX-(tile_n-1)\n"
+        "pattern_source_guard=existing_nonempty_output_byte_bounds;empty_math_bypasses_leaf\n";
   if (isa != StrictCpuIsaV1::Baseline)
     result.manifest += std::string("isa=") + platform::strictCpuIsaNameV1(isa) +
         "\nleaf_symbol=" + strictCpuLeafSymbolV1(isa) +
