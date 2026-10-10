@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        schedule: [scalar, row-contiguous]
+        schedule: [scalar, row-contiguous, output-tiled]
     steps:
       - uses: actions/checkout@v4
       - name: Authenticate native machine and task storage
@@ -65,6 +65,8 @@ jobs:
             -DMDSLC_ENABLE_EXPERIMENTAL_REGIONS=ON \
             -DMDSLC_ENABLE_OPENBLAS=OFF -DMDSLC_REQUIRE_OPENBLAS=OFF \
             -DMDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE=${{ matrix.schedule }} \
+            -DMDSLC_EXPERIMENTAL_CPU_OUTPUT_TILE_M=3 \
+            -DMDSLC_EXPERIMENTAL_CPU_OUTPUT_TILE_N=5 \
             -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
             -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang \
             -DMLIR_DIR=/usr/lib/llvm-21/lib/cmake/mlir
@@ -76,6 +78,10 @@ jobs:
           readelf -h build-arm/lib/regions/strict-normal.o | grep -E 'Machine: +AArch64'
           build-arm/bin/mdslc-region --version | grep -F 'native Linux AArch64 strict-only candidates'
           test ! -e build-arm/lib/regions/reassociate-normal.o
+          if [[ "${{ matrix.schedule }}" == "output-tiled" ]]; then
+            grep -Fx 'schedule=output-tiled-mkn' build-arm/lib/regions/strict-normal.ll.manifest
+            grep -Fx 'pattern_parameters=M:3,N:5,K:untiled' build-arm/lib/regions/strict-normal.ll.manifest
+          fi
           sha256sum build-arm/bin/mdslc-region build-arm/lib/regions/strict-normal.o
       - name: Execute complete closed-source qualification scope
         run: |

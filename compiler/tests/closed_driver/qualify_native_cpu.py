@@ -44,6 +44,11 @@ REQUIRED = {
     "package.experimental_regions.install_contract",
     "package.experimental_regions.closed_source_inaccessible",
 }
+REQUIRED.update({"generated_cpu.output_pattern.issuer", "generated_cpu.output_pattern.cli"})
+for pattern in ("baseline_3_5", "baseline_4_16", "baseline_1_1", "baseline_64_64"):
+    REQUIRED.update("generated_cpu.output_pattern." + pattern + "." + suffix
+                    for suffix in ("normal", "normal.corruption", "asan",
+                                   "asan.corruption", "asan_oob"))
 
 
 def main():

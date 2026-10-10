@@ -1032,6 +1032,8 @@ if(BUILD_TESTING)
             --clang "${MDSLC_CLANGXX_EXECUTABLE}"
             --llvm-dir "${LLVM_DIR}" --clang-dir "${Clang_DIR}" --mlir-dir "${MLIR_DIR}"
             --schedule "${MDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE}"
+            --output-tile-m "${MDSLC_EXPERIMENTAL_CPU_OUTPUT_TILE_M}"
+            --output-tile-n "${MDSLC_EXPERIMENTAL_CPU_OUTPUT_TILE_N}"
             --linker-launcher "${CMAKE_CXX_LINKER_LAUNCHER}" --nm "${CMAKE_NM}"
             --has-fused-pair "${MDSLC_CLOSED_CPU_X86}"
             --has-nvvm "${MDSLC_ENABLE_EXPERIMENTAL_NVVM}"

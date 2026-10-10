@@ -114,6 +114,13 @@ in `context.md`.
   `docs/mdslc/STAGED_GPU_CANDIDATES_V1.md` for exact toolchain/device bounds.
 
 - Preserve semantic information until the final optimization that can use it.
+  The private strict GEMM output pattern admits checked M/N tile parameters in
+  1..64, derives its loops with upstream Transform, and retains full increasing
+  scalar K with separate f32 multiply/add. Parameters are HOW, not source shape
+  or numerical permission. Preserve original witnesses, parameter-bound replay,
+  independent scalar-envelope checks and existing source/private-leaf ownership.
+  The output-tiled build selection is opt-in; it adds no automatic tuning policy
+  or GPU mapping. See `docs/mdslc/PARAMETERIZED_GEMM_PATTERN_V1.md`.
   Matcore semantic operations describe WHAT. Legality, planning, structured
   upstream dialects, scheduling, and library/generated-code selection describe
   HOW. LLVM, target-specific dialects, and platform/vendor toolchains describe

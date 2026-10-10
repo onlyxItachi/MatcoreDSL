@@ -4,6 +4,7 @@ if(NOT TARGET matcore-cpu-gemm-candidate)
 endif()
 
 include(StrictCpuIsaTests.cmake)
+include(OutputPatternTests.cmake)
 
 if(TARGET mdslc-region)
   foreach(case IN ITEMS source same_value)

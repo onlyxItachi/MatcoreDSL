@@ -21,6 +21,8 @@ def main():
                  "clang", "llvm-dir", "clang-dir", "mlir-dir", "schedule"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--linker-launcher", default="")
+    parser.add_argument("--output-tile-m", default="4")
+    parser.add_argument("--output-tile-n", default="16")
     parser.add_argument("--nm", default="nm")
     parser.add_argument("--has-fused-pair", choices=("ON", "OFF"), default="OFF")
     parser.add_argument("--has-nvvm", choices=("ON", "OFF"), default="OFF")
@@ -93,6 +95,8 @@ def main():
                      "-DMDSLC_ENABLE_EXPERIMENTAL_NVVM=" + args.has_nvvm,
                      "-DMDSLC_ENABLE_EXPERIMENTAL_ROCDL=" + args.has_rocdl,
                      "-DMDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE=" + args.schedule,
+                     "-DMDSLC_EXPERIMENTAL_CPU_OUTPUT_TILE_M=" + args.output_tile_m,
+                     "-DMDSLC_EXPERIMENTAL_CPU_OUTPUT_TILE_N=" + args.output_tile_n,
                      "-DLLVM_DIR=" + args.llvm_dir, "-DClang_DIR=" + args.clang_dir,
                      "-DMLIR_DIR=" + args.mlir_dir]
         if args.linker_launcher:

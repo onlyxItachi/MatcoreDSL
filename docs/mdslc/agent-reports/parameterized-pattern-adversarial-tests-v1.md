@@ -101,10 +101,11 @@ No separate ASan comparison counts are supplied here. Optional ISA hardware/OS
 guards returned available in this run; no optional ISA test was counted as a
 passing skip.
 
-At this handoff the integration owner's existing 120-test generated-CPU and
-closed-candidate regression scope was still running, with no failure reported
-yet. That scope, the full standalone suite, clean-build/source/ownership/replay
-checks and any hosted acceptance remain the owner's separate obligations.
+Integration-owner follow-up after the test commit: the existing generated CPU
+and candidate regression selection passed **120/120, zero skips**, in 99.57s.
+This includes the extended real production/testing/native-only adapter fixture,
+authenticated source schedule cases, retained ISA and provider refusal/partial
+failure checks. Full clean-source/package and hosted gates remain separate.
 Physical CPU, GPU issuer/image inspection, GPU execution, sanitizer lanes,
 unavailable refusal, hosted CI and performance are separate evidence categories.
 No GPU scheduling, runtime/default dispatch, numerical permission, source/effect
