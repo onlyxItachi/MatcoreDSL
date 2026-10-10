@@ -63,6 +63,16 @@ jobs:
           - openblas_label: OpenBLAS explicitly disabled
             openblas_enable: "OFF"
             openblas_require: "OFF"
+            mlir_label: Matcore MLIR parameterized output pattern
+            mlir_enable: "ON"
+            vector_readiness_enable: "OFF"
+            default_semantic_pipeline: matcore-mlir
+            cpu_schedule: output-tiled
+            cpu_tile_m: "3"
+            cpu_tile_n: "5"
+          - openblas_label: OpenBLAS explicitly disabled
+            openblas_enable: "OFF"
+            openblas_require: "OFF"
             mlir_label: Matcore MLIR disabled
             mlir_enable: "OFF"
             vector_readiness_enable: "OFF"
@@ -173,6 +183,8 @@ jobs:
             mlir_options+=(
               -DMLIR_DIR=/usr/lib/llvm-21/lib/cmake/mlir
               -DMDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE=${{ matrix.cpu_schedule || 'scalar' }}
+              -DMDSLC_EXPERIMENTAL_CPU_OUTPUT_TILE_M=${{ matrix.cpu_tile_m || '4' }}
+              -DMDSLC_EXPERIMENTAL_CPU_OUTPUT_TILE_N=${{ matrix.cpu_tile_n || '16' }}
             )
           fi
           cmake -S compiler -B build-mdslc -G Ninja \
@@ -213,8 +225,14 @@ jobs:
           expected=scalar-mnk
           if [[ "${{ matrix.cpu_schedule }}" == "row-contiguous" ]]; then
             expected=row-contiguous-mkn
+          elif [[ "${{ matrix.cpu_schedule }}" == "output-tiled" ]]; then
+            expected=output-tiled-mkn
           fi
           grep -Fx "schedule=${expected}" build-mdslc/lib/regions/strict-normal.ll.manifest
+          if [[ "${{ matrix.cpu_schedule }}" == "output-tiled" ]]; then
+            grep -Fx 'pattern=matcore-gemm-output-tile-v1' build-mdslc/lib/regions/strict-normal.ll.manifest
+            grep -Fx 'pattern_parameters=M:3,N:5,K:untiled' build-mdslc/lib/regions/strict-normal.ll.manifest
+          fi
 
       - name: Authenticate the MLIR link boundary
         if: matrix.mlir_enable == 'ON'
@@ -277,6 +295,9 @@ jobs:
               -R '^(frontend\.closed_host_strict_fused_pair_plan_v1|runtime\.closed_host\.strict_fused_pair_independent_v1|driver\.strict_fused_pair\..*)$' \
               | tee build-mdslc/fused-pair-source-test-list.txt
             grep -Fx "Total Tests: 4" build-mdslc/fused-pair-source-test-list.txt
+            ctest --test-dir build-mdslc -N -R '^generated_cpu\.output_pattern\.' \
+              | tee build-mdslc/output-pattern-test-list.txt
+            grep -Fx "Total Tests: 32" build-mdslc/output-pattern-test-list.txt
           fi
           if [[ "${{ matrix.vector_readiness_enable }}" == "ON" ]]; then
             ctest --test-dir build-mdslc --output-on-failure -j1 \
@@ -299,6 +320,8 @@ jobs:
             -DMDSLC_ENABLE_MATCORE_MLIR=ON \
             -DMDSLC_ENABLE_EXPERIMENTAL_REGIONS=ON \
             -DMDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE=${{ matrix.cpu_schedule || 'scalar' }} \
+            -DMDSLC_EXPERIMENTAL_CPU_OUTPUT_TILE_M=${{ matrix.cpu_tile_m || '4' }} \
+            -DMDSLC_EXPERIMENTAL_CPU_OUTPUT_TILE_N=${{ matrix.cpu_tile_n || '16' }} \
             -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
             -DClang_DIR=/usr/lib/llvm-21/lib/cmake/clang \
             -DMLIR_DIR=/usr/lib/llvm-21/lib/cmake/mlir
@@ -495,7 +518,7 @@ jobs:
           sanitizer_tests="${sanitizer_tests}|${region_tests}|${forwarding_tests}|${fused_pair_tests}|${fused_pair_source_tests}|${gpu_fused_frontier_tests}"
           ctest --test-dir build-mdslc-asan-ubsan -N -R "${sanitizer_tests}" \
             | tee build-mdslc-asan-ubsan/focused-test-list.txt
-          grep -Fx "Total Tests: 200" \
+          grep -Fx "Total Tests: 232" \
             build-mdslc-asan-ubsan/focused-test-list.txt
           ctest --test-dir build-mdslc-asan-ubsan --output-on-failure -j1 \
             -R "${sanitizer_tests}"

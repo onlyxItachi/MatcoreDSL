@@ -2,6 +2,7 @@
 #define MATCORE_MDSLC_MLIR_CPU_GEMM_CANDIDATE_H
 
 #include "MatcoreCpuTarget.h"
+#include "MatcoreGemmOutputPattern.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
@@ -45,8 +46,17 @@ bool verifyStrictGemmStructuredV1(mlir::ModuleOp module, std::string &error);
 bool verifyStrictGemmBufferizedV1(mlir::ModuleOp module, std::string &error);
 
 // Internal realization choice, not mathematical semantics or runtime policy.
-// Both retain increasing scalar K for every output and separate f32 arithmetic.
-enum class StrictGemmScheduleV1 { ScalarMNK, RowContiguousMKN };
+// All retain increasing scalar K for every output and separate f32 arithmetic.
+// Raw OutputTiledMKN invocations additionally require each next tile IV to be
+// representable: M <= INT64_MAX-(tile_m-1), N <= INT64_MAX-(tile_n-1).
+// The unchanged source adapter skips empty output/zero K and only enters a leaf
+// after nonempty f32 output byte bounds, which are strictly stronger. This is
+// not a new semantic dimension limit, source check, or failure frontier.
+enum class StrictGemmScheduleV1 {
+  ScalarMNK,
+  RowContiguousMKN,
+  OutputTiledMKN,
+};
 
 // Self-consistency/derivation only: callers cannot obtain execution authority
 // by submitting a serialized module to these inspection helpers.
@@ -75,7 +85,7 @@ struct GemmArtifactV1 {
 using StrictGemmArtifactV1 = GemmArtifactV1;
 
 // Closed issuer: only the built-in verified strict primitive, exact 21.1.8
-// schedules, closed baseline Linux target set and fixed x86 row-contiguous ISA
+// schedules, closed baseline Linux target set and fixed x86 MKN ISA
 // refinements. No refinements change the source numerical contract. Address instrumentation is carried
 // as LLVM function attributes, not presumed from the host link command.
 // Target selection is not a source/ABI/FP/physical execution certificate.
@@ -83,7 +93,8 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
     bool address_sanitizer,
     StrictGemmScheduleV1 schedule = StrictGemmScheduleV1::ScalarMNK,
     CpuTargetV1 target = CpuTargetV1::LinuxX86_64,
-    StrictCpuIsaV1 isa = StrictCpuIsaV1::Baseline);
+    StrictCpuIsaV1 isa = StrictCpuIsaV1::Baseline,
+    gemm_pattern::OutputTilePatternV1 tiles = {0, 0});
 
 } // namespace matcore::mdslc::cpu_candidate
 #endif
