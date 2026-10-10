@@ -476,18 +476,103 @@ int main() {
               ch::Code::invalid_candidate,
           "forged enum rejected");
   }
-  { // Huge empty descriptor must not invoke generated M-loop; all capacities
-    // zero.
-    ch::Session session(ch::Options{ch::Candidate::automatic});
-    ch::Value a, b, c;
+  // The raw output-tiled leaf has a representable next-IV precondition. That
+  // is not a source dimension limit: the production adapter skips all empty
+  // outputs and K0, and its existing positive output-byte bound is stronger
+  // than the tile step bound for every admitted 1..64 output tile. Exercise
+  // the real linked production choice, not a callback or alternate runtime.
+  for (const auto candidate : {ch::Candidate::automatic,
+                               ch::Candidate::generated_strict}) {
+    if (expected(candidate, ch::Numeric::strict_f32) != ch::Code::ok) continue;
     constexpr auto huge =
         static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
-    session.read(1, {nullptr, huge, 0, 0}, a);
-    session.read(2, {nullptr, 0, 0, 0}, b);
-    check(bool(session.gemm(3, a, b, ch::Numeric::strict_f32, c)),
-          "huge empty shape terminates");
-    check(session.candidateReport().actual == ch::Implementation::empty_output,
-          "huge empty no leaf invocation");
+    for (const auto shape : {std::array<std::uint64_t, 2>{huge, 0},
+                             {0, huge}, {3, 5}}) {
+      const auto m = shape[0], n = shape[1];
+      const bool empty = m == 0 || n == 0;
+      const auto count = empty ? std::uint64_t{0} : m * n;
+      float old = 17, effect = -29;
+      std::vector<float> output(static_cast<std::size_t>(count), -71);
+      ch::Session session(ch::Options{candidate});
+      ch::Value a, b, c;
+      check(bool(session.read(1, {&old, 1, 1, 1}, c)), "shortcut old value snapshot");
+      const auto retained = c;
+      check(bool(session.publish(2, c, {&effect, 1, 1, 1, ch::Access::read_write})),
+            "shortcut preserves an earlier publication");
+      check(bool(session.read(3, {nullptr, m, 0, 0}, a)), "shortcut zero-footprint lhs");
+      check(bool(session.read(4, {nullptr, 0, n, 0}, b)), "shortcut zero-footprint rhs");
+      const auto status = session.gemm(5, a, b, ch::Numeric::strict_f32, c);
+      check(bool(status), "huge empty or nonempty K0 shape terminates");
+      const auto report = session.candidateReport();
+      check(report.frontier == 5 && report.requested == candidate &&
+                report.numeric == ch::Numeric::strict_f32 && report.code == ch::Code::ok &&
+                report.actual == (empty ? ch::Implementation::empty_output
+                                       : ch::Implementation::zero_reduction) &&
+                !report.invocation_attempted && report.value_issued && report.actual_threads == 0 &&
+                !report.provider_contract_checked && !report.provider_probe_invoked,
+            "huge empty/K0 issues a value without leaf/provider invocation");
+      check(status.completed_frontier == 5 && status.failed_frontier == 0 &&
+                status.completed_effect_frontier == 2 && status.publications == 1 &&
+                status.observations == 0 && effect == 17,
+            "shortcut adds no failure or effect frontier and keeps earlier effects");
+      check(c.valid() && c.rows() == m && c.columns() == n && retained.data()[0] == 17,
+            "shortcut preserves full source shape and old immutable value");
+      if (!empty && c.valid() && c.rows() == m && c.columns() == n)
+        for (std::uint64_t i = 0; i < count; ++i)
+          check(std::bit_cast<std::uint32_t>(c.data()[i]) == 0,
+                "adapter K0 result is positive zero without the generated fill");
+      const ch::ResourceView destination{output.data(), m, n, count, ch::Access::read_write};
+      check(bool(session.publish(6, c, destination)), "shortcut original publication retires");
+      check(bool(session.observe(7, destination)), "shortcut original owning observation retires");
+      check(bool(session.complete(8)), "shortcut original completion retires");
+      const auto completed = session.status();
+      const auto observed = session.observation(0);
+      check(completed.completed && completed.completed_frontier == 8 &&
+                completed.failed_frontier == 0 && completed.completed_effect_frontier == 7 &&
+                completed.publications == 2 && completed.observations == 1 &&
+                observed.valid() && observed.rows() == m && observed.columns() == n &&
+                session.observationFrontier(0) == 7,
+            "huge empty/K0 retains original complete publication/observation frontiers");
+      for (float value : output)
+        check(std::bit_cast<std::uint32_t>(value) == 0, "K0 publication overwrites positive zero");
+      const auto after = session.candidateReport();
+      check(after.frontier == report.frontier && after.actual == report.actual &&
+                after.value_issued && !after.invocation_attempted,
+            "later effects/completion do not invent a shortcut leaf invocation");
+    }
+    for (const auto shape : {std::array<std::uint64_t, 2>{huge, 1}, {1, huge}}) {
+      // K0 makes both inputs zero-footprint, but the full logical C extent is
+      // not byte-representable. Retain the old extent_overflow at the GEMM,
+      // before output allocation/leaf entry, rather than a new tile refusal.
+      float old = 19, effect = -31;
+      ch::Session session(ch::Options{candidate});
+      ch::Value a, b, c;
+      check(bool(session.read(1, {&old, 1, 1, 1}, c)), "overflow old value snapshot");
+      const auto retained = c;
+      check(bool(session.publish(2, c, {&effect, 1, 1, 1, ch::Access::read_write})),
+            "overflow previous publication");
+      check(bool(session.read(3, {nullptr, shape[0], 0, 0}, a)), "overflow K0 lhs");
+      check(bool(session.read(4, {nullptr, 0, shape[1], 0}, b)), "overflow K0 rhs");
+      const auto status = session.gemm(5, a, b, ch::Numeric::strict_f32, c);
+      const auto report = session.candidateReport();
+      check(status.code == ch::Code::extent_overflow && status.failed_frontier == 5 &&
+                status.completed_frontier == 4 && status.completed_effect_frontier == 2 &&
+                status.publications == 1 && status.observations == 0 && !status.completed,
+            "large K0 byte-overflow keeps original failure and completed effect prefix");
+      check(report.frontier == 5 && report.code == ch::Code::extent_overflow &&
+                report.actual == ch::Implementation::none && !report.invocation_attempted &&
+                !report.value_issued && !report.provider_contract_checked &&
+                !report.provider_probe_invoked && c.data() == retained.data() &&
+                c.rows() == 1 && c.columns() == 1 && c.data()[0] == 19 && effect == 19,
+            "large K0 failure preserves value/publication without invoking the leaf");
+      check(session.publish(6, c, {&effect, 1, 1, 1, ch::Access::read_write}).code ==
+                ch::Code::extent_overflow &&
+                session.complete(7).code == ch::Code::extent_overflow &&
+                session.status().failed_frontier == 5 && session.status().completed_frontier == 4 &&
+                session.status().completed_effect_frontier == 2 &&
+                session.status().publications == 1 && effect == 19,
+            "large K0 failure remains sticky with no later publication/completion");
+    }
   }
   std::cout << checks << " candidate checks, " << failures << " failures\n";
   return failures == 0 ? 0 : 1;
