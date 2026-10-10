@@ -1,8 +1,9 @@
 # Parameterized strict GEMM output pattern v1
 
 Starting canonical main: `4c222dd68176de19fcf82696939b74be73f80968`.
-Status: implementation/qualification in progress on
-`mdslc/parameterized-gemm-pattern-v1`; not yet a canonical checkpoint.
+Status: normally merged through [PR #91](https://github.com/onlyxItachi/MatcoreDSL/pull/91),
+canonical engineering checkpoint `c09a9d0e4384441238bf169e7e1122bf13ea5e23`
+from exact premerge head `4fde88b8c3e6b09bc88ce466a0bd28d9dafe6600`.
 
 ## Architectural verdict
 
@@ -100,7 +101,7 @@ Required evidence is separate for:
 - unchanged default artifacts and regression paths; hosted target evidence is
   distinct from local execution and hardware-unavailable skips.
 
-Initial local qualification on coherent Linux x64 21.1.8:
+Local qualification on coherent Linux x64 21.1.8:
 
 - New focused suite: **32/32 passed, zero skips**. Issuer: 242 checks,
   22 well-formed IR corruptions rejected. CLI: 17 refusals and four accepted
@@ -121,14 +122,22 @@ Initial local qualification on coherent Linux x64 21.1.8:
   each axis at the exact parameter diagnostic (14 refusals); bounds 1 and 64
   configured successfully on both axes with `BUILD_TESTING=OFF` (four accepts).
 
-Full clean-source/package and hosted results remain pending; this initial
-qualification must not be substituted for those gates. The
+The full clean standalone suite passed **299/299 with zero skips**, including
+the production 3x5 source/build-inaccessible installed route. All **26 hosted
+engineering checks succeeded**, including native ARM64 tiled source qualification
+(126/126, zero skips), Release/Debug, focused sanitizers, Windows and legacy CI.
+Some x86 runners skipped unavailable AVX512 tests; they executed locally and
+on other hosted workers. Exact counts, run/head identities, skip sets and the
+28 unchanged GPU issuer artifacts are in the
+[merged qualification record](agent-reports/parameterized-pattern-qualification-checkpoint-v1.md).
+The
 [independent fixtures report](agent-reports/parameterized-pattern-adversarial-tests-v1.md)
 and [implementation report](agent-reports/parameterized-gemm-output-pattern-implementation-v1.md)
 record the bounded contracts and retained construction/test failures.
 An [independent core audit](agent-reports/parameterized-pattern-independent-core-audit-v1.md)
-accepted immutable implementation `a5d94e9` within this bounded contract, with
-no concrete correctness or authority blocker; it did not substitute for tests.
+accepted immutable implementation `a5d94e9` and rechecked final wiring `4fde88b`
+within this bounded contract, with no unresolved correctness or authority blocker;
+it did not substitute for tests.
 
 ## Deliberate exclusions and next boundaries
 
@@ -146,6 +155,10 @@ and draft PR #84 remain independent; this increment has no SPIR-V dependency.
 The next pattern-specific boundary is source-time selection and ownership of a
 bounded requested instance, reusing the same issuer and existing private-artifact
 authentication. No cost model or expanded numerical permission is implied.
+Its acceptance must bind requested parameters, target/toolchain and source closure
+to the private artifact; reject substituted/stale instances or forged submitted IR;
+and retain tail/numerical/source-effect and relocated-consumer controls. Generate
+only requested instances, without turning shape sizes into a kernel catalogue.
 Broader operations, GPU mapping and schedule search remain separately reviewable.
 External compiler interoperability is bounded by the
 [official-interface audit](COMPILER_INTEROP_BOUNDARIES_V1.md), not by shared use
