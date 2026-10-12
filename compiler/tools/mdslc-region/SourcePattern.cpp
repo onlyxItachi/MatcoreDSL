@@ -442,7 +442,7 @@ SourcePatternInstance::SourcePatternInstance(const Installation &installation,
   issued_.push_back(Artifact::capture(manifest_path, manifest_sha.c_str()));
   compilation_binding_ = std::shared_ptr<const codegen::SourcePatternCompilationBinding>(
       new codegen::SourcePatternCompilationBinding(evidence, candidates_.sha, policy, optimization,
-          !installation.accelerators.empty()));
+          !installation.accelerators.empty(), bool(REGION_SANITIZED)));
   unchanged();
 }
 

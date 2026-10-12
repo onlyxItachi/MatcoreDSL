@@ -37,8 +37,8 @@ authority. Its complete bytes and the exports map are pinned in the driver,
 but captured lazily only for the explicit new request.
 
 A private-constructed immutable compilation binding holds the original
-authenticated evidence seal, policy, optimization, candidate DSO digest and
-worker contract. Both the instance input factory and region compilation check
+authenticated evidence seal, policy, optimization, candidate DSO digest,
+worker contract and installation sanitizer profile. Both the instance input factory and region compilation check
 that binding. This rejects another source/region seal, policy/optimization,
 substituted same-ABI DSO or worker-contract substitution; an editable hash or
 inspection manifest does not grant execution authority. Program composition

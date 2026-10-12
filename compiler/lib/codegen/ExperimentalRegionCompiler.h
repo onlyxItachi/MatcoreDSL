@@ -21,12 +21,13 @@ public:
 private:
   SourcePatternCompilationBinding(const frontend::AuthenticatedClosedRegionEvidence &,
       std::string candidate_sha256, ClosedCpuPolicy, ClosedHostOptimization,
-      bool requires_worker_threads);
+      bool requires_worker_threads, bool address_undefined_sanitizers);
   frontend::AuthenticatedClosedRegionEvidence evidence_;
   std::string candidate_sha256_;
   ClosedCpuPolicy policy_;
   ClosedHostOptimization optimization_;
   bool requires_worker_threads_;
+  bool address_undefined_sanitizers_;
   friend class matcore::mdslc::driver::SourcePatternInstance;
 };
 

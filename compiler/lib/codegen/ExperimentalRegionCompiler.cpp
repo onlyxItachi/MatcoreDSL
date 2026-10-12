@@ -34,9 +34,11 @@ bool ownedHeader(const fs::path &path, const char *expected, std::string &error)
 SourcePatternCompilationBinding::SourcePatternCompilationBinding(
     const frontend::AuthenticatedClosedRegionEvidence &evidence,
     std::string candidate_sha256, ClosedCpuPolicy policy,
-    ClosedHostOptimization optimization, bool requires_worker_threads)
+    ClosedHostOptimization optimization, bool requires_worker_threads,
+    bool address_undefined_sanitizers)
     : evidence_(evidence), candidate_sha256_(std::move(candidate_sha256)),
-      policy_(policy), optimization_(optimization), requires_worker_threads_(requires_worker_threads) {}
+      policy_(policy), optimization_(optimization), requires_worker_threads_(requires_worker_threads),
+      address_undefined_sanitizers_(address_undefined_sanitizers) {}
 
 bool SourcePatternCompilationBinding::matches(
     const frontend::AuthenticatedClosedRegionEvidence &evidence,
@@ -51,7 +53,8 @@ bool SourcePatternCompilationBinding::matches(
       evidence_.regionName() != evidence.regionName() ||
       !evidence_.entryBinding() || !evidence.entryBinding() ||
       !frontend::detail::sameClosedRegionEntryBinding(*evidence_.entryBinding(), *evidence.entryBinding()) ||
-      policy_ != policy || optimization_ != optimization) {
+      policy_ != policy || optimization_ != optimization ||
+      inputs.address_undefined_sanitizers != address_undefined_sanitizers_) {
     error = "source-pattern artifact differs from the authenticated source/entry/policy binding";
     return false;
   }
