@@ -1,7 +1,11 @@
 # Authenticated source-time strict GEMM patterns v1
 
 Starting canonical main: `3077d9c3f5df1479f2fcadfcceeb9444018d6ba0`.
-Status: implementation and qualification in progress; not yet merged or qualified.
+Qualified engineering merge: `e8e8008cb61b61a585d8bc1584ca320c6326472d`
+([PR93](https://github.com/onlyxItachi/MatcoreDSL/pull/93)), from exact premerge
+`598ee6ae3611de7521526592f3b3a597c569b2b2`.
+See the [final qualification record](agent-reports/source-pattern-qualification-checkpoint-v1.md)
+for exact execution profiles, adversarial review, skips and preserved negative results.
 This is a bounded continuation of [PR91's HOW pattern](PARAMETERIZED_GEMM_PATTERN_V1.md),
 not a new optimizer, source language, numerical permission or scheduling policy.
 
@@ -13,7 +17,7 @@ C++ input closure, emits from a sealed Program and reserves trusted artifact
 symbols against original host definitions. Its generated leaf is a localized
 definition in a compiler-owned candidate DSO, not a replaceable executable symbol.
 
-**Conclusion:** source-time instantiation is the next missing HOW lifecycle,
+**Conclusion at the starting checkpoint:** source-time instantiation was the missing HOW lifecycle,
 but simply accepting tile flags or linking another kernel object is insufficient.
 The existing `-Bsymbolic`/local-export boundary would keep using the build-time
 leaf, or relaxing it would reopen host replacement of compiler-owned code.
@@ -151,5 +155,5 @@ interchange, rank-N surface, public API/ABI freeze or expanded numerical contrac
 independent and unchanged. A future per-operation or multi-source specialization
 requires its own ownership/composition proof; this increment must not promise it.
 
-Validation results and the surviving implementation details will be recorded here
-and in linked agent reports after the bounded acceptance requirements are tested.
+The acceptance requirements are qualified within this scope in the
+[durable implementation/test checkpoint](agent-reports/source-pattern-qualification-checkpoint-v1.md).
