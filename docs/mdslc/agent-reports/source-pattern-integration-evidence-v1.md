@@ -111,3 +111,46 @@ compile-artifact regression evidence only, not new physical GPU qualification.
 The [independent static review](source-pattern-adversarial-review-v1.md) accepts
 the exact core and connected test design while explicitly separating its static
 verdict from these integration-owned execution results.
+
+## Full local control and hosted ARM counterexample
+
+At exact source/test head `3c581c2989d563ee250288d27d815bdf0fd39d06`, the
+complete local Release suite passed **303/303**, zero skips,1340.71 seconds.
+The selected Debug ASan+UBSan scope passed **236/236**, zero skips,1174.53 seconds;
+the final source-pattern tests include72 successful phase controls. Production
+code was unchanged from the earlier reviewed core; the strengthened tests now
+inspect actual Transform tile operands and scheduled SCF steps and require
+completed mutations with their specific refusal categories/paths.
+
+| Local JUnit record | SHA256 |
+| --- | --- |
+| Release `qualified-release.xml` | `2688e042031a26743639cd8521e961288d450828a0d95e50ff6360d57f8c8fcd` |
+| ASan+UBSan `qualified-asan-scope.xml` | `1ca92bb896df974b210898a48c6b10acf45edc61507ef5aeef1a1485395aef77` |
+
+Release's production package test authenticated that exact clean commit, built
+with BUILD_TESTING=OFF and OpenBLAS OFF, relocated the installation, deleted its
+task-created producer source/build trees, then requested and executed both3x5
+and5x3 with the independent68-case oracle and actual Transform/SCF/DSO checks.
+SDK/bundle hashes stayed unchanged during the test; these package artifacts were
+ephemeral, not durably retained binaries. The installed driver SHA256 was
+`94b3f562863e8bf0b339dcfb106b036af88bcf14e57b94ff0ea23818c139d717`.
+This is not installed-ASan or installed-provider qualification. Independent
+read-only review accepted the final implementation and this bounded package
+test, noting that copied-header/missing-material package negatives have less
+specific diagnostic classification than the separate admission/refusal suites.
+
+**Observed qualification blocker, not waived:** hosted ARM64 run
+[`38218341835`](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/38218341835)
+failed in all three stock schedule profiles (scalar,row-contiguous,output-tiled).
+Build and original path authentication passed; the new installed-source,
+connected-source and phase-mutation setup cases refused because the issued DSO's
+dependencies differed from the pinned adapter/runtime closure. The exact
+dependency-equality check caught the discrepancy before executable publication.
+These local x64 passes therefore did not qualify the engineering merge.
+
+Source inspection identifies an unintended global linker-state change: the new
+relink command forces `--as-needed` after Runtime, unlike the stock CMake link.
+ARM's FP scope uses FPCR/FPSR instructions whereas x64 imports libc/libm fenv
+functions, making target-dependent pruning plausible. The corrective lane must
+prove scoped linker-state restoration and rerun native ARM qualification; it
+must not relax dependency equality or infer ARM success from x64 output.
