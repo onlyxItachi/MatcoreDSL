@@ -298,6 +298,9 @@ jobs:
             ctest --test-dir build-mdslc -N -R '^generated_cpu\.output_pattern\.' \
               | tee build-mdslc/output-pattern-test-list.txt
             grep -Fx "Total Tests: 32" build-mdslc/output-pattern-test-list.txt
+            ctest --test-dir build-mdslc -N -R '^driver\.source_pattern\.' \
+              | tee build-mdslc/source-pattern-test-list.txt
+            grep -Fx "Total Tests: 4" build-mdslc/source-pattern-test-list.txt
           fi
           if [[ "${{ matrix.vector_readiness_enable }}" == "ON" ]]; then
             ctest --test-dir build-mdslc --output-on-failure -j1 \
@@ -515,10 +518,11 @@ jobs:
           fused_pair_tests='^generated_cpu_fused_pair\..*$'
           fused_pair_source_tests='^(frontend\.closed_host_strict_fused_pair_plan_v1|runtime\.closed_host\.strict_fused_pair_independent_v1)$'
           gpu_fused_frontier_tests='^generated_gpu_fused_pair\.frontiers$'
-          sanitizer_tests="${sanitizer_tests}|${region_tests}|${forwarding_tests}|${fused_pair_tests}|${fused_pair_source_tests}|${gpu_fused_frontier_tests}"
+          source_pattern_tests='^driver\.source_pattern\..*$'
+          sanitizer_tests="${sanitizer_tests}|${region_tests}|${forwarding_tests}|${fused_pair_tests}|${fused_pair_source_tests}|${gpu_fused_frontier_tests}|${source_pattern_tests}"
           ctest --test-dir build-mdslc-asan-ubsan -N -R "${sanitizer_tests}" \
             | tee build-mdslc-asan-ubsan/focused-test-list.txt
-          grep -Fx "Total Tests: 232" \
+          grep -Fx "Total Tests: 236" \
             build-mdslc-asan-ubsan/focused-test-list.txt
           ctest --test-dir build-mdslc-asan-ubsan --output-on-failure -j1 \
             -R "${sanitizer_tests}"
