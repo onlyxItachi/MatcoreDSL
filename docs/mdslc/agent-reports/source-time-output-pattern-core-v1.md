@@ -50,7 +50,10 @@ compiler-produced LLVM digest and frozen host/helper snapshot pointers. Typed
 source-pattern publication checks this pairing before linking and at every
 recheck. Another instance, swapped compiled source/helper or modified LLVM
 result is rejected. The raw/default publication helper has no per-source DSO
-selection parameter. This is not a general IR certificate/importer and does
+selection parameter. The typed publisher also requires the original issuance
+Installation owner and the exact output whose private bundle was created;
+another installation or output cannot be cross-wired into this route.
+This is not a general IR certificate/importer and does
 not expand the existing trusted in-process default compiler API into a hostile
 caller boundary.
 

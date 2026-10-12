@@ -278,7 +278,7 @@ void validateSourcePatternInvocation(codegen::ClosedCpuPolicy policy,
 }
 
 SourcePatternBundle::SourcePatternBundle(const fs::path &output)
-    : path_(output.string() + ".mdslc-private") {
+    : output_(output), path_(output.string() + ".mdslc-private") {
   if (!output.is_absolute()) reject("source-pattern output must be an absolute new path");
   if (::mkdir(path_.c_str(), 0700) != 0)
     reject("source-pattern private bundle must be new: " + path_.string() + ": " + std::strerror(errno));

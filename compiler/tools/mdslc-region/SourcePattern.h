@@ -23,9 +23,13 @@ public:
   void unchangedOwnership() const;
   void retain() noexcept { retained_ = true; }
 private:
+  fs::path output_;
   fs::path path_;
   support::FileSnapshotV1 ownership_;
   bool retained_ = false;
+  friend void compileSourcePatternAndPublish(const Installation &, const Staging &,
+      const fs::path &, const codegen::ExperimentalLLVMCompilation &,
+      const SourcePatternInstance &);
 };
 
 // Noninstalled deterministic test-only phase hooks. Each runs AFTER immutable
@@ -63,5 +67,8 @@ private:
   std::vector<Artifact> issued_;
   std::string soname_;
   std::shared_ptr<const codegen::SourcePatternCompilationBinding> compilation_binding_;
+  friend void compileSourcePatternAndPublish(const Installation &, const Staging &,
+      const fs::path &, const codegen::ExperimentalLLVMCompilation &,
+      const SourcePatternInstance &);
 };
 } // namespace matcore::mdslc::driver

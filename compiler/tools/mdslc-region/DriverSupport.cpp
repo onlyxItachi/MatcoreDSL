@@ -277,6 +277,10 @@ void compileAndPublish(const Installation &installation, const Staging &staging,
 void compileSourcePatternAndPublish(const Installation &installation, const Staging &staging,
     const fs::path &output, const codegen::ExperimentalLLVMCompilation &compilation,
     const SourcePatternInstance &source_pattern) {
+  if (source_pattern.installation_ != &installation)
+    reject("source-pattern publication installation differs from its issuance owner");
+  if (source_pattern.bundle_->output_ != output)
+    reject("source-pattern publication output differs from its owned private bundle association");
   auto unchanged = [&] { source_pattern.verifyCompilation(compilation); };
   unchanged();
   compileAndPublishImpl(installation, staging, output, false, compilation.llvm_ir, unchanged, &source_pattern);
