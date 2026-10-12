@@ -152,13 +152,14 @@ grid/ABI binding, target limits and physical/completion qualification. Existing
 NVVM/ROCDL paths are not silently retargeted. [SPIR-V Issue #89](https://github.com/onlyxItachi/MatcoreDSL/issues/89)
 and draft PR #84 remain independent; this increment has no SPIR-V dependency.
 
-The next pattern-specific boundary is source-time selection and ownership of a
-bounded requested instance, reusing the same issuer and existing private-artifact
-authentication. No cost model or expanded numerical permission is implied.
-Its acceptance must bind requested parameters, target/toolchain and source closure
-to the private artifact; reject substituted/stale instances or forged submitted IR;
-and retain tail/numerical/source-effect and relocated-consumer controls. Generate
-only requested instances, without turning shape sizes into a kernel catalogue.
+PR91's recorded next pattern-specific boundary was source-time selection and
+ownership of a bounded requested instance. The implementation and qualification
+of that continuation are in [source-time GEMM patterns v1](SOURCE_TIME_GEMM_PATTERN_V1.md).
+It reuses this issuer and private-artifact authentication, binds the request,
+target/toolchain and source closure through final linkage, and generates only
+requested instances. It adds no cost model or expanded numerical permission.
+The first scope is an explicitly forced baseline strict single-TU executable;
+program-mode composition and per-operation selection remain excluded.
 Broader operations, GPU mapping and schedule search remain separately reviewable.
 External compiler interoperability is bounded by the
 [official-interface audit](COMPILER_INTEROP_BOUNDARIES_V1.md), not by shared use
