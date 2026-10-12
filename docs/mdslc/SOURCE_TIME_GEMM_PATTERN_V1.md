@@ -37,7 +37,7 @@ Rejected alternatives:
 
 ## Bounded requested behavior
 
-The proposed experimental driver spelling is `--gemm-output-tiles M,N`, with
+The experimental driver spelling is `--gemm-output-tiles M,N`, with
 canonical decimal values in 1..64, explicitly paired with `--candidate generated-strict`.
 The request applies to the compilation, not to source tensor dimensions or
 per-operation mathematical semantics. The first supported scope is single-TU
@@ -76,6 +76,50 @@ host-symbol ownership checks remain necessary but do not alone prove these facts
 Every staged input is rechecked through the final native compilation/publication
 boundary. Unknown or substituted artifacts fail closed. Trusted post-build loading
 remains a deployment precondition, not executable self-authentication or a sandbox.
+
+## Implemented lifecycle
+
+```sh
+mdslc-region source.mdsl --region pipeline --candidate generated-strict \
+  --gemm-output-tiles 3,5 -o program-3x5
+mdslc-region source.mdsl --region pipeline --candidate generated-strict \
+  --gemm-output-tiles 5,3 -o program-5x3
+```
+
+The same installed compiler issues either instance on demand. The operation's
+dynamic M/N/K shapes are still source/runtime facts, not these schedule tiles.
+The existing in-process issuer derives the Transform program, scheduled MLIR and
+LLVM; pinned Clang produces a PIC object. A pinned production relink archive
+retains the adapter and other qualified leaves but intentionally has no baseline
+leaf definition. Linking the issued leaf into it preserves local symbol ownership
+and the original adapter exports, runtime/provider ownership and checked guards.
+
+The driver rejects nonnative objects, unexpected leaf definitions/imports, changed
+export contracts, text relocations, unbound SONAMEs and altered dependency sets.
+An immutable private binding pairs the source seal, selected entry, policy,
+optimization, sanitizer/worker profile and candidate bytes at the compiler input.
+A second narrow compiled-result binding pairs that instance with the exact
+produced orchestration LLVM and its frozen host/helper snapshots at publication.
+Thus both a wrong-source input and a correctly compiled but wrong-instance output
+are refused. These are internal issuer bookkeeping, not a serialized proof format,
+general-purpose certificate framework or extension of source execution authority.
+
+`program-3x5.mdslc-private/` is a persistent private dependency bundle, not temporary
+staging. It retains the issued stages/object, uniquely named candidate DSO and an
+inspection-only `source-pattern.manifest`. The manifest records hashes but cannot
+authorize imports or stale-instance reuse. The directory must not already exist.
+Failed ordinary compilation removes only its still-identified owned directory;
+a substituted path is preserved rather than used as a recursive cleanup target.
+The executable is published with the existing atomic no-clobber hard link only
+after dependencies and source closures are rechecked.
+
+Installation relocation **before compilation** is supported by the existing
+package contract. An emitted executable has absolute dependency RUNPATHs: moving
+it or its bundle afterwards is not a supported deployment operation. Keep the
+bundle and compiler runtime installation available for execution. Crash recovery,
+hostile concurrent same-user filesystem mutation, post-publication loader attacks
+and executable self-authentication are not new claims. The private relink kit is
+captured lazily, so its absence does not change ordinary no-request compilation.
 
 ## Acceptance requirements
 
