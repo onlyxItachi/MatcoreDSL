@@ -7,7 +7,9 @@
 #include "clang/Tooling/Tooling.h"
 #include "llvm/AsmParser/Parser.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/SHA256.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 #include <fstream>
@@ -29,6 +31,45 @@ bool ownedHeader(const fs::path &path, const char *expected, std::string &error)
 }
 } // namespace
 
+SourcePatternCompilationBinding::SourcePatternCompilationBinding(
+    const frontend::AuthenticatedClosedRegionEvidence &evidence,
+    std::string candidate_sha256, ClosedCpuPolicy policy,
+    ClosedHostOptimization optimization, bool requires_worker_threads)
+    : evidence_(evidence), candidate_sha256_(std::move(candidate_sha256)),
+      policy_(policy), optimization_(optimization), requires_worker_threads_(requires_worker_threads) {}
+
+bool SourcePatternCompilationBinding::matches(
+    const frontend::AuthenticatedClosedRegionEvidence &evidence,
+    const ExperimentalCompilerInputs &inputs, ClosedCpuPolicy policy,
+    ClosedHostOptimization optimization, std::string &error) const {
+  auto expected = frontend::detail::ClosedRegionCompilationAccess::host(evidence_);
+  auto actual = frontend::detail::ClosedRegionCompilationAccess::host(evidence);
+  if (!expected || !actual || !expected->unchanged(error) || !actual->unchanged(error))
+    return false;
+  if (expected->identity() != actual->identity() ||
+      &evidence_.program() != &evidence.program() ||
+      evidence_.regionName() != evidence.regionName() ||
+      !evidence_.entryBinding() || !evidence.entryBinding() ||
+      !frontend::detail::sameClosedRegionEntryBinding(*evidence_.entryBinding(), *evidence.entryBinding()) ||
+      policy_ != policy || optimization_ != optimization) {
+    error = "source-pattern artifact differs from the authenticated source/entry/policy binding";
+    return false;
+  }
+  const TrustedSymbolArtifact *candidate = nullptr;
+  for (const auto &artifact : inputs.symbol_artifacts)
+    if (artifact.owner == SymbolArtifactOwner::PrivateCandidates) {
+      if (candidate) { error = "source-pattern binding has duplicate private candidates"; return false; }
+      candidate = &artifact;
+    }
+  if (!candidate || candidate->requires_worker_threads != requires_worker_threads_ ||
+      llvm::toHex(llvm::SHA256::hash(
+          llvm::arrayRefFromStringRef(candidate->bytes.getBuffer())), true) != candidate_sha256_) {
+    error = "source-pattern artifact bytes differ from the immutable issued candidate binding";
+    return false;
+  }
+  return true;
+}
+
 bool ExperimentalLLVMCompilation::inputsUnchanged(std::string &error) const {
   if (!host || !helper) {
     error = "compiled region is missing its immutable compiler-input closure";
@@ -43,6 +84,9 @@ static ExperimentalLLVMCompilationResult compileRegion(
     const std::function<void()> &after_staging,
     ClosedHostOptimization optimization) {
   ExperimentalLLVMCompilationResult result;
+  if (inputs.source_pattern_binding &&
+      !inputs.source_pattern_binding->matches(evidence, inputs, policy, optimization, result.error))
+    return result;
   if (std::count_if(inputs.symbol_artifacts.begin(), inputs.symbol_artifacts.end(),
           [](const auto &artifact) { return artifact.owner == SymbolArtifactOwner::PrivateCandidates; }) != 1) {
     result.error = "region execution compilation requires its isolated private candidate DSO";

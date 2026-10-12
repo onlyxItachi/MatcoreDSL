@@ -77,6 +77,8 @@ ExperimentalProgramCompilation compileProgram(
     const ExperimentalCompilerInputs &inputs, ClosedCpuPolicy policy,
     const std::function<void()> &after_interface_capture,
     ClosedHostOptimization optimization) {
+  if (inputs.source_pattern_binding)
+    reject("source output patterns require single-source executable compilation, not program composition");
   if (sources.size() < 2 || sources.size() > 8)
     reject("program requires 2..8 source translation units");
   if (std::count_if(inputs.symbol_artifacts.begin(), inputs.symbol_artifacts.end(),

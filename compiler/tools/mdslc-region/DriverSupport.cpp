@@ -1,4 +1,5 @@
 #include "DriverSupport.h"
+#include "SourcePattern.h"
 #include "region_driver_paths.h"
 #include "region_driver_identity.h"
 #include "ExperimentalRegionCompiler.h"
@@ -147,8 +148,13 @@ codegen::ClosedHostOptimization parseOptimization(const std::string &name) {
   reject("unknown region optimization: " + name);
 }
 const char *optimizationUsage() { return "none|publication-read-forwarding|strict-fused-pair"; }
-Installation::Installation()
-    : installed(layout()), clang(Artifact::capture(REGION_CLANG, REGION_CLANG_SHA)),
+Installation::Installation() : Installation(layout()) {}
+Installation Installation::pinnedBuildTreeForTesting() {
+  return Installation({REGION_BUILD_INCLUDE, REGION_BUILD_PRIVATE_HEADER,
+      REGION_BUILD_CANDIDATES, REGION_BUILD_RUNTIME, true});
+}
+Installation::Installation(Layout selected_layout)
+    : installed(std::move(selected_layout)), clang(Artifact::capture(REGION_CLANG, REGION_CLANG_SHA)),
       linker(Artifact::capture(REGION_LINKER, REGION_LINKER_SHA)),
       candidates(Artifact::capture(installed.candidates,
           installed.build_tree ? REGION_CANDIDATES_SHA : REGION_INSTALLED_CANDIDATES_SHA)),
@@ -200,11 +206,15 @@ codegen::ExperimentalCompilerInputs Installation::compilerInputs(const fs::path 
 }
 void compileAndPublish(const Installation &installation, const Staging &staging,
     const fs::path &output, bool compile_only, const std::string &derived_ir,
-    const std::function<void()> &inputs_unchanged) {
+    const std::function<void()> &inputs_unchanged,
+    const SourcePatternInstance *source_pattern) {
   const auto &installed = installation.installed;
   const auto &provider = installation.provider;
   const auto ir = staging.path / "host.ll", binary = staging.path / "result";
-  auto unchanged = [&] { inputs_unchanged(); installation.unchanged(); };
+  auto unchanged = [&] {
+    inputs_unchanged(); installation.unchanged();
+    if (source_pattern) source_pattern->unchanged();
+  };
   unchanged();
   write(ir, derived_ir);
   auto issued_ir = Artifact::capture(ir);
@@ -231,9 +241,11 @@ void compileAndPublish(const Installation &installation, const Staging &staging,
     // Both owning DSOs are explicit dependencies. Runtime is not an indirect
     // RUNPATH search through the private library's installation directory.
     process.argv.insert(process.argv.end(), {"-x", "none", "-Xlinker", "--no-as-needed",
-      installed.candidates.string(), installed.runtime.string(),
+      (source_pattern ? source_pattern->candidatePath() : installed.candidates).string(),
+      installed.runtime.string(),
       "-lm", "-pthread", "-Xlinker", "-rpath", "-Xlinker", installed.runtime.parent_path().string(),
-      "-Xlinker", "-rpath", "-Xlinker", installed.candidates.parent_path().string()});
+      "-Xlinker", "-rpath", "-Xlinker",
+      (source_pattern ? source_pattern->candidatePath() : installed.candidates).parent_path().string()});
     // Runtime's installed image has no RPATH. Bind its already-authenticated
     // provider as a direct dependency too: executable RUNPATH does not cover
     // a transitive Runtime -> provider lookup. Never rediscover it with -l.
@@ -250,8 +262,11 @@ void compileAndPublish(const Installation &installation, const Staging &staging,
   issued_ir.unchanged(); unchanged();
   const auto final = Artifact::capture(binary);
   verifyOutput(final, compile_only);
+  if (source_pattern) source_pattern->verifyExecutable(final);
   // Same filesystem, atomic no-clobber publication. An output racing into
   // existence is never overwritten; failed compiles leave no published file.
+  unchanged();
+  final.unchanged();
   fs::create_hard_link(binary, output);
 }
 } // namespace matcore::mdslc::driver

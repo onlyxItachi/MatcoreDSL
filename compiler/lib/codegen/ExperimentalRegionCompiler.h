@@ -6,7 +6,29 @@
 #include <filesystem>
 #include <functional>
 
+namespace matcore::mdslc::driver { class SourcePatternInstance; }
 namespace matcore::mdslc::codegen {
+
+struct ExperimentalCompilerInputs;
+// Private immutable per-source artifact binding. There is no public/serialized
+// constructor: only the source driver's closed issuer can pair a genuine
+// authenticated source seal with its freshly issued private candidate bytes.
+class SourcePatternCompilationBinding {
+public:
+  bool matches(const frontend::AuthenticatedClosedRegionEvidence &,
+      const ExperimentalCompilerInputs &, ClosedCpuPolicy,
+      ClosedHostOptimization, std::string &error) const;
+private:
+  SourcePatternCompilationBinding(const frontend::AuthenticatedClosedRegionEvidence &,
+      std::string candidate_sha256, ClosedCpuPolicy, ClosedHostOptimization,
+      bool requires_worker_threads);
+  frontend::AuthenticatedClosedRegionEvidence evidence_;
+  std::string candidate_sha256_;
+  ClosedCpuPolicy policy_;
+  ClosedHostOptimization optimization_;
+  bool requires_worker_threads_;
+  friend class matcore::mdslc::driver::SourcePatternInstance;
+};
 
 // Compiler installation/build inputs, never source or serialized authority.
 // The driver creates a private staging directory before capturing host inputs.
@@ -20,6 +42,7 @@ struct ExperimentalCompilerInputs {
   // Borrowed immutable bytes of exact pinned link inputs, owned by the driver
   // until compilation returns. Exactly one canonical runtime is mandatory.
   std::vector<TrustedSymbolArtifact> symbol_artifacts;
+  std::shared_ptr<const SourcePatternCompilationBinding> source_pattern_binding = {};
 };
 
 struct ExperimentalLLVMCompilation {
