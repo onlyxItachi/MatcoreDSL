@@ -148,6 +148,28 @@ These are ELF linkage controls, not physical source/kernel qualification.
 The correction brackets Runtime alone with `--push-state --no-as-needed ...
 --pop-state`. Exact `stock DT_NEEDED union Runtime SONAME` equality is unchanged;
 no dependency allowlist or failure gate is relaxed. A mismatch now reports
-sorted expected and observed sets. The registered empty-DSO mechanism test
-preserves both incoming-policy controls. Hosted ARM requalification is required
-to establish the actual target outcome after this correction.
+sorted expected and observed sets. Existing connected, phase-mutation and
+producer-inaccessible tests continue to exercise the real production command;
+no duplicated-argv mechanism test or CTest registration is added. Hosted ARM
+requalification is required to establish the actual target outcome after this
+correction.
+
+The native linkage probe used serial invocations of the pinned compiler,
+`--no-default-config --ld-path=/usr/bin/ld -shared -x c++ /dev/null`, and one
+compiler-produced empty Runtime fixture with SONAME `libprobe-runtime.so`.
+After `-x none`, the trailing argument variants were:
+
+```text
+stock:   runtime.so -lm -pthread
+old:     -Xlinker --no-as-needed runtime.so -Xlinker --as-needed -lm -pthread
+fixed:   -Xlinker --push-state -Xlinker --no-as-needed runtime.so -Xlinker --pop-state -lm -pthread
+incoming-as-needed:
+         -Xlinker --as-needed -Xlinker --push-state -Xlinker --no-as-needed runtime.so -Xlinker --pop-state -lm -pthread
+```
+
+Each output used `-o /tmp/mdslc-needed-state-xhypY3/NAME.so`; `readelf -d` observed
+the sets recorded above. The proposed standalone reproduction script and its
+registration were removed from the final correction because copied command
+arguments would not independently exercise the production driver and would
+change the repository's exact qualification scope. That removal is recoverable
+from the focused agent history, not an unrelated checkout deletion.
