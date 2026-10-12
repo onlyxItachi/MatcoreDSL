@@ -11,6 +11,7 @@ def manifest_control():
                  source_authority="authenticated_in_process_source_closure",
                  manifest_authority="inspection_only_never_imported", accelerator_count="0",
                  source_context_sha256="sha256:" + "0" * 64,
+                 toolchain="21.1.8",
                  binding_sha256="a" * 64, candidate_soname="libmdslc-pattern-" + "a" * 64 + ".so")
     return value
 
@@ -38,6 +39,26 @@ def elf_control():
     return data
 
 
+TRANSFORM = """module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%root: !transform.any_op) {
+    %tiled, %m, %n = transform.structured.tile_using_for %matmul tile_sizes [3, 5, 0] : (!transform.any_op) -> (!transform.any_op, !transform.op<"scf.for">, !transform.op<"scf.for">)
+  }
+}
+"""
+SCHEDULE = """module {
+  func.func @control() {
+    %c0 = arith.constant 0 : index
+    %m = arith.constant 3 : index
+    %n = arith.constant 5 : index
+    scf.for %row = %c0 to %rows step %m {
+      scf.for %column = %c0 to %columns step %n {
+      }
+    }
+  }
+}
+"""
+
+
 class Controls(unittest.TestCase):
     def test_manifest_positive(self):
         value = manifest_control()
@@ -45,6 +66,7 @@ class Controls(unittest.TestCase):
 
     def test_manifest_corruptions(self):
         for key, replacement in (("schema", "forged"), ("binding_sha256", "abc"),
+                                 ("toolchain", "21.1.80"), ("toolchain", "compatibility-21.1.8"),
                                  ("object_sha256", "G" * 64),
                                  ("candidate_soname", "../foreign.so"),
                                  ("candidate_soname", "libmdslc-pattern-" + "b" * 64 + ".so")):
@@ -99,6 +121,39 @@ class Controls(unittest.TestCase):
         struct.pack_into("<Q", data, 0x300 + 2 * 64 + 32, 72)
         with self.assertRaises(ValueError):
             run.private_wrapper_offset(data, 62)
+
+    def test_actual_output_tile_consumption(self):
+        self.assertEqual(run.output_tile_consumption(TRANSFORM, SCHEDULE, (3, 5)),
+                         {"transform_tile_sizes": [3, 5, 0], "outer_loop_steps": [3, 5]})
+        # An unrelated comment neither supplies nor duplicates an actual op.
+        self.assertEqual(run.output_tile_consumption("// " + TRANSFORM.splitlines()[2] + "\n" + TRANSFORM,
+                                                    SCHEDULE, (3, 5))["outer_loop_steps"], [3, 5])
+
+    def test_tile_consumption_corruptions(self):
+        for label, transform, schedule, tiles in (
+            ("swapped-request", TRANSFORM, SCHEDULE, (5, 3)),
+            ("swapped-transform", TRANSFORM.replace("[3, 5, 0]", "[5, 3, 0]"), SCHEDULE, (3, 5)),
+            ("tiled-reduction", TRANSFORM.replace("[3, 5, 0]", "[3, 5, 1]"), SCHEDULE, (3, 5)),
+            ("changed-step-constant", TRANSFORM, SCHEDULE.replace("constant 3 : index", "constant 4 : index"), (3, 5)),
+            ("swapped-step-references", TRANSFORM, SCHEDULE.replace("step %m", "step %temporary").replace("step %n", "step %m").replace("step %temporary", "step %n"), (3, 5)),
+            ("comment-only-transform", "\n".join("// " + line for line in TRANSFORM.splitlines()), SCHEDULE, (3, 5)),
+            ("comment-only-schedule", TRANSFORM, "\n".join("// " + line for line in SCHEDULE.splitlines()), (3, 5)),
+            ("extra-transform", TRANSFORM + TRANSFORM.splitlines()[2] + "\n", SCHEDULE, (3, 5)),
+            ("extra-loop", TRANSFORM, SCHEDULE + "scf.for %i = %c0 to %rows step %m {\n", (3, 5)),
+            ("unbound-step", TRANSFORM, SCHEDULE.replace("step %m", "step %unknown"), (3, 5)),
+        ):
+            with self.subTest(label=label):
+                with self.assertRaises(ValueError):
+                    run.output_tile_consumption(transform, schedule, tiles)
+
+    def test_specific_negative_dependency_refusal(self):
+        expected_path = "/private/refused.mdslc-private"
+        run.negative_dependency_refusal("mdslc-region: captured path identity or metadata changed: " + expected_path + "\n", expected_path)
+        for error in ("mdslc-region: unrelated failure\n", "AddressSanitizer: heap-buffer-overflow\n",
+                      "mdslc-region: captured path identity or metadata changed: /different/path\n",
+                      "mdslc-region: captured path identity or metadata changed: " + expected_path + "-other\n"):
+            with self.assertRaises(ValueError):
+                run.negative_dependency_refusal(error, expected_path)
 
 
 if __name__ == "__main__":

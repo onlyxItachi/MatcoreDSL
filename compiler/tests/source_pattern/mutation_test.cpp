@@ -77,11 +77,27 @@ Donor donor(const dr::Installation &installation, dr::OutputTileRequest tiles) {
   return {read(bundle.path() / "gemm.ll"), read(bundle.path() / "gemm.o"),
           read(issued.candidatePath()), read(bundle.path() / "source-pattern.manifest")};
 }
+struct MutationTrace {
+  enum class Kind { CapturedInput, ChangedArtifact, PreexistingIssuedOutput };
+  Kind kind = Kind::ChangedArtifact;
+  bool completed = false;
+  fs::path changed_path;
+  bool expectedRefusal(const std::string &error) const {
+    if (!completed || changed_path.empty() || !error.ends_with(changed_path.string())) return false;
+    switch (kind) {
+    case Kind::CapturedInput: return error.starts_with("captured ") && error.find("changed") != std::string::npos;
+    case Kind::ChangedArtifact: return error.starts_with("compiler artifact changed");
+    case Kind::PreexistingIssuedOutput: return error.starts_with("source-pattern issued output already exists:");
+    }
+    return false;
+  }
+};
 template<class MakeHook>
 void reject(const dr::Installation &installation, const char *label, MakeHook make_hook) {
   Fixture fixture(label);
   fs::path bundle_path;
-  bool invoked = false, rejected = false;
+  MutationTrace trace;
+  bool rejected = false;
   std::string error;
   {
     dr::SourcePatternBundle bundle(fixture.output);
@@ -90,14 +106,15 @@ void reject(const dr::Installation &installation, const char *label, MakeHook ma
     check(bool(admitted), std::string(label) + " authentic source control: " + admitted.error);
     if (!admitted) return;
     dr::SourcePatternTestHooks hooks;
-    make_hook(hooks, fixture, invoked);
+    make_hook(hooks, fixture, trace);
     try {
       auto instance = dr::SourcePatternInstance::issueForTesting(installation, bundle,
           *admitted.evidence, "pipeline", cg::ClosedCpuPolicy::GeneratedStrict,
           cg::ClosedHostOptimization::None, {3, 5}, hooks);
       instance.unchanged();
     } catch (const std::exception &failure) { rejected = true; error = failure.what(); }
-    check(invoked && rejected && !error.empty(), std::string(label) + " reached captured phase and failed closed: " + error);
+    check(rejected && trace.expectedRefusal(error),
+          std::string(label) + " completed mutation and reached its expected captured-path refusal: " + error);
     check(!fs::exists(fixture.output), std::string(label) + " did not publish executable");
   }
   check(!fs::exists(bundle_path), std::string(label) + " removed only its failed owned bundle");
@@ -105,6 +122,17 @@ void reject(const dr::Installation &installation, const char *label, MakeHook ma
 }
 int main() {
   try {
+    // Synthetic refusal-classifier controls are separate from the real issue
+    // mutations below. A partial hook or path-prefix coincidence cannot pass.
+    MutationTrace classifier;
+    classifier.changed_path = "/synthetic-independent-control/gemm.ll";
+    const auto correct_reason = "compiler artifact changed during compilation: " + classifier.changed_path.string();
+    check(!classifier.expectedRefusal(correct_reason), "unfinished hook cannot satisfy its expected exception");
+    classifier.completed = true;
+    check(classifier.expectedRefusal(correct_reason), "finished mutation has an exact positive diagnostic control");
+    check(!classifier.expectedRefusal(correct_reason + ".manifest") &&
+              !classifier.expectedRefusal("unrelated exception: " + classifier.changed_path.string()),
+          "path prefix or unrelated exception cannot satisfy a changed-artifact control");
     const auto installation = dr::Installation::pinnedBuildTreeForTesting();
     const auto foreign = donor(installation, {5, 3});
     const auto stale = donor(installation, {3, 5});
@@ -287,49 +315,68 @@ int main() {
     }
     for (const auto phase : {0, 1, 2}) {
       const auto source_label = "main-after-phase-" + std::to_string(phase);
-      reject(installation, source_label.c_str(), [&](auto &hooks, auto &fixture, bool &invoked) {
-        auto change = [&](const fs::path &) { invoked = true; dr::write(fixture.main, std::string(source) + "\n// stale closure\n"); };
+      reject(installation, source_label.c_str(), [&](auto &hooks, auto &fixture, MutationTrace &trace) {
+        trace.kind = MutationTrace::Kind::CapturedInput;
+        auto change = [&](const fs::path &) {
+          dr::write(fixture.main, std::string(source) + "\n// stale closure\n");
+          trace.changed_path = fixture.main; trace.completed = true;
+        };
         if (phase == 0) hooks.after_issue = change;
         else if (phase == 1) hooks.after_object = change;
         else hooks.after_dso = change;
       });
       const auto header_label = "header-after-phase-" + std::to_string(phase);
-      reject(installation, header_label.c_str(), [&](auto &hooks, auto &fixture, bool &invoked) {
-        auto change = [&](const fs::path &) { invoked = true; dr::write(fixture.header, std::string(helper) + "\n// stale physical inclusion\n"); };
+      reject(installation, header_label.c_str(), [&](auto &hooks, auto &fixture, MutationTrace &trace) {
+        trace.kind = MutationTrace::Kind::CapturedInput;
+        auto change = [&](const fs::path &) {
+          dr::write(fixture.header, std::string(helper) + "\n// stale physical inclusion\n");
+          trace.changed_path = fixture.header; trace.completed = true;
+        };
         if (phase == 0) hooks.after_issue = change;
         else if (phase == 1) hooks.after_object = change;
         else hooks.after_dso = change;
       });
     }
-    reject(installation, "valid-other-tiles-llvm", [&](auto &hooks, auto &, bool &invoked) {
-      hooks.after_issue = [&](const fs::path &path) { invoked = true; dr::write(path / "gemm.ll", foreign.llvm); };
+    reject(installation, "valid-other-tiles-llvm", [&](auto &hooks, auto &, MutationTrace &trace) {
+      hooks.after_issue = [&](const fs::path &path) {
+        dr::write(path / "gemm.ll", foreign.llvm);
+        trace.changed_path = path / "gemm.ll"; trace.completed = true;
+      };
     });
-    reject(installation, "valid-other-tiles-object", [&](auto &hooks, auto &, bool &invoked) {
-      hooks.after_object = [&](const fs::path &path) { invoked = true; dr::write(path / "gemm.o", foreign.object); };
+    reject(installation, "valid-other-tiles-object", [&](auto &hooks, auto &, MutationTrace &trace) {
+      hooks.after_object = [&](const fs::path &path) {
+        dr::write(path / "gemm.o", foreign.object);
+        trace.changed_path = path / "gemm.o"; trace.completed = true;
+      };
     });
     const auto replace_dso = [&](const Donor &replacement, const char *label) {
-      reject(installation, label, [&](auto &hooks, auto &, bool &invoked) {
+      reject(installation, label, [&](auto &hooks, auto &, MutationTrace &trace) {
         hooks.after_dso = [&](const fs::path &path) {
-          invoked = true;
           bool found = false;
           for (const auto &entry : fs::directory_iterator(path))
             if (entry.path().extension() == ".so") {
-              found = true; dr::write(entry.path(), replacement.dso);
+              dr::write(entry.path(), replacement.dso);
+              found = true; trace.changed_path = entry.path();
             }
           if (!found) throw std::runtime_error("DSO hook did not reach an issued candidate");
+          trace.completed = true;
         };
       });
     };
     replace_dso(foreign, "valid-other-tiles-dso");
     replace_dso(stale, "valid-stale-source-dso");
-    reject(installation, "forged-issued-MLIR", [&](auto &hooks, auto &, bool &invoked) {
+    reject(installation, "forged-issued-MLIR", [&](auto &hooks, auto &, MutationTrace &trace) {
       hooks.after_issue = [&](const fs::path &path) {
-        invoked = true;
         dr::write(path / "gemm.ll.semantic.mlir", read(path / "gemm.ll.semantic.mlir") + "\n// submitted authority\n");
+        trace.changed_path = path / "gemm.ll.semantic.mlir"; trace.completed = true;
       };
     });
-    reject(installation, "stale-manifest-prepopulation", [&](auto &hooks, auto &, bool &invoked) {
-      hooks.after_dso = [&](const fs::path &path) { invoked = true; dr::write(path / "source-pattern.manifest", stale.manifest); };
+    reject(installation, "stale-manifest-prepopulation", [&](auto &hooks, auto &, MutationTrace &trace) {
+      trace.kind = MutationTrace::Kind::PreexistingIssuedOutput;
+      hooks.after_dso = [&](const fs::path &path) {
+        dr::write(path / "source-pattern.manifest", stale.manifest);
+        trace.changed_path = path / "source-pattern.manifest"; trace.completed = true;
+      };
     });
     // A racing symlink must neither obtain authority nor become a recursive
     // cleanup target. All directories here are exact task-created temp roots.
@@ -339,6 +386,7 @@ int main() {
     dr::write(foreign_directory / "sentinel", "caller bytes must survive\n");
     fs::path original_bundle;
     bool hook_ran = false, race_rejected = false;
+    std::string race_error;
     {
       dr::SourcePatternBundle bundle(raced.output);
       original_bundle = bundle.path();
@@ -346,17 +394,20 @@ int main() {
       if (!admitted) throw std::runtime_error(admitted.error);
       dr::SourcePatternTestHooks hooks;
       hooks.after_issue = [&](const fs::path &path) {
-        hook_ran = true;
         fs::rename(path, path.string() + ".moved");
         fs::create_directory_symlink(foreign_directory, path);
+        hook_ran = true;
       };
       try {
         auto instance = dr::SourcePatternInstance::issueForTesting(installation, bundle, *admitted.evidence,
             "pipeline", cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None, {3, 5}, hooks);
         instance.unchanged();
-      } catch (const std::exception &) { race_rejected = true; }
+      } catch (const std::exception &failure) { race_rejected = true; race_error = failure.what(); }
     }
-    check(hook_ran && race_rejected && !fs::exists(raced.output), "bundle path race did not publish an executable");
+    check(hook_ran && race_rejected && !fs::exists(raced.output) &&
+              race_error.starts_with("source-pattern private bundle ownership/path changed:") &&
+              race_error.ends_with(original_bundle.string()),
+          "completed bundle path race reached its ownership-path refusal without publication: " + race_error);
     check(read(foreign_directory / "sentinel") == "caller bytes must survive\n" &&
               fs::exists(original_bundle.string() + ".moved"),
           "path substitution did not delete foreign or moved owned bytes");

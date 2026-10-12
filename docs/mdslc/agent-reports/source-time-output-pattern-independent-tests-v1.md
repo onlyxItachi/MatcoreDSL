@@ -66,3 +66,28 @@ Core `e026f15` additionally owns Installation identity and the bundle-associated
 output path. Tests refuse a byte-identical Installation copy and an unassociated
 output, with exact diagnostics and unchanged empty publication stages. All three
 legitimate source/tile instances first compile and validate their own pairing.
+
+## Final independent classifier and refusal hardening
+
+The integration owner reported the corrected four-test Release suite passing
+in 135.64 seconds and the matching four-test ASan suite passing, including actual
+requested-source DSO OOB attribution. Those are integration-reported physical
+results, separate from this agent's syntax and classifier checks.
+
+The final test-only increment checks consumed HOW structure independently:
+exactly one non-comment canonical Transform tile instruction uses `[M,N,0]`,
+and exactly two nested outer SCF loop step references resolve through preceding
+integer-index constants to ordered `[M,N]`. The toolchain string must equal
+`21.1.8`. Nine synthetic unit tests cover swapped tuple/step constants/references,
+comment-only impostors, extra instructions/loops, missing step definitions,
+malformed manifests/ELF and exact negative-dependency diagnostic ownership. An
+already emitted 64x64 Transform/scheduled pair passed this narrow inspection;
+that does not add an execution or optimizer-legality claim.
+
+Mutation completion is now recorded only after the write/path replacement
+finishes. Each phase failure must name the actual source/header/artifact path
+and its expected captured-input, changed-artifact or preexisting-output category;
+a hook exception cannot pass. The negative `__has_include` control specifically
+requires its captured bundle-directory metadata-change diagnostic, which precedes
+the generated file's formerly negative status in the current recheck order.
+The final strengthened physical rerun remains integration-owned.

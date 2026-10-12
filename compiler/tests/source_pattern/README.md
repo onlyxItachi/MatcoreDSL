@@ -8,6 +8,12 @@ the scalar-order/FMA cases include 65x129 outputs for full largest tiles and tai
 It separately checks original-witness identity, distinct derived/LLVM/object/DSO
 bytes, parameter/source/target/toolchain inspection bindings, exact requested DSO
 `NEEDED` entries, local issued leaf/wrapper definitions, and no dynamic leaf export.
+Its bounded canonical-emission classifier also requires the one actual Transform
+tile instruction to use `[M,N,0]` and the two ordered outer SCF step references
+to resolve to preceding `arith.constant integer : index` definitions `[M,N]`.
+Comment-only imitations, swapped constants/references and extra loops cannot
+satisfy consumption; this is not a general MLIR parser or optimizer verifier.
+The toolchain binding is exactly `21.1.8`, not a substring match.
 Successful public `Result` mathematics alone cannot identify a private leaf.
 
 `connected.mdsl` has 68 executed source cases: nonsymmetric rectangles and both
@@ -30,12 +36,17 @@ object/program combinations, untrusted IR/manifest option refusals, no-overwrite
 bundle file/directory/symlink controls, and an admitted negative `__has_include`
 dependency naming the actual bundle's later-issued LLVM file. Failure must leave
 no executable or newly owned bundle; caller-owned existing entries must survive.
+The negative include-dependency refusal must specifically name the captured
+bundle's metadata change. An unrelated nonzero status does not satisfy it.
 
 `mutation_test.cpp` uses only the noninstalled deterministic phase seam. Valid
 foreign tile LLVM/object/DSO and stale same-tile source DSO substitutions must fail
 after capture, as must source/header changes at each phase, forged retained MLIR,
 prepopulated stale manifests and a bundle directory/symlink race. The private
-consumer is independently exercised with another authentic source, another entry
+mutation must finish, and refusal diagnostics must identify its expected changed
+path and captured-input, changed-artifact or existing-output category; a failing
+hook itself cannot satisfy a control. The private consumer is independently
+exercised with another authentic source, another entry
 from the same source, mismatched candidate/optimization, worker contract, candidate
 bytes, and installation sanitizer profile. These are falsifiers, not input APIs.
 The final typed publisher additionally rejects compilation A with a different
@@ -57,8 +68,8 @@ separate host OOB control proves actual original-host instrumentation; LLVM
 attributes or a driver banner alone are not sanitizer execution evidence.
 
 `runner_test.py` tests malformed inspection/classifier and ELF controls using
-synthetic data, separately from all physical execution. Its six unit tests are
-not six source/target qualification cases. Existing relocated package acceptance
+synthetic data, separately from all physical execution. Its nine unit tests are
+not nine source/target qualification cases. Existing relocated package acceptance
 copies these source oracles and its inspector before producer removal, then
 issues both requests after relocation/removal, checks all bundle/SDK hashes and
 refuses a copied canonical public source header.

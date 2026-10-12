@@ -63,6 +63,8 @@ def manifest(text):
                          repr(sorted(set(result) ^ expected_keys)))
     if result["schema"] != "matcore-source-output-pattern-v1":
         raise ValueError("wrong source-pattern inspection schema")
+    if result["toolchain"] != "21.1.8":
+        raise ValueError("source-pattern inspection toolchain is not exactly the product tuple")
     if result["source_authority"] != "authenticated_in_process_source_closure" or result["manifest_authority"] != "inspection_only_never_imported":
         raise ValueError("inspection manifest falsely claims imported authority")
     for key, value in result.items():
@@ -83,6 +85,59 @@ def manifest(text):
 
 def needed(text):
     return re.findall(r"\(NEEDED\).*?Shared library:\s*\[([^\]]+)\]", text)
+
+
+def output_tile_consumption(transform, scheduled, tiles):
+    """Bounded canonical-emission classifier, never an MLIR parser/importer.
+
+    Check actual output-tile instruction and resolved outer loop increments;
+    distinct files or comments claiming parameters cannot satisfy consumption.
+    Full IR/numerical legality remains the issuer's independent responsibility.
+    """
+    ssa = r"%[A-Za-z0-9_.$-]+"
+    assignment = rf"{ssa}(?:\s*,\s*{ssa})*\s*=\s*"
+    code_lines = lambda value: [line.partition("//")[0] for line in value.splitlines()]
+    transforms = [line for line in code_lines(transform) if re.match(
+        rf"^\s*{assignment}transform\.structured\.tile_using_for\b", line)]
+    if len(transforms) != 1:
+        raise ValueError("expected exactly one actual output tile Transform instruction")
+    matched = re.fullmatch(
+        rf"\s*{assignment}transform\.structured\.tile_using_for\s+{ssa}\s+"
+        r"tile_sizes\s*\[\s*(-?[0-9]+)\s*,\s*(-?[0-9]+)\s*,\s*(-?[0-9]+)\s*\]\s*:\s*.+",
+        transforms[0])
+    if not matched or tuple(map(int, matched.groups())) != (*tiles, 0):
+        raise ValueError("actual Transform tile sizes do not consume the requested M/N and untiled K")
+    constants, loops = {}, []
+    for index, line in enumerate(code_lines(scheduled)):
+        constant = re.fullmatch(rf"\s*({ssa})\s*=\s*arith\.constant\s+(-?[0-9]+)\s*:\s*index\s*", line)
+        if constant:
+            if constant[1] in constants:
+                raise ValueError("duplicate index-constant SSA definition in canonical schedule")
+            constants[constant[1]] = (int(constant[2]), index)
+        if re.match(rf"^\s*(?:{assignment})?scf\.for\b", line):
+            loop = re.fullmatch(rf"(\s*)scf\.for\s+{ssa}\s*=\s*{ssa}\s+to\s+{ssa}\s+step\s+({ssa})\s*\{{\s*", line)
+            if not loop:
+                raise ValueError("outer output loop differs from canonical scheduled syntax")
+            loops.append((loop[2], index, len(loop[1])))
+    if len(loops) != 2 or loops[1][2] <= loops[0][2]:
+        raise ValueError("expected exactly two ordered nested output-domain SCF loops")
+    resolved = []
+    for step, index, _ in loops:
+        if step not in constants or constants[step][1] >= index:
+            raise ValueError("output loop step does not resolve to a preceding index constant")
+        resolved.append(constants[step][0])
+    if tuple(resolved) != tuple(tiles):
+        raise ValueError("actual outer SCF loop steps do not consume requested M/N in order")
+    return {"transform_tile_sizes": [*tiles, 0], "outer_loop_steps": resolved}
+
+
+def negative_dependency_refusal(stderr, bundle):
+    # Parent-directory metadata is checked before the new file's former
+    # negative status; require the exact captured bundle rather than a crash.
+    expected = "captured path identity or metadata changed: " + str(bundle)
+    lines = {line.removeprefix("mdslc-region: ") for line in stderr.splitlines()}
+    if not stderr.startswith("mdslc-region:") or expected not in lines:
+        raise ValueError("negative bundle dependency was not refused at its captured path change")
 
 
 def private_wrapper_offset(data, machine):
@@ -162,11 +217,13 @@ def validate_bundle(binary, tiles, region, optimization, sanitized, invoke):
         if info[key] != value:
             raise ValueError(f"source instance did not bind {key}: {info[key]!r}")
     target = {"x86_64": "x86_64-pc-linux-gnu", "aarch64": "aarch64-unknown-linux-gnu"}[platform.machine()]
-    if info["target"] != target or "21.1.8" not in info["toolchain"]:
+    if info["target"] != target or info["toolchain"] != "21.1.8":
         raise ValueError("source instance did not bind the exact native product tuple")
     for key, name in HASH_FILES.items():
         if digest(bundle / name) != info[key]:
             raise ValueError("retained issued bytes differ from binding: " + name)
+    output_tile_consumption((bundle / "gemm.ll.transform.mlir").read_text(),
+                            (bundle / "gemm.ll.scheduled.mlir").read_text(), tiles)
     dso = bundle / info["candidate_soname"]
     if digest(dso) != info["dso_sha256"]:
         raise ValueError("source instance DSO differs from bound bytes")
@@ -265,6 +322,7 @@ def main():
         save()
         if result.returncode != 1 or not result.stderr.startswith("mdslc-region:") or binary.exists() or Path(str(binary) + ".mdslc-private").exists():
             raise ValueError("invalid source request did not fail cleanly without publication: " + label)
+        return result
 
     try:
         banner = invoke([driver, "--version"]).stdout
@@ -323,8 +381,9 @@ def main():
             negative_source.write_text('#if __has_include("' + generated_path + '")\n'
                                        '#error private artifact changed an admitted negative source dependency\n'
                                        '#endif\n' + (source / "connected.mdsl").read_text())
-            reject("negative-dependency", [negative_source, "--region", "source_pattern_pipeline",
-                                          "--candidate", "generated-strict", "--gemm-output-tiles", "3,5"])
+            dependency = reject("negative-dependency", [negative_source, "--region", "source_pattern_pipeline",
+                                "--candidate", "generated-strict", "--gemm-output-tiles", "3,5"])
+            negative_dependency_refusal(dependency.stderr, Path(generated_path).parent)
         else:
             probe = root / "raw-asan-probe"
             if args.sanitized:
