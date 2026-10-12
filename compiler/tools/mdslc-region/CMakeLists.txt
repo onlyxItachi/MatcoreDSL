@@ -9,10 +9,21 @@ target_include_directories(matcore_experimental_program_compiler SYSTEM PRIVATE
 mdslc_target_enable_warnings(matcore_experimental_program_compiler WERROR)
 mdslc_target_match_llvm_rtti(matcore_experimental_program_compiler)
 
-add_executable(mdslc-region main.cpp DriverSupport.cpp program_main.cpp)
+add_library(matcore_region_driver_support STATIC DriverSupport.cpp SourcePattern.cpp)
+target_compile_features(matcore_region_driver_support PUBLIC cxx_std_20)
+target_include_directories(matcore_region_driver_support PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
+  PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_include_directories(matcore_region_driver_support SYSTEM PRIVATE
+  ${LLVM_INCLUDE_DIRS} ${CLANG_INCLUDE_DIRS} ${MLIR_INCLUDE_DIRS})
+target_link_libraries(matcore_region_driver_support PUBLIC
+  matcore_experimental_program_compiler MatcoreDSL::PlatformSupportV1 LLVM
+  PRIVATE matcore_cpu_gemm_candidate)
+mdslc_target_enable_warnings(matcore_region_driver_support WERROR)
+mdslc_target_match_llvm_rtti(matcore_region_driver_support)
+
+add_executable(mdslc-region main.cpp program_main.cpp)
 target_compile_features(mdslc-region PRIVATE cxx_std_20)
-target_link_libraries(mdslc-region PRIVATE matcore_experimental_program_compiler
-  MatcoreDSL::PlatformSupportV1 LLVM)
+target_link_libraries(mdslc-region PRIVATE matcore_region_driver_support)
 target_include_directories(mdslc-region PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 mdslc_target_enable_warnings(mdslc-region WERROR)
 mdslc_target_match_llvm_rtti(mdslc-region)
@@ -55,6 +66,8 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/region_driver_identity.h"
     "${CMAKE_CURRENT_BINARY_DIR}/region_driver_identity.h.candidates-install-image"
   COMMAND "${CMAKE_COMMAND}"
     "-DCANDIDATES=$<TARGET_FILE:matcore_closed_candidates_isolated_v1>"
+    "-DRELINK_KIT=$<TARGET_FILE:matcore_closed_candidates_source_pattern_v1>"
+    "-DEXPORTS=${region_compiler_dir}/lib/regions/private_runtime_v2.exports"
     "-DRUNTIME=$<TARGET_FILE:matcore_runtime>"
     "-DPROVIDER=${region_provider_path}"
     "-DCUDA_DRIVER=${MDSLC_CUDA_DRIVER_IDENTITY}"
@@ -63,12 +76,15 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/region_driver_identity.h"
     "-DLINKER=${region_linker}"
     "-DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/region_driver_identity.h"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/installation_identity.cmake"
-  DEPENDS matcore_closed_candidates_isolated_v1 matcore_runtime
+  DEPENDS matcore_closed_candidates_isolated_v1
+    matcore_closed_candidates_source_pattern_v1 matcore_runtime
     ${region_provider_path}
     ${MDSLC_CUDA_DRIVER_IDENTITY} ${MDSLC_HIP_RUNTIME_IDENTITY}
     "${MDSLC_CLANGXX_EXECUTABLE}" "${region_linker}"
+    "${region_compiler_dir}/lib/regions/private_runtime_v2.exports"
     "${CMAKE_CURRENT_SOURCE_DIR}/installation_identity.cmake" VERBATIM)
-target_sources(mdslc-region PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/region_driver_identity.h")
+target_sources(matcore_region_driver_support PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/region_driver_identity.h")
 install(TARGETS mdslc-region RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 if(BUILD_TESTING)
   add_subdirectory("../../tests/program" "${CMAKE_CURRENT_BINARY_DIR}/program-tests")

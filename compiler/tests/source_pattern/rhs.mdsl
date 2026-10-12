@@ -1,0 +1,77 @@
+// Noncommuting rectangular RHS carry through the new private source instance.
+#include "math_helper.h"
+#include <algorithm>
+#include <bit>
+#include <cstdint>
+#include <cstdio>
+#include <vector>
+namespace md = matcore::mdsl;
+MATCORE_REGION
+md::Result source_pattern_rhs(md::Storage A, md::Storage B, md::Storage C,
+    md::Storage D, md::Storage E, md::Shape M, md::Shape K,
+    md::Shape N, md::Shape P) noexcept {
+  auto a = md::read(A, M, K);
+  auto b = md::read(B, K, N);
+  auto first = source_pattern_math::product(a, b);
+  md::publish(first, C);
+  md::observe(C);
+  auto late = md::read(D, P, M);
+  auto second = source_pattern_math::product(late, first);
+  md::publish(second, E);
+  md::observe(E);
+  return md::complete();
+}
+std::vector<float> multiply(const float *a, const float *b, unsigned m, unsigned k, unsigned n) {
+  std::vector<float> c(m * n);
+  for (unsigned i = 0; i < m; ++i)
+    for (unsigned j = 0; j < n; ++j) {
+      volatile float sum = 0;
+      for (unsigned q = 0; q < k; ++q) {
+        volatile float term = a[i * k + q] * b[q * n + j];
+        sum = sum + term;
+      }
+      c[i * n + j] = sum;
+    }
+  return c;
+}
+int main() {
+  unsigned checks = 0;
+  for (unsigned n : {3, 5, 7, 17}) {
+    constexpr unsigned m = 5, k = 3, p = 3;
+    std::vector<float> a(m * k), b(k * n), c(m * n + 1, 9), e(p * n, -17);
+    for (unsigned i = 0; i < a.size(); ++i) a[i] = float(int((i * 7 + 1) % 11) - 5);
+    for (unsigned i = 0; i < b.size(); ++i) b[i] = float(int((i * 3 + 2) % 13) - 6);
+    const auto first = multiply(a.data(), b.data(), m, k, n);
+    auto published = c;
+    for (unsigned i = 0; i < first.size(); ++i) published[i] = first[i];
+    const auto second = multiply(published.data() + 1, first.data(), p, m, n);
+    auto result = source_pattern_rhs({a.data(), m, k, a.size()}, {b.data(), k, n, b.size()},
+        {c.data(), m, n, c.size(), md::Access::read_write},
+        {c.data() + 1, p, m, c.size() - 1}, {e.data(), p, n, e.size(), md::Access::read_write},
+        m, k, n, p);
+    if (!result || result.publication_count() != 2 || result.observation_count() != 2) return 1;
+    auto observed = result.observation(1);
+    if (!observed.valid() || c.back() != 9) return 2;
+    for (unsigned i = 0; i < e.size(); ++i) {
+      if (std::bit_cast<std::uint32_t>(e[i]) != std::bit_cast<std::uint32_t>(second[i]) ||
+          std::bit_cast<std::uint32_t>(observed.data()[i]) != std::bit_cast<std::uint32_t>(second[i])) return 3;
+      ++checks;
+    }
+    // A failure of this genuinely late aliased read must not undo C.
+    std::fill(c.begin(), c.end(), 9);
+    std::fill(e.begin(), e.end(), -17);
+    auto failed = source_pattern_rhs({a.data(), m, k, a.size()}, {b.data(), k, n, b.size()},
+        {c.data(), m, n, c.size(), md::Access::read_write},
+        {c.data() + 1, p, m, p * m - 1}, {e.data(), p, n, e.size(), md::Access::read_write},
+        m, k, n, p);
+    if (failed || failed.error() != md::Error::insufficient_capacity ||
+        failed.failed_frontier() != 6 || failed.completed_effect_frontier() != 5 ||
+        failed.publication_count() != 1 || failed.observation_count() != 1) return 4;
+    for (unsigned i = 0; i < first.size(); ++i) {
+      if (c[i] != first[i]) return 5;
+      ++checks;
+    }
+    for (const auto value : e) if (value != -17) return 6;
+  }
+  std::printf("Source pattern RHS carry: 8 cases; %u checks; 0 failures\n", checks);
+}

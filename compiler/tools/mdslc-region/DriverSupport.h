@@ -15,6 +15,7 @@ namespace support = matcore::mdslc::support;
 namespace frontend = matcore::mdslc::frontend;
 namespace codegen = matcore::mdslc::codegen;
 [[noreturn]] void reject(const std::string &);
+std::string digest(const std::string &);
 struct Artifact {
   fs::path path;
   support::FileSnapshotV1 snapshot;
@@ -50,15 +51,27 @@ struct Installation {
   std::vector<Artifact> accelerators;
   Artifact public_header, storage_header, private_header;
   Installation();
+  // Noninstalled compiler-test seam. This admits only the compiled, pinned
+  // build tuple; normal copied/installed drivers never use build fallback.
+  static Installation pinnedBuildTreeForTesting();
   std::vector<codegen::TrustedSymbolArtifact> symbolArtifacts() const;
   void unchanged() const;
   frontend::Options options(const fs::path &, const std::vector<std::string> &) const;
   codegen::ExperimentalCompilerInputs compilerInputs(const fs::path &) const;
+private:
+  explicit Installation(Layout);
 };
+class SourcePatternInstance;
 // Only compiler-derived output reaches this private helper. The mandatory
 // callback checks the entire frozen source/helper closure before native
 // compilation and again before atomic no-clobber publication.
 void compileAndPublish(const Installation &, const Staging &, const fs::path &,
     bool compile_only, const std::string &derived_ir,
     const std::function<void()> &inputs_unchanged);
+// A per-source DSO can only be published with the authenticated compilation
+// which actually consumed that exact instance. The raw default helper above
+// cannot select or link a source-time candidate artifact.
+void compileSourcePatternAndPublish(const Installation &, const Staging &,
+    const fs::path &, const codegen::ExperimentalLLVMCompilation &,
+    const SourcePatternInstance &);
 } // namespace matcore::mdslc::driver

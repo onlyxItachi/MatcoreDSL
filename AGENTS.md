@@ -121,6 +121,15 @@ in `context.md`.
   independent scalar-envelope checks and existing source/private-leaf ownership.
   The output-tiled build selection is opt-in; it adds no automatic tuning policy
   or GPU mapping. See `docs/mdslc/PARAMETERIZED_GEMM_PATTERN_V1.md`.
+  The separately requested source-time `--gemm-output-tiles M,N` route is bounded
+  to single-TU native baseline `generated-strict` executables. Reuse the closed
+  issuer and pinned private relink kit, never a submitted IR/object or callback.
+  Preserve source/entry/request/target/toolchain binding through compilation and
+  final publication, including the actual private DSO's intrinsic leaf ownership.
+  The per-output `.mdslc-private` dependency bundle is compiler-owned, no-clobber,
+  persistent and inspection-only, not an artifact import/cache authority. Defaults,
+  program mode, other candidates and GPU recipes remain separate. See
+  `docs/mdslc/SOURCE_TIME_GEMM_PATTERN_V1.md`.
   Matcore semantic operations describe WHAT. Legality, planning, structured
   upstream dialects, scheduling, and library/generated-code selection describe
   HOW. LLVM, target-specific dialects, and platform/vendor toolchains describe

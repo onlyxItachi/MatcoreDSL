@@ -1,5 +1,6 @@
 #include "region_driver_paths.h"
 #include "DriverSupport.h"
+#include "SourcePattern.h"
 #include "program_main.h"
 #include <iostream>
 
@@ -13,6 +14,8 @@ struct Invocation {
   std::vector<std::string> host_options;
   bool compile_only = false;
   bool optimization_seen = false;
+  unsigned candidate_count = 0;
+  std::optional<OutputTileRequest> output_tiles;
 };
 Invocation parse(int argc, char **argv) {
   Invocation args;
@@ -26,7 +29,11 @@ Invocation parse(int argc, char **argv) {
     else if (argument == "--region") { if (!args.region.empty()) reject("duplicate --region"); args.region = value(); }
     else if (argument == "-c") args.compile_only = true;
     else if (argument == "--candidate") {
+      ++args.candidate_count;
       args.policy = parseCandidatePolicy(value());
+    } else if (argument == "--gemm-output-tiles") {
+      if (args.output_tiles) reject("duplicate --gemm-output-tiles");
+      args.output_tiles = parseOutputTileRequest(value());
     } else if (argument == "--optimization") {
       if (args.optimization_seen) reject("duplicate --optimization");
       args.optimization_seen = true;
@@ -41,7 +48,11 @@ Invocation parse(int argc, char **argv) {
     else reject("unknown or unsupported argument: " + argument);
   }
   if (args.source.empty() || args.output.empty() || args.region.empty())
-    reject(std::string("usage: mdslc-region source.mdsl --region qualified_name [-c] [--candidate ") + candidatePolicyUsage() + "] [--optimization " + optimizationUsage() + "] -o NEW_OUTPUT [-- bounded C++ include/macro options]");
+    reject(std::string("usage: mdslc-region source.mdsl --region qualified_name [-c] [--candidate ") + candidatePolicyUsage() + "] [--optimization " + optimizationUsage() + "] [--gemm-output-tiles M,N] -o NEW_OUTPUT [-- bounded C++ include/macro options]");
+  if (args.output_tiles) {
+    if (args.candidate_count != 1) reject("--gemm-output-tiles requires exactly one --candidate generated-strict");
+    validateSourcePatternInvocation(args.policy, args.optimization, args.compile_only);
+  }
   return args;
 }
 
@@ -62,6 +73,8 @@ int run(int argc, char **argv) {
   args.source = fs::absolute(args.source);
   args.output = fs::absolute(args.output);
   validateNewOutput(args.output);
+  std::optional<SourcePatternBundle> bundle;
+  if (args.output_tiles) bundle.emplace(args.output); // Before host directory capture.
   Staging staging(args.output.parent_path()); // Before any host directory capture.
   write(staging.path / "host.ll", ""); write(staging.path / "result", "");
   const Installation installation;
@@ -69,15 +82,26 @@ int run(int argc, char **argv) {
   auto admitted = frontend::admitExperimentalRegionHost(options, cwd.string(),
       {installation.public_header.path.string(), installation.storage_header.path.string()}, args.region);
   if (!admitted) reject(admitted.error);
+  std::optional<SourcePatternInstance> source_pattern;
+  if (args.output_tiles)
+    source_pattern.emplace(SourcePatternInstance::issue(installation, *bundle,
+        *admitted.evidence, args.region, args.policy, args.optimization, *args.output_tiles));
   auto compilation = codegen::compileExperimentalRegionToLLVM(*admitted.evidence,
-      installation.compilerInputs(staging.path / "helper"), args.policy, args.optimization);
+      source_pattern ? source_pattern->compilerInputs(staging.path / "helper", *admitted.evidence)
+                     : installation.compilerInputs(staging.path / "helper"),
+      args.policy, args.optimization);
   if (!compilation) reject(compilation.error);
   auto unchanged = [&] {
     std::string error;
     if (!compilation.compilation->inputsUnchanged(error)) reject(error);
   };
-  compileAndPublish(installation, staging, args.output, args.compile_only,
-      compilation.compilation->llvm_ir, unchanged);
+  if (source_pattern)
+    compileSourcePatternAndPublish(installation, staging, args.output,
+        *compilation.compilation, *source_pattern);
+  else
+    compileAndPublish(installation, staging, args.output, args.compile_only,
+        compilation.compilation->llvm_ir, unchanged);
+  if (bundle) bundle->retain();
   return 0;
 }
 } // namespace

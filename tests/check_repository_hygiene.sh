@@ -25,6 +25,7 @@ declare -a ignore_sentinels=(
   ".deps/hygiene"
   ".matcore_debug/hygiene"
   ".matcore_ir_dump/hygiene"
+  "hygiene.mdslc-private/source-pattern.manifest"
   "hygiene.host.cpp"
   "hygiene.host-overlay.yaml"
   "hygiene.matcore.json"
@@ -67,7 +68,7 @@ while IFS= read -r path; do
     .ninja_deps | */.ninja_deps | .ninja_log | */.ninja_log | \
     compile_commands.json | */compile_commands.json | \
     CTestTestfile.cmake | */CTestTestfile.cmake | Testing/* | */Testing/* | \
-    .deps/* | */.deps/* | .matcore_debug/* | */.matcore_debug/* | \
+    .deps/* | */.deps/* | *.mdslc-private/* | .matcore_debug/* | */.matcore_debug/* | \
     .matcore_ir_dump/* | */.matcore_ir_dump/* | \
     *.o | *.a | *.so | *.so.* | *.dylib | *.dll | *.exe | *.obj | \
     *.lib | *.exp | *.pdb | *.ilk | *.rsp | *.zip | *.bin | *.cubin | \

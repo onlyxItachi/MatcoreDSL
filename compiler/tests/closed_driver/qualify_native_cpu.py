@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 SCOPE = (r"^(platform\.closed_fp_environment\.v1|generated_cpu\..*|closed_candidates\..*|"
          r"runtime\.(closed_host|experimental_region)\..*|private_runtime\..*|"
          r"frontend\.(closed_.*|experimental_.*|frozen_host_.*|program_input_mutation)|"
-         r"driver\.(program_.*|source_library_.*|generated_reassociate\..*|publication_read_forwarding\..*|"
+         r"driver\.(program_.*|source_library_.*|source_pattern\..*|generated_reassociate\..*|publication_read_forwarding\..*|"
          r"experimental_region_contract|implementation_ownership|storage_conformance(_runner)?)|"
          r"codegen\.(artifact_symbol_ownership_v1|authenticated_host_thunk_v1|program_call_interface_v1)|"
          r"mlir\.closed_region_semantics|package\.experimental_regions\..*)$")
@@ -45,6 +45,8 @@ REQUIRED = {
     "package.experimental_regions.closed_source_inaccessible",
 }
 REQUIRED.update({"generated_cpu.output_pattern.issuer", "generated_cpu.output_pattern.cli"})
+REQUIRED.update("driver.source_pattern." + suffix
+                for suffix in ("connected", "refusals", "runner", "phase_mutations"))
 for pattern in ("baseline_3_5", "baseline_4_16", "baseline_1_1", "baseline_64_64"):
     REQUIRED.update("generated_cpu.output_pattern." + pattern + "." + suffix
                     for suffix in ("normal", "normal.corruption", "asan",

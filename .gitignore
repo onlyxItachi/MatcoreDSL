@@ -62,3 +62,6 @@ htmlcov/
 *.backend.cpp
 .matcore_debug/
 .matcore_ir_dump/
+
+# Compiler-owned dependencies of source-time requested GEMM instances.
+*.mdslc-private/

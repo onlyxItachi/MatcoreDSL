@@ -153,4 +153,38 @@ if(TARGET mdslc-region)
       "${CMAKE_CURRENT_SOURCE_DIR}/../driver_storage_conformance/runner_test.py")
   set_tests_properties(driver.storage_conformance driver.storage_conformance_runner
     PROPERTIES TIMEOUT 240 ENVIRONMENT "TMPDIR=${CMAKE_CURRENT_BINARY_DIR}")
+
+  # Independent public-source requests consume this build's actual driver.
+  # Mathematics alone does not prove private instance selection: the runner
+  # separately inspects exact NEEDED ownership, local leaves and bound bytes.
+  set(source_pattern_flags)
+  if(experimental_compiler_test_flags)
+    list(APPEND source_pattern_flags --sanitized)
+  endif()
+  foreach(source_pattern_case IN ITEMS connected refusals)
+    add_test(NAME driver.source_pattern.${source_pattern_case}
+      COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../source_pattern/run.py"
+        --driver "$<TARGET_FILE:mdslc-region>" --case "${source_pattern_case}"
+        --cxx "${MDSLC_CLANGXX_EXECUTABLE}"
+        --runtime "$<TARGET_FILE:matcore_runtime>" ${source_pattern_flags})
+    set_tests_properties(driver.source_pattern.${source_pattern_case}
+      PROPERTIES TIMEOUT 600 ENVIRONMENT "TMPDIR=${CMAKE_CURRENT_BINARY_DIR}")
+  endforeach()
+  add_test(NAME driver.source_pattern.runner
+    COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../source_pattern/runner_test.py")
+  set_tests_properties(driver.source_pattern.runner PROPERTIES TIMEOUT 60
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+  if(TARGET matcore_region_driver_support)
+    add_executable(matcore_source_pattern_mutation_test ../source_pattern/mutation_test.cpp)
+    target_link_libraries(matcore_source_pattern_mutation_test PRIVATE matcore_region_driver_support)
+    target_include_directories(matcore_source_pattern_mutation_test SYSTEM PRIVATE
+      ${LLVM_INCLUDE_DIRS} ${CLANG_INCLUDE_DIRS} ${MLIR_INCLUDE_DIRS})
+    mdslc_target_enable_warnings(matcore_source_pattern_mutation_test WERROR)
+    mdslc_target_match_llvm_rtti(matcore_source_pattern_mutation_test)
+    add_dependencies(matcore_source_pattern_mutation_test mdslc-region)
+    add_test(NAME driver.source_pattern.phase_mutations COMMAND matcore_source_pattern_mutation_test)
+    set_tests_properties(driver.source_pattern.phase_mutations PROPERTIES TIMEOUT 900)
+  endif()
 endif()

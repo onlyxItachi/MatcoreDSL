@@ -193,9 +193,13 @@ set(MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS "${MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS
 # dedicated archive. The default invocation produces the installed candidate set.
 include(GpuCandidates.cmake)
 function(mdslc_add_closed_candidate_runtime target)
-  cmake_parse_arguments(REGION "TESTING;NATIVE_ONLY;SHARED" "" "" ${ARGN})
+  cmake_parse_arguments(REGION "TESTING;NATIVE_ONLY;SHARED;SOURCE_PATTERN_KIT" "" "" ${ARGN})
   if(REGION_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR "Unknown closed candidate runtime option: ${REGION_UNPARSED_ARGUMENTS}")
+  endif()
+  if(REGION_SOURCE_PATTERN_KIT AND
+     (REGION_TESTING OR REGION_NATIVE_ONLY OR REGION_SHARED))
+    message(FATAL_ERROR "A source-pattern relink kit is a production-only PIC archive")
   endif()
   set(compiler_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../..")
   set(library_kind STATIC)
@@ -207,6 +211,9 @@ function(mdslc_add_closed_candidate_runtime target)
   target_include_directories(${target} PUBLIC
     "${compiler_dir}/lib/runtime" "${compiler_dir}/include")
   target_compile_features(${target} PUBLIC cxx_std_20)
+  if(REGION_SOURCE_PATTERN_KIT)
+    set_property(TARGET ${target} PROPERTY POSITION_INDEPENDENT_CODE ON)
+  endif()
   target_compile_options(${target} PRIVATE -fno-fast-math -ffp-contract=off -frounding-math)
   target_link_libraries(${target} PRIVATE m)
   mdslc_target_enable_warnings(${target})
@@ -222,7 +229,12 @@ function(mdslc_add_closed_candidate_runtime target)
     endif()
     set_source_files_properties("${MDSLC_CLOSED_GEMM_NORMAL_OBJECT}" PROPERTIES
       GENERATED TRUE EXTERNAL_OBJECT TRUE)
-    target_sources(${target} PRIVATE "${MDSLC_CLOSED_GEMM_NORMAL_OBJECT}")
+    # A source invocation replaces only this primitive. The kit retains the
+    # same adapter/configuration and other already-DSO-qualified isolated leaf
+    # objects; it never embeds the canonical Runtime/provider policy owner.
+    if(NOT REGION_SOURCE_PATTERN_KIT)
+      target_sources(${target} PRIVATE "${MDSLC_CLOSED_GEMM_NORMAL_OBJECT}")
+    endif()
     if(MDSLC_CLOSED_CPU_X86)
       target_sources(${target} PRIVATE "${MDSLC_CLOSED_REASSOCIATE_NORMAL_OBJECT}"
         "${MDSLC_FUSED_PAIR_NORMAL_OBJECT}"
