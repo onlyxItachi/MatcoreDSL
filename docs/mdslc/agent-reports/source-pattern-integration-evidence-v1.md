@@ -154,3 +154,12 @@ ARM's FP scope uses FPCR/FPSR instructions whereas x64 imports libc/libm fenv
 functions, making target-dependent pruning plausible. The corrective lane must
 prove scoped linker-state restoration and rerun native ARM qualification; it
 must not relax dependency equality or infer ARM success from x64 output.
+
+**Observed hosted budget limit:** the first head's native ASan+UBSan jobs
+`114708273227` (PR run38218341959) and `114708249337` (push run38218334599)
+were cancelled at the45-minute job limit, during the final source-pattern
+phase-mutation test after233 completed passes. Cancellation is not qualification
+and is not a reported numerical/correctness failure. The sanitizer job allowance
+is increased to60 minutes, matching the established full Release/Debug budget;
+the exact236-test scope, assertions, per-test timeouts and two-job build limit
+are unchanged. Final hosted sanitizer qualification remains required.

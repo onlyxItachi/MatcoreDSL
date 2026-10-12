@@ -428,7 +428,10 @@ jobs:
   clang-21-asan-ubsan-mlir:
     name: Clang 21.1.8 ASan+UBSan (Matcore MLIR enabled, OpenBLAS disabled)
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # The complete 236-test scope reached its final mutation controls when the
+    # old 45-minute job budget expired. Preserve every test, allowing build and
+    # sanitizer execution to finish on the hosted runner.
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
