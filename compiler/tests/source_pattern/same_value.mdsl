@@ -1,0 +1,45 @@
+// Distinct read snapshots do not prove same-Value A/B alias legality.
+#include "math_helper.h"
+#include <bit>
+#include <cstdint>
+#include <cstdio>
+#include <vector>
+namespace md = matcore::mdsl;
+MATCORE_REGION
+md::Result source_pattern_same_value(md::Storage A, md::Storage C, md::Shape n) noexcept {
+  auto shared = md::read(A, n, n);
+  auto output = source_pattern_math::product(shared, shared);
+  md::publish(output, C);
+  md::observe(C);
+  return md::complete();
+}
+int main() {
+  unsigned checks = 0;
+  for (md::Shape n : {3ULL, 5ULL, 6ULL, 11ULL, 17ULL}) {
+    std::vector<float> a(n * n), c(n * n, -99.0F), expected(n * n);
+    for (std::size_t i = 0; i < a.size(); ++i) a[i] = float(int((7 * i + 3) % 13) - 6) * 0.125F;
+    const auto original = a;
+    for (md::Shape i = 0; i < n; ++i)
+      for (md::Shape j = 0; j < n; ++j) {
+        volatile float acc = 0.0F;
+        for (md::Shape q = 0; q < n; ++q) {
+          volatile float term = a[i * n + q] * a[q * n + j];
+          acc = acc + term;
+        }
+        expected[i * n + j] = acc;
+      }
+    auto result = source_pattern_same_value({a.data(), n, n, n * n},
+        {c.data(), n, n, n * n, md::Access::read_write}, n);
+    if (!result.ok() || result.publication_count() != 1 || result.observation_count() != 1) return 1;
+    const auto observed = result.observation(0);
+    if (!observed.valid()) return 2;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      if (a[i] != original[i] ||
+          std::bit_cast<std::uint32_t>(c[i]) != std::bit_cast<std::uint32_t>(expected[i]) ||
+          std::bit_cast<std::uint32_t>(observed.data()[i]) != std::bit_cast<std::uint32_t>(expected[i]))
+        return 3;
+      ++checks;
+    }
+  }
+  std::printf("Source pattern same Value: 5 cases; %u checks; 0 failures\n", checks);
+}

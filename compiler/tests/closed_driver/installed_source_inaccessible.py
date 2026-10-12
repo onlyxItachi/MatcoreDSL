@@ -2,6 +2,7 @@
 """Installed closed-source execution after deleting disposable producer trees."""
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -43,8 +44,12 @@ def main():
         source, build, stage = root / "producer-source", root / "producer-build", root / "stage"
         installed = root / "relocated-install"
         log = []
+        issued_hashes = {}
 
         def run(argv, expected=0, stdout=None):
+            if any(hashlib.sha256(Path(path).read_bytes()).hexdigest() != sha
+                   for path, sha in issued_hashes.items()):
+                raise RuntimeError("a previously issued private source instance changed")
             result = subprocess.run([str(arg) for arg in argv], cwd=root, env=environment,
                                     text=True, capture_output=True, timeout=900)
             log.append({"argv": [str(arg) for arg in argv], "exit": result.returncode,
@@ -55,6 +60,18 @@ def main():
             return result
 
         clone_clean_commit(args.git, repository, source, commit)
+        pattern_inputs = root / "source-pattern-inputs"
+        pattern_inputs.mkdir()
+        for name in ("connected.mdsl", "same_value.mdsl", "rhs.mdsl", "math_helper.h"):
+            shutil.copyfile(source / "compiler/tests/source_pattern" / name, pattern_inputs / name)
+        # Keep the independent artifact classifier beside the surviving
+        # consumer, not in either disposable producer directory.
+        pattern_inspector = root / "source-pattern-inspector.py"
+        shutil.copyfile(source / "compiler/tests/source_pattern/run.py", pattern_inspector)
+        sys.dont_write_bytecode = True
+        spec = importlib.util.spec_from_file_location("installed_pattern_inspector", pattern_inspector)
+        inspector = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(inspector)
         consumer = root / "consumer.mdsl"
         shutil.copyfile(source / "compiler/examples/experimental/two_gemm.mdsl", consumer)
         forwarding_consumer = root / "forwarding-consumer.mdsl"
@@ -112,6 +129,61 @@ def main():
         shutil.rmtree(build)
         if source.exists() or build.exists() or stage.exists():
             raise RuntimeError("producer source/build/staging remains accessible")
+        sdk_hashes = {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+                      for path in installed.rglob("*") if path.is_file() and not path.is_symlink()}
+        requested_patterns = []
+        for tiles in ((3, 5), (5, 3)):
+            executable = root / f"installed-source-pattern-{tiles[0]}-{tiles[1]}"
+            run([driver, pattern_inputs / "connected.mdsl", "--region", "source_pattern_pipeline",
+                 "--candidate", "generated-strict", "--gemm-output-tiles", f"{tiles[0]},{tiles[1]}",
+                 "-o", executable])
+            info, hashes = inspector.validate_bundle(executable, tiles, "source_pattern_pipeline",
+                                                     "none", False, run)
+            result = run([executable])
+            inspector.semantic_summary(result.stdout, False)
+            if result.stderr:
+                raise RuntimeError("relocated source pattern emitted positive execution diagnostics")
+            bundle = Path(str(executable) + ".mdslc-private")
+            issued_hashes[str(executable)] = hashlib.sha256(executable.read_bytes()).hexdigest()
+            issued_hashes.update({str(bundle / name): sha for name, sha in hashes.items()})
+            requested_patterns.append(info)
+        for key in ("semantic_sha256", "structured_sha256", "bufferized_sha256"):
+            if requested_patterns[0][key] != requested_patterns[1][key]:
+                raise RuntimeError("installed source parameters changed original WHAT witnesses")
+        for key in ("transform_sha256", "scheduled_sha256", "llvm_sha256", "object_sha256",
+                    "dso_sha256", "candidate_soname", "binding_sha256"):
+            if requested_patterns[0][key] == requested_patterns[1][key]:
+                raise RuntimeError("installed requests did not own distinct realized source instances")
+        forged_headers = root / "forged-source-headers" / "matcore"
+        forged_headers.mkdir(parents=True)
+        shutil.copyfile(installed / "include/matcore/region.h", forged_headers / "region.h")
+        forged_executable = root / "forged-source-pattern"
+        refused = run([driver, pattern_inputs / "connected.mdsl", "--region", "source_pattern_pipeline",
+                       "--candidate", "generated-strict", "--gemm-output-tiles", "3,5",
+                       "-o", forged_executable, "--", "-I" + str(forged_headers.parent)], expected=1)
+        if (forged_executable.exists() or Path(str(forged_executable) + ".mdslc-private").exists() or
+                not refused.stderr.startswith("mdslc-region:")):
+            raise RuntimeError("installed source forgery obtained or leaked a private source instance")
+        for filename in ("libmatcore_closed_candidates_source_pattern_v1.a", "private_runtime_v2.exports"):
+            material = list(installed.rglob(filename))
+            if len(material) != 1:
+                raise RuntimeError("source-time private relink material is not uniquely installed")
+            live = material[0]
+            hidden = root / (filename + ".temporarily-hidden")
+            live.rename(hidden)
+            try:
+                stock_executable = root / ("stock-without-" + filename)
+                run([driver, pattern_inputs / "connected.mdsl", "--region", "source_pattern_pipeline",
+                     "--candidate", "generated-strict", "-o", stock_executable])
+                inspector.semantic_summary(run([stock_executable]).stdout, False)
+                missing_executable = root / ("requested-without-" + filename)
+                run([driver, pattern_inputs / "connected.mdsl", "--region", "source_pattern_pipeline",
+                     "--candidate", "generated-strict", "--gemm-output-tiles", "3,5",
+                     "-o", missing_executable], expected=1)
+                if missing_executable.exists() or Path(str(missing_executable) + ".mdslc-private").exists():
+                    raise RuntimeError("missing relink material silently fell back or leaked source output")
+            finally:
+                hidden.rename(live)
         for candidate in ("native-strict", "generated-strict", "automatic"):
             executable = root / candidate
             run([driver, consumer, "--region", "pipeline", "--candidate", candidate,
@@ -220,9 +292,17 @@ def main():
                         raise RuntimeError("source-inaccessible GPU work cap exact source oracle failed")
         if hashlib.sha256(driver.read_bytes()).hexdigest() != digest:
             raise RuntimeError("installed driver changed during package acceptance")
+        if any(hashlib.sha256(Path(path).read_bytes()).hexdigest() != sha
+               for path, sha in sdk_hashes.items()):
+            raise RuntimeError("installed SDK changed during source-time issuance")
+        if any(hashlib.sha256(Path(path).read_bytes()).hexdigest() != sha
+               for path, sha in issued_hashes.items()):
+            raise RuntimeError("private source bundle changed during package acceptance")
         if source.exists() or build.exists() or stage.exists():
             raise RuntimeError("installed driver recreated producer trees")
         print(f"PASS closed source/build-inaccessible package at {commit}: "
+              "two explicit 3x5/5x3 source-time requests; actual distinct bound DSO/leaf linkage; "
+              "68-case strict/source-effect oracle each; all bundle/SDK hashes retained; copied-header forgery refused; "
               "3 policies, exact math, retained observations and ordered late failure; "
               "same-source none/forwarding executed after producer removal with checked call reference; "
               + ("same-source none/strict-pair executed after producer removal with checked call reference; "
