@@ -89,3 +89,25 @@ Useful negative results preserved:
 
 Complete regression, sanitizer, relocated production-package and hosted results
 remain to be appended before engineering qualification.
+
+The matching Debug/ASan+UBSan source-pattern scope at the same implementation
+head also passed **4/4**, zero skips,154.13 seconds. Both Release and sanitizer
+phase tests executed69 checks with zero failures, including successful correctly
+paired typed publication after refusal controls. The sanitizer connected runner
+required heap-buffer-overflow attribution to the actual requested DSO's local
+generated leaf (not a separately recompiled copy), plus original-host ASan evidence.
+This also exercised1x1 and64x64 source requests after the observed import fix.
+
+Initial focused JUnit identities (retained outside Git):
+
+| Profile | SHA256 of `source-pattern-qualified.xml` |
+| --- | --- |
+| Release | `210dc7385a5e3463fe9b5ff839681e4681455663aff9c1d0579ccf5e8f25e541` |
+| Debug ASan+UBSan | `5ebb63ea69c8c148dae0868a76a8002047b3097ac6c02dc6539c952199ec6bb6` |
+
+All28 retained NVVMsm89/ROCDLgfx1150 single and fused-pair issuer artifacts are
+byte-identical between the canonical baseline and integrated build. This is
+compile-artifact regression evidence only, not new physical GPU qualification.
+The [independent static review](source-pattern-adversarial-review-v1.md) accepts
+the exact core and connected test design while explicitly separating its static
+verdict from these integration-owned execution results.
