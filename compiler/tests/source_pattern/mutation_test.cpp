@@ -199,6 +199,92 @@ int main() {
       }
       check(refused, "private input factory refuses a different entry from the same source");
     }
+    {
+      // Create every source, bundle and helper/publication stage before either
+      // admission. A generic CWD/directory-change refusal is not evidence that
+      // the typed publication boundary rejects a cross-wired compilation.
+      Fixture a_fixture("publish-A"), b_fixture("publish-B");
+      const auto tiles_output = a_fixture.outputs->path() / "other-tiles-executable";
+      dr::SourcePatternBundle a_bundle(a_fixture.output), b_bundle(b_fixture.output), tiles_bundle(tiles_output);
+      dr::Staging a_stage(a_fixture.outputs->path()), b_stage(b_fixture.outputs->path()),
+          tiles_stage(a_fixture.outputs->path());
+      for (const auto *stage : {&a_stage, &b_stage, &tiles_stage}) {
+        dr::write(stage->path / "host.ll", "");
+        dr::write(stage->path / "result", "");
+      }
+      auto a = a_fixture.admit(installation), b = b_fixture.admit(installation);
+      if (!a || !b) throw std::runtime_error(a.error + b.error);
+      auto a_instance = dr::SourcePatternInstance::issue(installation, a_bundle, *a.evidence,
+          "pipeline", cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None, {3, 5});
+      auto b_instance = dr::SourcePatternInstance::issue(installation, b_bundle, *b.evidence,
+          "pipeline", cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None, {3, 5});
+      auto tiles_instance = dr::SourcePatternInstance::issue(installation, tiles_bundle, *a.evidence,
+          "pipeline", cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None, {5, 3});
+      auto inputs = a_instance.compilerInputs(a_stage.path / "helper", *a.evidence);
+      auto compiled = cg::compileExperimentalRegionToLLVM(*a.evidence, inputs,
+          cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None);
+      if (!compiled) throw std::runtime_error(compiled.error);
+      auto b_inputs = b_instance.compilerInputs(b_stage.path / "helper", *b.evidence);
+      auto b_compiled = cg::compileExperimentalRegionToLLVM(*b.evidence, b_inputs,
+          cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None);
+      auto tiles_inputs = tiles_instance.compilerInputs(tiles_stage.path / "helper", *a.evidence);
+      auto tiles_compiled = cg::compileExperimentalRegionToLLVM(*a.evidence, tiles_inputs,
+          cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None);
+      if (!b_compiled || !tiles_compiled) throw std::runtime_error(b_compiled.error + tiles_compiled.error);
+      a_instance.verifyCompilation(*compiled.compilation);
+      b_instance.verifyCompilation(*b_compiled.compilation);
+      tiles_instance.verifyCompilation(*tiles_compiled.compilation);
+      check(true, "all three independent instance/compilation pairs satisfy positive typed controls");
+      const auto refuse_publication = [&](const dr::Staging &stage, const fs::path &output,
+          const cg::ExperimentalLLVMCompilation &compilation,
+          const dr::SourcePatternInstance &instance, const char *label) {
+        bool refused = false;
+        std::string error;
+        try { dr::compileSourcePatternAndPublish(installation, stage, output, compilation, instance); }
+        catch (const std::exception &failure) { error = failure.what(); refused = true; }
+        check(refused && error.find("source-pattern") != std::string::npos && !fs::exists(output) &&
+                  read(stage.path / "host.ll").empty() && read(stage.path / "result").empty(),
+              std::string("typed publisher refuses before native linkage: ") + label + ": " + error);
+      };
+      refuse_publication(b_stage, b_fixture.output, *compiled.compilation, b_instance,
+                          "A compilation with B physical-source instance");
+      refuse_publication(tiles_stage, tiles_output, *compiled.compilation, tiles_instance,
+                          "A compilation with same-source different-tile instance");
+      auto altered = *compiled.compilation;
+      altered.llvm_ir += "\n; caller-substituted but well-formed emitted LLVM\n";
+      refuse_publication(a_stage, a_fixture.output, altered, a_instance,
+                          "same instance but changed emitted LLVM bytes");
+      auto other_installation = installation;
+      bool installation_refused = false;
+      std::string installation_error;
+      try {
+        dr::compileSourcePatternAndPublish(other_installation, a_stage, a_fixture.output,
+                                          *compiled.compilation, a_instance);
+      } catch (const std::exception &failure) { installation_refused = true; installation_error = failure.what(); }
+      check(installation_refused && installation_error.find("installation differs from its issuance owner") != std::string::npos &&
+                !fs::exists(a_fixture.output) && read(a_stage.path / "host.ll").empty() && read(a_stage.path / "result").empty(),
+            "typed publisher refuses a byte-identical but different Installation object before linkage");
+      const auto wrong_output = a_fixture.outputs->path() / "unowned-output";
+      bool output_refused = false;
+      std::string output_error;
+      try {
+        dr::compileSourcePatternAndPublish(installation, a_stage, wrong_output,
+                                          *compiled.compilation, a_instance);
+      } catch (const std::exception &failure) { output_refused = true; output_error = failure.what(); }
+      check(output_refused && output_error.find("output differs from its owned private bundle association") != std::string::npos &&
+                !fs::exists(wrong_output) && read(a_stage.path / "host.ll").empty() && read(a_stage.path / "result").empty(),
+            "typed publisher refuses a different output/bundle association before linkage");
+      dr::compileSourcePatternAndPublish(installation, a_stage, a_fixture.output,
+                                        *compiled.compilation, a_instance);
+      check(fs::is_regular_file(a_fixture.output), "exact typed compilation/instance publishes its executable");
+      support::ProcessRequestV1 request;
+      request.argv = {a_fixture.output.string()};
+      request.working_directory = a_fixture.outputs->path();
+      request.environment = support::compiler_environment_sanitization_v1();
+      const auto executed = support::run_process_v1(request);
+      check(executed.launched && executed.exit_code == 0 && executed.stderr_text.empty(),
+            "exact typed publication executes the original source's independent 1x1 expectation");
+    }
     for (const auto phase : {0, 1, 2}) {
       const auto source_label = "main-after-phase-" + std::to_string(phase);
       reject(installation, source_label.c_str(), [&](auto &hooks, auto &fixture, bool &invoked) {

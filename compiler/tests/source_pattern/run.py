@@ -217,7 +217,7 @@ def main():
         root = Path(tempfile.mkdtemp(prefix="mdslc-source-pattern-"))
     source = root / "inputs"
     source.mkdir()
-    for name in ("connected.mdsl", "same_value.mdsl", "rhs.mdsl", "math_helper.h"):
+    for name in ("connected.mdsl", "same_value.mdsl", "rhs.mdsl", "forwarding.mdsl", "math_helper.h"):
         shutil.copyfile(Path(__file__).resolve().parent / name, source / name)
     environment = dict(os.environ, LC_ALL="C", PYTHONDONTWRITEBYTECODE="1")
     environment["ASAN_OPTIONS"] = "halt_on_error=1:detect_leaks=0:exitcode=1:symbolize=1"
@@ -383,9 +383,25 @@ def main():
             compile(forwarded, optimization="publication-read-forwarding")
             validate_bundle(forwarded, (3, 5), "source_pattern_pipeline", "publication-read-forwarding", args.sanitized, invoke)
             semantic_summary(invoke([forwarded]).stdout, args.sanitized)
-            symbols = invoke(["nm", "--undefined-only", "--demangle", forwarded]).stdout
-            if "closed_host_v1::SessionAbiV2::readForwarded" not in symbols:
-                raise ValueError("source tiles silently disconnected explicitly selected forwarding")
+            # Distinct MAY-alias D and C cannot establish a forwarding fact.
+            # Keep their same-source none/forwarding semantic parity without
+            # demanding an ineligible transformation. This separate eligible
+            # fixture must genuinely connect readForwarded only when requested.
+            forwarding_outputs = []
+            for optimization in ("none", "publication-read-forwarding"):
+                eligible = root / ("eligible-forwarding-" + optimization)
+                compile(eligible, "forwarding.mdsl", "source_pattern_forwarding", (3, 5), optimization)
+                validate_bundle(eligible, (3, 5), "source_pattern_forwarding", optimization, args.sanitized, invoke)
+                output = invoke([eligible]).stdout
+                match = re.fullmatch(r"Source pattern eligible forwarding: 8 cases; (\d+) checks; 0 failures\n", output)
+                if not match or int(match[1]) < 1000:
+                    raise ValueError("eligible forwarding did not execute its independent source/guard oracle")
+                symbols = invoke(["nm", "--undefined-only", "--demangle", eligible]).stdout
+                if ("closed_host_v1::SessionAbiV2::readForwarded" in symbols) != (optimization == "publication-read-forwarding"):
+                    raise ValueError("eligible source forwarding did not match its checked call discriminator")
+                forwarding_outputs.append(output)
+            if forwarding_outputs[0] != forwarding_outputs[1]:
+                raise ValueError("eligible same-source forwarding altered source outcomes/frontiers")
             for candidate in ("automatic", "generated-strict"):
                 stock = root / ("unrequested-" + candidate)
                 invoke([driver, source / "connected.mdsl", "--region", "source_pattern_pipeline",

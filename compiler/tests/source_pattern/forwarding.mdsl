@@ -1,0 +1,79 @@
+// A genuinely eligible same-descriptor publication/read pair, distinct from
+// the MAY-alias different-descriptor control in connected.mdsl.
+#include "math_helper.h"
+#include <algorithm>
+#include <bit>
+#include <cstdint>
+#include <cstdio>
+#include <vector>
+namespace md = matcore::mdsl;
+MATCORE_REGION
+md::Result source_pattern_forwarding(md::Storage A, md::Storage B, md::Storage C,
+    md::Storage E, md::Shape n, md::Shape requested_rows) noexcept {
+  auto a = md::read(A, n, n);
+  auto b = md::read(B, n, n);
+  auto first = source_pattern_math::product(a, b);
+  md::publish(first, C);
+  md::observe(C);
+  auto late = md::read(C, requested_rows, n);
+  auto second = source_pattern_math::product(late, late);
+  md::publish(second, E);
+  md::observe(E);
+  return md::complete();
+}
+std::vector<float> multiply(const std::vector<float> &a, const std::vector<float> &b, unsigned n) {
+  std::vector<float> c(n * n);
+  for (unsigned i = 0; i < n; ++i)
+    for (unsigned j = 0; j < n; ++j) {
+      volatile float sum = 0;
+      for (unsigned q = 0; q < n; ++q) {
+        volatile float term = a[i * n + q] * b[q * n + j];
+        sum = sum + term;
+      }
+      c[i * n + j] = sum;
+    }
+  return c;
+}
+int main() {
+  unsigned checks = 0, failures = 0, cases = 0;
+  const auto check = [&](bool okay) { ++checks; failures += !okay; };
+  const auto same = [](float a, float b) {
+    return std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b);
+  };
+  for (unsigned n : {3, 5, 7, 11}) {
+    std::vector<float> a(n * n), b(n * n), c(n * n, 19), e(n * n, -29);
+    for (unsigned i = 0; i < a.size(); ++i) {
+      a[i] = float(int((i * 7 + 1) % 11) - 5);
+      b[i] = float(int((i * 3 + 2) % 13) - 6);
+    }
+    const auto first = multiply(a, b, n), second = multiply(first, first, n);
+    for (bool fail : {false, true}) {
+      ++cases;
+      std::fill(c.begin(), c.end(), 19);
+      std::fill(e.begin(), e.end(), -29);
+      auto result = source_pattern_forwarding({a.data(), n, n, a.size()}, {b.data(), n, n, b.size()},
+          {c.data(), n, n, c.size(), md::Access::read_write},
+          {e.data(), n, n, e.size(), md::Access::read_write}, n, fail ? n + 1 : n);
+      check(bool(result) == !fail && result.publication_count() == (fail ? 1U : 2U) &&
+            result.observation_count() == (fail ? 1U : 2U));
+      auto first_observation = result.observation(0);
+      check(first_observation.valid());
+      if (fail)
+        check(result.error() == md::Error::shape_mismatch && result.failed_frontier() == 6 &&
+              result.completed_frontier() == 5 && result.completed_effect_frontier() == 5 &&
+              result.failure_location().file && result.failure_location().line && result.failure_location().column);
+      else
+        check(result.completed_frontier() == 10 && result.completed_effect_frontier() == 9);
+      auto second_observation = result.observation(1);
+      if (!fail) check(second_observation.valid());
+      for (unsigned i = 0; i < c.size(); ++i) {
+        check(same(c[i], first[i]));
+        check(first_observation.valid() && same(first_observation.data()[i], first[i]));
+        check(same(e[i], fail ? -29.0F : second[i]));
+        if (!fail) check(second_observation.valid() && same(second_observation.data()[i], second[i]));
+      }
+    }
+  }
+  std::printf("Source pattern eligible forwarding: %u cases; %u checks; %u failures\n", cases, checks, failures);
+  return failures ? 1 : 0;
+}

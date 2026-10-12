@@ -44,3 +44,25 @@ parameters under `-Werror`. The corrected narrow check uses the coherent MLIR
 21.1.8 prefix and SYSTEM includes, matching CMake. The source-context inspection
 identity intentionally retains its existing `sha256:` prefix rather than
 normalizing the production representation to satisfy a test.
+
+## First physical integration feedback and follow-up
+
+The integration owner reported the first Release run passing the refusal,
+synthetic runner and deterministic phase tests. The connected test reached real
+execution but failed its forwarding call discriminator: the original fixture's
+late `D` is only MAY-alias with published `C`, so that transformation is not
+legally eligible. The correction preserves that fixture's none/forwarding math
+parity and adds a separate same-descriptor `forwarding.mdsl` positive with an
+exact checked-call discriminator and requested-shape failure-prefix oracle.
+This fixes the test premise; it does not weaken the production legality rule.
+
+Core `171456c` adds typed source publication. New controls precreate all sources,
+bundles and stages before admission and require specific source-pattern pairing/
+digest refusals before stage IR/result changes. They cross-wire compiled A with a
+different-source B and a same-source different-tile B, and modify otherwise
+well-formed emitted LLVM bytes. Exact paired publication must separately execute.
+These follow-up physical controls remain for the integration owner to run.
+Core `e026f15` additionally owns Installation identity and the bundle-associated
+output path. Tests refuse a byte-identical Installation copy and an unassociated
+output, with exact diagnostics and unchanged empty publication stages. All three
+legitimate source/tile instances first compile and validate their own pairing.

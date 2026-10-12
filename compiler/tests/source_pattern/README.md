@@ -20,6 +20,10 @@ FP/errno restoration; zero M/N/K; and INT64_MAX empty/checked-overflow controls.
 rectangular second product, with shifted late aliases and retained failure prefix.
 The runner also executes explicitly selected publication forwarding and retains
 stock default/automatic ownership when no source-time request is made.
+`forwarding.mdsl` is a separate genuinely eligible same-descriptor control:
+only its requested optimized route must reference checked `readForwarded`.
+The different-descriptor MAY-alias control retains semantic parity without
+claiming that an unproved alias can authorize forwarding.
 
 The refusal lane checks canonical parameters, unsupported candidate/optimization/
 object/program combinations, untrusted IR/manifest option refusals, no-overwrite
@@ -34,6 +38,13 @@ prepopulated stale manifests and a bundle directory/symlink race. The private
 consumer is independently exercised with another authentic source, another entry
 from the same source, mismatched candidate/optimization, worker contract, candidate
 bytes, and installation sanitizer profile. These are falsifiers, not input APIs.
+The final typed publisher additionally rejects compilation A with a different
+source instance B, A with a same-source different-tile instance, and modified
+compiler-produced LLVM bytes before native compilation/linkage; the exact paired
+compilation/instance is a separately executing positive control.
+Byte-identical copies of the Installation owner and a different output/bundle
+association must also fail specifically before linkage. Each legitimate instance
+first passes its own compilation/pairing check, with all directories precreated.
 
 In a real ASan installation, `raw_asan_probe.cpp` deliberately violates the raw
 leaf capacity precondition **outside the supported source-caller contract**. It
