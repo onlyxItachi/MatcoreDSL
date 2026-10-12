@@ -83,8 +83,9 @@ The explicit internal build selection is:
 This selects the existing generated-strict primitive in the build's private
 candidate library. Default scalar and existing ISA/native/provider/GPU routes
 are unchanged. The public source driver does not accept arbitrary schedules or
-select tiles automatically. Production issue-at-build-time remains: source-time
-on-demand specialization is still a subsequent artifact-lifecycle boundary.
+select tiles automatically. At the PR91 checkpoint, production issuance remained
+build-time; the now-qualified [source-time continuation](SOURCE_TIME_GEMM_PATTERN_V1.md)
+adds a separate bounded artifact lifecycle, not arbitrary schedule import or tuning.
 
 ## Acceptance and falsification
 

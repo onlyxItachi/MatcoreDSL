@@ -1,7 +1,9 @@
 # Source-time output pattern integration evidence v1
 
-Status: work in progress. This record distinguishes baseline checks from new
-implementation qualification; pending work is not a passing result.
+Status: historical implementation/qualification log. Its intermediate pending,
+failed and cancelled results are preserved below, not promoted to passing evidence.
+The [final qualified checkpoint](source-pattern-qualification-checkpoint-v1.md)
+records completed gates, exact premerge/merge identities and independent review.
 
 ## Authenticated start (2026-10-12)
 
