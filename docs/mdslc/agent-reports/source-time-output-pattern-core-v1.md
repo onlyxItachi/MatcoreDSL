@@ -118,3 +118,36 @@ standard ASan diagnostic import is now admitted only for the sanitizer
 profile; no arbitrary ASan prefix is accepted. The diagnostic artifacts are
 under `/tmp/mdslc-pattern-asan-imports-aIxcuC`. This was object/import evidence,
 not raw-leaf execution, final source execution or complete qualification.
+
+## Hosted ARM closure failure and scoped link-state correction
+
+On PR #93 head `3c581c2989d563ee250288d27d815bdf0fd39d06`, hosted ARM run
+`38218341835` failed the new connected, phase-mutation and producer-inaccessible
+source-pattern tests in scalar, row-contiguous and output-tiled jobs. Native
+build/authentication and the original ARM source routes passed. The new route
+failed closed before execution at exact candidate dependency equality, not at
+the source numerical oracle. Failed bundles were cleaned; the uploaded witness
+and test logs do not contain the failed specialized DSOs, so their exact ARM
+expected/observed dependency sets were not independently observed at this point.
+
+The new link command forced Runtime retention, then globally enabled
+`--as-needed` for all trailing libraries. Stock CMake linking retained the
+toolchain's original policy. The ARM FP adapter uses FPCR/FPSR assembly rather
+than x64's `fegetenv`/`fesetenv` libm calls, exposing otherwise-unused libraries
+to that policy difference. This is a source-backed explanation, not a claim
+that a particular ARM dependency set has already been recovered.
+
+A serial native Clang 21/GNU ld empty-DSO mechanism probe under
+`/tmp/mdslc-needed-state-xhypY3` observed stock and scoped-fixed dependencies
+identically: Runtime fixture, `libm.so.6`, `libstdc++.so.6`, `libgcc_s.so.1` and
+`libc.so.6`. The old reset retained only Runtime. A scoped fixed link with
+intentionally incoming `--as-needed` also retained only Runtime, proving that
+push/pop restores incoming policy rather than imposing global no-as-needed.
+These are ELF linkage controls, not physical source/kernel qualification.
+
+The correction brackets Runtime alone with `--push-state --no-as-needed ...
+--pop-state`. Exact `stock DT_NEEDED union Runtime SONAME` equality is unchanged;
+no dependency allowlist or failure gate is relaxed. A mismatch now reports
+sorted expected and observed sets. The registered empty-DSO mechanism test
+preserves both incoming-policy controls. Hosted ARM requalification is required
+to establish the actual target outcome after this correction.

@@ -87,5 +87,11 @@ target_sources(matcore_region_driver_support PRIVATE
   "${CMAKE_CURRENT_BINARY_DIR}/region_driver_identity.h")
 install(TARGETS mdslc-region RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 if(BUILD_TESTING)
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  add_test(NAME toolchain.closed_candidate_link_state
+    COMMAND "${Python3_EXECUTABLE}"
+      "${region_compiler_dir}/tests/source_pattern/link_state_test.py"
+      --cxx "${MDSLC_CLANGXX_EXECUTABLE}" --linker "${region_linker}")
+  set_tests_properties(toolchain.closed_candidate_link_state PROPERTIES TIMEOUT 60)
   add_subdirectory("../../tests/program" "${CMAKE_CURRENT_BINARY_DIR}/program-tests")
 endif()

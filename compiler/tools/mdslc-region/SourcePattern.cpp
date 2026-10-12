@@ -101,6 +101,14 @@ DynamicInfo dynamicInfo(const ElfObject &elf, bool issued_private = false) {
 }
 
 using Exports = std::map<std::string, std::tuple<unsigned, unsigned, unsigned>>;
+std::string dependencyNames(const std::set<std::string> &names) {
+  std::string result = "[";
+  for (const auto &name : names) {
+    if (result.size() != 1) result += ", ";
+    result += name;
+  }
+  return result + "]";
+}
 Exports exportSet(const ElfObject &elf) {
   Exports result;
   for (const auto &symbol : elf.getDynamicSymbolIterators()) {
@@ -209,7 +217,8 @@ void verifyCandidate(const Artifact &issued, const Installation &installation,
   if (runtime_soname.empty()) reject("canonical Runtime lacks its pinned SONAME");
   allowed.insert(runtime_soname);
   if (dynamic.needed != allowed || dynamic.needed.contains(stock_dynamic.soname))
-    reject("source-pattern DSO dependencies differ from the pinned runtime/adapter closure");
+    reject("source-pattern DSO dependencies differ from the pinned runtime/adapter closure: expected=" +
+        dependencyNames(allowed) + "; observed=" + dependencyNames(dynamic.needed));
   std::set<std::string> leaves{candidate::kStrictGemmSymbolV1, candidate::kStrictGemmCInterfaceV1};
   for (const auto &symbol : elf.symbols()) {
     auto name = symbol.getName();
@@ -423,8 +432,12 @@ SourcePatternInstance::SourcePatternInstance(const Installation &installation,
       "-shared", "-o", dso_path.string(), "-Xlinker", "--whole-archive", kit_.path.string(),
       "-Xlinker", "--no-whole-archive", object_path.string(), "-Xlinker", "-Bsymbolic",
       "-Xlinker", "--version-script=" + exports_.path.string(), "-Xlinker", "-soname",
-      "-Xlinker", soname_, "-Xlinker", "--no-as-needed", installation.runtime.path.string(),
-      "-Xlinker", "--as-needed", "-lm", "-pthread"};
+      "-Xlinker", soname_, "-Xlinker", "--push-state", "-Xlinker", "--no-as-needed",
+      installation.runtime.path.string(), "-Xlinker", "--pop-state", "-lm", "-pthread"};
+  // Retain Runtime as an explicit owner without leaking a new as-needed
+  // policy over -lm, accelerators or Clang's implicit C++/unwind libraries.
+  // In particular the ARM FP scope uses FPCR/FPSR assembly, not libm calls;
+  // the trailing dependency policy must still match the pinned stock DSO.
   if (!REGION_SANITIZED) {
     process.argv.insert(process.argv.end(), {"-Xlinker", "--no-undefined"});
   }
