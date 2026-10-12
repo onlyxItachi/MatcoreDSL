@@ -48,3 +48,44 @@ Retained local artifact identities before implementation integration:
 
 These are same-environment regression controls, not portable release digests or
 proof of performance. New-source-path qualification remains pending below.
+
+## Incremental implementation qualification
+
+At implementation/test head `01362399b31cddb7814e928ed72b8090978564a2`,
+Release source-pattern scope passed **4/4**, zero skips,135.64 seconds:
+`driver.source_pattern.connected`, `refusals`, `runner`, `phase_mutations`.
+The independent connected oracle executed **68 cases / 111292 checks / zero
+failures for each of 3x5,5x3,1x1,64x64**. It also exercises rhs-carried and
+same-Value operands, eligible forwarding versus different-descriptor MAY-alias
+reads, no-request stock routes, artifact identity and no-clobber publication.
+Earlier integrated original-pattern/ownership regression scope passed35/35,
+zero skips,45.01 seconds. These are incremental checks, not yet complete-suite
+or hosted qualification.
+
+The original runtime, stock candidate DSO, default leaf object and LLVM retain
+all four baseline hashes above after integration. Manual original two-GEMM
+source requests3x5 and5x3 both compiled and executed; the ASan3x5 control also
+executed. Those small controls do not replace the independent full runner.
+
+Useful negative results preserved:
+
+- Review found that a source-bound DSO could be cross-wired into compilation of
+  another authenticated source. The compiler now checks the exact original
+  source/entry seal, policy, optimization, bytes and worker/sanitizer profile.
+- Review then found correctly compiled A could be passed to a raw final linker
+  with instanceB. Typed publication now checks the immutable exact instance,
+  produced LLVM and frozen input snapshots, original Installation owner and
+  output/bundle association before native linkage. No generic IR importer or
+  new public authority was added.
+- Initial source-ASan64x64 refused `__asan_report_load_n`. The existing issuer's
+  exact diagnostic object demonstrated that one additional compiler-rt reporting
+  import; the sanitized-only closed list was corrected, not replaced by a prefix
+  allowance. The refusal produced no executable or retained failed bundle.
+- The first connected runner incorrectly demanded forwarding of a read through
+  descriptorD following publication through descriptorC. MAY-alias is not
+  identity, so this was a test defect. The corrected test preserves that case
+  and adds a genuinely eligible same-C read with checked shape-failure frontiers
+  and none/forwarding call discriminators. Production forwarding was unchanged.
+
+Complete regression, sanitizer, relocated production-package and hosted results
+remain to be appended before engineering qualification.
