@@ -67,6 +67,11 @@ class SourcePatternInstance;
 // compilation and again before atomic no-clobber publication.
 void compileAndPublish(const Installation &, const Staging &, const fs::path &,
     bool compile_only, const std::string &derived_ir,
-    const std::function<void()> &inputs_unchanged,
-    const SourcePatternInstance *source_pattern = nullptr);
+    const std::function<void()> &inputs_unchanged);
+// A per-source DSO can only be published with the authenticated compilation
+// which actually consumed that exact instance. The raw default helper above
+// cannot select or link a source-time candidate artifact.
+void compileSourcePatternAndPublish(const Installation &, const Staging &,
+    const fs::path &, const codegen::ExperimentalLLVMCompilation &,
+    const SourcePatternInstance &);
 } // namespace matcore::mdslc::driver

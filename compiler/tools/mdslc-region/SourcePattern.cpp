@@ -165,6 +165,7 @@ void verifyLeafObject(const Artifact &object, bool sanitized) {
   const std::set<std::string> sanitizer_imports{
       "__asan_init", "__asan_memset", "__asan_register_elf_globals",
       "__asan_report_load4", "__asan_report_load8", "__asan_report_store4",
+      "__asan_report_load_n",
       "__asan_version_mismatch_check_v8", "__start_asan_globals", "__stop_asan_globals"};
   for (const auto &symbol : elf.symbols()) {
     auto flags = symbol.getFlags();
@@ -470,6 +471,13 @@ codegen::ExperimentalCompilerInputs SourcePatternInstance::compilerInputs(const 
           compilation_binding_->optimization_, error))
     reject(error.empty() ? "source-pattern compilation binding is missing" : error);
   return inputs;
+}
+void SourcePatternInstance::verifyCompilation(const codegen::ExperimentalLLVMCompilation &compilation) const {
+  unchanged();
+  std::string error;
+  if (!compilation.source_pattern_compilation ||
+      !compilation.source_pattern_compilation->matches(compilation, compilation_binding_, error))
+    reject(error.empty() ? "source-pattern publication lacks its compiler-produced pairing" : error);
 }
 void SourcePatternInstance::verifyExecutable(const Artifact &artifact) const {
   auto parsed = llvm::object::ObjectFile::createObjectFile(

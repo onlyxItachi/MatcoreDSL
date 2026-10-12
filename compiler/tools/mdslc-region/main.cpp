@@ -95,8 +95,12 @@ int run(int argc, char **argv) {
     std::string error;
     if (!compilation.compilation->inputsUnchanged(error)) reject(error);
   };
-  compileAndPublish(installation, staging, args.output, args.compile_only,
-      compilation.compilation->llvm_ir, unchanged, source_pattern ? &*source_pattern : nullptr);
+  if (source_pattern)
+    compileSourcePatternAndPublish(installation, staging, args.output,
+        *compilation.compilation, *source_pattern);
+  else
+    compileAndPublish(installation, staging, args.output, args.compile_only,
+        compilation.compilation->llvm_ir, unchanged);
   if (bundle) bundle->retain();
   return 0;
 }

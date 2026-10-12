@@ -204,7 +204,7 @@ codegen::ExperimentalCompilerInputs Installation::compilerInputs(const fs::path 
   return {REGION_CLANG, REGION_RESOURCE_DIR, installed.include, installed.header,
           staging, bool(REGION_SANITIZED), symbolArtifacts()};
 }
-void compileAndPublish(const Installation &installation, const Staging &staging,
+static void compileAndPublishImpl(const Installation &installation, const Staging &staging,
     const fs::path &output, bool compile_only, const std::string &derived_ir,
     const std::function<void()> &inputs_unchanged,
     const SourcePatternInstance *source_pattern) {
@@ -268,5 +268,17 @@ void compileAndPublish(const Installation &installation, const Staging &staging,
   unchanged();
   final.unchanged();
   fs::create_hard_link(binary, output);
+}
+void compileAndPublish(const Installation &installation, const Staging &staging,
+    const fs::path &output, bool compile_only, const std::string &derived_ir,
+    const std::function<void()> &inputs_unchanged) {
+  compileAndPublishImpl(installation, staging, output, compile_only, derived_ir, inputs_unchanged, nullptr);
+}
+void compileSourcePatternAndPublish(const Installation &installation, const Staging &staging,
+    const fs::path &output, const codegen::ExperimentalLLVMCompilation &compilation,
+    const SourcePatternInstance &source_pattern) {
+  auto unchanged = [&] { source_pattern.verifyCompilation(compilation); };
+  unchanged();
+  compileAndPublishImpl(installation, staging, output, false, compilation.llvm_ir, unchanged, &source_pattern);
 }
 } // namespace matcore::mdslc::driver

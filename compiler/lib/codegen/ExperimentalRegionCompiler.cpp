@@ -73,6 +73,26 @@ bool SourcePatternCompilationBinding::matches(
   return true;
 }
 
+SourcePatternCompiledBinding::SourcePatternCompiledBinding(
+    std::shared_ptr<const SourcePatternCompilationBinding> source,
+    const ExperimentalLLVMCompilation &compilation)
+    : source_(std::move(source)), host_(compilation.host), helper_(compilation.helper),
+      llvm_sha256_(llvm::toHex(llvm::SHA256::hash(
+          llvm::arrayRefFromStringRef(compilation.llvm_ir)), true)) {}
+
+bool SourcePatternCompiledBinding::matches(const ExperimentalLLVMCompilation &compilation,
+    const std::shared_ptr<const SourcePatternCompilationBinding> &source,
+    std::string &error) const {
+  if (!source_ || source_.get() != source.get() ||
+      !host_ || !helper_ || compilation.host.get() != host_.get() ||
+      compilation.helper.get() != helper_.get() ||
+      llvm::toHex(llvm::SHA256::hash(llvm::arrayRefFromStringRef(compilation.llvm_ir)), true) != llvm_sha256_) {
+    error = "source-pattern publication differs from its compiler-produced source/instance/LLVM pairing";
+    return false;
+  }
+  return compilation.inputsUnchanged(error);
+}
+
 bool ExperimentalLLVMCompilation::inputsUnchanged(std::string &error) const {
   if (!host || !helper) {
     error = "compiled region is missing its immutable compiler-input closure";
@@ -197,13 +217,21 @@ ExperimentalLLVMCompilationResult compileExperimentalRegionToLLVM(
     const frontend::AuthenticatedClosedRegionEvidence &evidence,
     const ExperimentalCompilerInputs &inputs, ClosedCpuPolicy policy,
     ClosedHostOptimization optimization) {
-  return compileRegion(evidence, inputs, policy, {}, optimization);
+  auto result = compileRegion(evidence, inputs, policy, {}, optimization);
+  if (result && inputs.source_pattern_binding)
+    result.compilation->source_pattern_compilation = std::shared_ptr<const SourcePatternCompiledBinding>(
+        new SourcePatternCompiledBinding(inputs.source_pattern_binding, *result.compilation));
+  return result;
 }
 
 ExperimentalLLVMCompilationResult compileExperimentalRegionToLLVMForTesting(
     const frontend::AuthenticatedClosedRegionEvidence &evidence,
     const ExperimentalCompilerInputs &inputs, ClosedCpuPolicy policy,
     const std::function<void()> &after_staging, ClosedHostOptimization optimization) {
-  return compileRegion(evidence, inputs, policy, after_staging, optimization);
+  auto result = compileRegion(evidence, inputs, policy, after_staging, optimization);
+  if (result && inputs.source_pattern_binding)
+    result.compilation->source_pattern_compilation = std::shared_ptr<const SourcePatternCompiledBinding>(
+        new SourcePatternCompiledBinding(inputs.source_pattern_binding, *result.compilation));
+  return result;
 }
 } // namespace matcore::mdslc::codegen

@@ -49,6 +49,7 @@ public:
       const frontend::AuthenticatedClosedRegionEvidence &) const;
   const fs::path &candidatePath() const { return candidates_.path; }
   void unchanged() const;
+  void verifyCompilation(const codegen::ExperimentalLLVMCompilation &) const;
   void verifyExecutable(const Artifact &) const;
 private:
   SourcePatternInstance(const Installation &, SourcePatternBundle &,

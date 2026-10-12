@@ -10,6 +10,8 @@ namespace matcore::mdslc::driver { class SourcePatternInstance; }
 namespace matcore::mdslc::codegen {
 
 struct ExperimentalCompilerInputs;
+struct ExperimentalLLVMCompilation;
+struct ExperimentalLLVMCompilationResult;
 // Private immutable per-source artifact binding. There is no public/serialized
 // constructor: only the source driver's closed issuer can pair a genuine
 // authenticated source seal with its freshly issued private candidate bytes.
@@ -29,6 +31,28 @@ private:
   bool requires_worker_threads_;
   bool address_undefined_sanitizers_;
   friend class matcore::mdslc::driver::SourcePatternInstance;
+};
+
+// Special-case source-pattern publication bookkeeping, not an IR certificate
+// or importer. Only a successful authenticated region compilation can retain
+// this immutable pairing of issuance, produced LLVM bytes and frozen inputs.
+class SourcePatternCompiledBinding {
+public:
+  bool matches(const ExperimentalLLVMCompilation &,
+      const std::shared_ptr<const SourcePatternCompilationBinding> &,
+      std::string &error) const;
+private:
+  SourcePatternCompiledBinding(std::shared_ptr<const SourcePatternCompilationBinding>,
+      const ExperimentalLLVMCompilation &);
+  std::shared_ptr<const SourcePatternCompilationBinding> source_;
+  std::shared_ptr<const frontend::closed_region_host::HostInputSnapshot> host_, helper_;
+  std::string llvm_sha256_;
+  friend ExperimentalLLVMCompilationResult compileExperimentalRegionToLLVM(
+      const frontend::AuthenticatedClosedRegionEvidence &, const ExperimentalCompilerInputs &,
+      ClosedCpuPolicy, ClosedHostOptimization);
+  friend ExperimentalLLVMCompilationResult compileExperimentalRegionToLLVMForTesting(
+      const frontend::AuthenticatedClosedRegionEvidence &, const ExperimentalCompilerInputs &,
+      ClosedCpuPolicy, const std::function<void()> &, ClosedHostOptimization);
 };
 
 // Compiler installation/build inputs, never source or serialized authority.
@@ -51,6 +75,7 @@ struct ExperimentalLLVMCompilation {
   std::string llvm_ir;
   std::shared_ptr<const frontend::closed_region_host::HostInputSnapshot> host;
   std::shared_ptr<const frontend::closed_region_host::HostInputSnapshot> helper;
+  std::shared_ptr<const SourcePatternCompiledBinding> source_pattern_compilation = {};
   bool inputsUnchanged(std::string &error) const;
 };
 struct ExperimentalLLVMCompilationResult {

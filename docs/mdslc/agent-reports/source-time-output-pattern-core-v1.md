@@ -44,6 +44,16 @@ substituted same-ABI DSO or worker-contract substitution; an editable hash or
 inspection manifest does not grant execution authority. Program composition
 also refuses this binding.
 
+Successful source-pattern region compilation additionally retains immutable
+special-case publication bookkeeping: the exact source issuance binding,
+compiler-produced LLVM digest and frozen host/helper snapshot pointers. Typed
+source-pattern publication checks this pairing before linking and at every
+recheck. Another instance, swapped compiled source/helper or modified LLVM
+result is rejected. The raw/default publication helper has no per-source DSO
+selection parameter. This is not a general IR certificate/importer and does
+not expand the existing trusted in-process default compiler API into a hostile
+caller boundary.
+
 ## Artifact lifecycle
 
 The new `OUTPUT.mdslc-private` bundle is created exclusively with mode `0700`
@@ -84,3 +94,24 @@ this core agent before handoff. The integration owner owns the build lock,
 compilation, independent tests, installed-consumer tests and full regression
 qualification. No performance or expanded-target claim follows from this
 implementation.
+
+## Subsequent bounded core corrections
+
+Independent static review identified a cross-wired publication counterexample:
+correctly compiled source/instance A could be passed to the old raw publisher
+with instance B. The source-specific typed publisher and immutable produced-IR
+pairing above close that counterexample and separately reject LLVM result
+mutation. The reviewer accepted that narrow shape statically; this is not a
+substitute for the direct negative publication tests.
+
+The integration owner reported preliminary ASan source execution of 3x5 passed
+but 64x64 refused without publication at the closed leaf import diagnostic for
+`__asan_report_load_n`. This agent re-issued the existing built ASan issuer's
+64x64 primitive and compiled only that diagnostic object with the source
+route's exact `-O2 -fPIC -ffp-contract=off -fsanitize=address` flags. LLVM nm
+observed the previously admitted init/memset/register/load4/load8/version and
+weak start/stop globals, plus exactly `__asan_report_load_n`. That observed
+standard ASan diagnostic import is now admitted only for the sanitizer
+profile; no arbitrary ASan prefix is accepted. The diagnostic artifacts are
+under `/tmp/mdslc-pattern-asan-imports-aIxcuC`. This was object/import evidence,
+not raw-leaf execution, final source execution or complete qualification.
