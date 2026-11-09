@@ -92,6 +92,9 @@ bool kernelBody(gpu::GPUFuncOp function, StaticGemmShapeV1 shape, bool fill,
       function.getNumArguments() != (fill ? 1 : 3) ||
       function.getNumResults() || !llvm::hasSingleElement(function.getBody()))
     return reject(error, "outlined kernel signature differs");
+  for (unsigned i = 0; i != function.getNumArguments(); ++i)
+    if (!function.getArgAttrs(i).empty())
+      return reject(error, "outlined kernel acquired argument permissions");
   const auto local = function->getAttrOfType<DenseI32ArrayAttr>("known_block_size");
   const auto grid = function->getAttrOfType<DenseI32ArrayAttr>("known_grid_size");
   if (!function->hasAttr("gpu.kernel") || !local || !grid ||
@@ -216,14 +219,18 @@ std::optional<Linear> linear(Value value, Value reduction,
   if (!lhs || !rhs) return {};
   Linear result{};
   if (isa<spirv::IAddOp>(op)) {
-    for (unsigned i = 0; i != 4; ++i) result[i] = (*lhs)[i] + (*rhs)[i];
+    for (unsigned i = 0; i != 4; ++i) {
+      if (__builtin_add_overflow((*lhs)[i], (*rhs)[i], &result[i])) return {};
+    }
   } else {
     const auto constant = [](Linear candidate) {
       return candidate[1] == 0 && candidate[2] == 0 && candidate[3] == 0;
     };
     if (!constant(*lhs) && !constant(*rhs)) return {};
     if (!constant(*lhs)) std::swap(lhs, rhs);
-    for (unsigned i = 0; i != 4; ++i) result[i] = (*lhs)[0] * (*rhs)[i];
+    for (unsigned i = 0; i != 4; ++i) {
+      if (__builtin_mul_overflow((*lhs)[0], (*rhs)[i], &result[i])) return {};
+    }
   }
   return result;
 }
@@ -293,6 +300,17 @@ bool verifyStrictGemmOutlinedV1(mlir::ModuleOp module, StaticGemmShapeV1 shape,
   if (!validateStaticGemmShapeV1(shape, error)) return false;
   if (!module || failed(verify(module)) || module.getBody()->getOperations().size() != 3)
     return reject(error, "expected one host function and exactly two outlined modules");
+  bool extraAttributes = false;
+  module.walk([&](Operation *op) {
+    if (isa<gpu::GPUFuncOp>(op) || op->getParentOfType<gpu::GPUFuncOp>()) return;
+    for (auto attr : op->getDiscardableAttrDictionary()) {
+      auto name = attr.getName().strref();
+      if (op == module.getOperation() &&
+          (name == "gpu.container_module" || name == spirv::getTargetEnvAttrName())) continue;
+      extraAttributes = true;
+    }
+  });
+  if (extraAttributes) return reject(error, "outlined host/module acquired extra attributes");
   auto host = module.lookupSymbol<func::FuncOp>(cpu_candidate::kStrictGemmSymbolV1);
   auto fill = module.lookupSymbol<gpu::GPUModuleOp>(kEntryPointV1);
   auto gemm = module.lookupSymbol<gpu::GPUModuleOp>(std::string(kEntryPointV1) + "_0");
@@ -305,6 +323,9 @@ bool verifyStrictGemmOutlinedV1(mlir::ModuleOp module, StaticGemmShapeV1 shape,
       !llvm::hasSingleElement(fill.getOps<gpu::GPUFuncOp>()) ||
       !llvm::hasSingleElement(gemm.getOps<gpu::GPUFuncOp>()))
     return reject(error, "outlined static host/module signature differs");
+  for (unsigned i = 0; i != 3; ++i)
+    if (!host.getArgAttrs(i).empty())
+      return reject(error, "outlined host acquired argument permissions");
   SmallVector<gpu::LaunchFuncOp> launches;
   for (auto &op : host.getBody().front()) {
     if (auto launch = dyn_cast<gpu::LaunchFuncOp>(op)) launches.push_back(launch);
@@ -367,9 +388,16 @@ bool verifyStrictGemmShaderV1(mlir::spirv::ModuleOp module,
       entry.getFn() != kEntryPointV1 || entry.getExecutionModel() != spirv::ExecutionModel::GLCompute)
     return reject(error, "final shader entry/function identity differs");
   const auto shaderAbi = abi(shape, fill);
+  for (auto &operation : *module.getBody())
+    if (!isa<spirv::FuncOp, spirv::GlobalVariableOp, spirv::EntryPointOp,
+             spirv::ExecutionModeOp>(operation))
+      return reject(error, "final shader contains an unexpected import/declaration/operation");
   unsigned storageCount = 0, builtinCount = 0;
   std::set<unsigned> bindings;
   for (auto global : module.getOps<spirv::GlobalVariableOp>()) {
+    for (auto attr : global->getDiscardableAttrDictionary())
+      if (attr.getName().strref() != "built_in")
+        return reject(error, "final shader global acquired extra permissions");
     auto pointer = dyn_cast<spirv::PointerType>(global.getType());
     if (!pointer) return reject(error, "final global is not a logical pointer");
     if (pointer.getStorageClass() == spirv::StorageClass::Input) {

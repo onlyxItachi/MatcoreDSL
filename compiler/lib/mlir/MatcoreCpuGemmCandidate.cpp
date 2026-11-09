@@ -87,6 +87,19 @@ bool fail(std::string &error, llvm::StringRef message) {
   error = "strict CPU GEMM candidate: " + message.str();
   return false;
 }
+bool validStaticShape(StaticGemmShapeV1 shape, std::string &error) {
+  if (shape.m <= 0 || shape.k <= 0 || shape.n <= 0)
+    return fail(error, "static specialization requires positive M/K/N");
+  // Bound the new static specialization before ShapedType/upstream code may
+  // form products. Dynamic source semantics and existing issuers are unchanged.
+  constexpr auto maxElements = std::uint64_t(INT64_MAX) / 4;
+  const auto fits = [](std::int64_t rows, std::int64_t columns) {
+    return std::uint64_t(rows) <= maxElements / std::uint64_t(columns);
+  };
+  if (!fits(shape.m, shape.k) || !fits(shape.k, shape.n) || !fits(shape.m, shape.n))
+    return fail(error, "static specialization matrix f32 byte extent exceeds signed i64");
+  return true;
+}
 
 closed_region::Program primitive(bool reassociate = false,
                                  const StaticGemmShapeV1 *staticShape = nullptr) {
@@ -388,14 +401,12 @@ bool verifyStrictGemmBufferizedV1(mlir::ModuleOp module, std::string &error) {
 }
 bool verifyStrictGemmStructuredV1(mlir::ModuleOp module,
                                  StaticGemmShapeV1 shape, std::string &error) {
-  if (shape.m <= 0 || shape.k <= 0 || shape.n <= 0)
-    return fail(error, "static specialization requires positive M/K/N");
+  if (!validStaticShape(shape, error)) return false;
   return verifyStage(module, false, error, false, false, &shape);
 }
 bool verifyStrictGemmBufferizedV1(mlir::ModuleOp module,
                                  StaticGemmShapeV1 shape, std::string &error) {
-  if (shape.m <= 0 || shape.k <= 0 || shape.n <= 0)
-    return fail(error, "static specialization requires positive M/K/N");
+  if (!validStaticShape(shape, error)) return false;
   return verifyStage(module, true, error, false, false, &shape);
 }
 
@@ -481,11 +492,8 @@ StrictGemmStagesV1 buildStrictGemmStagesV1(mlir::MLIRContext &context) {
 }
 StrictGemmStagesV1 buildStrictGemmStagesV1(mlir::MLIRContext &context,
                                         StaticGemmShapeV1 shape) {
-  if (shape.m <= 0 || shape.k <= 0 || shape.n <= 0) {
-    StrictGemmStagesV1 result;
-    fail(result.error, "static specialization requires positive M/K/N");
-    return result;
-  }
+  StrictGemmStagesV1 result;
+  if (!validStaticShape(shape, result.error)) return result;
   return buildGemmStages(context, false, &shape);
 }
 GemmStagesV1 buildReassociateGemmStagesV1(mlir::MLIRContext &context) {
