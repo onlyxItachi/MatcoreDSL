@@ -25,12 +25,14 @@ int main() {
   using Shape = candidate::StaticGemmShapeV1;
   const Shape accepted[] = {{1, 1, 1}, {2, 3, 4}, {1, 7, 9}, {9, 7, 1},
       {3, 5, 7}, {17, 31, 13}, {65, 3, 67}, {65535, 1, 1}, {1, 1, 65535},
-      {1, 33554432, 1}, {4096, 1, 8192}, {65535, 1, 512}};
+      {1, 33554432, 1}, {4096, 1, 8192}, {65535, 1, 512},
+      {65535, 512, 1}, {1, 512, 65535}};
   for (auto shape : accepted)
     if (!require(candidate::validateStaticGemmShapeV1(shape, error), "accepted family shape")) return 1;
   const Shape rejected[] = {{0, 3, 4}, {2, 0, 4}, {2, 3, 0}, {-1, 3, 4},
       {2, -1, 4}, {2, 3, -1}, {65536, 1, 1}, {1, 1, 65536},
       {1, 33554433, 1}, {4096, 1, 8193}, {65535, 1, 513},
+      {65535, 513, 1}, {1, 513, 65535},
       {1, INT32_MAX, 1}, {INT64_MAX, INT64_MAX, INT64_MAX},
       {INT64_MIN, 1, 1}};
   for (auto shape : rejected)

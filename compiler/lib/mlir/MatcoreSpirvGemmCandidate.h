@@ -14,7 +14,7 @@ using StaticGemmShapeV1 = cpu_candidate::StaticGemmShapeV1;
 inline constexpr std::int64_t kMaxDispatchAxisV1 = 65535;
 inline constexpr std::uint64_t kMaxStorageBufferBytesV1 = 128ULL * 1024 * 1024;
 inline constexpr std::uint64_t kMaxStorageBufferElementsV1 =
-    kMaxStorageBufferBytesV1 / sizeof(float);
+    kMaxStorageBufferBytesV1 / 4;
 inline constexpr char kEntryPointV1[] = "__matcore_strict_gemm_f32_v1_kernel";
 
 // Device-independent issuance envelope, NOT device availability/qualification.
