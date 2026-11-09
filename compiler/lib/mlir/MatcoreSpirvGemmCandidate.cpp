@@ -83,6 +83,13 @@ bool positiveZero(Value value, bool spv = false) {
   return attr && attr.getType().isF32() && attr.getValue().isZero() &&
          !attr.getValue().isNegative();
 }
+StringAttr builtinDecoration(spirv::GlobalVariableOp global) {
+  // 21.1.8's production GlobalVariable builder, custom parser/printer and
+  // serializer use the snake-case BuiltIn decoration name ("built_in"), not
+  // the unrelated generated optional ODS "builtin" field/getBuiltin().
+  return global ? global->getAttrOfType<StringAttr>(
+      spirv::SPIRVDialect::getAttributeName(spirv::Decoration::BuiltIn)) : StringAttr{};
+}
 bool outputIndex(Value value, gpu::Dimension dimension, std::int64_t extent) {
   if (extent == 1) return integer(value, 0);
   auto op = value.getDefiningOp<gpu::BlockIdOp>();
@@ -215,8 +222,8 @@ std::optional<Linear> linear(Value value, Value reduction,
                         : spirv::AddressOfOp{};
     auto global = address ? module.lookupSymbol<spirv::GlobalVariableOp>(address.getVariable())
                           : spirv::GlobalVariableOp{};
-    auto builtin = global ? global.getBuiltin() : std::optional<llvm::StringRef>{};
-    if (!builtin || *builtin != "WorkgroupId" || op.getIndices().size() != 1)
+    auto builtin = builtinDecoration(global);
+    if (!builtin || builtin.getValue() != "WorkgroupId" || op.getIndices().size() != 1)
       return {};
     auto axis = dyn_cast<IntegerAttr>(op.getIndices()[0]);
     if (!axis || axis.getInt() < 0 || axis.getInt() > 1) return {};
@@ -425,15 +432,15 @@ bool verifyStrictGemmShaderV1(mlir::spirv::ModuleOp module,
   unsigned storageCount = 0, builtinCount = 0;
   std::set<unsigned> bindings;
   for (auto global : module.getOps<spirv::GlobalVariableOp>()) {
-    if (!attrsOnly(global, {"type", "sym_name", "descriptor_set", "binding", "builtin"}, error))
+    if (!attrsOnly(global, {"type", "sym_name", "descriptor_set", "binding", "built_in"}, error))
       return false;
     auto pointer = dyn_cast<spirv::PointerType>(global.getType());
     if (!pointer) return reject(error, "final global is not a logical pointer");
     if (pointer.getStorageClass() == spirv::StorageClass::Input) {
       ++builtinCount;
-      auto builtin = global.getBuiltin();
+      auto builtin = builtinDecoration(global);
       auto type = dyn_cast<VectorType>(pointer.getPointeeType());
-      if (!builtin || *builtin != "WorkgroupId" || !type ||
+      if (!builtin || builtin.getValue() != "WorkgroupId" || !type ||
           type.getShape() != llvm::ArrayRef<std::int64_t>({3}) ||
           !type.getElementType().isInteger(32) || global.getBinding() || global.getDescriptorSet())
         return reject(error, "final shader unexpected builtin input");
@@ -447,7 +454,7 @@ bool verifyStrictGemmShaderV1(mlir::spirv::ModuleOp module,
     if (pointer.getStorageClass() != spirv::StorageClass::StorageBuffer ||
         global.getDescriptorSet() != 0 || !global.getBinding() ||
         *global.getBinding() >= shaderAbi.buffers.size() ||
-        !bindings.insert(*global.getBinding()).second || global.getBuiltin())
+        !bindings.insert(*global.getBinding()).second || builtinDecoration(global))
       return reject(error, "final shader storage-class/set/binding differs");
     auto structure = dyn_cast<spirv::StructType>(pointer.getPointeeType());
     if (!structure || structure.getNumElements() != 1 || !structure.hasOffset() ||
