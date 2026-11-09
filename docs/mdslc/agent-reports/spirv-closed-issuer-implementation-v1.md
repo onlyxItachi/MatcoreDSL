@@ -2,6 +2,7 @@
 
 Status: implemented; focused compile/adversarial qualification passed;
 **compiler-private issuance only, no source/runtime/candidate authority**.
+The user-facing scope and ABI are in [the issuer contract](../SPIRV_CLOSED_ISSUER_V1.md).
 Canonical starting point is `b2597bed52de46604574f76eb33663788a5ab994`.
 This report covers `MatcoreSpirvGemmCandidate.{h,cpp}`, the narrow positive-static
 overload in `MatcoreCpuGemmCandidate.{h,cpp}`, and the focused C++ issuer tests.
@@ -136,34 +137,37 @@ into the loop seed; the second function block contains only Loop+Return. The
 checker proves that exact one-predecessor/one-use forwarding, including exact
 seed identity, and permits the decoder's header-local exact K constant. It does
 not normalize or mutate the emitted graph. Independent review found and removed
-an overly permissive equivalent-fresh-zero alternative; decoded valid mutants
-exercise this separate representation.
+an overly permissive equivalent-fresh-zero alternative. Its additional decoded
+graph mutation gate is recorded separately by the integration owner; no pending
+run is counted in the frozen focused receipt below.
 
 ## Current focused validation receipt
 
 The integration owner built the narrow targets coherently with Clang/LLVM/MLIR
-21.1.8, then ran the four focused CTests at 2026-11-10 02:24 Europe/Istanbul.
-All four passed at integrated issuer/test checkpoint `179e584`, with the owner's
-separate CMake/CLI/external-fixture additions:
+21.1.8, then ran the five focused CTests at 2026-11-10 02:24 Europe/Istanbul.
+All five passed at integrated build/CLI checkpoint `76bbebd`:
 
 - `generated_spirv.issuer`: 148 focused checks, including 14 compiler-issued
   family shapes and MLIR-valid negative controls.
 - `generated_spirv.adversarial`: 31 independently authored structural checks.
 - `generated_spirv.oracle`: 19 independent software oracle controls; explicitly
   `vulkan_loaded:false`, zero dispatches, no issuance or physical observation.
-- `generated_spirv.external_validation`: 12 fill/GEMM pairs (24 binaries) passed
+- `generated_spirv.receipt_validator`: 36 synthetic wrapper controls; no probe
+  process or Vulkan call.
+- `generated_spirv.external_validation`: 15 fill/GEMM pairs (30 binaries) passed
   `spirv-val --target-env vulkan1.2` and disassembly ABI/strict-control checks;
-  27 malformed/out-of-family/no-clobber/import CLI refusals passed.
+  30 malformed/out-of-family/no-clobber/import CLI refusals passed.
 
 Observed CTest receipt:
-`/home/hamza-usta/mdslc-work/correctness-campaign-v1/build-release/Testing/Temporary/LastTest.log`.
+`/home/hamza-usta/mdslc-work/correctness-campaign-v1/build-release/focused-76bbebd.log`.
 The run-specific, non-overwritten external receipt is
-`/home/hamza-usta/mdslc-work/correctness-campaign-v1/build-release/tests/generated_spirv/external-validation/run-rr546ko5/report.json`.
+`/home/hamza-usta/mdslc-work/correctness-campaign-v1/build-release/tests/generated_spirv/external-validation/run-5k3pwotj/report.json`.
 It records exact commands, all shape-specific binary SHA256s, and tool identities.
 The control 2x3x4 binary SHA256s are fill
 `7e72f01ed8d543b570285ba3a6d7e235d7ac6ff969990294d4a9b4ebd0b5cd3f`
 and GEMM `650ffeec817886e66c71256240525a3a3265d76294e2e81453d594e2b5c4b347`.
-The private issuer executable SHA256 for this receipt is
+The private issuer executable SHA256 in the earlier, matching 12-pair control
+receipt `run-rr546ko5/report.json` is
 `e63eca1cec1e5d25481d275565e1352e0b7fc63647c6f81a138e17c53680140e`.
 
 Read-only review of the owner's CMake/CLI gate found no private-authority blocker:
@@ -179,6 +183,17 @@ none is inferred from these focused passes. This implementation lane has run no
 physical workload, system package mutation, LLVM build, source-driver route,
 runtime adapter or performance test. The 128 MiB and maximum-K shapes above are
 compile-only coverage, not large physical workloads.
+
+The integration owner separately ran a bounded 12-shape AMD physical sample
+campaign, not this implementation lane. Its frozen root-run receipt is
+`/home/hamza-usta/mdslc-work/correctness-campaign-v1/build-release/physical-amd-v1/summary.json`,
+SHA256 `f0c0e2545b948b55a97aa09964becbc33739f38c94165b9a56bd76b8a051341a`.
+It says `BOUNDED_PHYSICAL_SAMPLES`, `source_runtime_authority:false` and
+`full_issuer_envelope_physically_qualified:false`. The implementation owner
+inspected this receipt and hash, not the hardware. Consult the integration and
+[test-only harness record](spirv-physical-harness-v1.md) for actual device,
+per-case counts and explicit zero-dispatch refusals; no full-family/device or
+reusable runtime qualification is inferred here.
 
 ## Intentionally unsupported subsequent boundaries
 
