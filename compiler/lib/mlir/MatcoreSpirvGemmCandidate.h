@@ -2,6 +2,7 @@
 #define MATCORE_MDSLC_MLIR_SPIRV_GEMM_CANDIDATE_H
 
 #include "MatcoreCpuGemmCandidate.h"
+#include "mlir/Dialect/SPIRV/IR/SPIRVOps.h"
 #include <array>
 #include <cstdint>
 #include <string>
@@ -65,6 +66,13 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
 bool verifyStrictGemmArtifactV1(mlir::MLIRContext &context,
                                const StrictGemmArtifactV1 &artifact,
                                std::string &error);
+// Independent structural inspection, supplementary to complete replay. These
+// verify exact scalar reduction/address/ABI invariants; they are not issuers.
+bool verifyStrictGemmOutlinedV1(mlir::ModuleOp module, StaticGemmShapeV1 shape,
+                               std::string &error);
+bool verifyStrictGemmShaderV1(mlir::spirv::ModuleOp module,
+                             StaticGemmShapeV1 shape, bool fill,
+                             std::string &error);
 
 } // namespace matcore::mdslc::spirv_candidate
 #endif
