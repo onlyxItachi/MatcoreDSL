@@ -1,6 +1,6 @@
 # Closed bounded static strict GEMM SPIR-V issuer v1
 
-Status: implementation and adversarial compile qualification in progress;
+Status: implemented; focused compile/adversarial qualification passed;
 **compiler-private issuance only, no source/runtime/candidate authority**.
 Canonical starting point is `b2597bed52de46604574f76eb33663788a5ab994`.
 This report covers `MatcoreSpirvGemmCandidate.{h,cpp}`, the narrow positive-static
@@ -122,10 +122,63 @@ member decorations that discardable-only checks miss; native-property and member
 decoration checks now reject them. These failures are recorded, not passing
 qualification claims.
 
-Final compile/unit/external/physical receipts will be recorded by the integration
-owner after the complete current implementation is compiled and executed where
-required. This implementation lane has run no physical workload, system package
-mutation, LLVM build, source-driver route, runtime adapter or performance test.
+The non-scalar interface-ABI storage-class field also initially failed upstream
+verification: only scalar ABI values may specify it. The corrected memref ABI
+leaves storage class to the converted pointer and independently checks the final
+StorageBuffer type. Upstream's generated optional `builtin` ODS field is not the
+production BuiltIn decoration: the builder/parser/serializer use the canonical
+`SPIRVDialect::getAttributeName(Decoration::BuiltIn)` name, `built_in`. Only that
+exact decoration is accepted, not ambiguous/conflicting spellings.
+
+Native 21.1.8 deserialization retains a two-block function phi prologue for K>1.
+Its extra edge forwards literal i32 zero to a sole-use argument, then exactly
+into the loop seed; the second function block contains only Loop+Return. The
+checker proves that exact one-predecessor/one-use forwarding, including exact
+seed identity, and permits the decoder's header-local exact K constant. It does
+not normalize or mutate the emitted graph. Independent review found and removed
+an overly permissive equivalent-fresh-zero alternative; decoded valid mutants
+exercise this separate representation.
+
+## Current focused validation receipt
+
+The integration owner built the narrow targets coherently with Clang/LLVM/MLIR
+21.1.8, then ran the four focused CTests at 2026-11-10 02:24 Europe/Istanbul.
+All four passed at integrated issuer/test checkpoint `179e584`, with the owner's
+separate CMake/CLI/external-fixture additions:
+
+- `generated_spirv.issuer`: 148 focused checks, including 14 compiler-issued
+  family shapes and MLIR-valid negative controls.
+- `generated_spirv.adversarial`: 31 independently authored structural checks.
+- `generated_spirv.oracle`: 19 independent software oracle controls; explicitly
+  `vulkan_loaded:false`, zero dispatches, no issuance or physical observation.
+- `generated_spirv.external_validation`: 12 fill/GEMM pairs (24 binaries) passed
+  `spirv-val --target-env vulkan1.2` and disassembly ABI/strict-control checks;
+  27 malformed/out-of-family/no-clobber/import CLI refusals passed.
+
+Observed CTest receipt:
+`/home/hamza-usta/mdslc-work/correctness-campaign-v1/build-release/Testing/Temporary/LastTest.log`.
+The run-specific, non-overwritten external receipt is
+`/home/hamza-usta/mdslc-work/correctness-campaign-v1/build-release/tests/generated_spirv/external-validation/run-rr546ko5/report.json`.
+It records exact commands, all shape-specific binary SHA256s, and tool identities.
+The control 2x3x4 binary SHA256s are fill
+`7e72f01ed8d543b570285ba3a6d7e235d7ac6ff969990294d4a9b4ebd0b5cd3f`
+and GEMM `650ffeec817886e66c71256240525a3a3265d76294e2e81453d594e2b5c4b347`.
+The private issuer executable SHA256 for this receipt is
+`e63eca1cec1e5d25481d275565e1352e0b7fc63647c6f81a138e17c53680140e`.
+
+Read-only review of the owner's CMake/CLI gate found no private-authority blocker:
+the option defaults OFF and depends on the existing native-Linux/64-bit/exact-21
+regions gate; issuer targets are not installed or connected to runtime/source
+candidates. The CLI accepts only M/K/N and a new output directory, constructs and
+replays before publishing, and uses CreateNew for every inspection output. The
+optional physical probe is separate and default OFF; automatic CTest runs only
+its software oracle. Missing external tools are explicitly not qualified.
+
+Full product/sanitizer/physical receipts remain owned by the integration report;
+none is inferred from these focused passes. This implementation lane has run no
+physical workload, system package mutation, LLVM build, source-driver route,
+runtime adapter or performance test. The 128 MiB and maximum-K shapes above are
+compile-only coverage, not large physical workloads.
 
 ## Intentionally unsupported subsequent boundaries
 
