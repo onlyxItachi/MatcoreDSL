@@ -89,9 +89,10 @@ change, CPU/provider policy change, universal speedup, full BLAS parity, Issue #
 closure, new GPU/SPIR-V performance claim or public API/ABI freeze in P1. Any
 subsequent tuning or policy proposal needs its own correctness and evidence gates.
 
-## Proposed first issue — ready for owner review, not filed here
+## First issue
 
-Title: **P1: authenticated strict source-time CPU tile performance evidence**
+[Issue #98](https://github.com/onlyxItachi/MatcoreDSL/issues/98):
+**P1: authenticated strict source-time CPU tile performance evidence**.
 
 Acceptance gates:
 
