@@ -15,6 +15,7 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Target/SPIRV/Serialization.h"
+#include "mlir/Target/SPIRV/Deserialization.h"
 #include "mlir/Transforms/Passes.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/Support/SHA256.h"
@@ -422,8 +423,9 @@ bool verifyStrictGemmShaderV1(mlir::spirv::ModuleOp module,
           type.getShape() != llvm::ArrayRef<std::int64_t>({3}) ||
           !type.getElementType().isInteger(32) || global.getBinding() || global.getDescriptorSet())
         return reject(error, "final shader unexpected builtin input");
-      if (entry.getInterface().size() != 1 ||
-          cast<FlatSymbolRefAttr>(entry.getInterface()[0]).getValue() != global.getSymName())
+      auto interface = entry.getInterface().size() == 1
+          ? dyn_cast<FlatSymbolRefAttr>(entry.getInterface()[0]) : FlatSymbolRefAttr{};
+      if (!interface || interface.getValue() != global.getSymName())
         return reject(error, "final shader interface is not the exact WorkgroupId variable");
       continue;
     }
@@ -684,6 +686,14 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
       reject(result.error, "production SPIR-V serialization/version failed");
       return result;
     }
+    // Inspect the actual serialized word stream through upstream's native
+    // deserializer, not just the pre-serialization module. This is an internal
+    // round trip of freshly compiler-issued bytes, never an import entry point.
+    auto decoded = spirv::deserialize(words, &context);
+    if (!decoded || !verifyStrictGemmShaderV1(*decoded, shape, index == 0, result.error)) {
+      if (result.error.empty()) reject(result.error, "serialized shader native round-trip inspection failed");
+      return result;
+    }
     (index ? result.gemm_spirv_ir : result.fill_spirv_ir) = print(shader.getOperation());
     (index ? result.gemm_words : result.fill_words).assign(words.begin(), words.end());
   }
@@ -696,7 +706,7 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
       "rte;denorm-preserve;signed-zero-inf-nan-preserve\n"
       "pipeline=closed-semantic-static;structured;one-shot-bufferize;"
       "linalg-parallel;gpu-map;parallel-to-gpu;canonicalize;sink-index;outline;"
-      "canonicalize;production-abi;gpu-to-spirv;lower-abi;strict-controls;update-vce;serialize\n"
+      "canonicalize;production-abi;gpu-to-spirv;lower-abi;strict-controls;update-vce;serialize;native-deserialize-check\n"
       "dependency=fill-output-to-gemm-output;ordered-dispatch;external-memory-barrier-required\n"
       "family=positive;M,N<=65535;K<INT32_MAX;MK,KN,MN<=33554432\n";
   result.manifest += "MKN=" + std::to_string(shape.m) + "," + std::to_string(shape.k) + "," +

@@ -4,6 +4,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/IR/Verifier.h"
 #include "llvm/Support/raw_ostream.h"
 #include <functional>
 #include <limits>
@@ -165,6 +166,7 @@ int main() {
         fill ? artifact.fill_spirv_ir : artifact.gemm_spirv_ir, &context);
     if (!changed) return require(false, "parse shader control");
     mutate(*changed);
+    if (!require(succeeded(verify(*changed)), "mutated shader remains valid MLIR")) return false;
     return require(!candidate::verifyStrictGemmShaderV1(*changed, {2, 3, 4}, fill, error), name);
   };
   if (!shaderAttack("final shader K-bound mutation keeps op counts/float modes", [](auto module) {
