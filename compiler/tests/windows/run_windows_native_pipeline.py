@@ -24,6 +24,21 @@ import tempfile
 import time
 
 
+# Native Windows diagnostics may contain code-page bytes even when Python's
+# default is UTF-8 (3.15+). Preserve unexpected bytes visibly; never let a
+# decoder-thread failure erase stderr or the exit status, including Popen.
+DIAGNOSTIC_TEXT = {"encoding": "utf-8", "errors": "backslashreplace"}
+
+
+def start(
+    command: list[str], *, cwd: Path
+) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        **DIAGNOSTIC_TEXT,
+    )
+
+
 def run(
     command: list[str],
     *,
@@ -34,7 +49,7 @@ def run(
         command,
         cwd=cwd,
         env=environment,
-        text=True,
+        **DIAGNOSTIC_TEXT,
         capture_output=True,
         check=False,
     )
@@ -710,7 +725,7 @@ def pipeline_suite(
         encoding="utf-8",
     )
     mutation_output = mutation_dir / "mutation.lib"
-    process = subprocess.Popen(
+    process = start(
         [
             str(driver),
             "--save-temps",
@@ -721,9 +736,6 @@ def pipeline_suite(
             str(mutation_output),
         ],
         cwd=mutation_dir,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
     )
     deadline = time.monotonic() + 30.0
     mutated = False
