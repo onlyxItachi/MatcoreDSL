@@ -16,11 +16,17 @@ unchanged, and every original negative/actionable-diagnostic check remains.
 Strict UTF-8 JSON/artifact reads are unchanged. This does not modify compiler,
 frontend, runtime, ABI, source semantics or platform support.
 
-The new `windows.diagnostic_capture` regression runs two real child processes:
-one writes valid UTF-8 stdout and invalid UTF-8 stderr and exits 7; the other
-succeeds. It checks exact decoded outputs and statuses. Local Python 3.15 and
-system Python 3.12 each passed 2/2 controls; an independent reviewer repeated
-2/2 and inspected the hosted failure, full diff and preserved assertions.
+The first fix covered `run` but hosted run
+[42718828654](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/42718828654)
+exposed the same decoding problem in the separate asynchronous source-mutation
+`Popen` path. Both now share the explicit diagnostic transport policy; the
+source-mutation timing, no-output and actionable-rejection assertions remain.
+The new `windows.diagnostic_capture` regression runs four real child processes:
+valid UTF-8 stdout plus invalid UTF-8 stderr with exit 7, and ordinary success,
+through both synchronous and asynchronous helpers. Exact outputs and statuses
+are checked. Local Python 3.15 and system Python 3.12 each passed 4/4 controls.
+An independent reviewer inspected the first fix and repeated its original 2/2
+controls; the asynchronous follow-up requires its own review and hosted run.
 `git diff --check` passed. Native hosted Windows validation remains a separate
 merge gate; no Linux run substitutes for it.
 
