@@ -43,7 +43,7 @@ StrictGemmStagesV1 buildStrictGemmStagesV1(mlir::MLIRContext &context);
 // index/byte/dispatch envelopes remain the responsibility of the closed target
 // issuer; this overload grants neither source nor execution authority.
 struct StaticGemmShapeV1 {
-  std::int64_t m, k, n;
+  std::int64_t m = 0, k = 0, n = 0;
   bool operator==(const StaticGemmShapeV1 &) const = default;
 };
 StrictGemmStagesV1 buildStrictGemmStagesV1(mlir::MLIRContext &context,

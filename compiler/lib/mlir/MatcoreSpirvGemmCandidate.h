@@ -25,16 +25,16 @@ bool validateStaticGemmShapeV1(StaticGemmShapeV1 shape, std::string &error);
 
 enum class BufferRoleV1 { Lhs, Rhs, Output };
 struct BufferBindingV1 {
-  BufferRoleV1 role;
-  std::uint32_t descriptor_set, binding;
-  std::uint64_t bytes;
+  BufferRoleV1 role = BufferRoleV1::Output;
+  std::uint32_t descriptor_set = 0, binding = 0;
+  std::uint64_t bytes = 0;
   std::uint32_t element_stride = 4, member_offset = 0;
-  bool writable;
+  bool writable = false;
   bool operator==(const BufferBindingV1 &) const = default;
 };
 struct ShaderAbiV1 {
   std::string entry_point;
-  std::array<std::uint32_t, 3> local_size, dispatch;
+  std::array<std::uint32_t, 3> local_size{}, dispatch{};
   std::vector<BufferBindingV1> buffers;
   bool operator==(const ShaderAbiV1 &) const = default;
 };
