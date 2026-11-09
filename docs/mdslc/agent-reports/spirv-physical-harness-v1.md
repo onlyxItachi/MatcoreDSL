@@ -1,9 +1,12 @@
 # Test-only strict SPIR-V physical harness v1
 
-Status: **implemented, not yet compiled or executed** in this lane. No physical,
-sanitizer, issuer, source or runtime qualification is claimed by this report.
-Date: 2026-11-10. The integration owner coordinates the one shared build, compiler
-prerequisites and actual execution receipts; no additional build ran here.
+Status: **final qualification pending**. The integration owner reported successful
+coherent-21 compilation and software-oracle CTest execution; this lane did not
+rerun those checks. That first build had 22 expected missing-field-initializer
+warnings. The later issuer-checker fixes still require their own final evidence.
+No physical, sanitizer, issuer, source or runtime qualification is claimed here.
+Date: 2026-11-10. The integration owner coordinates the shared build, compiler
+prerequisites and actual execution receipts; no additional build ran in this lane.
 
 ## Scope and authority
 
@@ -106,6 +109,60 @@ and Khronos documentation for [float-control properties](https://docs.vulkan.org
 and [memory dependencies/fences](https://docs.vulkan.org/spec/latest/chapters/synchronization.html).
 These API contracts are not evidence that this implementation has run correctly.
 
+## Receipt qualification wrapper
+
+`compiler/tests/generated_spirv/physical_qualification.py` adds a separate,
+no-overwrite campaign over an already built probe. It neither builds nor chooses
+a device. The integration owner must first pass the final issuer and independent
+upstream SPIRV-Tools checks; that ordering is not replaced by receipt inspection.
+
+```sh
+python3 -B compiler/tests/generated_spirv/physical_qualification.py --self-test
+python3 -B compiler/tests/generated_spirv/physical_qualification.py \
+  --probe build-release/bin/matcore_spirv_vulkan_probe \
+  --device N --output /path/to/new-physical-receipts
+python3 -B compiler/tests/generated_spirv/physical_qualification.py \
+  --probe build-release/bin/matcore_spirv_vulkan_probe \
+  --device N --expect-refusal --output /path/to/new-refusal-receipts
+```
+
+The output directory must not exist; its parent must exist. Each sequential
+subprocess has a 20-second timeout, exclusive raw stdout/stderr files, exact
+arguments/status and a strictly parsed JSON receipt. Duplicate keys, nonfinite
+JSON constants, malformed output, nonzero matching exits, crashes and timeouts
+fail the campaign with no retry or fallback. A compact stdout summary points to
+`summary.json`; its artifact catalog hashes the raw/parsed records and an explicit
+source snapshot rather than dumping every log into chat. Probe and source
+identities are frozen and checked again after the campaign, including failures.
+The source catalog is evidence of those exact bytes, not an attestation that an
+arbitrary executable was built from them.
+
+The positive family is exactly the twelve proposed M,K,N shapes: 2,3,4; 1,1,1;
+1,7,9; 9,7,1; 3,5,7; 17,31,13; 65,3,67; 65535,1,1; 1,1,65535; 3,2,5;
+1,257,1; and 5,1,7. All fit the independent total scalar-operation cap.
+The wrapper requires exact 19/2 case inventories, K1/K2 skip names, all expected
+output/input/guard counts, 2 dispatches and 1 completion per case, zero mismatches,
+the selected device's unchanged identity/properties, correct ABI geometry,
+shader digests and `source_runtime_authority:false`. It independently checks
+non-NaN constant expectation digests and the integer-addressing expectations
+without evaluating host floating-point arithmetic. NaN payload hashes are
+recorded, not prescribed.
+
+Separate expected-refusal mode requires one checked 2,3,4 shape to return exactly
+78 at the selected device/control gate with zero dispatches/completions. It
+cannot turn a missing device index, unrelated allocation failure or numerical
+counterexample into a passing target refusal. Both modes additionally require 21
+unknown/duplicate/missing-option, invalid shape/range and independent-overwork
+controls to return 78 with no issuance/loader/device markers. Compile-only large
+issuer cases remain separate; no full-envelope physical or performance claim is
+inferred from these twelve samples.
+
+Wrapper validation in this lane: `--self-test` passed **36 synthetic checks**,
+including valid 19/2-case receipts and mutated count/bits/geometry/skip/authority,
+pre-loader refusal and JSON controls. The probe was not started, Vulkan was not
+loaded and no hardware ran. `git diff --check` passed. Root executes the real
+wrapper only after its independently checked core is settled.
+
 ## Integration commands and pending evidence
 
 The integration owner provides the opt-in test-only
@@ -132,8 +189,8 @@ does not dispatch. Execution returns 0 only on match, 78 on explicit refusal and
 unsupported/inapplicable shapes and excess test work refuse before dispatch.
 Capture stdout as the JSON receipt and preserve stderr separately.
 
-Pending: issuer prerequisite integration, compilation, software-oracle execution,
-inventory/refusal tests, physical matching or counterexample receipts, and
-independent implementation review. `git diff --check` is the only executable
-validation performed in this lane before handoff; no passing compiler/device
-test is inferred from source inspection or constants supplied by another agent.
+Pending: final immutable issuer/checker integration and upstream validation,
+inventory/refusal tests, physical matching or counterexample receipts, and final
+independent implementation review. This lane's executable evidence is limited to
+the synthetic wrapper self-test and whitespace validation. No passing compiler
+or device test is inferred from inspection or constants supplied by another agent.
