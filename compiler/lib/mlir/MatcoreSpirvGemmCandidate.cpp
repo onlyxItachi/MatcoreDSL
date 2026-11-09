@@ -413,8 +413,10 @@ bool verifyStrictGemmShaderV1(mlir::spirv::ModuleOp module,
     return reject(error, "final shader requires exactly one function and entry point");
   auto function = *functions.begin();
   auto entry = *entries.begin();
+  const auto functionBlocks = function.getBody().getBlocks().size();
   if (function.getName() != kEntryPointV1 || function.getNumArguments() ||
-      function.getNumResults() || !llvm::hasSingleElement(function.getBody()) ||
+      function.getNumResults() || (functionBlocks != 1 &&
+          (fill || shape.k == 1 || functionBlocks != 2)) ||
       function.getFunctionControl() != spirv::FunctionControl::None ||
       entry.getFn() != kEntryPointV1 || entry.getExecutionModel() != spirv::ExecutionModel::GLCompute)
     return reject(error, "final shader entry/function identity differs: function=" +
@@ -509,6 +511,25 @@ bool verifyStrictGemmShaderV1(mlir::spirv::ModuleOp module,
       spirv::ExecutionMode::SignedZeroInfNanPreserve})
     return reject(error, "final shader missing/extra strict float controls");
 
+  // Native deserialization 21.1.8 preserves the serializer's loop-header phi
+  // incoming edge as a two-block function prologue. Prove only that exact
+  // zero-forwarding wrapper; do not normalize/mutate the emitted graph.
+  Block *functionBody = &function.getBody().back();
+  Value forwardedZero;
+  if (functionBlocks == 2) {
+    auto &prologue = function.getBody().front();
+    auto branch = dyn_cast<spirv::BranchOp>(prologue.getTerminator());
+    if (!branch || branch->getNumOperands() != 1 ||
+        !spvInteger(branch->getOperand(0), 0) ||
+        branch->getSuccessor(0) != functionBody ||
+        functionBody->getNumArguments() != 1 || !functionBody->hasOneUse() ||
+        !functionBody->getArgument(0).hasOneUse() ||
+        functionBody->getOperations().size() != 2 ||
+        !isa<spirv::LoopOp>(functionBody->front()))
+      return reject(error, "native shader phi prologue is not exact single-use zero forwarding");
+    forwardedZero = functionBody->getArgument(0);
+  }
+
   bool unknown = false;
   unsigned loops = 0, returns = 0;
   spirv::LoopOp loop;
@@ -543,14 +564,14 @@ bool verifyStrictGemmShaderV1(mlir::spirv::ModuleOp module,
     unknown |= !allowed;
   });
   if (unknown || returns != 1 || stores.size() != 1 ||
-      !isa<spirv::ReturnOp>(function.getBody().front().back()) ||
+      !isa<spirv::ReturnOp>(functionBody->back()) ||
       loops != unsigned(!fill && shape.k != 1) ||
       loads.size() != (fill ? 0U : 3U) || multiplies.size() != (fill ? 0U : 1U) ||
       adds.size() != (fill ? 0U : 1U))
     return reject(error, "final shader extra computation/call/permission/effect: " + error);
   auto store = stores[0];
   Value reduction;
-  Block *body = &function.getBody().front();
+  Block *body = functionBody;
   if (!fill && shape.k != 1) {
     if (loop.getBody().getBlocks().size() != 4 || loop.getNumResults() ||
         loop.getLoopControl() != spirv::LoopControl::None ||
@@ -561,17 +582,26 @@ bool verifyStrictGemmShaderV1(mlir::spirv::ModuleOp module,
     auto *merge = loop.getMergeBlock();
     auto *continueBlock = loop.getContinueBlock();
     if (!entryBlock || !header || !merge || !continueBlock ||
-        entryBlock->getOperations().size() != 1 || header->getOperations().size() != 2 ||
+        entryBlock->getOperations().size() != 1 ||
+        (header->getOperations().size() != 2 && header->getOperations().size() != 3) ||
         header->getNumArguments() != 1 || merge->getOperations().size() != 1 ||
         !isa<spirv::MergeOp>(merge->front()))
       return reject(error, "final shader reduction CFG blocks differ");
     reduction = header->getArgument(0);
     auto *initial = entryBlock->getTerminator();
     auto *condition = &header->front();
+    if (header->getOperations().size() == 3) {
+      auto constant = dyn_cast<spirv::ConstantOp>(condition);
+      if (!constant || !spvInteger(constant->getResult(0), shape.k))
+        return reject(error, "native shader header constant is not exact K");
+      condition = condition->getNextNode();
+    }
     auto *branch = header->getTerminator();
     auto *next = continueBlock->getTerminator();
     if (!isa<spirv::BranchOp>(initial) || initial->getNumOperands() != 1 ||
-        !spvInteger(initial->getOperand(0), 0) || initial->getSuccessor(0) != header ||
+        !(spvInteger(initial->getOperand(0), 0) ||
+          (forwardedZero && initial->getOperand(0) == forwardedZero)) ||
+        initial->getSuccessor(0) != header ||
         !isa<spirv::SLessThanOp>(condition) || condition->getOperand(0) != reduction ||
         !spvInteger(condition->getOperand(1), shape.k) ||
         !isa<spirv::BranchConditionalOp>(branch) || branch->getNumOperands() != 1 ||
