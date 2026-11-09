@@ -33,6 +33,14 @@ bool reject(std::string &error, llvm::StringRef message) {
   error = "strict static SPIR-V GEMM issuer: " + message.str();
   return false;
 }
+bool attrsOnly(Operation *op, std::initializer_list<llvm::StringRef> allowed,
+                std::string &error) {
+  for (auto attr : op->getAttrs())
+    if (!llvm::is_contained(allowed, attr.getName().strref()))
+      return reject(error, "unsupported attribute " + attr.getName().str() +
+          " on " + op->getName().getStringRef().str());
+  return true;
+}
 std::string print(Operation *operation) {
   std::string result;
   llvm::raw_string_ostream stream(result);
@@ -108,6 +116,7 @@ bool kernelBody(gpu::GPUFuncOp function, StaticGemmShapeV1 shape, bool fill,
               !matrix(function.getArgument(2).getType(), shape.m, shape.n)))
     return reject(error, "outlined kernel static operand types differ");
   bool unknown = false;
+  std::string unexpected;
   unsigned loops = 0, returns = 0;
   SmallVector<memref::LoadOp> loads;
   SmallVector<memref::StoreOp> stores;
@@ -128,13 +137,15 @@ bool kernelBody(gpu::GPUFuncOp function, StaticGemmShapeV1 shape, bool fill,
       auto name = attr.getName().strref();
       if (isa<gpu::GPUFuncOp>(op) &&
           (name == "known_block_size" || name == "known_grid_size" ||
-           name == "gpu.kernel" || name == "workgroup_attributions")) continue;
+           name == "gpu.kernel" || name == "workgroup_attributions" ||
+           name == "sym_name")) continue;
+      unexpected = "unsupported attribute " + name.str() + " on " + op->getName().getStringRef().str();
       unknown = true;
     }
   });
   if (unknown || returns != 1 || stores.size() != 1 ||
       !isa<gpu::ReturnOp>(function.getBody().front().back()))
-    return reject(error, "outlined kernel has extra computation/attributes/effects");
+    return reject(error, "outlined kernel has extra computation/attributes/effects: " + unexpected);
   auto store = stores[0];
   auto indices = store.getIndices();
   if (indices.size() != 2 ||
@@ -203,8 +214,8 @@ std::optional<Linear> linear(Value value, Value reduction,
                         : spirv::AddressOfOp{};
     auto global = address ? module.lookupSymbol<spirv::GlobalVariableOp>(address.getVariable())
                           : spirv::GlobalVariableOp{};
-    auto builtin = global ? global->getAttrOfType<StringAttr>("built_in") : StringAttr{};
-    if (!builtin || builtin.getValue() != "WorkgroupId" || op.getIndices().size() != 1)
+    auto builtin = global ? global.getBuiltin() : std::optional<llvm::StringRef>{};
+    if (!builtin || *builtin != "WorkgroupId" || op.getIndices().size() != 1)
       return {};
     auto axis = dyn_cast<IntegerAttr>(op.getIndices()[0]);
     if (!axis || axis.getInt() < 0 || axis.getInt() > 1) return {};
@@ -366,6 +377,8 @@ bool verifyStrictGemmShaderV1(mlir::spirv::ModuleOp module,
       module.getAddressingModel() != spirv::AddressingModel::Logical ||
       module.getMemoryModel() != spirv::MemoryModel::GLSL450)
     return reject(error, "final shader is not verified Logical/GLSL450");
+  if (!attrsOnly(module, {"addressing_model", "memory_model", "vce_triple", "sym_name"}, error))
+    return false;
   const auto wantedCaps = std::set<spirv::Capability>{spirv::Capability::Shader,
       spirv::Capability::DenormPreserve, spirv::Capability::SignedZeroInfNanPreserve,
       spirv::Capability::RoundingModeRTE};
@@ -385,6 +398,7 @@ bool verifyStrictGemmShaderV1(mlir::spirv::ModuleOp module,
   auto entry = *entries.begin();
   if (function.getName() != kEntryPointV1 || function.getNumArguments() ||
       function.getNumResults() || !llvm::hasSingleElement(function.getBody()) ||
+      function.getFunctionControl() != spirv::FunctionControl::None ||
       entry.getFn() != kEntryPointV1 || entry.getExecutionModel() != spirv::ExecutionModel::GLCompute)
     return reject(error, "final shader entry/function identity differs");
   const auto shaderAbi = abi(shape, fill);
@@ -392,29 +406,32 @@ bool verifyStrictGemmShaderV1(mlir::spirv::ModuleOp module,
     if (!isa<spirv::FuncOp, spirv::GlobalVariableOp, spirv::EntryPointOp,
              spirv::ExecutionModeOp>(operation))
       return reject(error, "final shader contains an unexpected import/declaration/operation");
+  if (!attrsOnly(entry, {"execution_model", "fn", "interface"}, error)) return false;
   unsigned storageCount = 0, builtinCount = 0;
   std::set<unsigned> bindings;
   for (auto global : module.getOps<spirv::GlobalVariableOp>()) {
-    for (auto attr : global->getDiscardableAttrDictionary())
-      if (attr.getName().strref() != "built_in")
-        return reject(error, "final shader global acquired extra permissions");
+    if (!attrsOnly(global, {"type", "sym_name", "descriptor_set", "binding", "builtin"}, error))
+      return false;
     auto pointer = dyn_cast<spirv::PointerType>(global.getType());
     if (!pointer) return reject(error, "final global is not a logical pointer");
     if (pointer.getStorageClass() == spirv::StorageClass::Input) {
       ++builtinCount;
-      auto builtin = global->getAttrOfType<StringAttr>("built_in");
+      auto builtin = global.getBuiltin();
       auto type = dyn_cast<VectorType>(pointer.getPointeeType());
-      if (!builtin || builtin.getValue() != "WorkgroupId" || !type ||
+      if (!builtin || *builtin != "WorkgroupId" || !type ||
           type.getShape() != llvm::ArrayRef<std::int64_t>({3}) ||
-          !type.getElementType().isInteger(32))
+          !type.getElementType().isInteger(32) || global.getBinding() || global.getDescriptorSet())
         return reject(error, "final shader unexpected builtin input");
+      if (entry.getInterface().size() != 1 ||
+          cast<FlatSymbolRefAttr>(entry.getInterface()[0]).getValue() != global.getSymName())
+        return reject(error, "final shader interface is not the exact WorkgroupId variable");
       continue;
     }
     ++storageCount;
     if (pointer.getStorageClass() != spirv::StorageClass::StorageBuffer ||
         global.getDescriptorSet() != 0 || !global.getBinding() ||
         *global.getBinding() >= shaderAbi.buffers.size() ||
-        !bindings.insert(*global.getBinding()).second)
+        !bindings.insert(*global.getBinding()).second || global.getBuiltin())
       return reject(error, "final shader storage-class/set/binding differs");
     auto structure = dyn_cast<spirv::StructType>(pointer.getPointeeType());
     if (!structure || structure.getNumElements() != 1 || !structure.hasOffset() ||
@@ -424,6 +441,10 @@ bool verifyStrictGemmShaderV1(mlir::spirv::ModuleOp module,
     if (!array || !array.getElementType().isF32() || array.getArrayStride() != 4 ||
         std::uint64_t(array.getNumElements()) * 4 != shaderAbi.buffers[*global.getBinding()].bytes)
       return reject(error, "final shader f32 static array extent/stride/range differs");
+    SmallVector<spirv::StructType::MemberDecorationInfo> decorations;
+    structure.getMemberDecorations(decorations);
+    if (!decorations.empty())
+      return reject(error, "final shader buffer member acquired relaxed/foreign decorations");
   }
   if (storageCount != shaderAbi.buffers.size() ||
       builtinCount != unsigned(shape.m != 1 || shape.n != 1) ||
@@ -431,6 +452,7 @@ bool verifyStrictGemmShaderV1(mlir::spirv::ModuleOp module,
     return reject(error, "final shader global/interface set differs");
   std::set<spirv::ExecutionMode> modes;
   for (auto mode : module.getOps<spirv::ExecutionModeOp>()) {
+    if (!attrsOnly(mode, {"fn", "execution_mode", "values"}, error)) return false;
     if (mode.getFn() != kEntryPointV1 || !modes.insert(mode.getExecutionMode()).second)
       return reject(error, "final shader duplicate/foreign execution mode");
     SmallVector<std::int64_t> values;
@@ -471,21 +493,25 @@ bool verifyStrictGemmShaderV1(mlir::spirv::ModuleOp module,
     if (auto candidate = dyn_cast<spirv::StoreOp>(op)) stores.push_back(candidate);
     if (auto candidate = dyn_cast<spirv::FMulOp>(op)) multiplies.push_back(candidate);
     if (auto candidate = dyn_cast<spirv::FAddOp>(op)) adds.push_back(candidate);
-    for (auto attr : op->getDiscardableAttrDictionary()) {
-      const auto name = attr.getName().strref();
-      if (isa<spirv::FuncOp>(op) && (name == "known_block_size" || name == "known_grid_size" ||
-          name == "workgroup_attributions")) continue;
-      if (isa<spirv::FMulOp, spirv::FAddOp>(op) && name == "no_contraction" &&
-          isa<UnitAttr>(attr.getValue())) continue;
-      unknown = true;
-    }
+    bool allowed = false;
+    if (isa<spirv::FuncOp>(op))
+      allowed = attrsOnly(op, {"sym_name", "function_type", "function_control",
+          "known_block_size", "known_grid_size", "workgroup_attributions"}, error);
+    else if (isa<spirv::AddressOfOp>(op)) allowed = attrsOnly(op, {"variable"}, error);
+    else if (isa<spirv::ConstantOp>(op)) allowed = attrsOnly(op, {"value"}, error);
+    else if (isa<spirv::CompositeExtractOp>(op)) allowed = attrsOnly(op, {"indices"}, error);
+    else if (isa<spirv::LoopOp>(op)) allowed = attrsOnly(op, {"loop_control"}, error);
+    else if (isa<spirv::BranchConditionalOp>(op)) allowed = attrsOnly(op, {"operandSegmentSizes"}, error);
+    else if (isa<spirv::FMulOp, spirv::FAddOp>(op)) allowed = attrsOnly(op, {"no_contraction"}, error);
+    else allowed = attrsOnly(op, {}, error);
+    unknown |= !allowed;
   });
   if (unknown || returns != 1 || stores.size() != 1 ||
       !isa<spirv::ReturnOp>(function.getBody().front().back()) ||
       loops != unsigned(!fill && shape.k != 1) ||
       loads.size() != (fill ? 0U : 3U) || multiplies.size() != (fill ? 0U : 1U) ||
       adds.size() != (fill ? 0U : 1U))
-    return reject(error, "final shader extra computation/call/permission/effect");
+    return reject(error, "final shader extra computation/call/permission/effect: " + error);
   auto store = stores[0];
   Value reduction;
   Block *body = &function.getBody().front();
