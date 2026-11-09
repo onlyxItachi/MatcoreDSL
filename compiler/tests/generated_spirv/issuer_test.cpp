@@ -185,6 +185,32 @@ int main() {
       !shaderAttack("final shader removed NoContraction", [](auto module) {
         module.walk([](spirv::FMulOp op) { op->removeAttr("no_contraction"); });
       }) ||
+      !shaderAttack("final shader valid load alignment overclaim", [](auto module) {
+        module.walk([](spirv::LoadOp op) {
+          if (!op->getResult(0).getType().isF32()) return;
+          op.setMemoryAccess(spirv::MemoryAccess::Aligned);
+          op.setAlignment(8);
+        });
+      }) ||
+      !shaderAttack("final shader valid store memory modifier", [](auto module) {
+        module.walk([](spirv::StoreOp op) { op.setMemoryAccess(spirv::MemoryAccess::Volatile); });
+      }) ||
+      !shaderAttack("final shader valid static array stride mutation", [](auto module) {
+        const auto changedType = [](Type type) -> Type {
+          auto pointer = dyn_cast<spirv::PointerType>(type);
+          if (!pointer || pointer.getStorageClass() != spirv::StorageClass::StorageBuffer) return type;
+          auto structure = dyn_cast<spirv::StructType>(pointer.getPointeeType());
+          if (!structure || structure.getNumElements() != 1) return type;
+          auto array = dyn_cast<spirv::ArrayType>(structure.getElementType(0));
+          if (!array) return type;
+          auto changed = spirv::ArrayType::get(array.getElementType(), array.getNumElements(), 8);
+          return spirv::PointerType::get(spirv::StructType::get({changed}, {0}), pointer.getStorageClass());
+        };
+        module.walk([&](Operation *op) {
+          if (auto global = dyn_cast<spirv::GlobalVariableOp>(op)) global.setType(changedType(global.getType()));
+          for (auto result : op->getResults()) result.setType(changedType(result.getType()));
+        });
+      }) ||
       !shaderAttack("final shader missing denormal mode", [](auto module) {
         for (auto mode : llvm::make_early_inc_range(module.template getOps<spirv::ExecutionModeOp>()))
           if (mode.getExecutionMode() == spirv::ExecutionMode::DenormPreserve) mode.erase();

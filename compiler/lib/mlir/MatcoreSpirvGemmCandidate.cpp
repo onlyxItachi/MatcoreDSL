@@ -99,7 +99,10 @@ bool kernelBody(gpu::GPUFuncOp function, StaticGemmShapeV1 shape, bool fill,
                 std::string &error) {
   if (!function || function.getName() != kEntryPointV1 ||
       function.getNumArguments() != (fill ? 1 : 3) ||
-      function.getNumResults() || !llvm::hasSingleElement(function.getBody()))
+      function.getNumResults() || !llvm::hasSingleElement(function.getBody()) ||
+      function.getAllArgAttrs() || function.getAllResultAttrs() ||
+      !function.getWorkgroupAttributions().empty() ||
+      !function.getPrivateAttributions().empty())
     return reject(error, "outlined kernel signature differs");
   for (unsigned i = 0; i != function.getNumArguments(); ++i)
     if (!function.getArgAttrs(i).empty())
@@ -332,6 +335,10 @@ bool verifyStrictGemmOutlinedV1(mlir::ModuleOp module, StaticGemmShapeV1 shape,
       !matrix(host.getArgument(1).getType(), shape.k, shape.n) ||
       !matrix(host.getArgument(2).getType(), shape.m, shape.n) ||
       host.getResultTypes()[0] != host.getArgument(2).getType() ||
+      host.getAllArgAttrs() || host.getAllResultAttrs() ||
+      fill.getTargets() || gemm.getTargets() ||
+      fill.getBody()->getOperations().size() != 1 ||
+      gemm.getBody()->getOperations().size() != 1 ||
       !llvm::hasSingleElement(fill.getOps<gpu::GPUFuncOp>()) ||
       !llvm::hasSingleElement(gemm.getOps<gpu::GPUFuncOp>()))
     return reject(error, "outlined static host/module signature differs");
@@ -402,6 +409,19 @@ bool verifyStrictGemmShaderV1(mlir::spirv::ModuleOp module,
       function.getFunctionControl() != spirv::FunctionControl::None ||
       entry.getFn() != kEntryPointV1 || entry.getExecutionModel() != spirv::ExecutionModel::GLCompute)
     return reject(error, "final shader entry/function identity differs");
+  // These analysis-only properties are not serialized. When retained on the
+  // compiler-owned lowering, bind their values as well; a native binary round
+  // trip legitimately has none of them.
+  if (auto local = function->getAttrOfType<DenseI32ArrayAttr>("known_block_size"))
+    if (local.asArrayRef() != llvm::ArrayRef<std::int32_t>({1, 1, 1}))
+      return reject(error, "final shader retained local-size analysis differs");
+  if (auto grid = function->getAttrOfType<DenseI32ArrayAttr>("known_grid_size"))
+    if (grid.asArrayRef() != llvm::ArrayRef<std::int32_t>(
+            {std::int32_t(shape.m), std::int32_t(shape.n), 1}))
+      return reject(error, "final shader retained dispatch analysis differs");
+  if (auto workgroup = function->getAttrOfType<IntegerAttr>("workgroup_attributions"))
+    if (workgroup.getInt() != 0)
+      return reject(error, "final shader acquired workgroup storage");
   const auto shaderAbi = abi(shape, fill);
   for (auto &operation : *module.getBody())
     if (!isa<spirv::FuncOp, spirv::GlobalVariableOp, spirv::EntryPointOp,
