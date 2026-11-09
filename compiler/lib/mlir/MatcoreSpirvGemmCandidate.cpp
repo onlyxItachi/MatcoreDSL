@@ -599,8 +599,8 @@ bool verifyStrictGemmShaderV1(mlir::spirv::ModuleOp module,
     auto *branch = header->getTerminator();
     auto *next = continueBlock->getTerminator();
     if (!isa<spirv::BranchOp>(initial) || initial->getNumOperands() != 1 ||
-        !(spvInteger(initial->getOperand(0), 0) ||
-          (forwardedZero && initial->getOperand(0) == forwardedZero)) ||
+        !(forwardedZero ? initial->getOperand(0) == forwardedZero
+                        : spvInteger(initial->getOperand(0), 0)) ||
         initial->getSuccessor(0) != header ||
         !isa<spirv::SLessThanOp>(condition) || condition->getOperand(0) != reduction ||
         !spvInteger(condition->getOperand(1), shape.k) ||
