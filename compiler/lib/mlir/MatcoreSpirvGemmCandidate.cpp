@@ -423,7 +423,7 @@ bool verifyStrictGemmShaderV1(mlir::spirv::ModuleOp module,
         function.getName().str() + "; args=" + std::to_string(function.getNumArguments()) +
         "; results=" + std::to_string(function.getNumResults()) +
         "; blocks=" + std::to_string(function.getBody().getBlocks().size()) +
-        "; control=" + spirv::stringifyFunctionControl(function.getFunctionControl()).str() +
+        "; control=" + spirv::stringifyFunctionControl(function.getFunctionControl()) +
         "; entry=" + entry.getFn().str());
   // These analysis-only properties are not serialized. When retained on the
   // compiler-owned lowering, bind their values as well; a native binary round
