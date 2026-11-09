@@ -35,6 +35,11 @@ def run(
         cwd=cwd,
         env=environment,
         text=True,
+        # Native Windows diagnostics may contain code-page bytes even when
+        # Python's default is UTF-8 (3.15+). Preserve unexpected bytes visibly;
+        # never let a decoder-thread failure erase stderr or the exit status.
+        encoding="utf-8",
+        errors="backslashreplace",
         capture_output=True,
         check=False,
     )
