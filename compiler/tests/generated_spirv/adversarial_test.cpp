@@ -1,6 +1,8 @@
 // Independent regression controls for otherwise valid, non-closed shaders.
 // Never imports an executable artifact, dispatches, or grants runtime authority.
 #include "MatcoreSpirvGemmCandidate.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
@@ -17,9 +19,9 @@ using namespace mlir;
 namespace candidate = matcore::mdslc::spirv_candidate;
 using Counts = std::map<std::string, unsigned>;
 
-Counts counts(spirv::ModuleOp module) {
+Counts counts(Operation *module) {
   Counts result;
-  module.walk([&](Operation *op) { ++result[op->getName().getStringRef().str()]; });
+  module->walk([&](Operation *op) { ++result[op->getName().getStringRef().str()]; });
   return result;
 }
 
@@ -152,6 +154,39 @@ int main(int argc, char **argv) {
     }
     return false;
   }, false); // MLIR valid, but invalid Vulkan1.2/SPIR-V1.3 interface storage class.
+
+  const auto outlinedAttack = [&](const char *name,
+                                  const std::function<bool(ModuleOp)> &mutate) {
+    auto changed = parseSourceString<ModuleOp>(artifact.outlined_ir, &context);
+    error.clear();
+    if (!changed) { require(false, "outlined control parse"); return; }
+    const auto controlCounts = counts(*changed);
+    if (!require(mutate(*changed), std::string(name) + " constructed")) return;
+    if (!require(counts(*changed) == controlCounts,
+                 std::string(name) + " unchanged operation inventory")) return;
+    if (!require(succeeded(verify(*changed)), std::string(name) + " MLIR valid")) return;
+    require(!candidate::verifyStrictGemmOutlinedV1(*changed, {2, 3, 4}, error) &&
+                !error.empty(), std::string(name) + " closed classifier refusal");
+  };
+  outlinedAttack("unproved block-id upper bound", [&](auto module) {
+    bool changed = false;
+    module.walk([&](gpu::BlockIdOp block) {
+      if (!changed && block.getDimension() == gpu::Dimension::x) {
+        // M=2: x=1 is a legal dispatched block. An explicit upper_bound=1
+        // overrides known_grid_size and makes that execution undefined.
+        block.setUpperBoundAttr(Builder(&context).getIndexAttr(1));
+        changed = true;
+      }
+    });
+    return changed;
+  });
+  outlinedAttack("foreign nontemporal input hint", [](auto module) {
+    bool changed = false;
+    module.walk([&](memref::LoadOp load) {
+      if (!changed) { load.setNontemporal(true); changed = true; }
+    });
+    return changed;
+  });
 
   if (failures) return 1;
   llvm::outs() << "PASS " << checks
