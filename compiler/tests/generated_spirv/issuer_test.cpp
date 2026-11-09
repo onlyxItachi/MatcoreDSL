@@ -160,6 +160,12 @@ int main() {
       }) ||
       !outlinedAttack("outlined untrusted argument permission", [&](auto module) {
         module.walk([&](gpu::GPUFuncOp op) { op.setArgAttr(0, "llvm.noalias", UnitAttr::get(&context)); });
+      }) ||
+      !outlinedAttack("outlined valid block-id upper-bound overclaim", [&](auto module) {
+        module.walk([&](gpu::BlockIdOp op) { op->setAttr("upper_bound", IntegerAttr::get(IntegerType::get(&context, 64), 1)); });
+      }) ||
+      !outlinedAttack("outlined valid nontemporal load modifier", [](auto module) {
+        module.walk([](memref::LoadOp op) { op.setNontemporal(true); });
       })) return 1;
 
   const auto shaderAttack = [&](llvm::StringRef name,

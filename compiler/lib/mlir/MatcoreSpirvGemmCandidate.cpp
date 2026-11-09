@@ -93,7 +93,7 @@ StringAttr builtinDecoration(spirv::GlobalVariableOp global) {
 bool outputIndex(Value value, gpu::Dimension dimension, std::int64_t extent) {
   if (extent == 1) return integer(value, 0);
   auto op = value.getDefiningOp<gpu::BlockIdOp>();
-  return op && op.getDimension() == dimension;
+  return op && op.getDimension() == dimension && !op->hasAttr("upper_bound");
 }
 bool matrix(Type type, std::int64_t rows, std::int64_t columns) {
   auto memref = dyn_cast<MemRefType>(type);
@@ -141,15 +141,19 @@ bool kernelBody(gpu::GPUFuncOp function, StaticGemmShapeV1 shape, bool fill,
     if (auto candidate = dyn_cast<memref::StoreOp>(op)) stores.push_back(candidate);
     if (auto candidate = dyn_cast<arith::MulFOp>(op)) multiplies.push_back(candidate);
     if (auto candidate = dyn_cast<arith::AddFOp>(op)) adds.push_back(candidate);
-    for (auto attr : op->getDiscardableAttrDictionary()) {
-      auto name = attr.getName().strref();
-      if (isa<gpu::GPUFuncOp>(op) &&
-          (name == "known_block_size" || name == "known_grid_size" ||
-           name == "gpu.kernel" || name == "workgroup_attributions" ||
-           name == "sym_name")) continue;
-      unexpected = "unsupported attribute " + name.str() + " on " + op->getName().getStringRef().str();
-      unknown = true;
-    }
+    bool allowed = false;
+    if (isa<gpu::GPUFuncOp>(op))
+      allowed = attrsOnly(op, {"sym_name", "function_type", "known_block_size",
+          "known_grid_size", "gpu.kernel", "workgroup_attributions"}, error);
+    else if (isa<arith::ConstantOp>(op)) allowed = attrsOnly(op, {"value"}, error);
+    else if (isa<gpu::BlockIdOp>(op)) allowed = attrsOnly(op, {"dimension"}, error);
+    else if (isa<arith::MulFOp, arith::AddFOp>(op)) allowed = attrsOnly(op, {"fastmath"}, error);
+    else if (auto load = dyn_cast<memref::LoadOp>(op))
+      allowed = attrsOnly(op, {"nontemporal"}, error) && !load.getNontemporal();
+    else if (auto store = dyn_cast<memref::StoreOp>(op))
+      allowed = attrsOnly(op, {"nontemporal"}, error) && !store.getNontemporal();
+    else allowed = attrsOnly(op, {}, error);
+    if (!allowed) { unknown = true; unexpected = error; }
   });
   if (unknown || returns != 1 || stores.size() != 1 ||
       !isa<gpu::ReturnOp>(function.getBody().front().back()))
@@ -322,14 +326,16 @@ bool verifyStrictGemmOutlinedV1(mlir::ModuleOp module, StaticGemmShapeV1 shape,
   bool extraAttributes = false;
   module.walk([&](Operation *op) {
     if (isa<gpu::GPUFuncOp>(op) || op->getParentOfType<gpu::GPUFuncOp>()) return;
-    for (auto attr : op->getDiscardableAttrDictionary()) {
-      auto name = attr.getName().strref();
-      if (op == module.getOperation() &&
-          (name == "gpu.container_module" || name == spirv::getTargetEnvAttrName())) continue;
-      extraAttributes = true;
-    }
+    bool allowed = false;
+    if (op == module.getOperation()) allowed = attrsOnly(op, {"gpu.container_module", "spirv.target_env"}, error);
+    else if (isa<func::FuncOp>(op)) allowed = attrsOnly(op, {"sym_name", "function_type"}, error);
+    else if (isa<gpu::GPUModuleOp>(op)) allowed = attrsOnly(op, {"sym_name"}, error);
+    else if (isa<gpu::LaunchFuncOp>(op)) allowed = attrsOnly(op, {"kernel", "operandSegmentSizes"}, error);
+    else if (isa<arith::ConstantOp>(op)) allowed = attrsOnly(op, {"value"}, error);
+    else allowed = attrsOnly(op, {}, error);
+    extraAttributes |= !allowed;
   });
-  if (extraAttributes) return reject(error, "outlined host/module acquired extra attributes");
+  if (extraAttributes) return reject(error, "outlined host/module acquired extra attributes: " + error);
   auto host = module.lookupSymbol<func::FuncOp>(cpu_candidate::kStrictGemmSymbolV1);
   auto fill = module.lookupSymbol<gpu::GPUModuleOp>(kEntryPointV1);
   auto gemm = module.lookupSymbol<gpu::GPUModuleOp>(std::string(kEntryPointV1) + "_0");
@@ -362,7 +368,9 @@ bool verifyStrictGemmOutlinedV1(mlir::ModuleOp module, StaticGemmShapeV1 shape,
         !integer(launch.getGridSizeY(), shape.n) || !integer(launch.getGridSizeZ(), 1) ||
         !integer(launch.getBlockSizeX(), 1) || !integer(launch.getBlockSizeY(), 1) ||
         !integer(launch.getBlockSizeZ(), 1) || launch.getAsyncToken() ||
-        !launch.getAsyncDependencies().empty() || launch.getDynamicSharedMemorySize())
+        !launch.getAsyncDependencies().empty() || launch.getDynamicSharedMemorySize() ||
+        launch.getClusterSizeX() || launch.getClusterSizeY() || launch.getClusterSizeZ() ||
+        launch.getAsyncObject() || launch.getNumResults())
       return reject(error, "outlined ordered launch/geometry differs");
     auto arguments = launch.getKernelOperands();
     if (arguments.size() != (i ? 3 : 1)) return reject(error, "launch argument count differs");
