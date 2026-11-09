@@ -127,3 +127,42 @@ support the narrow scalar f32 multiply/add claim under the required controls,
 not arbitrary dot/matrix/extended-instruction substitution. Optional properties,
 actual ICD/layer identity and source adapter/artifact/completion laws remain
 separately owned subsequent boundaries.
+
+## Native decoded forwarding graph addendum
+
+The integration owner's real round-trip check exposed a representation
+difference: pinned 21.1.8 deserialization retains two function blocks around the
+loop-header incoming phi. Review was extended to issuer commits `59b47fa`,
+`c6eb716`, `0a3a706`, `0e977ce` and exact-seed hardening `77fac52`.
+The added shape faces and defensive record initialization introduce no new
+mathematical, source or runtime authority.
+
+The reviewed two-block law is narrow. The first block branches with one concrete
+i32 zero to the second block. That block has exactly one predecessor use, one
+single-use argument, and only the loop followed by return. The loop must consume
+that exact forwarded argument, not an equivalent freshly created zero. Its four
+internal blocks still have the original fixed incoming edge, k<K test, true/false
+successors and k+1 backedge. An optional first header operation is allowed only
+when it is the exact i32 K constant. No emitted IR or binary is normalized or
+rewritten to satisfy inspection.
+
+The first `c6eb716` condition allowed a fresh constant-zero incoming IV even with
+the wrapper present. This was not a numerical bypass: the forwarded argument was
+also proven zero. It did permit a foreign representation with a dead argument
+consumed by unused integer arithmetic. Review requested exact consumption;
+`77fac52` now requires the forwarded block argument whenever that wrapper exists.
+No high/medium seed, predecessor, body or control-flow bypass was identified by
+source inspection after that tightening.
+
+The native two-block form was independently reproduced from the historical
+strict 2x3x4 binary using the existing pinned `mlir-translate --deserialize-spirv`.
+Streaming mutations of the prologue seed to 1, the header bound to 2 and the
+increment to 0 each passed `mlir-opt` generic validity. None was dispatched.
+Additional test-only commit `9de234ac30a64fca3010281a89ba42c47ea2d255` directly
+deserializes freshly issued words and checks a positive decoded control, then
+requires direct structural rejection of those three mutants, a builtin-controlled
+seed, an extra predecessor block and the former dead-wrapper-argument bypass.
+Every negative first proves generic MLIR validity; the first four also retain
+the MLIR operation inventory. The last two deliberately add operations and do
+not claim count preservation. This reviewer made no second build; actual test
+execution remains in the integration owner's receipts.
