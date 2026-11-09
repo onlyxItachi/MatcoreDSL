@@ -120,7 +120,7 @@ ARM64, Windows, GPU, Metal or NPU support is promised.
 Keep current qualified implementations and historical measurements; do not start
 new tuning/parity campaigns as prerequisites for M1/M2. After an operation and a
 specific realization pass their correctness/trace/artifact gates, a separately
-approved performance question may compare matching numerical permissions,
+scoped performance question may compare matching numerical permissions,
 allocation/packing/reuse modes, actual thread/provider policy and reproducible
 timing conditions on an exclusive host. It must retain the correctness corpus and
 negative controls. No speedup, automatic selection, BLAS parity, Issue #15 closure
