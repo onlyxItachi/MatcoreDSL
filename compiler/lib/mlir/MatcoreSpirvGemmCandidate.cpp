@@ -417,7 +417,12 @@ bool verifyStrictGemmShaderV1(mlir::spirv::ModuleOp module,
       function.getNumResults() || !llvm::hasSingleElement(function.getBody()) ||
       function.getFunctionControl() != spirv::FunctionControl::None ||
       entry.getFn() != kEntryPointV1 || entry.getExecutionModel() != spirv::ExecutionModel::GLCompute)
-    return reject(error, "final shader entry/function identity differs");
+    return reject(error, "final shader entry/function identity differs: function=" +
+        function.getName().str() + "; args=" + std::to_string(function.getNumArguments()) +
+        "; results=" + std::to_string(function.getNumResults()) +
+        "; blocks=" + std::to_string(function.getBody().getBlocks().size()) +
+        "; control=" + spirv::stringifyFunctionControl(function.getFunctionControl()).str() +
+        "; entry=" + entry.getFn().str());
   // These analysis-only properties are not serialized. When retained on the
   // compiler-owned lowering, bind their values as well; a native binary round
   // trip legitimately has none of them.
@@ -724,6 +729,7 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
     auto decoded = spirv::deserialize(words, &context);
     if (!decoded || !verifyStrictGemmShaderV1(*decoded, shape, index == 0, result.error)) {
       if (result.error.empty()) reject(result.error, "serialized shader native round-trip inspection failed");
+      else result.error = "serialized native round-trip: " + result.error;
       return result;
     }
     (index ? result.gemm_spirv_ir : result.fill_spirv_ir) = print(shader.getOperation());
