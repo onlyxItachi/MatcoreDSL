@@ -6,6 +6,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
+#include <cstdint>
 #include <string>
 
 namespace llvm { class Module; }
@@ -38,12 +39,25 @@ struct GemmStagesV1 {
 using StrictGemmStagesV1 = GemmStagesV1;
 
 StrictGemmStagesV1 buildStrictGemmStagesV1(mlir::MLIRContext &context);
+// Compiler-owned positive static specialization of the same primitive. Target
+// index/byte/dispatch envelopes remain the responsibility of the closed target
+// issuer; this overload grants neither source nor execution authority.
+struct StaticGemmShapeV1 {
+  std::int64_t m, k, n;
+  bool operator==(const StaticGemmShapeV1 &) const = default;
+};
+StrictGemmStagesV1 buildStrictGemmStagesV1(mlir::MLIRContext &context,
+                                        StaticGemmShapeV1 shape);
 // Self-consistency checks only; none grants source/execution authority. Linalg
 // reduction iterator identity does not itself encode increasing-K order. Only
 // the issuer's fixed loop pipelines are defended here; arbitrary tiling,
 // vectorization or reassociation needs a separate numerical-order proof.
 bool verifyStrictGemmStructuredV1(mlir::ModuleOp module, std::string &error);
 bool verifyStrictGemmBufferizedV1(mlir::ModuleOp module, std::string &error);
+bool verifyStrictGemmStructuredV1(mlir::ModuleOp module,
+                                 StaticGemmShapeV1 shape, std::string &error);
+bool verifyStrictGemmBufferizedV1(mlir::ModuleOp module,
+                                 StaticGemmShapeV1 shape, std::string &error);
 
 // Internal realization choice, not mathematical semantics or runtime policy.
 // All retain increasing scalar K for every output and separate f32 arithmetic.

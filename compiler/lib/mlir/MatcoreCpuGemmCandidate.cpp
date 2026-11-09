@@ -88,15 +88,21 @@ bool fail(std::string &error, llvm::StringRef message) {
   return false;
 }
 
-closed_region::Program primitive(bool reassociate = false) {
+closed_region::Program primitive(bool reassociate = false,
+                                 const StaticGemmShapeV1 *staticShape = nullptr) {
   namespace cr = closed_region;
   cr::Program program;
   program.source_identity = reassociate ? "matcore-builtin:reassociate-gemm-f32-v1"
                                        : "matcore-builtin:strict-gemm-f32-v1";
   const llvm::StringRef selectedContract = reassociate ? reassociateContract : contract;
-  program.source_sha256 = digest(selectedContract);
+  std::string selectedIdentity = selectedContract.str();
+  if (staticShape)
+    selectedIdentity += ";static-MKN=" + std::to_string(staticShape->m) + "," +
+                        std::to_string(staticShape->k) + "," +
+                        std::to_string(staticShape->n);
+  program.source_sha256 = digest(selectedIdentity);
   program.source_files = {{1, program.source_identity, program.source_sha256,
-                           selectedContract.size()}};
+                           selectedIdentity.size()}};
   // This is a compiler-owned primitive identity, explicitly not a C++ header.
   program.header_sha256 = digest("no-source-header:compiler-owned-primitive");
   program.compiler_identity = "matcore-cpu-candidate:LLVM-" LLVM_VERSION_STRING;
@@ -104,8 +110,14 @@ closed_region::Program primitive(bool reassociate = false) {
   region.name = reassociate ? "reassociate_gemm_primitive" : "strict_gemm_primitive";
   region.site = {0, 1, 1, 1, 1};
   region.resources = {{1, "lhs", 0}, {2, "rhs", 1}};
-  region.shape_parameters = {{1, "M", 2}, {2, "K", 3}, {3, "N", 4}};
-  auto shape = [](cr::Id id) {
+  if (!staticShape)
+    region.shape_parameters = {{1, "M", 2}, {2, "K", 3}, {3, "N", 4}};
+  auto shape = [staticShape](cr::Id id) {
+    if (staticShape) {
+      const std::int64_t dimensions[] = {staticShape->m, staticShape->k,
+                                         staticShape->n};
+      return cr::Dimension{cr::Dimension::Kind::Literal, dimensions[id - 1], 0};
+    }
     return cr::Dimension{cr::Dimension::Kind::ShapeParameter, 0, id};
   };
   cr::Operation lhs, rhs, gemm;
@@ -132,8 +144,9 @@ closed_region::Program primitive(bool reassociate = false) {
 
 mlir::OwningOpRef<mlir::ModuleOp>
 structuredFromPrimitive(mlir::ModuleOp semantic, std::string &error,
-                        bool reassociate = false) {
-  if (!closed_region::verifyModuleMatchesProgram(primitive(reassociate), semantic, error))
+                        bool reassociate = false,
+                        const StaticGemmShapeV1 *staticShape = nullptr) {
+  if (!closed_region::verifyModuleMatchesProgram(primitive(reassociate, staticShape), semantic, error))
     return {};
   mlir::Operation *gemm = nullptr;
   semantic.walk([&](mlir::Operation *op) {
@@ -172,7 +185,8 @@ structuredFromPrimitive(mlir::ModuleOp semantic, std::string &error,
 }
 
 bool verifyStage(mlir::ModuleOp module, bool buffer, std::string &error,
-                 bool rowContiguous = false, bool reassociate = false) {
+                 bool rowContiguous = false, bool reassociate = false,
+                 const StaticGemmShapeV1 *staticShape = nullptr) {
   error.clear();
   if (!module || mlir::failed(mlir::verify(module)) ||
       !module->getAttrs().empty() ||
@@ -195,12 +209,21 @@ bool verifyStage(mlir::ModuleOp module, bool buffer, std::string &error,
       !llvm::hasSingleElement(function.getBody()))
     return fail(error,
                 "function identity/type/attributes differ from primitive");
+  unsigned argument = 0;
   for (auto type : function.getFunctionType().getInputs()) {
     auto shaped = mlir::dyn_cast<mlir::ShapedType>(type);
     if (!shaped || !shaped.hasRank() || shaped.getRank() != 2 ||
-        !shaped.getElementType().isF32() || !shaped.isDynamicDim(0) ||
-        !shaped.isDynamicDim(1))
+        !shaped.getElementType().isF32())
+      return fail(error, "candidate requires rank-2 f32 operands");
+    if (staticShape) {
+      const std::int64_t dimensions[][2] = {{staticShape->m, staticShape->k},
+          {staticShape->k, staticShape->n}, {staticShape->m, staticShape->n}};
+      if (shaped.getShape() != llvm::ArrayRef<std::int64_t>(dimensions[argument]))
+        return fail(error, "candidate lost checked static GEMM shape");
+    } else if (!shaped.isDynamicDim(0) || !shaped.isDynamicDim(1)) {
       return fail(error, "candidate requires dynamic rank-2 f32 operands");
+    }
+    ++argument;
     if (buffer) {
       auto memref = mlir::dyn_cast<mlir::MemRefType>(type);
       if (!memref || !memref.getLayout().isIdentity() ||
@@ -362,6 +385,18 @@ bool verifyStrictGemmStructuredV1(mlir::ModuleOp module, std::string &error) {
 bool verifyStrictGemmBufferizedV1(mlir::ModuleOp module, std::string &error) {
   return verifyStage(module, true, error);
 }
+bool verifyStrictGemmStructuredV1(mlir::ModuleOp module,
+                                 StaticGemmShapeV1 shape, std::string &error) {
+  if (shape.m <= 0 || shape.k <= 0 || shape.n <= 0)
+    return fail(error, "static specialization requires positive M/K/N");
+  return verifyStage(module, false, error, false, false, &shape);
+}
+bool verifyStrictGemmBufferizedV1(mlir::ModuleOp module,
+                                 StaticGemmShapeV1 shape, std::string &error) {
+  if (shape.m <= 0 || shape.k <= 0 || shape.n <= 0)
+    return fail(error, "static specialization requires positive M/K/N");
+  return verifyStage(module, true, error, false, false, &shape);
+}
 
 bool verifyStrictGemmRowContiguousV1(mlir::ModuleOp module, std::string &error) {
   return verifyStage(module, true, error, true);
@@ -399,22 +434,23 @@ deriveStrictGemmRowContiguousV1(mlir::ModuleOp bufferized, std::string &error) {
 }
 
 namespace {
-GemmStagesV1 buildGemmStages(mlir::MLIRContext &context, bool reassociate) {
+GemmStagesV1 buildGemmStages(mlir::MLIRContext &context, bool reassociate,
+                            const StaticGemmShapeV1 *staticShape = nullptr) {
   GemmStagesV1 result;
   if (llvm::StringRef(LLVM_VERSION_STRING) != "21.1.8") {
     fail(result.error, "requires exact LLVM/MLIR 21.1.8");
     return result;
   }
   mlir_bridge::registerBufferizedGemmHandoffDialectsV1(context);
-  auto witness = closed_region::buildModule(primitive(reassociate), context);
+  auto witness = closed_region::buildModule(primitive(reassociate, staticShape), context);
   if (!witness) {
     result.error = witness.error;
     return result;
   }
   result.semantic = std::move(witness.module);
-  result.structured = structuredFromPrimitive(*result.semantic, result.error, reassociate);
+  result.structured = structuredFromPrimitive(*result.semantic, result.error, reassociate, staticShape);
   if (!result.structured ||
-      !verifyStage(*result.structured, false, result.error, false, reassociate))
+      !verifyStage(*result.structured, false, result.error, false, reassociate, staticShape))
     return result;
   result.bufferized = result.structured->clone();
   mlir::bufferization::OneShotBufferizationOptions options;
@@ -429,7 +465,7 @@ GemmStagesV1 buildGemmStages(mlir::MLIRContext &context, bool reassociate) {
           *result.bufferized, options, state, &statistics)) ||
       statistics.numBufferAlloc || statistics.numBufferDealloc ||
       statistics.numTensorOutOfPlace ||
-      !verifyStage(*result.bufferized, true, result.error, false, reassociate)) {
+      !verifyStage(*result.bufferized, true, result.error, false, reassociate, staticShape)) {
     if (result.error.empty())
       fail(result.error, "One-Shot did not preserve isolated destination "
                          "without tensor allocation/copy");
@@ -441,6 +477,15 @@ GemmStagesV1 buildGemmStages(mlir::MLIRContext &context, bool reassociate) {
 
 StrictGemmStagesV1 buildStrictGemmStagesV1(mlir::MLIRContext &context) {
   return buildGemmStages(context, false);
+}
+StrictGemmStagesV1 buildStrictGemmStagesV1(mlir::MLIRContext &context,
+                                        StaticGemmShapeV1 shape) {
+  if (shape.m <= 0 || shape.k <= 0 || shape.n <= 0) {
+    StrictGemmStagesV1 result;
+    fail(result.error, "static specialization requires positive M/K/N");
+    return result;
+  }
+  return buildGemmStages(context, false, &shape);
 }
 GemmStagesV1 buildReassociateGemmStagesV1(mlir::MLIRContext &context) {
   return buildGemmStages(context, true);
