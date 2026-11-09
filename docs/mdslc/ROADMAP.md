@@ -1,10 +1,12 @@
 # MDSLC roadmap
 
 Status date: 2026-11-10. This roadmap is gate-driven and additive to the existing
-Python/JIT lineage. **Mathematical correctness comes first; performance comes
-later.** Progress must broaden the mathematical surface, not merely produce
-more sophisticated GEMM schedules. A plan, topology carrier, emitted artifact or
-passing finite-value example is not an executed correctness qualification.
+Python/JIT lineage. **Correctness is the gate; performance is the next objective
+inside the qualified envelope.** The owner's later direction explicitly enters
+the performance-evidence phase after the selected correctness boundary; it does
+not require every future mathematical operation to be implemented first.
+A plan, topology carrier, emitted artifact or passing finite-value example is
+not an executed correctness qualification or performance result.
 
 ## Current navigation and priority
 
@@ -13,9 +15,12 @@ passing finite-value example is not an executed correctness qualification.
   boundary. At this documentation baseline, PR #93's engineering merge is
   `e8e8008cb61b61a585d8bc1584ca320c6326472d`; PR #94's documentation checkpoint is
   `b2597bed52de46604574f76eb33663788a5ab994`.
+- [Performance evidence roadmap v1](PERFORMANCE_EVIDENCE_ROADMAP_V1.md) defines
+  P1: an authenticated source-time comparison of at least two strict CPU output
+  tile requests on one exclusive host, without automatic dispatch thresholds.
 - [Mathematical correctness roadmap v1](MATHEMATICAL_CORRECTNESS_ROADMAP_V1.md)
-  records the actual operation coverage, small broader-math gates, and the
-  distinction between semantic coverage, target qualification and performance.
+  records actual operation coverage and future broader-math gates. Those gates
+  remain useful proposals, not prerequisites for P1 or the current work queue.
 - [Region compiler guide](REGION_COMPILER_V1.md) describes the current
   source/value/effect contract; [source-time GEMM
   patterns](SOURCE_TIME_GEMM_PATTERN_V1.md) describes the bounded explicit CPU
@@ -24,19 +29,21 @@ passing finite-value example is not an executed correctness qualification.
   proposed first broader-math boundary in current code and contains an unfiled
   issue proposal. It does not authorize implementation or remote changes.
 
-The immediate engineering frontier remains the closed, parameterized,
+At this baseline the immediate correctness frontier is the closed, parameterized,
 bounded-static-shape strict SPIR-V issuer tracked by Issue #89. It must establish
 its positive family and negative controls without source/runtime authority;
 research PR #84 remains draft and unchanged at this baseline. That independent
-target-proof boundary does not substitute for broader mathematical coverage.
-After its disposition, select the next engineering boundary explicitly rather
-than treating every item in this roadmap as concurrently authorized work.
+target-proof boundary does not substitute for broader mathematical coverage or
+CPU timing evidence. After its disposition, the selected follow-up direction is
+P1 performance evidence for the already qualified CPU source-time tile route.
+Do not infer Vulkan source/runtime execution, GPU timing work or concurrent
+implementation of every roadmap proposal from either boundary.
 
 | Workstream | Required result | Not implied |
 | --- | --- | --- |
-| Broader mathematics | A distinct operation's numerical, shape, value, effect and failure contracts, then independently qualified execution | GEMV/DOT/GER/batch support from shared indexing maps or GEMM degeneracies |
 | Target qualification | Exact admitted operation/profile on a pinned compiler, ABI, artifact and physical target, with checked completion/refusal | Every target, source integration from issuer-only evidence, or performance |
-| Later performance | Reproducible measurements inside an already qualified correctness envelope | Numerical relaxation, new operations, BLAS parity or Issue #15 closure |
+| P1 performance evidence | Reproducible matched strict CPU source-time tile measurements on an exclusive host | A guaranteed win, numerical relaxation, automatic thresholds, BLAS parity or Issue #15 closure |
+| Future broader mathematics | A distinct operation's numerical, shape, value, effect and failure contracts, then independently qualified execution | A dependency that blocks performance of existing GEMM, or support from indexing maps/degeneracies |
 
 Keep strict numerics, all-MAY-alias source Storage, ordered failure/effect
 frontiers, checked completion, source/artifact ownership and fail-closed target

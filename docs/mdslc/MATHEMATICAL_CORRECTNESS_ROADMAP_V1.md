@@ -2,9 +2,11 @@
 
 Planning baseline: 2026-11-10, documentation checkpoint
 `b2597bed52de46604574f76eb33663788a5ab994`. This is a small sequence of falsifiable
-gates, not a promise to implement every operation or target. The user's priority
-is mathematical correctness first and performance later, including broader
-mathematics rather than only improving GEMM. [CURRENT_STATE.md](CURRENT_STATE.md)
+gates, not a promise to implement every operation or target. The initial request
+included broader mathematical coverage; the owner's later direction selects
+performance after the chosen correctness gates. These future math proposals are
+not a dependency for [P1 performance evidence](PERFORMANCE_EVIDENCE_ROADMAP_V1.md)
+on the already qualified strict GEMM route. [CURRENT_STATE.md](CURRENT_STATE.md)
 owns the canonical implementation envelope and exactly one immediate frontier;
 the [audit](agent-reports/correctness-coverage-audit-v1.md) records code evidence.
 
@@ -24,7 +26,7 @@ Unit extents do not turn GEMM into GEMV/DOT, and GER's update semantics must not
 be replaced by a singleton-K GEMM. Shared topology does not establish overwrite,
 initial-accumulator, rounding, alias/effect or failure behavior.
 
-## Three gates for broader math
+## Three future broader-math gates — not prerequisites for P1
 
 1. **M1 — Dense GEMV semantics and authenticated inspection.** Propose one
    distinct dense f32 matrix/vector operation with normal and transposed matrix
@@ -59,8 +61,9 @@ initial-accumulator, rounding, alias/effect or failure behavior.
    behavior. General tensors/views and sparse math remain separate future design
    decisions, not implied deliverables of these dense-operation gates.
 
-GEMV is the proposed first family because its existing canonical topology already
-distinguishes matrix N/T orientation with ranks `[2,1,1]`. DOT introduces a scalar
+If broader-math work is selected, GEMV is the proposed first family because its
+existing canonical topology distinguishes matrix N/T orientation with ranks
+`[2,1,1]`. DOT introduces a scalar
 result, GER introduces update semantics, and batching introduces rank-3. This is
 a code-grounded scope choice, not proof that the missing vector boundary is free
 or that GEMV is already implementable without review. M1 may stop at an unresolved
@@ -115,13 +118,12 @@ limitations keep their original distinct scopes. A backend dialect or a CPU
 pass cannot substitute for physical accelerator execution. No universal x64,
 ARM64, Windows, GPU, Metal or NPU support is promised.
 
-## Performance comes after the selected correctness envelope
+## Performance follows the selected correctness envelope, not every math gate
 
-Keep current qualified implementations and historical measurements; do not start
-new tuning/parity campaigns as prerequisites for M1/M2. After an operation and a
-specific realization pass their correctness/trace/artifact gates, a separately
-scoped performance question may compare matching numerical permissions,
-allocation/packing/reuse modes, actual thread/provider policy and reproducible
-timing conditions on an exclusive host. It must retain the correctness corpus and
-negative controls. No speedup, automatic selection, BLAS parity, Issue #15 closure
-or API/ABI freeze is implied by this roadmap.
+The selected next direction is the [P1 source-time strict tile
+comparison](PERFORMANCE_EVIDENCE_ROADMAP_V1.md), not M1/M2. New operations are not
+needed to measure the existing qualified GEMM implementation. P1 preserves its
+numerical/effect/artifact contract and compares matching measurement modes on an
+exclusive host. Broader math may be selected later and still requires its own
+gates. No speedup, automatic selection, BLAS parity, Issue #15 closure or API/ABI
+freeze is implied by either workstream.

@@ -10,11 +10,14 @@ PR #93 merge `e8e8008cb61b61a585d8bc1584ca320c6326472d` as recorded by
 
 ## Disposition
 
-The user reaffirmed mathematical correctness before performance and broader math
-coverage rather than only more elaborate GEMM. [ROADMAP.md](../ROADMAP.md) now
-starts with current navigation and that priority, separates broader mathematics
-from target qualification/performance, and explicitly labels its old CPU-beta and
-post-beta narrative as history. Its original historical evidence is retained.
+The initial request reaffirmed correctness before performance and broader math
+coverage rather than only more elaborate GEMM. A later explicit owner direction
+selects the performance-evidence phase after the chosen correctness boundary.
+[P1](../PERFORMANCE_EVIDENCE_ROADMAP_V1.md) is therefore the selected follow-up;
+the broader-math proposals below are parked and do not block timing the existing
+qualified strict GEMM route. [ROADMAP.md](../ROADMAP.md) now separates these
+workstreams and labels its old CPU-beta/post-beta narrative as history. Its
+original historical evidence is retained.
 The short [correctness roadmap](../MATHEMATICAL_CORRECTNESS_ROADMAP_V1.md) proposes
 GEMV semantic/admission and CPU-execution gates, then a separately chosen family.
 These are proposed follow-ups, not new execution authority or promises.
@@ -47,7 +50,7 @@ execution are historical, not current queue/authority. Updating every historical
 report would erase useful chronology; current navigation now supersedes the old
 roadmap's scheduling language explicitly.
 
-## Why GEMV first, and what remains a decision
+## Why GEMV first if broader math is selected
 
 GEMV is a proposed *family* boundary because the canonical model and tests already
 distinguish N/T without requiring update semantics, scalar result handling or a
@@ -58,24 +61,25 @@ matrix remains GEMM, not proof of rank-1 support. DOT might have fewer loops, bu
 it adds rank-0 ownership/observation; GER adds update behavior. None is a free
 extension from topology alone.
 
-The proposed first engineering boundary is therefore M1: a reviewed minimal
-rank-1 contract and authenticated, inspection-only dense strict GEMV N/T. M2 is
+The proposed first broader-math boundary would be M1: a reviewed minimal rank-1
+contract and authenticated, inspection-only dense strict GEMV N/T. It is not the
+current performance follow-up or a prerequisite for P1. M2 is
 one CPU execution slice with independent arithmetic/trace/artifact/package
 evidence. No API spelling or general rank-N redesign is selected by this report.
 Stop and resolve any unavoidable contract ambiguity; do not widen admission or
 silently reinterpret the GEMM-only v1 capture DTO. Keep the existing sealed
 Program/exact-witness architecture, not a new overlapping optimizer schema.
 
-## Prepared GitHub issue proposal — not filed
+## Historical broader-math issue proposal — parked, not filed
 
 Suggested title: **Correctness-first dense GEMV N/T: rank-1 contract and authenticated inspection**
 
 Issue body:
 
-> Planning proposal after the disposition of the current Issue #89 boundary;
-> not authorization for concurrent implementation. Mathematical correctness and
-> broader operation coverage come before tuning. Canonical audit baseline is
-> `b2597bed52de46604574f76eb33663788a5ab994`.
+> Retained broader-math proposal, not the selected next engineering issue. The
+> owner's later direction selects P1 performance evidence on the existing
+> qualified strict GEMM route; implementing this proposal is not a prerequisite.
+> Canonical audit baseline is `b2597bed52de46604574f76eb33663788a5ab994`.
 
 ### Problem
 
@@ -144,8 +148,9 @@ Validation is source/documentation inspection only, not rerun compiler evidence:
 - `git diff --check`: passed; no whitespace errors.
 - Compared `ROADMAP.md` from `## Authenticated pivot baseline` through EOF with
   the same baseline suffix from `git show HEAD:docs/mdslc/ROADMAP.md`: identical.
-- Local Markdown link-target existence check over all three owned documents:
-  33/33 targets exist. This checks local paths, not remote URL availability.
+- Initial local Markdown link-target check: 33/33 targets existed. The later
+  performance-direction update checks all four documents: 41/41 targets exist.
+  This checks local paths, not remote URL availability.
 - Source claims were checked against the listed headers, operation definitions,
   builders, lowerer/runtime and contract/test sources; historical test counts are
   not re-presented as new passing results.
