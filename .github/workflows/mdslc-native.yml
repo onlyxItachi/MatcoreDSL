@@ -227,6 +227,13 @@ jobs:
       - name: Build standalone MDSLC
         run: cmake --build build-mdslc --parallel 2
 
+      - name: Require independent SPIR-V validation registration
+        if: matrix.spirv_issuer_enable == 'ON'
+        run: |
+          ctest --test-dir build-mdslc -N -R '^generated_spirv\.external_validation$' \
+            | tee build-mdslc/spirv-external-test-list.txt
+          grep -Fx 'Total Tests: 1' build-mdslc/spirv-external-test-list.txt
+
       - name: Verify the selected generated schedule
         if: matrix.mlir_enable == 'ON'
         run: |
