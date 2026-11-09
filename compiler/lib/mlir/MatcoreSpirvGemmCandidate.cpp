@@ -638,7 +638,10 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
         spirv::getEntryPointABIAttr(&context, {1, 1, 1}, std::nullopt, 32));
     for (unsigned i = 0; i != kernel.getNumArguments(); ++i)
       kernel.setArgAttr(i, spirv::getInterfaceVarABIAttrName(),
-          spirv::getInterfaceVarABIAttr(0, i, spirv::StorageClass::StorageBuffer, &context));
+          // For non-scalar memrefs the converted pointer type owns its storage
+          // class. Supplying an ABI storage-class field is invalid in 21.1.8.
+          // The final independent checker still mandates StorageBuffer.
+          spirv::getInterfaceVarABIAttr(0, i, std::nullopt, &context));
   });
   PassManager convert(&context);
   convert.addPass(createConvertGPUToSPIRVPass());
