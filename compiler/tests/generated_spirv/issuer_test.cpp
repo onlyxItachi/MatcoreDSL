@@ -4,6 +4,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/Verifier.h"
 #include "llvm/Support/raw_ostream.h"
 #include <functional>
@@ -145,6 +146,7 @@ int main() {
     auto changed = parseSourceString<ModuleOp>(artifact.outlined_ir, &context);
     if (!changed) return require(false, "parse outlined control");
     mutate(*changed);
+    if (!require(succeeded(verify(*changed)), "mutated outlined module remains valid MLIR")) return false;
     return require(!candidate::verifyStrictGemmOutlinedV1(*changed, {2, 3, 4}, error), name);
   };
   if (!outlinedAttack("outlined reduction starts at one", [](auto module) {
@@ -194,6 +196,17 @@ int main() {
       }) ||
       !shaderAttack("final shader valid store memory modifier", [](auto module) {
         module.walk([](spirv::StoreOp op) { op.setMemoryAccess(spirv::MemoryAccess::Volatile); });
+      }) ||
+      !shaderAttack("final shader nested index coefficient overflow is safely refused", [&](auto module) {
+        spirv::AccessChainOp target;
+        module.walk([&](spirv::AccessChainOp op) { if (!target) target = op; });
+        OpBuilder builder(target);
+        auto large = spirv::ConstantOp::create(builder, target.getLoc(),
+            builder.getI32Type(), builder.getI32IntegerAttr(INT32_MAX));
+        Value scaled = target->getOperand(2);
+        for (unsigned i = 0; i != 6; ++i)
+          scaled = spirv::IMulOp::create(builder, target.getLoc(), scaled, large);
+        target->setOperand(2, scaled);
       }) ||
       !shaderAttack("final shader valid static array stride mutation", [](auto module) {
         const auto changedType = [](Type type) -> Type {
