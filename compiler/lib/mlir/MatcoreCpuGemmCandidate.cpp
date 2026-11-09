@@ -116,7 +116,8 @@ closed_region::Program primitive(bool reassociate = false,
     if (staticShape) {
       const std::int64_t dimensions[] = {staticShape->m, staticShape->k,
                                          staticShape->n};
-      return cr::Dimension{cr::Dimension::Kind::Literal, dimensions[id - 1], 0};
+      return cr::Dimension{cr::Dimension::Kind::Literal,
+                           static_cast<std::uint64_t>(dimensions[id - 1]), 0};
     }
     return cr::Dimension{cr::Dimension::Kind::ShapeParameter, 0, id};
   };
