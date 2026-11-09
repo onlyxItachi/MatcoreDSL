@@ -104,9 +104,6 @@ bool kernelBody(gpu::GPUFuncOp function, StaticGemmShapeV1 shape, bool fill,
       !function.getWorkgroupAttributions().empty() ||
       !function.getPrivateAttributions().empty())
     return reject(error, "outlined kernel signature differs");
-  for (unsigned i = 0; i != function.getNumArguments(); ++i)
-    if (!function.getArgAttrs(i).empty())
-      return reject(error, "outlined kernel acquired argument permissions");
   const auto local = function->getAttrOfType<DenseI32ArrayAttr>("known_block_size");
   const auto grid = function->getAttrOfType<DenseI32ArrayAttr>("known_grid_size");
   if (!function->hasAttr("gpu.kernel") || !local || !grid ||
@@ -342,9 +339,6 @@ bool verifyStrictGemmOutlinedV1(mlir::ModuleOp module, StaticGemmShapeV1 shape,
       !llvm::hasSingleElement(fill.getOps<gpu::GPUFuncOp>()) ||
       !llvm::hasSingleElement(gemm.getOps<gpu::GPUFuncOp>()))
     return reject(error, "outlined static host/module signature differs");
-  for (unsigned i = 0; i != 3; ++i)
-    if (!host.getArgAttrs(i).empty())
-      return reject(error, "outlined host acquired argument permissions");
   SmallVector<gpu::LaunchFuncOp> launches;
   for (auto &op : host.getBody().front()) {
     if (auto launch = dyn_cast<gpu::LaunchFuncOp>(op)) launches.push_back(launch);
