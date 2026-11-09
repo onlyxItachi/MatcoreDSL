@@ -109,8 +109,20 @@ The independent reviewer revalidated all 83 command receipts, all source/catalog
 hashes, empty stderr logs and the 24 physical shader identities. A low synthetic
 receipt weakness was corrected: target refusal reasons must agree with actual
 typed device properties, and nonempty diagnostics cannot qualify. The old real
-receipts already satisfy the stronger rule; fresh v2 campaigns are recorded below
-when complete. Source snapshots are evidence, not build-origin attestations.
+receipts already satisfy the stronger rule. Fresh v2 campaigns at `d1d944d`
+passed the same 35/24/24 commands, same physical counts and zero mismatches:
+
+- `physical-amd-v2/summary.json`:
+  `ddebc6154f076fd48bec818aae426f22f8606c40c982e32984d737e0acad401b`.
+- `refusal-nvidia-v2/summary.json`:
+  `6e7178f241cfb40a2ac61ebff296fdf7fdcdb63e95beda7c3b00b3b6be1a7559`.
+- `refusal-llvmpipe-v2/summary.json`:
+  `408b528f32a8f38f1e72e0fe3e504312275a403c8b6f432ba16da472e83fdd47`.
+
+The independent reviewer revalidated these 83 new receipts, all 148/104/104
+catalog files, source/probe identities and upstream shader-byte joins. All
+diagnostic logs are empty. Source snapshots are evidence, not build-origin
+attestations. These are repeated bounded controls, not broader shape coverage.
 
 These samples do not prove all f32 inputs, all admitted shapes, other driver
 versions or a production failure/cleanup protocol. All receipts retain

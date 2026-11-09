@@ -405,6 +405,7 @@ jobs:
             -DMDSLC_REQUIRE_OPENBLAS=OFF \
             -DMDSLC_ENABLE_MATCORE_MLIR=ON \
             -DMDSLC_ENABLE_EXPERIMENTAL_REGIONS=ON \
+            -DMDSLC_ENABLE_EXPERIMENTAL_SPIRV_ISSUER=ON \
             -DMDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE=row-contiguous \
             -DMDSLC_DEFAULT_SEMANTIC_PIPELINE=matcore-mlir \
             -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
@@ -438,7 +439,11 @@ jobs:
           fi
 
       - name: Test exact-MLIR Debug validation
-        run: ctest --test-dir build-mdslc-debug --output-on-failure -j1
+        run: |
+          ctest --test-dir build-mdslc-debug -N -R '^generated_spirv\.(issuer|adversarial)$' \
+            | tee build-mdslc-debug/spirv-issuer-test-list.txt
+          grep -Fx 'Total Tests: 2' build-mdslc-debug/spirv-issuer-test-list.txt
+          ctest --test-dir build-mdslc-debug --output-on-failure -j1
 
   clang-21-asan-ubsan-mlir:
     name: Clang 21.1.8 ASan+UBSan (Matcore MLIR enabled, OpenBLAS disabled)

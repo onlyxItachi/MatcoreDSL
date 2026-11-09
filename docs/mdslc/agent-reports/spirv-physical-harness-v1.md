@@ -1,10 +1,12 @@
 # Test-only strict SPIR-V physical harness v1
 
-Status: **final qualification pending**. The integration owner reported successful
-coherent-21 compilation and software-oracle CTest execution; this lane did not
-rerun those checks. That first build had 22 expected missing-field-initializer
-warnings. The later issuer-checker fixes still require their own final evidence.
-No physical, sanitizer, issuer, source or runtime qualification is claimed here.
+Status: this is the **harness author's source-level record**, not the current
+integration verdict. The integration owner's subsequent compilation, software
+and bounded physical receipts are in the
+[qualification record](spirv-issuer-integration-qualification-v1.md).
+This lane did not build or dispatch. The first root build had 22 expected
+missing-field-initializer warnings. No physical, sanitizer, issuer, source or
+runtime qualification is inferred from this source-level record alone.
 Date: 2026-11-10. The integration owner coordinates the shared build, compiler
 prerequisites and actual execution receipts; no additional build ran in this lane.
 
