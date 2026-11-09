@@ -47,6 +47,9 @@ SOURCE_FILES = (
 )
 CAP = 1 << 20
 TIMEOUT = 20
+FP_CONTROLS = ("denorm_preserve_f32", "rne_f32", "signed_zero_inf_nan_f32")
+CONTROL_REFUSAL = "selected device lacks Vulkan1.2/DenormPreserve/RTE/SignedZeroInfNan f32 controls"
+PHYSICAL_REFUSAL = "positive sample requires selected physical AMD RADV device"
 
 
 def require(condition, message):
@@ -132,6 +135,25 @@ def selected_device(receipt, index, expected):
     exact_int(receipt.get("selected_device_index"), index, "selected device")
     values = devices(receipt)
     require(index < len(values) and values[index] == expected, "selected device identity/properties changed from inventory")
+
+
+def target_refusal_reason(device):
+    # Mirror the probe's ordered device gates. A known reason string alone is
+    # not evidence for a refusal contradicted by the selected inventory record.
+    for key in ("api_version", "vendor_id", "driver_id", "device_type"):
+        require(type(device.get(key)) is int and 0 <= device[key] <= 0xffffffff,
+                "missing/noninteger device property " + key)
+    for key in FP_CONTROLS:
+        require(type(device.get(key)) is bool, "missing/nonboolean device control " + key)
+    if device["api_version"] < ((1 << 22) | (2 << 12)) or not all(device[key] for key in FP_CONTROLS):
+        return CONTROL_REFUSAL
+    if device["vendor_id"] != 0x1002 or device["driver_id"] != 3 or device["device_type"] not in (1, 2):
+        return PHYSICAL_REFUSAL
+    return None
+
+
+def empty_stderr(byte_count):
+    exact_int(byte_count, 0, "probe stderr diagnostic bytes")
 
 
 def integer_bits(value):
@@ -231,9 +253,9 @@ def refusal(receipt, code, before_loader=False, index=None, device=None):
         selected_device(receipt, index, device)
         require(receipt.get("expectations_frozen_before_vulkan_load") is True and
                 receipt.get("artifact_replay_verified_before_vulkan") is True, "target refusal did not reach checked device gate")
-        require(receipt["reason"] in (
-            "selected device lacks Vulkan1.2/DenormPreserve/RTE/SignedZeroInfNan f32 controls",
-            "positive sample requires selected physical AMD RADV device"), "not the expected device/control refusal")
+        expected = target_refusal_reason(device)
+        require(expected is not None and receipt["reason"] == expected,
+                "target refusal reason is not justified by the selected device properties")
 
 
 def identity(path):
@@ -292,6 +314,10 @@ class Campaign:
             require(stdout_path.stat().st_size <= 4 * 1024 * 1024, "receipt unexpectedly exceeds 4MiB; inspect raw log")
             receipt = strict_json(stdout_path.read_bytes())
             write_json(directory / "receipt.json", receipt)
+            # Keep both raw logs and the decoded receipt on failure, but never
+            # let diagnostics (including recoverable sanitizer errors) pass as
+            # an otherwise successful or expected-refusal probe invocation.
+            empty_stderr((directory / "stderr.log").stat().st_size)
             validate(receipt, record["returncode"])
             record["validated"] = True
             return receipt
@@ -438,6 +464,49 @@ def self_test():
     device = dict(index=0, device_uuid="1" * 32, driver_uuid="2" * 32, vendor_id=0x1002,
                   driver_id=3, device_type=1, api_version=(1 << 22) | (3 << 12),
                   denorm_preserve_f32=True, rne_f32=True, signed_zero_inf_nan_f32=True)
+    require(target_refusal_reason(device) is None, "supported AMD device must not justify target refusal")
+    empty_stderr(0)
+    checks += 2
+    for size in (1, True, -1, "0"):
+        try:
+            empty_stderr(size)
+        except RuntimeError:
+            checks += 1
+        else:
+            raise RuntimeError("synthetic nonempty/invalid stderr size accepted")
+
+    def target_fixture(selected, reason):
+        return {**basic, "classification": "REFUSED", "status": "NO_FALLBACK", "reason": reason,
+                "devices": [copy.deepcopy(selected)], "selected_device_index": 0,
+                "expectations_frozen_before_vulkan_load": True,
+                "artifact_replay_verified_before_vulkan": True}
+
+    valid_targets = [({key: False}, CONTROL_REFUSAL) for key in FP_CONTROLS]
+    valid_targets += [({"api_version": (1 << 22) | (1 << 12)}, CONTROL_REFUSAL),
+                      ({"vendor_id": 0x10de}, PHYSICAL_REFUSAL),
+                      ({"driver_id": 4}, PHYSICAL_REFUSAL),
+                      ({"device_type": 4}, PHYSICAL_REFUSAL)]
+    for updates, reason in valid_targets:
+        selected = {**device, **updates}
+        refusal(target_fixture(selected, reason), 78, index=0, device=selected)
+        checks += 1
+    invalid_targets = (
+        ("supported AMD claims missing FP", {}, CONTROL_REFUSAL),
+        ("supported AMD claims wrong device", {}, PHYSICAL_REFUSAL),
+        ("missing FP claims later device gate", {"denorm_preserve_f32": False, "vendor_id": 0x10de}, PHYSICAL_REFUSAL),
+        ("wrong device claims missing FP", {"vendor_id": 0x10de}, CONTROL_REFUSAL),
+        ("nonboolean FP property", {"denorm_preserve_f32": 0}, CONTROL_REFUSAL),
+        ("missing FP property", {"denorm_preserve_f32": None}, CONTROL_REFUSAL),
+        ("boolean Vulkan version", {"api_version": True}, CONTROL_REFUSAL),
+    )
+    for label, updates, reason in invalid_targets:
+        selected = {**device, **updates}
+        try:
+            refusal(target_fixture(selected, reason), 78, index=0, device=selected)
+        except RuntimeError:
+            checks += 1
+        else:
+            raise RuntimeError("synthetic inconsistent target refusal accepted: " + label)
 
     def fixture(shape):
         m, k, n = shape

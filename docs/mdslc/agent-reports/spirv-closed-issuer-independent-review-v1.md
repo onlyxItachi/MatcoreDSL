@@ -166,3 +166,59 @@ Every negative first proves generic MLIR validity; the first four also retain
 the MLIR operation inventory. The last two deliberately add operations and do
 not claim count preservation. This reviewer made no second build; actual test
 execution remains in the integration owner's receipts.
+
+## Final integration and receipt review
+
+Integration checkpoint `0d094b2751eefaa7ff8859dc3e87ef6fc9845097` was reviewed
+without another build or hardware execution. The default-off CMake wiring and
+private inspection CLI neither install the issuer nor connect it to a source
+candidate/runtime registry. The CLI accepts a shape and a new output directory,
+not executable IR, and retains no-clobber publication. The hosted normal profile
+requires the independent external-validation CTest to exist; the sanitizer job
+adds a separately enumerated two-test issuer/adversarial gate without changing
+the retained 236-test scope. No hosted physical execution is introduced.
+
+Existing local records were independently re-read, revalidated and hash-checked:
+
+| Recorded campaign | Commands | Shape samples | Checked completions | Dispatches | Output checks | Input checks | Canaries | Mismatches |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `physical-amd-v1` | 35 | 12 | 143 | 286 | 350098 | 301116 | 18304 | 0 |
+| `refusal-nvidia-v1` | 24 | 1 refusal | 0 | 0 | 0 | 0 | 0 | 0 |
+| `refusal-llvmpipe-v1` | 24 | 1 refusal | 0 | 0 | 0 | 0 | 0 | 0 |
+
+The 148/104/104 catalogued files respectively matched their recorded sizes and
+SHA256s. Every parsed receipt matched its raw stdout; all 35/24/24 stderr logs
+were empty. Source-snapshot hashes matched the recorded before/after snapshots
+and the reviewed integration files. The current probe's bytes matched the
+recorded executable hash at inspection. These are explicit snapshot/byte bindings,
+not a new claim of build-origin or ICD/layer-chain authentication.
+
+The complete upstream record
+`tests/generated_spirv/external-validation/run-5k3pwotj/report.json` has 15
+validated shape pairs, including all 12 physical shapes. All 24 physical shader
+hashes matched both that report and its actual SPIR-V files. That record completed
+at 2026-11-10 02:24:47 +03:00, before the AMD campaign began at 02:25:10 +03:00.
+Older partial-coverage/incomplete records were not substituted for this gate.
+The AMD record identifies physical RADV STRIX1/Mesa 26.0.8-1ubuntu0.3; both refusal
+records have false f32 denormal-preservation properties and zero dispatches.
+The full issuer envelope, noncoherent memory, recoverable adapters and performance
+remain unqualified. These were offline checks of the integration owner's saved
+execution evidence, not physical runs by this reviewer.
+
+Review found a low receipt-policy gap: the prior validator accepted a supported
+AMD inventory entry with all required f32 properties while claiming the known
+"missing controls" reason. A synthetic read-only call reproduced this; none of
+the actual recorded refusals was inconsistent. The wrapper now derives the
+expected refusal from typed selected-device properties in the probe's gate order.
+A supported AMD/RADV physical entry cannot justify target refusal, and an earlier
+missing-control gate cannot be mislabelled as the later physical-device gate.
+The campaign also now requires empty stderr before marking any invocation valid;
+raw stdout/stderr and decoded JSON remain preserved on failure.
+
+The hardened `--self-test` passed 56 explicitly synthetic checks, including valid
+device/control refusals, inconsistent-reason spoofs, property-type failures and
+stderr-count controls. Without starting the probe, the hardened policy rechecked
+all existing 35/24/24 command receipts successfully. Their recorded evidence is
+unchanged; the integration owner owns any fresh v2 campaign and its distinct
+source snapshots. No source, shader, device, CMake or workflow code was changed
+by this receipt hardening.
