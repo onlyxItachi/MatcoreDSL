@@ -1,12 +1,58 @@
 # MDSLC roadmap
 
-Status date: 2026-09-05
+Status date: 2026-11-10. This roadmap is gate-driven and additive to the existing
+Python/JIT lineage. **Mathematical correctness comes first; performance comes
+later.** Progress must broaden the mathematical surface, not merely produce
+more sophisticated GEMM schedules. A plan, topology carrier, emitted artifact or
+passing finite-value example is not an executed correctness qualification.
 
-The roadmap is gate-driven and additive to the existing Python/JIT lineage.
-The primary direction is now a compositional semantic compiler and CPU-first
-beta, not native-BLAS parity followed immediately by an API freeze. A backend
-is supported only after it compiles, links, executes, validates correctness,
-and passes its declared platform gates.
+## Current navigation and priority
+
+- [CURRENT_STATE.md](CURRENT_STATE.md) is authoritative for the canonical
+  engineering checkpoint, supported envelope and exactly one immediate next
+  boundary. At this documentation baseline, PR #93's engineering merge is
+  `e8e8008cb61b61a585d8bc1584ca320c6326472d`; PR #94's documentation checkpoint is
+  `b2597bed52de46604574f76eb33663788a5ab994`.
+- [Mathematical correctness roadmap v1](MATHEMATICAL_CORRECTNESS_ROADMAP_V1.md)
+  records the actual operation coverage, small broader-math gates, and the
+  distinction between semantic coverage, target qualification and performance.
+- [Region compiler guide](REGION_COMPILER_V1.md) describes the current
+  source/value/effect contract; [source-time GEMM
+  patterns](SOURCE_TIME_GEMM_PATTERN_V1.md) describes the bounded explicit CPU
+  M/N tile lifecycle. Neither adds a non-GEMM operation.
+- The [coverage audit](agent-reports/correctness-coverage-audit-v1.md) grounds the
+  proposed first broader-math boundary in current code and contains an unfiled
+  issue proposal. It does not authorize implementation or remote changes.
+
+The immediate engineering frontier remains the closed, parameterized,
+bounded-static-shape strict SPIR-V issuer tracked by Issue #89. It must establish
+its positive family and negative controls without source/runtime authority;
+research PR #84 remains draft and unchanged at this baseline. That independent
+target-proof boundary does not substitute for broader mathematical coverage.
+After its disposition, select the next engineering boundary explicitly rather
+than treating every item in this roadmap as concurrently authorized work.
+
+| Workstream | Required result | Not implied |
+| --- | --- | --- |
+| Broader mathematics | A distinct operation's numerical, shape, value, effect and failure contracts, then independently qualified execution | GEMV/DOT/GER/batch support from shared indexing maps or GEMM degeneracies |
+| Target qualification | Exact admitted operation/profile on a pinned compiler, ABI, artifact and physical target, with checked completion/refusal | Every target, source integration from issuer-only evidence, or performance |
+| Later performance | Reproducible measurements inside an already qualified correctness envelope | Numerical relaxation, new operations, BLAS parity or Issue #15 closure |
+
+Keep strict numerics, all-MAY-alias source Storage, ordered failure/effect
+frontiers, checked completion, source/artifact ownership and fail-closed target
+legality through every gate. Existing bounded CPU/GPU results remain useful;
+they do not promise all operations, dtypes, layouts or targets. No public API,
+ABI or backend-contract freeze follows from this priority update.
+
+## Historical record begins here — 2026-09-05
+
+The sections below preserve the CPU-beta pivot and the then-current post-beta
+campaign, including their exact evidence and limitations. Their branch names,
+status dates and words such as "now", "next" and "deferred" are historical,
+not the current execution queue. In particular, the tiled/dynamic GEMM study
+below is a past frontier, not today's next boundary. Use the current links above
+for present scope; do not reinterpret old inspection-only evidence as authority
+for later source-connected implementations.
 
 ## Authenticated pivot baseline
 
