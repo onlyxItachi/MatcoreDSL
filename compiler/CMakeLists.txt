@@ -163,6 +163,12 @@ endif()
 
 option(MDSLC_ENABLE_EXPERIMENTAL_GPU_ISSUER
   "Build the inspection-only fixed NVVM/ROCDL artifact issuer" OFF)
+option(MDSLC_ENABLE_EXPERIMENTAL_SPIRV_ISSUER
+  "Build the inspection-only bounded static strict SPIR-V artifact issuer" OFF)
+if(MDSLC_ENABLE_EXPERIMENTAL_SPIRV_ISSUER AND
+   NOT MDSLC_ENABLE_EXPERIMENTAL_REGIONS)
+  message(FATAL_ERROR "The private SPIR-V issuer requires MDSLC_ENABLE_EXPERIMENTAL_REGIONS=ON")
+endif()
 option(MDSLC_ENABLE_EXPERIMENTAL_NVVM
   "Enable the forced synchronous staged sm89 generated candidate" OFF)
 option(MDSLC_ENABLE_EXPERIMENTAL_ROCDL
@@ -519,6 +525,9 @@ if(MDSLC_BUILD_CLOSED_REGION_TESTS)
   add_subdirectory(tests/generated_cpu)
   add_subdirectory(tests/generated_cpu_fused_pair)
   add_subdirectory(tests/generated_gpu)
+  if(MDSLC_ENABLE_EXPERIMENTAL_SPIRV_ISSUER)
+    add_subdirectory(tests/generated_spirv)
+  endif()
   add_subdirectory(tests/generated_gpu_fused_pair)
   add_subdirectory(tests/closed_candidates)
   add_subdirectory(tests/closed_source)

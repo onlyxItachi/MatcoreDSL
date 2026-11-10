@@ -51,6 +51,7 @@ jobs:
             mlir_label: Matcore MLIR enabled
             mlir_enable: "ON"
             vector_readiness_enable: "ON"
+            spirv_issuer_enable: "ON"
             default_semantic_pipeline: matcore-mlir
           - openblas_label: OpenBLAS explicitly disabled
             openblas_enable: "OFF"
@@ -171,12 +172,19 @@ jobs:
             echo "LD_LIBRARY_PATH=${install_prefix}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
           } >> "${GITHUB_ENV}"
 
+      - name: Install independent SPIR-V validation tools
+        if: matrix.spirv_issuer_enable == 'ON'
+        run: |
+          sudo apt-get install -y --no-install-recommends spirv-tools
+          spirv-val --version
+
       - name: Configure standalone MDSLC
         run: |
           mlir_options=(
             -DMDSLC_ENABLE_MATCORE_MLIR=${{ matrix.mlir_enable }}
             -DMDSLC_ENABLE_EXPERIMENTAL_REGIONS=${{ matrix.mlir_enable }}
             -DMDSLC_ENABLE_EXPERIMENTAL_GPU_ISSUER=${{ matrix.mlir_enable }}
+            -DMDSLC_ENABLE_EXPERIMENTAL_SPIRV_ISSUER=${{ matrix.spirv_issuer_enable || 'OFF' }}
             -DMDSLC_ENABLE_EXPERIMENTAL_MLIR_VECTOR_READINESS=${{ matrix.vector_readiness_enable }}
           )
           if [[ "${{ matrix.mlir_enable }}" == "ON" ]]; then
@@ -218,6 +226,13 @@ jobs:
 
       - name: Build standalone MDSLC
         run: cmake --build build-mdslc --parallel 2
+
+      - name: Require independent SPIR-V validation registration
+        if: matrix.spirv_issuer_enable == 'ON'
+        run: |
+          ctest --test-dir build-mdslc -N -R '^generated_spirv\.external_validation$' \
+            | tee build-mdslc/spirv-external-test-list.txt
+          grep -Fx 'Total Tests: 1' build-mdslc/spirv-external-test-list.txt
 
       - name: Verify the selected generated schedule
         if: matrix.mlir_enable == 'ON'
@@ -390,6 +405,7 @@ jobs:
             -DMDSLC_REQUIRE_OPENBLAS=OFF \
             -DMDSLC_ENABLE_MATCORE_MLIR=ON \
             -DMDSLC_ENABLE_EXPERIMENTAL_REGIONS=ON \
+            -DMDSLC_ENABLE_EXPERIMENTAL_SPIRV_ISSUER=ON \
             -DMDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE=row-contiguous \
             -DMDSLC_DEFAULT_SEMANTIC_PIPELINE=matcore-mlir \
             -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
@@ -423,7 +439,11 @@ jobs:
           fi
 
       - name: Test exact-MLIR Debug validation
-        run: ctest --test-dir build-mdslc-debug --output-on-failure -j1
+        run: |
+          ctest --test-dir build-mdslc-debug -N -R '^generated_spirv\.(issuer|adversarial)$' \
+            | tee build-mdslc-debug/spirv-issuer-test-list.txt
+          grep -Fx 'Total Tests: 2' build-mdslc-debug/spirv-issuer-test-list.txt
+          ctest --test-dir build-mdslc-debug --output-on-failure -j1
 
   clang-21-asan-ubsan-mlir:
     name: Clang 21.1.8 ASan+UBSan (Matcore MLIR enabled, OpenBLAS disabled)
@@ -484,6 +504,7 @@ jobs:
             -DMDSLC_REQUIRE_OPENBLAS=OFF \
             -DMDSLC_ENABLE_MATCORE_MLIR=ON \
             -DMDSLC_ENABLE_EXPERIMENTAL_REGIONS=ON \
+            -DMDSLC_ENABLE_EXPERIMENTAL_SPIRV_ISSUER=ON \
             -DMDSLC_EXPERIMENTAL_CPU_GEMM_SCHEDULE=row-contiguous \
             -DMDSLC_DEFAULT_SEMANTIC_PIPELINE=matcore-mlir \
             -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
@@ -529,6 +550,12 @@ jobs:
             build-mdslc-asan-ubsan/focused-test-list.txt
           ctest --test-dir build-mdslc-asan-ubsan --output-on-failure -j1 \
             -R "${sanitizer_tests}"
+          # A separate fixed gate; do not dilute or renumber the retained 236.
+          ctest --test-dir build-mdslc-asan-ubsan -N -R '^generated_spirv\.(issuer|adversarial)$' \
+            | tee build-mdslc-asan-ubsan/spirv-issuer-test-list.txt
+          grep -Fx 'Total Tests: 2' build-mdslc-asan-ubsan/spirv-issuer-test-list.txt
+          ctest --test-dir build-mdslc-asan-ubsan --output-on-failure -j1 \
+            -R '^generated_spirv\.(issuer|adversarial)$'
 
   clang-21-tsan-runtime:
     name: Clang 21.1.8 TSan runtime (Matcore MLIR and OpenBLAS disabled)

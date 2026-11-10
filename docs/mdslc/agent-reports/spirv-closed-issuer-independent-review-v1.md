@@ -1,0 +1,224 @@
+# Independent closed static SPIR-V issuer review v1
+
+Scope: Issue #89's compiler-private bounded-static positive strict-f32 GEMM
+issuer. Canonical starting point was verified as
+`b2597bed52de46604574f76eb33663788a5ab994`. Research PR #84 remained draft at
+`5dc14db686b6b2668a2d3a47f5ef24c0e2bb4b97` during this review. Full repository
+guidance, `CURRENT_STATE.md`, Issue #89 and its comments, the research specimen,
+and the source-frontier audit were read before reviewing implementation.
+
+The final source review includes issuer-lane hardening through
+`82bd1db14bd106b5816289610402adf86c34612c` and the canonical BuiltIn-decoration
+fix `8c16d6ac39dbc6935b0a17552297e75aac886b35`. Those are local engineering
+identities, not claims that canonical main already contains this work.
+
+## Disposition and evidence limits
+
+No remaining high/medium numerical or ABI finding was identified by source
+inspection at that checkpoint. Acceptance still depends on the integration
+owner's actual compiled tests, upstream SPIRV-Tools validation and separately
+labelled physical/refusal receipts. This reviewer did not start an LLVM or MDSLC
+build, dispatch a shader, mutate a device or system package, or execute a source
+candidate. No performance, universal-target, installed-consumer, source/runtime
+authority or general imported-IR verification claim follows.
+
+Exact artifact replay binds every stage string, full word vector, shape, manifest
+and typed ABI. It does not independently prove the correctness of a shared issuer
+bug. The supplementary graph/ABI checks and independent arithmetic controls are
+therefore material: replay is not substituted for them.
+
+## Concrete falsifiers and resulting hardening
+
+The initial supplementary classifiers inspected discardable attributes but
+missed some native properties and type-member decorations. These were not
+artifact-import or execution-authority bypasses: complete replay still rejected
+changed artifact fields. They were gaps in the claimed independent envelope.
+
+| Validity-preserving change | Why it matters | Reviewed response |
+| --- | --- | --- |
+| Add `Aligned 8` to a scalar f32 load/store | The unchanged index may name an odd f32 element; the ABI grants no such alignment promise | Final native attribute allowlists reject memory-access/alignment modifiers |
+| Add buffer-member `RelaxedPrecision` | Arithmetic opcode counts and NoContraction remain unchanged, but precision permission changes | The checker explicitly rejects extra member decorations |
+| Replace the entry interface's WorkgroupId reference with a storage variable | Generic MLIR verification checks that a referenced global exists, not the exact required interface | The checker binds the actual WorkgroupId symbol, not only interface count |
+| Add `gpu.block_id x upper_bound 1` while dispatch M is 2 | This explicit bound overrides contextual bounds and makes a legal dispatched block undefined | The outlined checker now rejects native upper bounds |
+| Set `memref.load` nontemporal true | A native property escaped the former discardable-only check | The outlined checker now requires the closed false-valued property |
+
+Independently executed controls used only the existing pinned tools and streaming
+standard input/output; no generated file replaced a production artifact:
+
+- The historical strict 2x3x4 assembly with an Aligned8 f32 load assembled and
+  passed `spirv-val --target-env vulkan1.2`.
+- The same assembly with member-0 RelaxedPrecision on A's struct assembled and
+  passed that upstream Vulkan validation.
+- Pinned MLIR 21.1.8 accepted the outlined upper-bound-1 mutant. The precise
+  undefined-behavior rule is in the pinned
+  [GPU operation definition](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/mlir/include/mlir/Dialect/GPU/IR/GPUOps.td).
+
+Thus generic validity is not being counted as strict closed-graph correctness.
+The independently authored
+[`adversarial_test.cpp`](../../../compiler/tests/generated_spirv/adversarial_test.cpp)
+first checks unchanged MLIR operation inventory, generic validity and (for final
+shaders) production serialization, then calls the structural classifier directly.
+It does not obtain rejection merely from edited strings disagreeing with replay.
+The foreign-interface control is MLIR-valid but intentionally not Vulkan-valid;
+the optional exports contain only the other three expected Vulkan-valid shaders.
+Test-only commits are `52e3b14ce354c8cdcdd718d0cd1d145fda59a6c9` and
+`de5e392dd88fa2ad9432ee1347875c40e1efdfea`; compilation/execution belongs to the
+integration owner's receipts, not this review's independently executed evidence.
+
+## Independent shape and numerical reasoning
+
+Let L=33,554,432. The division-based positive-family checks imply MK, KN and MN
+are at most L before a product is formed. For dispatched x<M, y<N and scalar
+k<K, the complete addresses satisfy:
+
+```text
+A: x*K+k <= M*K-1 < L
+B: k*N+y <= K*N-1 < L
+C: x*N+y <= M*N-1 < L
+```
+
+Consequently element addressing and four-byte ranges fit signed i32; K itself
+is at most L, so the next induction value cannot overflow. M/N at most 65535
+match the guaranteed Vulkan dispatch-axis minimum; each range at most 128 MiB
+matches the guaranteed storage-buffer minimum. These are issuance bounds, not
+allocation success, optional float-property support or a physical-work budget.
+An admitted 5792x5792x5792 instance is already about 194 billion multiply/add
+pairs; no claim that all admitted tuples were physically run is justified.
+
+Independent pinned-tool scheduling controls confirmed all three graph forms:
+1x1x1 uses zero indices with no K loop; 1x3x4 removes only x; 2x3x1 removes only
+y. The checker must accept these proven forms, not require a fixed 2x3x4 graph.
+
+An integer/rational software binary32 calculation, using no host floating-point
+arithmetic, independently established the following anchors. Inputs/results are
+hex binary32; B is all 3f800000 unless explicitly given; every reduction starts
+at positive zero.
+
+| Control | A; exceptional B | Strict result / counterfactual |
+| --- | --- | --- |
+| FMA | bf800000,3f800001,0; B=3f800000,3f7ffffe,3f800000 | 00000000; fused second step a8800000 |
+| K order | 4b800000,3f800000,cb800000 | 00000000; reverse 3f800000 |
+| Overflow/order | 7f7fffff,7f7fffff,ff7fffff | 7f800000; regrouping can return 7f7fffff |
+| Subnormal input | 00000001,0,0 | 00000001; negative input gives 80000001 |
+| Inexact underflow/RNE tie | 00800000,0,0; first B=3f000003 | 00400002; RTZ gives 00400001 |
+| Positive seed | all A=80000000 | 00000000; negative-zero seed remains 80000000 |
+| RTE versus RTZ | 3f800000,33c00000,0 | 3f800001 |
+| Tie-to-even high | 3f800001,33800000,0 | 3f800002 |
+
+Inf*0, opposed infinities and quiet NaN require NaN classification, not payload
+identity. Signed-zero padding must remain negative-zero products for the seed
+discriminator; trailing positive-zero products would erase a wrong negative seed.
+Last-K-only and nonuniform rectangular controls are necessary because repeated
+dot witnesses alone can mask truncated reductions or address permutations.
+
+The APFloat oracle and Vulkan probe were also read in full. Their arithmetic
+oracle is independent of MLIR lowering and device FP state, though from the same
+LLVM project; fixed analytic anchors are the second arithmetic oracle. Expected
+outputs freeze before Vulkan loading. Integer-prefix range checks, distinct
+NaN/non-NaN output sentinels, immutable inputs, canaries and ordered coherent
+barriers/fenced completion are separate controls. Source inspection of those
+controls is not a claim of device execution or reusable adapter failure proof.
+
+Pinned upstream [ABI lowering](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/mlir/lib/Dialect/SPIRV/Transforms/LowerABIAttributesPass.cpp)
+and [serialization](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/mlir/lib/Target/SPIRV/Serialization/Serializer.cpp)
+support the native metadata route. The
+[Vulkan precision rules](https://docs.vulkan.org/spec/latest/appendices/spirvenv.html#spirvenv-precision)
+support the narrow scalar f32 multiply/add claim under the required controls,
+not arbitrary dot/matrix/extended-instruction substitution. Optional properties,
+actual ICD/layer identity and source adapter/artifact/completion laws remain
+separately owned subsequent boundaries.
+
+## Native decoded forwarding graph addendum
+
+The integration owner's real round-trip check exposed a representation
+difference: pinned 21.1.8 deserialization retains two function blocks around the
+loop-header incoming phi. Review was extended to issuer commits `59b47fa`,
+`c6eb716`, `0a3a706`, `0e977ce` and exact-seed hardening `77fac52`.
+The added shape faces and defensive record initialization introduce no new
+mathematical, source or runtime authority.
+
+The reviewed two-block law is narrow. The first block branches with one concrete
+i32 zero to the second block. That block has exactly one predecessor use, one
+single-use argument, and only the loop followed by return. The loop must consume
+that exact forwarded argument, not an equivalent freshly created zero. Its four
+internal blocks still have the original fixed incoming edge, k<K test, true/false
+successors and k+1 backedge. An optional first header operation is allowed only
+when it is the exact i32 K constant. No emitted IR or binary is normalized or
+rewritten to satisfy inspection.
+
+The first `c6eb716` condition allowed a fresh constant-zero incoming IV even with
+the wrapper present. This was not a numerical bypass: the forwarded argument was
+also proven zero. It did permit a foreign representation with a dead argument
+consumed by unused integer arithmetic. Review requested exact consumption;
+`77fac52` now requires the forwarded block argument whenever that wrapper exists.
+No high/medium seed, predecessor, body or control-flow bypass was identified by
+source inspection after that tightening.
+
+The native two-block form was independently reproduced from the historical
+strict 2x3x4 binary using the existing pinned `mlir-translate --deserialize-spirv`.
+Streaming mutations of the prologue seed to 1, the header bound to 2 and the
+increment to 0 each passed `mlir-opt` generic validity. None was dispatched.
+Additional test-only commit `9de234ac30a64fca3010281a89ba42c47ea2d255` directly
+deserializes freshly issued words and checks a positive decoded control, then
+requires direct structural rejection of those three mutants, a builtin-controlled
+seed, an extra predecessor block and the former dead-wrapper-argument bypass.
+Every negative first proves generic MLIR validity; the first four also retain
+the MLIR operation inventory. The last two deliberately add operations and do
+not claim count preservation. This reviewer made no second build; actual test
+execution remains in the integration owner's receipts.
+
+## Final integration and receipt review
+
+Integration checkpoint `0d094b2751eefaa7ff8859dc3e87ef6fc9845097` was reviewed
+without another build or hardware execution. The default-off CMake wiring and
+private inspection CLI neither install the issuer nor connect it to a source
+candidate/runtime registry. The CLI accepts a shape and a new output directory,
+not executable IR, and retains no-clobber publication. The hosted normal profile
+requires the independent external-validation CTest to exist; the sanitizer job
+adds a separately enumerated two-test issuer/adversarial gate without changing
+the retained 236-test scope. No hosted physical execution is introduced.
+
+Existing local records were independently re-read, revalidated and hash-checked:
+
+| Recorded campaign | Commands | Shape samples | Checked completions | Dispatches | Output checks | Input checks | Canaries | Mismatches |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `physical-amd-v1` | 35 | 12 | 143 | 286 | 350098 | 301116 | 18304 | 0 |
+| `refusal-nvidia-v1` | 24 | 1 refusal | 0 | 0 | 0 | 0 | 0 | 0 |
+| `refusal-llvmpipe-v1` | 24 | 1 refusal | 0 | 0 | 0 | 0 | 0 | 0 |
+
+The 148/104/104 catalogued files respectively matched their recorded sizes and
+SHA256s. Every parsed receipt matched its raw stdout; all 35/24/24 stderr logs
+were empty. Source-snapshot hashes matched the recorded before/after snapshots
+and the reviewed integration files. The current probe's bytes matched the
+recorded executable hash at inspection. These are explicit snapshot/byte bindings,
+not a new claim of build-origin or ICD/layer-chain authentication.
+
+The complete upstream record
+`tests/generated_spirv/external-validation/run-5k3pwotj/report.json` has 15
+validated shape pairs, including all 12 physical shapes. All 24 physical shader
+hashes matched both that report and its actual SPIR-V files. That record completed
+at 2026-11-10 02:24:47 +03:00, before the AMD campaign began at 02:25:10 +03:00.
+Older partial-coverage/incomplete records were not substituted for this gate.
+The AMD record identifies physical RADV STRIX1/Mesa 26.0.8-1ubuntu0.3; both refusal
+records have false f32 denormal-preservation properties and zero dispatches.
+The full issuer envelope, noncoherent memory, recoverable adapters and performance
+remain unqualified. These were offline checks of the integration owner's saved
+execution evidence, not physical runs by this reviewer.
+
+Review found a low receipt-policy gap: the prior validator accepted a supported
+AMD inventory entry with all required f32 properties while claiming the known
+"missing controls" reason. A synthetic read-only call reproduced this; none of
+the actual recorded refusals was inconsistent. The wrapper now derives the
+expected refusal from typed selected-device properties in the probe's gate order.
+A supported AMD/RADV physical entry cannot justify target refusal, and an earlier
+missing-control gate cannot be mislabelled as the later physical-device gate.
+The campaign also now requires empty stderr before marking any invocation valid;
+raw stdout/stderr and decoded JSON remain preserved on failure.
+
+The hardened `--self-test` passed 56 explicitly synthetic checks, including valid
+device/control refusals, inconsistent-reason spoofs, property-type failures and
+stderr-count controls. Without starting the probe, the hardened policy rechecked
+all existing 35/24/24 command receipts successfully. Their recorded evidence is
+unchanged; the integration owner owns any fresh v2 campaign and its distinct
+source snapshots. No source, shader, device, CMake or workflow code was changed
+by this receipt hardening.

@@ -114,6 +114,13 @@ in `context.md`.
   `docs/mdslc/STAGED_GPU_CANDIDATES_V1.md` for exact toolchain/device bounds.
 
 - Preserve semantic information until the final optimization that can use it.
+  The separately opt-in closed static SPIR-V issuer is construction/inspection
+  only: checked positive M/K/N -> existing strict GEMM stages -> upstream GPU
+  outlining/SPIR-V lowering, complete graph/ABI checks and native byte round-trip.
+  Its private tools and test-only Vulkan probe are not source/runtime candidates,
+  shader-import authorities or installed components. Preserve separate issuance,
+  physical-sample and refusal envelopes; no source connection follows from a
+  passing shader sample. See `docs/mdslc/SPIRV_CLOSED_ISSUER_V1.md`.
   The private strict GEMM output pattern admits checked M/N tile parameters in
   1..64, derives its loops with upstream Transform, and retains full increasing
   scalar K with separate f32 multiply/add. Parameters are HOW, not source shape
