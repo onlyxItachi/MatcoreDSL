@@ -197,8 +197,8 @@ int main() {
   reject("tail starts late and leaves a gap", [&](mlir::ModuleOp module) {
     auto tail = roles(module).tail;
     mlir::OpBuilder builder(tail);
-    auto one = mlir::arith::ConstantIndexOp::create(builder, tail.getLoc(), 1);
-    auto shifted = mlir::arith::AddIOp::create(builder, tail.getLoc(), tail.getLowerBound(), one);
+    auto one = mlir::arith::ConstantOp::create(builder, tail.getLoc(), builder.getIndexAttr(1));
+    auto shifted = mlir::arith::AddIOp::create(builder, tail.getLoc(), tail.getLowerBound(), one.getResult());
     tail.getLowerBoundMutable().assign(shifted.getResult()); return true;
   });
   reject("tail range omitted", [&](mlir::ModuleOp module) {
@@ -364,7 +364,7 @@ int main() {
   mlir::OwningOpRef<mlir::ModuleOp> replayOnly = scheduled->clone();
   auto function = roles(*replayOnly).function;
   mlir::OpBuilder builder(&function.front(), function.front().begin());
-  mlir::arith::ConstantIndexOp::create(builder, function.getLoc(), 42);
+  mlir::arith::ConstantOp::create(builder, function.getLoc(), builder.getIndexAttr(42));
   check(mlir::succeeded(mlir::verify(*replayOnly)), "benign replay mismatch is valid MLIR");
   error.clear();
   const bool replayAccepted = gp::verifyStrictGemmOutputPeelNV1(*replayOnly, tiles, error);

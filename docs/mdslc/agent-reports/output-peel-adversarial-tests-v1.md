@@ -82,3 +82,13 @@ P1 remains INCONCLUSIVE_TIMING; these fixtures neither retry it nor infer speed
 from a register-accumulator code shape. The initial private variant is baseline
 x86-64/AArch64 only as selected by root; nonbaseline ISA admission is not tested
 or implied.
+
+## Retained first-build diagnostic
+
+Root's first focused compilation is retained in sibling build directory
+`build-peel-release/focused-build-first.log`. It reported two test-only overload
+errors: `ConstantIndexOp::create` inherits the MLIR 21 `ConstantOp::create`
+interface, which requires a typed attribute rather than a bare integer. The
+follow-up uses `ConstantOp::create(..., builder.getIndexAttr(1/42))`, preserving
+the late-tail gap and benign replay-only constant. No build was rerun by this
+agent, and the failed receipt remains evidence rather than a passing result.
