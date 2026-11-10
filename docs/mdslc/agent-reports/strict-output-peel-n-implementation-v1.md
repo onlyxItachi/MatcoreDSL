@@ -109,9 +109,47 @@ The existing source adapter's byte bounds/bypasses are not a new source route.
   by DCE. The complete dimension validation and proved-index closure above
   address that independent-proof gap; replay is not counted as its proof.
 
-At this first implementation handoff, the parent-coordinated focused build,
-mutant tests, raw-leaf numerical/empty/alias checks, generated-code sanitizer
-controls and full regressions have not yet passed for the corrected source.
-This lane ran no C++ build or generated physical program. Do not infer source
-driver acceptance, package/target qualification, speed improvement, default
-adoption, or permission to weaken the existing v1 verifier from this report.
+At the first implementation handoff (`fb5d5c079a69a8c83e2e5dd8ef01f56b676f03d4`),
+the corrected native build and acceptance checks were still pending. This lane
+ran no C++ build or generated physical program; the focused evidence below is
+parent-run and was inspected read-only before this report update.
+
+## Parent-run focused native evidence
+
+Evidence root:
+`/home/hamza-usta/mdslc-work/correctness-campaign-v1/build-peel-release`.
+The frozen P1 build/installed SDK was not rebuilt or modified for this lane.
+
+| Parent-run scope | Observed result |
+| --- | --- |
+| Inspector and private CLI | 2/2 CTest tests passed; 627 inspection checks, 56 valid-MLIR mutants, zero failures and zero unsupported upstream mutants. The test includes 36 representative parameter pairs and explicit unit-N identity controls. CLI: 22 refusals and 8 issued parameter/target combinations. |
+| Actual compiler-issued 5x3 leaf | Normal LLVM SHA256 `7864ea0110a3567ad29c0f27d8a64369f05fb4f440625d457a4712b8021d3496`, byte-identical to frozen P3 `peeled-bound.ll`; the source/ABI fact seam did not silently change the prototype computation. |
+| 5x3 normal, actual generated ASan, both corruption controls, tail OOB and full-body OOB controls | 6/6 CTest tests passed, zero CTest skips. Each positive peeled-fixture run reports 1618 cases / 558043 checks, zero failures, alongside the inherited raw-leaf fixture. Strict-witness coverage counters are full=852, tail-width1=426, tail-width2=426; mixed full/tail cases can contribute to more than one counter. |
+
+The fixture separately reports 80 inapplicable-K witness subcases; these are
+explicit exclusions, not executed passing witnesses or CTest skips. The passed
+OOB tests are deliberate generated-code ASan detection controls, not claims
+that an out-of-bounds execution succeeds. AArch64 CLI issuance is compile-only
+evidence and is not physical AArch64 qualification.
+
+Preserved receipts (all paths relative to the evidence root):
+
+- `peel-first-controls.log`: SHA256
+  `aa3018a86c6eb1edaea18c8f7ba5f12cdc49d0edb118d7745033674e33615be8`;
+  `peel-first-controls.xml`: SHA256
+  `12a66652dfde32b60fcf7947c670dbc295ce6686eb011ebec596fae31d90ebe6`.
+- `peel-5x3-controls.log`: SHA256
+  `c12968ac1953008f1dd4d468836e4b9c2971816a01dff5255047c57382339db9`;
+  `peel-5x3-controls.xml`: SHA256
+  `29ffe3d09fbfa7e9ea27f00eeac90f5c73ecc604b4ff1d8855410cecd3e9f521`.
+
+The native family-construction controls and exact unit-peel failure remain at
+`/var/tmp/mdslc-peel-family-eYz0rM`, including `one-by-sixtyfour.json`,
+`sixtyfour-by-two.json` and `unit-negative.json` with their corresponding
+Transform scripts, output MLIR and stderr. They are upstream construction
+controls, separate from the newly passing C++ inspector and physical 5x3 tests.
+
+Full regressions, other physical parameter/target profiles and broader package
+qualification remain parent-owned pending gates. Do not infer source-driver
+acceptance, performance improvement, default adoption or permission to weaken
+the existing v1 verifier from this focused private-realization evidence.
