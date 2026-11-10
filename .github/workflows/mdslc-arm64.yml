@@ -86,6 +86,13 @@ jobs:
       - name: Execute complete closed-source qualification scope
         run: |
           python3 compiler/tests/closed_driver/qualify_native_cpu.py --build build-arm --require-arm
+      - name: Qualify separate private full-N and tail realization
+        run: |
+          ctest --test-dir build-arm -N -R '^generated_cpu_output_peel\.' \
+            | tee build-arm/output-peel-test-list.txt
+          grep -Fx 'Total Tests: 44' build-arm/output-peel-test-list.txt
+          ctest --test-dir build-arm --output-on-failure -j1 \
+            -R '^generated_cpu_output_peel\.' --output-junit output-peel-junit.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -93,6 +100,8 @@ jobs:
           path: |
             build-arm/native-cpu-qualification.json
             build-arm/native-cpu-junit.xml
+            build-arm/output-peel-junit.xml
+            build-arm/output-peel-test-list.txt
             build-arm/Testing/Temporary/LastTest.log
             build-arm/lib/regions/strict-normal.ll*
             build-arm/lib/regions/strict-normal.o

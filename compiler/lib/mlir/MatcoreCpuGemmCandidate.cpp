@@ -517,16 +517,22 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
   }
   if (schedule != StrictGemmScheduleV1::ScalarMNK &&
       schedule != StrictGemmScheduleV1::RowContiguousMKN &&
-      schedule != StrictGemmScheduleV1::OutputTiledMKN) {
+      schedule != StrictGemmScheduleV1::OutputTiledMKN &&
+      schedule != StrictGemmScheduleV1::OutputTiledPeelNMKN) {
     fail(result.error, "unknown strict GEMM schedule");
     return result;
   }
-  const bool outputTiled = schedule == StrictGemmScheduleV1::OutputTiledMKN;
+  const bool peelN = schedule == StrictGemmScheduleV1::OutputTiledPeelNMKN;
+  const bool outputTiled = schedule == StrictGemmScheduleV1::OutputTiledMKN || peelN;
   if (outputTiled) {
     if (!gemm_pattern::validateOutputTilePatternV1(tiles, result.error))
       return result;
   } else if (tiles.tile_m != 0 || tiles.tile_n != 0) {
     fail(result.error, "output tile parameters require the output-tiled schedule");
+    return result;
+  }
+  if (peelN && isa != StrictCpuIsaV1::Baseline) {
+    fail(result.error, "peeled output pattern is qualified only for the baseline ISA");
     return result;
   }
   if (!strictCpuFeaturesV1(isa) ||
@@ -551,12 +557,15 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
       return result;
     result.transform_ir = rowContiguousTransform.str();
   } else if (outputTiled) {
-    stages.bufferized = gemm_pattern::deriveStrictGemmOutputTiledV1(
-        *stages.bufferized, tiles, result.error);
+    stages.bufferized = peelN ? gemm_pattern::deriveStrictGemmOutputPeelNV1(
+        *stages.bufferized, tiles, result.error) :
+        gemm_pattern::deriveStrictGemmOutputTiledV1(
+            *stages.bufferized, tiles, result.error);
     if (!stages.bufferized)
       return result;
-    result.transform_ir = gemm_pattern::strictGemmOutputTileTransformV1(
-        tiles, result.error);
+    result.transform_ir = peelN ? gemm_pattern::strictGemmOutputPeelNTransformV1(
+        tiles, result.error) : gemm_pattern::strictGemmOutputTileTransformV1(
+            tiles, result.error);
     if (result.transform_ir.empty())
       return result;
   }
@@ -641,7 +650,11 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
         }
       }
   }
-  if (definitions != 2 || multiplies != 1 || adds != 1) {
+  // The new branch-aware structural envelope already checked both disjoint
+  // full/tail recurrences before lowering. This exact footprint is an extra
+  // post-lowering guard, not a substitute for that proof. Unit N has no tail.
+  const unsigned arithmeticCopies = peelN && tiles.tile_n > 1 ? 2 : 1;
+  if (definitions != 2 || multiplies != arithmeticCopies || adds != arithmeticCopies) {
     fail(result.error, "LLVM strict scalar arithmetic footprint changed");
     return result;
   }
@@ -689,6 +702,8 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
       "output_alias_fact=llvm_leaf_aligned_c_only\ninput_input_alias=permitted\n"
       "pipeline=one-shot-bufferize," +
       (schedule == StrictGemmScheduleV1::ScalarMNK ? std::string{} :
+          peelN && tiles.tile_n > 1 ?
+              "transform-output-tile-mn-generalize-interchange-mkn-peel-n,canonicalize," :
           outputTiled ? "transform-output-tile-mn-generalize-interchange-mkn," :
                         "transform-generalize-interchange-mkn,") +
       "linalg-loops," +
@@ -698,6 +713,7 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
       std::string(address_sanitizer ? "function_attributes" : "off") +
       "\nschedule=" +
       (schedule == StrictGemmScheduleV1::ScalarMNK ? "scalar-mnk" :
+          peelN ? "output-tiled-peel-n-mkn" :
           outputTiled ? "output-tiled-mkn" : "row-contiguous-mkn") +
       "\nsemantic_sha256=" + digest(result.semantic_ir) +
       "\nstructured_sha256=" + digest(result.structured_ir) +
@@ -706,12 +722,20 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
       "\nscheduled_sha256=" + digest(result.scheduled_ir) +
       "\nllvm_sha256=" + digest(result.llvm_ir) + "\n";
   if (outputTiled)
-    result.manifest += "pattern=matcore-gemm-output-tile-v1\npattern_parameters=M:" +
+    result.manifest += std::string(peelN ?
+        "pattern=matcore-gemm-output-tile-peel-n-v1\npattern_parameters=M:" :
+        "pattern=matcore-gemm-output-tile-v1\npattern_parameters=M:") +
         std::to_string(tiles.tile_m) + ",N:" + std::to_string(tiles.tile_n) +
-        ",K:untiled\npattern_bounds=1..64_each\n"
-        "pattern_derivation=parameter-bound-pinned-upstream-replay-and-scalar-envelope\n"
-        "pattern_step_precondition=M<=INT64_MAX-(tile_m-1);N<=INT64_MAX-(tile_n-1)\n"
-        "pattern_source_guard=existing_nonempty_output_byte_bounds;empty_math_bypasses_leaf\n";
+        ",K:untiled\npattern_bounds=1..64_each\n" +
+        (peelN ? "pattern_derivation=parameter-bound-pinned-upstream-replay-and-full-tail-envelope\n" :
+                 "pattern_derivation=parameter-bound-pinned-upstream-replay-and-scalar-envelope\n") +
+        "pattern_step_precondition=M<=INT64_MAX-(tile_m-1);N<=INT64_MAX-(tile_n-1)\n" +
+        (peelN ? "pattern_source_guard=not_connected_no_source_authority\n" :
+                 "pattern_source_guard=existing_nonempty_output_byte_bounds;empty_math_bypasses_leaf\n");
+  if (peelN)
+    result.manifest += "pattern_source_selection=unavailable_private_issuer_only\n"
+        "pattern_n_partition=full:[0,tile_n*floor(N/tile_n));tail:[tile_n*floor(N/tile_n),N)\n"
+        "pattern_unit_n=no_tail_original_v1_graph\n";
   if (isa != StrictCpuIsaV1::Baseline)
     result.manifest += std::string("isa=") + platform::strictCpuIsaNameV1(isa) +
         "\nleaf_symbol=" + strictCpuLeafSymbolV1(isa) +

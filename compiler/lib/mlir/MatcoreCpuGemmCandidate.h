@@ -61,15 +61,20 @@ bool verifyStrictGemmBufferizedV1(mlir::ModuleOp module,
 
 // Internal realization choice, not mathematical semantics or runtime policy.
 // All retain increasing scalar K for every output and separate f32 arithmetic.
-// Raw OutputTiledMKN invocations additionally require each next tile IV to be
+// Raw output-tiled invocations additionally require each next tile IV to be
 // representable: M <= INT64_MAX-(tile_m-1), N <= INT64_MAX-(tile_n-1).
 // The unchanged source adapter skips empty output/zero K and only enters a leaf
 // after nonempty f32 output byte bounds, which are strictly stronger. This is
 // not a new semantic dimension limit, source check, or failure frontier.
+// OutputTiledPeelNMKN is private-issuer-only and does not connect to that source
+// adapter. Its raw callers retain the same preconditions explicitly.
 enum class StrictGemmScheduleV1 {
   ScalarMNK,
   RowContiguousMKN,
   OutputTiledMKN,
+  // Separately requested private realization; not a source-driver selection.
+  // Existing output-tiled artifacts and default routes retain their v1 graph.
+  OutputTiledPeelNMKN,
 };
 
 // Self-consistency/derivation only: callers cannot obtain execution authority

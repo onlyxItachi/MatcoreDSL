@@ -11,6 +11,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/TransformOps/SCFTransformOps.h"
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Transform/Transforms/TransformInterpreterUtils.h"
@@ -20,7 +21,13 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Transforms/Passes.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include <array>
+#include <initializer_list>
+#include <iterator>
+#include <utility>
 
 namespace matcore::mdslc::gemm_pattern {
 namespace {
@@ -313,6 +320,690 @@ bool scalarEnvelope(ModuleOp scheduled, const OutputTilePatternV1 &tiles,
   return true;
 }
 
+// Separate inspection machinery for the additive peeled recipe. In particular,
+// none of the v1 recipe, scalar envelope or replay paths below are relaxed.
+// These bounded linear forms only recognize index relations; they never emit
+// loops, rewrite a candidate, or establish source/execution authority.
+struct PeelLinear {
+  std::array<std::int64_t, 3> coefficients{}; // first, second, constant
+  bool valid = false;
+};
+constexpr std::int64_t peelCoefficientLimit = 1 << 20;
+
+PeelLinear peelLinear(std::int64_t first, std::int64_t second,
+                      std::int64_t constant) {
+  for (auto coefficient : {first, second, constant})
+    if (coefficient < -peelCoefficientLimit ||
+        coefficient > peelCoefficientLimit) return {};
+  return {{first, second, constant}, true};
+}
+
+PeelLinear peelCombine(PeelLinear lhs, PeelLinear rhs, bool multiply) {
+  if (!lhs.valid || !rhs.valid) return {};
+  if (!multiply)
+    return peelLinear(lhs.coefficients[0] + rhs.coefficients[0],
+                      lhs.coefficients[1] + rhs.coefficients[1],
+                      lhs.coefficients[2] + rhs.coefficients[2]);
+  if (lhs.coefficients[0] || lhs.coefficients[1]) std::swap(lhs, rhs);
+  if (lhs.coefficients[0] || lhs.coefficients[1]) return {};
+  // Each operand was bounded by 2^20, so these products fit signed i64 even
+  // for hostile inspection input. Reject any result outside the same bound.
+  return peelLinear(lhs.coefficients[2] * rhs.coefficients[0],
+                    lhs.coefficients[2] * rhs.coefficients[1],
+                    lhs.coefficients[2] * rhs.coefficients[2]);
+}
+
+PeelLinear peelAffineLinear(AffineExpr expression,
+                            ArrayRef<PeelLinear> operands, unsigned dimensions,
+                            unsigned depth, unsigned &budget) {
+  if (depth == 16 || !budget) return {};
+  --budget;
+  if (auto constant = dyn_cast<AffineConstantExpr>(expression))
+    return peelLinear(0, 0, constant.getValue());
+  if (auto dim = dyn_cast<AffineDimExpr>(expression))
+    return dim.getPosition() < dimensions ? operands[dim.getPosition()]
+                                         : PeelLinear{};
+  if (auto symbol = dyn_cast<AffineSymbolExpr>(expression)) {
+    const auto position = dimensions + symbol.getPosition();
+    return position < operands.size() ? operands[position] : PeelLinear{};
+  }
+  auto binary = dyn_cast<AffineBinaryOpExpr>(expression);
+  if (!binary || (binary.getKind() != AffineExprKind::Add &&
+                  binary.getKind() != AffineExprKind::Mul)) return {};
+  return peelCombine(peelAffineLinear(binary.getLHS(), operands, dimensions,
+                                      depth + 1, budget),
+                     peelAffineLinear(binary.getRHS(), operands, dimensions,
+                                      depth + 1, budget),
+                     binary.getKind() == AffineExprKind::Mul);
+}
+
+PeelLinear peelIndexLinear(Value value, Value first, Value second,
+                           unsigned depth, unsigned &budget) {
+  if (!value || depth == 16 || !budget) return {};
+  --budget;
+  if (value == first) return peelLinear(1, 0, 0);
+  if (value == second) return peelLinear(0, 1, 0);
+  if (auto constant = value.getDefiningOp<arith::ConstantIndexOp>())
+    return peelLinear(0, 0, constant.value());
+  if (auto dim = value.getDefiningOp<memref::DimOp>()) {
+    auto view = dim.getSource().getDefiningOp<memref::SubViewOp>();
+    auto index = dim.getIndex().getDefiningOp<arith::ConstantIndexOp>();
+    if (!view || !index || index.value() < 0 ||
+        static_cast<std::size_t>(index.value()) >= view.getMixedSizes().size())
+      return {};
+    const auto size = view.getMixedSizes()[index.value()];
+    if (auto constant = getConstantIntValue(size))
+      return peelLinear(0, 0, *constant);
+    return peelIndexLinear(dyn_cast<Value>(size), first, second, depth + 1,
+                            budget);
+  }
+  if (auto add = value.getDefiningOp<arith::AddIOp>())
+    return peelCombine(peelIndexLinear(add.getLhs(), first, second, depth + 1,
+                                       budget),
+                       peelIndexLinear(add.getRhs(), first, second, depth + 1,
+                                       budget), false);
+  if (auto mul = value.getDefiningOp<arith::MulIOp>())
+    return peelCombine(peelIndexLinear(mul.getLhs(), first, second, depth + 1,
+                                       budget),
+                       peelIndexLinear(mul.getRhs(), first, second, depth + 1,
+                                       budget), true);
+  auto apply = value.getDefiningOp<affine::AffineApplyOp>();
+  if (!apply || apply.getAffineMap().getNumResults() != 1) return {};
+  SmallVector<PeelLinear> operands;
+  for (auto operand : apply.getOperands()) {
+    auto form = peelIndexLinear(operand, first, second, depth + 1, budget);
+    if (!form.valid) return {};
+    operands.push_back(form);
+  }
+  return peelAffineLinear(apply.getAffineMap().getResult(0), operands,
+                           apply.getAffineMap().getNumDims(), depth + 1, budget);
+}
+
+bool peelIndexIs(Value value, Value first, Value second,
+                  std::array<std::int64_t, 3> expected) {
+  unsigned budget = 256;
+  auto form = peelIndexLinear(value, first, second, 0, budget);
+  return form.valid && form.coefficients == expected;
+}
+
+bool peelConstant(Value value, std::int64_t expected) {
+  return peelIndexIs(value, {}, {}, {0, 0, expected});
+}
+
+Value peelDynamicExtent(Value value) {
+  for (unsigned depth = 0; value && depth != 16; ++depth) {
+    auto dim = value.getDefiningOp<memref::DimOp>();
+    auto view = dim ? dim.getSource().getDefiningOp<memref::SubViewOp>()
+                    : memref::SubViewOp{};
+    auto index = dim ? dim.getIndex().getDefiningOp<arith::ConstantIndexOp>()
+                     : arith::ConstantIndexOp{};
+    if (!view || !index || index.value() < 0 ||
+        static_cast<std::size_t>(index.value()) >= view.getMixedSizes().size())
+      return value;
+    auto next = dyn_cast<Value>(view.getMixedSizes()[index.value()]);
+    if (!next) return value;
+    value = next;
+  }
+  return {};
+}
+
+bool peelDimension(Value value, Value matrix, std::int64_t dimension) {
+  value = peelDynamicExtent(value);
+  auto dim = value ? value.getDefiningOp<memref::DimOp>() : memref::DimOp{};
+  return dim && dim.getSource() == matrix &&
+         peelConstant(dim.getIndex(), dimension);
+}
+
+bool peelTailBound(Value value, Value origin, Value extent, std::int64_t tile) {
+  if (tile == 1 && peelConstant(value, 1)) return true;
+  value = peelDynamicExtent(value);
+  auto minimum = value ? value.getDefiningOp<affine::AffineMinOp>()
+                       : affine::AffineMinOp{};
+  if (!minimum || minimum.getAffineMap().getNumResults() != 2) return false;
+  unsigned budget = 256;
+  SmallVector<PeelLinear> operands;
+  for (auto operand : minimum.getOperands()) {
+    auto form = peelIndexLinear(operand, origin, extent, 0, budget);
+    if (!form.valid) return false;
+    operands.push_back(form);
+  }
+  bool remaining = false, constant = false;
+  for (auto expression : minimum.getAffineMap().getResults()) {
+    auto form = peelAffineLinear(expression, operands,
+                                  minimum.getAffineMap().getNumDims(), 0, budget);
+    if (!form.valid) return false;
+    remaining |= form.coefficients == std::array<std::int64_t, 3>{-1, 1, 0};
+    constant |= form.coefficients == std::array<std::int64_t, 3>{0, 0, tile};
+  }
+  return remaining && constant;
+}
+
+bool peelFullBoundary(Value value, Value b, std::int64_t tile) {
+  // Native peeling/canonicalization supplies a single-input affine apply.
+  // Compare its exact floor expression, never evaluate untrusted division or
+  // coefficient products. For nonnegative N, F=tile*floor(N/tile) <= N and
+  // 0<=N-F<tile, so this multiplication introduces no new signed bound.
+  auto apply = value.getDefiningOp<affine::AffineApplyOp>();
+  if (!apply || apply.getNumOperands() != 1 ||
+      apply.getAffineMap().getNumResults() != 1 ||
+      !peelDimension(apply.getOperand(0), b, 1)) return false;
+  auto map = apply.getAffineMap();
+  auto variable = map.getNumDims() == 1 && map.getNumSymbols() == 0
+      ? getAffineDimExpr(0, value.getContext())
+      : map.getNumDims() == 0 && map.getNumSymbols() == 1
+          ? getAffineSymbolExpr(0, value.getContext()) : AffineExpr{};
+  return variable && map.getResult(0) == variable.floorDiv(tile) * tile;
+}
+
+bool peelAttrsOnly(Operation *operation,
+                    std::initializer_list<llvm::StringRef> allowed,
+                    std::string &error) {
+  for (auto attribute : operation->getAttrs())
+    if (!llvm::is_contained(allowed, attribute.getName().strref()))
+      return reject(error, "peeled recipe has unsupported attribute " +
+          attribute.getName().str() + " on " +
+          operation->getName().getStringRef().str());
+  return true;
+}
+
+bool peelOperations(ModuleOp module, bool structured, std::string &error) {
+  bool valid = true;
+  module.walk([&](Operation *op) {
+    if (!valid) return;
+    if (isa<ModuleOp, func::ReturnOp, scf::ForOp, scf::YieldOp,
+            linalg::YieldOp, memref::DimOp>(op))
+      valid = peelAttrsOnly(op, {}, error);
+    else if (isa<func::FuncOp>(op))
+      valid = peelAttrsOnly(op, {"sym_name", "function_type"}, error);
+    else if (auto constant = dyn_cast<arith::ConstantOp>(op)) {
+      valid = peelAttrsOnly(op, {"value"}, error);
+      auto floating = dyn_cast<FloatAttr>(constant.getValue());
+      auto integer = dyn_cast<IntegerAttr>(constant.getValue());
+      valid &= floating ? constant.getType().isF32() &&
+                              floating.getValue().isZero() &&
+                              !floating.getValue().isNegative()
+                        : constant.getType().isIndex() && integer &&
+                              integer.getInt() >= -64 && integer.getInt() <= 64;
+    } else if (auto mul = dyn_cast<arith::MulFOp>(op))
+      valid = peelAttrsOnly(op, {"fastmath"}, error) && mul.getType().isF32() &&
+              mul.getFastmath() == arith::FastMathFlags::none;
+    else if (auto add = dyn_cast<arith::AddFOp>(op))
+      valid = peelAttrsOnly(op, {"fastmath"}, error) && add.getType().isF32() &&
+              add.getFastmath() == arith::FastMathFlags::none;
+    else if (auto add = dyn_cast<arith::AddIOp>(op))
+      valid = peelAttrsOnly(op, {"overflowFlags"}, error) &&
+              add.getType().isIndex() &&
+              add.getOverflowFlags() == arith::IntegerOverflowFlags::none;
+    else if (auto mul = dyn_cast<arith::MulIOp>(op))
+      valid = peelAttrsOnly(op, {"overflowFlags"}, error) &&
+              mul.getType().isIndex() &&
+              mul.getOverflowFlags() == arith::IntegerOverflowFlags::none;
+    else if (auto load = dyn_cast<memref::LoadOp>(op))
+      valid = !structured && peelAttrsOnly(op, {"nontemporal"}, error) &&
+              !load.getNontemporal();
+    else if (auto store = dyn_cast<memref::StoreOp>(op))
+      valid = !structured && peelAttrsOnly(op, {"nontemporal"}, error) &&
+              !store.getNontemporal();
+    else if (structured && isa<memref::SubViewOp>(op))
+      valid = peelAttrsOnly(op, {"static_offsets", "static_sizes", "static_strides",
+                                  "operandSegmentSizes"}, error);
+    else if (isa<affine::AffineApplyOp, affine::AffineMinOp>(op))
+      valid = peelAttrsOnly(op, {"map"}, error);
+    else if (structured && isa<linalg::FillOp>(op))
+      valid = peelAttrsOnly(op, {"operandSegmentSizes"}, error);
+    else if (structured && isa<linalg::GenericOp>(op))
+      valid = peelAttrsOnly(op, {"indexing_maps", "iterator_types",
+                                  "operandSegmentSizes"}, error);
+    else {
+      valid = false;
+      reject(error, "peeled recipe has unsupported operation " +
+          op->getName().getStringRef().str());
+    }
+  });
+  if (!valid && error.empty())
+    return reject(error, "peeled recipe changed constant, arithmetic or memory properties");
+  return valid;
+}
+
+struct PeelCopy {
+  scf::ForOp tileM, tileN, localM, reduction, localN;
+  memref::LoadOp lhs, rhs, old;
+  arith::MulFOp product;
+  arith::AddFOp sum;
+  memref::StoreOp store;
+};
+
+bool peelCopy(memref::StoreOp store, func::FuncOp function,
+                const OutputTilePatternV1 &tiles, PeelCopy &copy,
+                std::string &error) {
+  const auto a = function.getArgument(0), b = function.getArgument(1),
+             c = function.getArgument(2);
+  copy.store = store;
+  copy.sum = store.getValue().getDefiningOp<arith::AddFOp>();
+  copy.product = copy.sum ? copy.sum.getRhs().getDefiningOp<arith::MulFOp>()
+                          : arith::MulFOp{};
+  copy.old = copy.sum ? copy.sum.getLhs().getDefiningOp<memref::LoadOp>()
+                      : memref::LoadOp{};
+  copy.lhs = copy.product ? copy.product.getLhs().getDefiningOp<memref::LoadOp>()
+                          : memref::LoadOp{};
+  copy.rhs = copy.product ? copy.product.getRhs().getDefiningOp<memref::LoadOp>()
+                          : memref::LoadOp{};
+  copy.localN = dyn_cast<scf::ForOp>(store->getParentOp());
+  copy.reduction = copy.localN
+      ? dyn_cast<scf::ForOp>(copy.localN->getParentOp()) : scf::ForOp{};
+  copy.localM = copy.reduction
+      ? dyn_cast<scf::ForOp>(copy.reduction->getParentOp()) : scf::ForOp{};
+  copy.tileN = copy.localM
+      ? dyn_cast<scf::ForOp>(copy.localM->getParentOp()) : scf::ForOp{};
+  copy.tileM = copy.tileN
+      ? dyn_cast<scf::ForOp>(copy.tileN->getParentOp()) : scf::ForOp{};
+  if (!copy.sum || !copy.product || !copy.old || !copy.lhs || !copy.rhs ||
+      !copy.tileM || copy.tileM->getParentOp() != function.getOperation() ||
+      store.getMemRef() != c || copy.old.getMemRef() != c ||
+      copy.lhs.getMemRef() != a || copy.rhs.getMemRef() != b)
+    return reject(error, "peeled contraction lost M/N/local-M/K/local-N ownership or A/B/C dataflow");
+  auto *body = copy.localN.getBody();
+  for (Operation *operation : {copy.lhs.getOperation(), copy.rhs.getOperation(),
+                               copy.old.getOperation(), copy.product.getOperation(),
+                               copy.sum.getOperation()})
+    if (operation->getBlock() != body)
+      return reject(error, "peeled scalar computation escaped its own local-N body");
+  if (!copy.lhs->isBeforeInBlock(copy.rhs) ||
+      !copy.rhs->isBeforeInBlock(copy.old) ||
+      !copy.old->isBeforeInBlock(copy.product) ||
+      !copy.product->isBeforeInBlock(copy.sum) ||
+      !copy.sum->isBeforeInBlock(store) ||
+      !copy.lhs.getResult().hasOneUse() || !copy.rhs.getResult().hasOneUse() ||
+      !copy.old.getResult().hasOneUse() || !copy.product.getResult().hasOneUse() ||
+      !copy.sum.getResult().hasOneUse())
+    return reject(error, "peeled strict load/multiply/add/store graph changed");
+  if (!peelConstant(copy.tileM.getLowerBound(), 0) ||
+      !peelConstant(copy.tileM.getStep(), tiles.tile_m) ||
+      !peelDimension(copy.tileM.getUpperBound(), a, 0) ||
+      !peelConstant(copy.tileN.getStep(), tiles.tile_n) ||
+      !peelConstant(copy.localM.getLowerBound(), 0) ||
+      !peelConstant(copy.localM.getStep(), 1) ||
+      !peelTailBound(copy.localM.getUpperBound(), copy.tileM.getInductionVar(),
+                       copy.tileM.getUpperBound(), tiles.tile_m) ||
+      !peelConstant(copy.reduction.getLowerBound(), 0) ||
+      !peelConstant(copy.reduction.getStep(), 1) ||
+      !peelDimension(copy.reduction.getUpperBound(), a, 1) ||
+      !peelConstant(copy.localN.getLowerBound(), 0) ||
+      !peelConstant(copy.localN.getStep(), 1))
+    return reject(error, "peeled M bounds, local unit steps or complete increasing K changed");
+  if (copy.lhs.getIndices().size() != 2 || copy.rhs.getIndices().size() != 2 ||
+      copy.old.getIndices().size() != 2 || store.getIndices().size() != 2 ||
+      copy.lhs.getIndices()[1] != copy.reduction.getInductionVar() ||
+      copy.rhs.getIndices()[0] != copy.reduction.getInductionVar())
+    return reject(error, "peeled product changed original A/B K indices");
+  for (auto indices : {copy.lhs.getIndices(), copy.old.getIndices(),
+                       store.getIndices()})
+    if (!peelIndexIs(indices[0], copy.tileM.getInductionVar(),
+                       copy.localM.getInductionVar(), {1, 1, 0}))
+      return reject(error, "peeled A/C row no longer equals tile-M plus local-M");
+  for (auto indices : {copy.rhs.getIndices(), copy.old.getIndices(),
+                       store.getIndices()})
+    if (!peelIndexIs(indices[1], copy.tileN.getInductionVar(),
+                       copy.localN.getInductionVar(), {1, 1, 0}))
+      return reject(error, "peeled B/C column no longer equals tile-N plus local-N");
+  return true;
+}
+
+bool peelMixedIs(OpFoldResult value, Value first, Value second,
+                   std::array<std::int64_t, 3> expected) {
+  if (auto constant = getConstantIntValue(value))
+    return expected == std::array<std::int64_t, 3>{0, 0, *constant};
+  return peelIndexIs(dyn_cast<Value>(value), first, second, expected);
+}
+
+bool peelMixedDimension(OpFoldResult value, Value matrix, std::int64_t dim) {
+  auto dynamic = dyn_cast<Value>(value);
+  return dynamic && peelDimension(dynamic, matrix, dim);
+}
+
+bool peelMixedBound(OpFoldResult value, Value origin, Value extent,
+                     std::int64_t tile) {
+  if (auto constant = getConstantIntValue(value)) return tile == 1 && *constant == 1;
+  auto dynamic = dyn_cast<Value>(value);
+  return dynamic && peelTailBound(dynamic, origin, extent, tile);
+}
+
+enum class PeelDomain { UnitN, FullN, TailN };
+
+bool peelSubview(memref::SubViewOp view, PeelCopy copy, PeelDomain domain,
+                   func::FuncOp function, const OutputTilePatternV1 &tiles,
+                   std::string &error) {
+  auto offsets = view.getMixedOffsets(), sizes = view.getMixedSizes(),
+       strides = view.getMixedStrides();
+  if (offsets.size() != 2 || sizes.size() != 2 || strides.size() != 2 ||
+      !peelMixedIs(strides[0], {}, {}, {0, 0, 1}) ||
+      !peelMixedIs(strides[1], {}, {}, {0, 0, 1}))
+    return reject(error, "peeled subview rank or original unit strides changed");
+  const auto a = function.getArgument(0), b = function.getArgument(1),
+             c = function.getArgument(2);
+  const auto m = copy.tileM.getInductionVar(), n = copy.tileN.getInductionVar();
+  const auto mExtent = copy.tileM.getUpperBound();
+  const auto nExtent = domain == PeelDomain::TailN ? copy.tileN.getUpperBound()
+      : Value{};
+  const bool rows = peelMixedBound(sizes[0], m, mExtent, tiles.tile_m);
+  const bool columns = domain == PeelDomain::FullN
+      ? peelMixedIs(sizes[1], {}, {}, {0, 0, tiles.tile_n})
+      : domain == PeelDomain::TailN
+          ? peelMixedIs(sizes[1], n, nExtent, {-1, 1, 0})
+          : peelMixedBound(sizes[1], n, copy.tileN.getUpperBound(), 1);
+  if (view.getSource() == a &&
+      peelMixedIs(offsets[0], m, {}, {1, 0, 0}) &&
+      peelMixedIs(offsets[1], {}, {}, {0, 0, 0}) && rows &&
+      peelMixedDimension(sizes[1], a, 1)) return true;
+  if (view.getSource() == b &&
+      peelMixedIs(offsets[0], {}, {}, {0, 0, 0}) &&
+      peelMixedIs(offsets[1], n, {}, {1, 0, 0}) &&
+      peelMixedDimension(sizes[0], a, 1) && columns) return true;
+  if (view.getSource() == c &&
+      peelMixedIs(offsets[0], m, {}, {1, 0, 0}) &&
+      peelMixedIs(offsets[1], n, {}, {1, 0, 0}) && rows && columns) return true;
+  return reject(error, "peeled subview lost its exact original A/B/C bounded slice");
+}
+
+bool peelStructuredSlices(func::FuncOp function,
+                             const OutputTilePatternV1 &tiles,
+                             std::string &error) {
+  // Alias folding intentionally consumes and deletes these views. Validate
+  // even their lengths/types and exact generic uses *before* that boundary;
+  // a correct post-fold access cannot prove an erased view had valid bounds.
+  const unsigned copies = tiles.tile_n == 1 ? 1 : 2;
+  unsigned fills = 0, multiplies = 0, adds = 0;
+  SmallVector<scf::ForOp> loops;
+  SmallVector<linalg::GenericOp> products;
+  SmallVector<memref::SubViewOp> views;
+  function.walk([&](Operation *operation) {
+    fills += isa<linalg::FillOp>(operation);
+    multiplies += isa<arith::MulFOp>(operation);
+    adds += isa<arith::AddFOp>(operation);
+    if (auto loop = dyn_cast<scf::ForOp>(operation)) loops.push_back(loop);
+    if (auto product = dyn_cast<linalg::GenericOp>(operation)) products.push_back(product);
+    if (auto view = dyn_cast<memref::SubViewOp>(operation)) views.push_back(view);
+  });
+  if (fills != 1 || products.size() != copies || multiplies != copies ||
+      adds != copies || views.size() != 3 * copies || loops.size() != copies + 1)
+    return reject(error, "peeled structured fill/copy/view graph counts changed");
+  for (auto fill : function.front().getOps<linalg::FillOp>()) {
+    auto &body = fill->getRegion(0).front();
+    auto yielded = body.empty() ? linalg::YieldOp{}
+                                : dyn_cast<linalg::YieldOp>(body.back());
+    if (fill->getNumOperands() != 2 || fill->getNumResults() != 0 ||
+        fill->getOperand(1) != function.getArgument(2) ||
+        body.getNumArguments() != 2 || body.getOperations().size() != 1 ||
+        !yielded || yielded.getNumOperands() != 1 ||
+        yielded.getOperand(0) != body.getArgument(0))
+      return reject(error, "peeled structured fill body/destination changed");
+  }
+  llvm::SmallPtrSet<Operation *, 8> checkedViews, checkedLoops;
+  scf::ForOp tileM, fullN;
+  for (auto [index, product] : llvm::enumerate(products)) {
+    auto *context = function.getContext();
+    const auto m = getAffineDimExpr(0, context), k = getAffineDimExpr(1, context),
+               n = getAffineDimExpr(2, context);
+    SmallVector<AffineMap> actualMaps;
+    for (auto map : product.getIndexingMaps())
+      actualMaps.push_back(cast<AffineMapAttr>(map).getValue());
+    const SmallVector<AffineMap> expectedMaps{
+        AffineMap::get(3, 0, {m, k}, context),
+        AffineMap::get(3, 0, {k, n}, context),
+        AffineMap::get(3, 0, {m, n}, context)};
+    const SmallVector<utils::IteratorType> expectedIterators{
+        utils::IteratorType::parallel, utils::IteratorType::reduction,
+        utils::IteratorType::parallel};
+    auto &body = product->getRegion(0).front();
+    if (actualMaps != expectedMaps || product.getIteratorTypesArray() != expectedIterators ||
+        body.getNumArguments() != 3 || body.getOperations().size() != 3)
+      return reject(error, "peeled structured M/K/N indexing or scalar body changed");
+    auto mul = dyn_cast<arith::MulFOp>(body.front());
+    auto add = dyn_cast<arith::AddFOp>(*std::next(body.begin()));
+    auto yielded = dyn_cast<linalg::YieldOp>(body.back());
+    if (!mul || !add || !yielded ||
+        mul.getLhs() != body.getArgument(0) || mul.getRhs() != body.getArgument(1) ||
+        add.getLhs() != body.getArgument(2) || add.getRhs() != mul.getResult() ||
+        yielded.getNumOperands() != 1 || yielded.getOperand(0) != add.getResult())
+      return reject(error, "peeled structured separate multiply/add recurrence changed");
+    PeelCopy copy;
+    copy.tileN = dyn_cast<scf::ForOp>(product->getParentOp());
+    copy.tileM = copy.tileN ? dyn_cast<scf::ForOp>(copy.tileN->getParentOp())
+                           : scf::ForOp{};
+    if (!copy.tileM || copy.tileM->getParentOp() != function.getOperation() ||
+        product->getNumOperands() != 3 || product->getNumResults() != 0 ||
+        !peelConstant(copy.tileM.getLowerBound(), 0) ||
+        !peelConstant(copy.tileM.getStep(), tiles.tile_m) ||
+        !peelDimension(copy.tileM.getUpperBound(), function.getArgument(0), 0) ||
+        !peelConstant(copy.tileN.getStep(), tiles.tile_n))
+      return reject(error, "peeled structured copy lost its exact M/N ownership");
+    if (!tileM) tileM = copy.tileM;
+    if (tileM != copy.tileM)
+      return reject(error, "peeled full/tail copies do not share their original M loop");
+    const auto domain = copies == 1 ? PeelDomain::UnitN
+        : index == 0 ? PeelDomain::FullN : PeelDomain::TailN;
+    if (index == 0) {
+      fullN = copy.tileN;
+      if (!peelConstant(fullN.getLowerBound(), 0) ||
+          (copies == 1
+               ? !peelDimension(fullN.getUpperBound(), function.getArgument(1), 1)
+               : !peelFullBoundary(fullN.getUpperBound(), function.getArgument(1),
+                                      tiles.tile_n)))
+        return reject(error, "peeled structured full-N boundary changed");
+    } else if (copy.tileN == fullN || !fullN->isBeforeInBlock(copy.tileN) ||
+               copy.tileN.getLowerBound() != fullN.getUpperBound() ||
+               !peelDimension(copy.tileN.getUpperBound(), function.getArgument(1), 1))
+      return reject(error, "peeled structured remainder is not exactly [F,N)");
+    checkedLoops.insert(copy.tileM.getOperation());
+    checkedLoops.insert(copy.tileN.getOperation());
+    for (unsigned source = 0; source != 3; ++source) {
+      auto view = product->getOperand(source).getDefiningOp<memref::SubViewOp>();
+      if (!view || view->getParentOp() != copy.tileN.getOperation() ||
+          view.getSource() != function.getArgument(source) ||
+          !view.getResult().hasOneUse() ||
+          !checkedViews.insert(view.getOperation()).second)
+        return reject(error, "peeled generic lost its unique original A/B/C slices");
+      if (!peelSubview(view, copy, domain, function, tiles, error)) return false;
+    }
+  }
+  for (auto loop : loops)
+    if (!checkedLoops.contains(loop.getOperation()) || loop.getNumResults() ||
+        !loop.getInitArgs().empty() || loop.getBody()->getNumArguments() != 1)
+      return reject(error, "peeled structured graph has an unproved loop role");
+  return checkedViews.size() == views.size();
+}
+
+bool peelLegacyDeadIndex(affine::AffineApplyOp apply, func::FuncOp function,
+                            const OutputTilePatternV1 &tiles) {
+  // The unchanged unit-N tiler emits unused (extent-1) helpers. These exact
+  // helpers are safe for nonnegative K or the proven bounded M/N extents. Do
+  // not generalize this to arbitrary dead semi-affine or arithmetic programs.
+  if (tiles.tile_n != 1 || !apply.getResult().use_empty() ||
+      apply.getNumOperands() != 1 ||
+      !peelIndexIs(apply.getResult(), apply.getOperand(0), {}, {1, 0, -1}))
+    return false;
+  auto n = dyn_cast<scf::ForOp>(apply->getParentOp());
+  auto m = n ? dyn_cast<scf::ForOp>(n->getParentOp()) : scf::ForOp{};
+  if (!m || m->getParentOp() != function.getOperation()) return false;
+  const auto extent = apply.getOperand(0);
+  return peelDimension(extent, function.getArgument(0), 1) ||
+         peelTailBound(extent, m.getInductionVar(), m.getUpperBound(), tiles.tile_m) ||
+         peelTailBound(extent, n.getInductionVar(), n.getUpperBound(), 1);
+}
+
+bool peelIndexClosure(ModuleOp module, func::FuncOp function,
+                         const OutputTilePatternV1 &tiles, bool structured,
+                         std::string &error) {
+  // All index computations must participate in a separately proved bound,
+  // slice or access relation. Otherwise lowering could DCE an undefined dim or
+  // semi-affine divisor before the independent envelope ever sees it.
+  SmallVector<Value> pending;
+  bool valid = true;
+  module.walk([&](Operation *operation) {
+    if (auto loop = dyn_cast<scf::ForOp>(operation)) {
+      pending.push_back(loop.getLowerBound());
+      pending.push_back(loop.getUpperBound());
+      pending.push_back(loop.getStep());
+    }
+    if (auto view = dyn_cast<memref::SubViewOp>(operation)) {
+      for (auto value : view.getOperands())
+        if (value.getType().isIndex()) pending.push_back(value);
+    }
+    if (auto load = dyn_cast<memref::LoadOp>(operation))
+      llvm::append_range(pending, load.getIndices());
+    if (auto store = dyn_cast<memref::StoreOp>(operation))
+      llvm::append_range(pending, store.getIndices());
+    if (auto dim = dyn_cast<memref::DimOp>(operation)) {
+      bool source = false;
+      for (auto argument : function.getArguments()) source |= dim.getSource() == argument;
+      if (structured)
+        source |= bool(dim.getSource().getDefiningOp<memref::SubViewOp>());
+      if (!source || (!peelConstant(dim.getIndex(), 0) &&
+                     !peelConstant(dim.getIndex(), 1))) valid = false;
+      // A valid rank-2 dimension query is also an explicitly safe dead case;
+      // unused original dimensions occur in the unchanged unit-N graph.
+      pending.push_back(dim.getIndex());
+    }
+  });
+  if (!valid) return reject(error, "peeled graph contains an unproved matrix dimension query");
+  llvm::SmallPtrSet<Operation *, 32> proved;
+  while (!pending.empty()) {
+    auto value = pending.pop_back_val();
+    auto *operation = value.getDefiningOp();
+    if (!operation || !proved.insert(operation).second) continue;
+    for (auto operand : operation->getOperands())
+      if (operand.getType().isIndex()) pending.push_back(operand);
+  }
+  module.walk([&](Operation *operation) {
+    if (!valid || !isa<arith::AddIOp, arith::MulIOp, affine::AffineApplyOp,
+                       affine::AffineMinOp>(operation) || proved.contains(operation)) return;
+    auto apply = dyn_cast<affine::AffineApplyOp>(operation);
+    if (!structured || !apply || !peelLegacyDeadIndex(apply, function, tiles)) valid = false;
+  });
+  return valid || reject(error, "peeled graph has index glue outside all proved relations");
+}
+
+bool peelScalarEnvelope(ModuleOp scheduled, const OutputTilePatternV1 &tiles,
+                          std::string &error) {
+  if (!scheduled || failed(verify(scheduled)) ||
+      !scheduled->getAttrs().empty() ||
+      !llvm::hasSingleElement(scheduled.getBody()->getOperations()))
+    return reject(error, "peeled module ownership or validity changed");
+  auto original = dyn_cast<func::FuncOp>(scheduled.getBody()->front());
+  if (!original || original.getName() != cpu_candidate::kStrictGemmSymbolV1 ||
+      original.getNumArguments() != 3 || original.getNumResults() != 1 ||
+      !llvm::hasSingleElement(original.getBody()) ||
+      original.getResultTypes()[0] != original.getArgument(2).getType())
+    return reject(error, "peeled function identity/type changed");
+  for (auto type : original.getArgumentTypes())
+    if (!matrix(type)) return reject(error, "peeled matrix layout changed");
+  if (!peelOperations(scheduled, true, error) ||
+      !peelStructuredSlices(original, tiles, error) ||
+      !peelIndexClosure(scheduled, original, tiles, true, error)) return false;
+
+  OwningOpRef<ModuleOp> lowered = scheduled.clone();
+  PassManager loops(scheduled.getContext());
+  loops.addNestedPass<func::FuncOp>(createConvertLinalgToLoopsPass());
+  loops.addPass(memref::createFoldMemRefAliasOpsPass());
+  // Preserve even unit local loops for the role/ownership proof. Production
+  // may canonicalize them only after this complete independent inspection.
+  if (failed(loops.run(*lowered)) || failed(verify(*lowered)) ||
+      !peelOperations(*lowered, false, error))
+    return reject(error, "peeled independent scalar-loop inspection failed: " + error);
+  auto function = *lowered->getOps<func::FuncOp>().begin();
+  const auto c = function.getArgument(2);
+  const unsigned copies = tiles.tile_n == 1 ? 1 : 2;
+  unsigned multiplies = 0, adds = 0, loads = 0;
+  SmallVector<scf::ForOp> allLoops;
+  SmallVector<memref::StoreOp> stores;
+  bool invalid = false;
+  lowered->walk([&](Operation *op) {
+    if (auto loop = dyn_cast<scf::ForOp>(op)) {
+      allLoops.push_back(loop);
+      invalid |= loop.getNumResults() || !loop.getInitArgs().empty() ||
+                 loop.getBody()->getNumArguments() != 1;
+    }
+    multiplies += isa<arith::MulFOp>(op);
+    adds += isa<arith::AddFOp>(op);
+    loads += isa<memref::LoadOp>(op);
+    if (auto store = dyn_cast<memref::StoreOp>(op)) stores.push_back(store);
+  });
+  if (invalid || multiplies != copies || adds != copies || loads != 3 * copies ||
+      stores.size() != copies + 1 || allLoops.size() != (copies == 1 ? 7 : 11))
+    return reject(error, "peeled scalar body/fill/copy graph counts changed");
+
+  scf::ForOp fillM, fillN;
+  SmallVector<PeelCopy> contractions;
+  for (auto store : stores) {
+    if (store.getValue().getDefiningOp<arith::AddFOp>()) {
+      PeelCopy copy;
+      if (!peelCopy(store, function, tiles, copy, error)) return false;
+      contractions.push_back(copy);
+      continue;
+    }
+    auto constant = store.getValue().getDefiningOp<arith::ConstantOp>();
+    auto zero = constant ? dyn_cast<FloatAttr>(constant.getValue()) : FloatAttr{};
+    auto n = dyn_cast<scf::ForOp>(store->getParentOp());
+    auto m = n ? dyn_cast<scf::ForOp>(n->getParentOp()) : scf::ForOp{};
+    if (fillM || !zero || !zero.getValue().isZero() || zero.getValue().isNegative() ||
+        !m || m->getParentOp() != function.getOperation() || store.getMemRef() != c ||
+        !peelConstant(m.getLowerBound(), 0) || !peelConstant(n.getLowerBound(), 0) ||
+        !peelConstant(m.getStep(), 1) || !peelConstant(n.getStep(), 1) ||
+        !peelDimension(m.getUpperBound(), c, 0) ||
+        !peelDimension(n.getUpperBound(), c, 1) || store.getIndices().size() != 2 ||
+        store.getIndices()[0] != m.getInductionVar() ||
+        store.getIndices()[1] != n.getInductionVar())
+      return reject(error, "peeled positive-zero complete destination fill changed");
+    fillM = m;
+    fillN = n;
+  }
+  if (!fillM || contractions.size() != copies)
+    return reject(error, "peeled full/tail or zero-fill ownership missing");
+  auto &full = contractions.front();
+  auto tileM = full.tileM;
+  if (!fillM->isBeforeInBlock(tileM))
+    return reject(error, "peeled computation moved before full positive-zero fill");
+  if (copies == 1) {
+    // Unit N is a statically selected exact one-body identity recipe; upstream
+    // peel is never invoked and there is no optional/ignored remainder body.
+    if (!peelConstant(full.tileN.getLowerBound(), 0) ||
+        !peelDimension(full.tileN.getUpperBound(), function.getArgument(1), 1) ||
+        !peelTailBound(full.localN.getUpperBound(), full.tileN.getInductionVar(),
+                         full.tileN.getUpperBound(), 1))
+      return reject(error, "peeled unit-N identity domain changed");
+  } else {
+    auto &tail = contractions.back();
+    const auto boundary = full.tileN.getUpperBound();
+    if (full.tileM != tail.tileM || full.tileN == tail.tileN ||
+        !full.tileN->isBeforeInBlock(tail.tileN) ||
+        !peelConstant(full.tileN.getLowerBound(), 0) ||
+        !peelFullBoundary(boundary, function.getArgument(1), tiles.tile_n) ||
+        tail.tileN.getLowerBound() != boundary ||
+        !peelDimension(tail.tileN.getUpperBound(), function.getArgument(1), 1) ||
+        !peelConstant(full.localN.getUpperBound(), tiles.tile_n) ||
+        !peelIndexIs(peelDynamicExtent(tail.localN.getUpperBound()),
+                       tail.tileN.getInductionVar(), tail.tileN.getUpperBound(),
+                       {-1, 1, 0}))
+      return reject(error, "peeled full/tail disjoint complete N partition changed");
+  }
+
+  llvm::SmallPtrSet<Operation *, 16> expectedLoops{
+      fillM.getOperation(), fillN.getOperation()};
+  for (auto copy : contractions) {
+    for (auto loop : {copy.tileM, copy.tileN, copy.localM, copy.reduction, copy.localN})
+      expectedLoops.insert(loop.getOperation());
+  }
+  if (expectedLoops.size() != allLoops.size() ||
+      llvm::any_of(allLoops, [&](scf::ForOp loop) {
+        return !expectedLoops.contains(loop.getOperation());
+      }))
+    return reject(error, "peeled loop graph contains an unproved extra or shared role");
+  auto returned = dyn_cast<func::ReturnOp>(function.front().back());
+  if (!returned || returned.getNumOperands() != 1 || returned.getOperand(0) != c)
+    return reject(error, "peeled return lost the original destination identity");
+  return peelIndexClosure(*lowered, function, tiles, false, error);
+}
+
 OwningOpRef<ModuleOp> runSchedule(ModuleOp bufferized,
                                 const OutputTilePatternV1 &tiles,
                                 std::string &error) {
@@ -339,6 +1030,47 @@ OwningOpRef<ModuleOp> runSchedule(ModuleOp bufferized,
           transform::TransformOptions().enableExpensiveChecks(true))) ||
       failed(verify(*scheduled))) {
     reject(error, "parameterized upstream Transform derivation failed");
+    return {};
+  }
+  return scheduled;
+}
+
+OwningOpRef<ModuleOp> runPeelNSchedule(ModuleOp bufferized,
+                                      const OutputTilePatternV1 &tiles,
+                                      std::string &error) {
+  // Native peelForLoop rejects step<=1. This is an explicit, checked identity
+  // case, not an attempted peel, failure suppression, or fallback recipe.
+  if (tiles.tile_n == 1) return runSchedule(bufferized, tiles, error);
+  auto transformText = strictGemmOutputPeelNTransformV1(tiles, error);
+  if (transformText.empty()) return {};
+  auto *context = bufferized.getContext();
+  DialectRegistry registry;
+  registry.insert<affine::AffineDialect, scf::SCFDialect>();
+  linalg::registerTransformDialectExtension(registry);
+  linalg::registerTilingInterfaceExternalModels(registry);
+  scf::registerTransformDialectExtension(registry);
+  context->appendDialectRegistry(registry);
+  context->getOrLoadDialect<affine::AffineDialect>();
+  context->getOrLoadDialect<scf::SCFDialect>();
+  context->getOrLoadDialect<transform::TransformDialect>();
+  auto transform = parseSourceString<ModuleOp>(transformText, ParserConfig(context));
+  if (!transform) {
+    reject(error, "cannot parse closed upstream peel-N Transform");
+    return {};
+  }
+  auto entry = transform->lookupSymbol<transform::NamedSequenceOp>(
+      transform::TransformDialect::kTransformEntryPointSymbolName);
+  OwningOpRef<ModuleOp> scheduled = bufferized.clone();
+  if (!entry || failed(transform::applyTransformNamedSequence(
+          scheduled->getOperation(), entry.getOperation(), *transform,
+          transform::TransformOptions().enableExpensiveChecks(true)))) {
+    reject(error, "closed upstream peel-N Transform failed");
+    return {};
+  }
+  PassManager cleanup(context);
+  cleanup.addPass(createCanonicalizerPass());
+  if (failed(cleanup.run(*scheduled)) || failed(verify(*scheduled))) {
+    reject(error, "closed upstream peel-N canonicalization failed");
     return {};
   }
   return scheduled;
@@ -391,6 +1123,51 @@ bool verifyStrictGemmOutputTiledV1(ModuleOp scheduled,
   if (!OperationEquivalence::isEquivalentTo(scheduled, *expected,
                                            OperationEquivalence::IgnoreLocations))
     return reject(error, "scheduled payload differs from parameter-bound upstream replay");
+  return true;
+}
+
+std::string strictGemmOutputPeelNTransformV1(const OutputTilePatternV1 &tiles,
+                                           std::string &error) {
+  auto text = strictGemmOutputTileTransformV1(tiles, error);
+  if (text.empty() || tiles.tile_n == 1) return text;
+  const auto yield = text.find("    transform.yield\n");
+  if (yield == std::string::npos) {
+    reject(error, "closed peel-N Transform template changed");
+    return {};
+  }
+  text.insert(yield,
+      "    %full_n, %tail_n = transform.loop.peel %n : (!transform.op<\"scf.for\">) -> (!transform.op<\"scf.for\">, !transform.op<\"scf.for\">)\n");
+  return text;
+}
+
+OwningOpRef<ModuleOp> deriveStrictGemmOutputPeelNV1(
+    ModuleOp canonical_bufferized, const OutputTilePatternV1 &tiles,
+    std::string &error) {
+  if (!validateOutputTilePatternV1(tiles, error) ||
+      !cpu_candidate::verifyStrictGemmBufferizedV1(canonical_bufferized, error))
+    return {};
+  auto result = runPeelNSchedule(canonical_bufferized, tiles, error);
+  if (!result || !verifyStrictGemmOutputPeelNV1(*result, tiles, error)) return {};
+  return result;
+}
+
+bool verifyStrictGemmOutputPeelNV1(ModuleOp scheduled,
+                                  const OutputTilePatternV1 &tiles,
+                                  std::string &error) {
+  if (!validateOutputTilePatternV1(tiles, error)) return false;
+  if (!peelScalarEnvelope(scheduled, tiles, error)) {
+    // Stable stage distinction for independent valid-mutant tests: replay
+    // refusal must never masquerade as evidence of the scalar/domain proof.
+    error = "peeled scalar envelope: " + error;
+    return false;
+  }
+  auto original = cpu_candidate::buildStrictGemmStagesV1(*scheduled.getContext());
+  if (!original) { error = original.error; return false; }
+  auto expected = runPeelNSchedule(*original.bufferized, tiles, error);
+  if (!expected) return false;
+  if (!OperationEquivalence::isEquivalentTo(scheduled, *expected,
+                                           OperationEquivalence::IgnoreLocations))
+    return reject(error, "peeled payload differs from parameter-bound upstream replay");
   return true;
 }
 
