@@ -1,9 +1,11 @@
 # Private output-N peel: independent adversarial fixtures
 
-Status: source authored and inspected; **not compiled or executed by this agent**.
-Root coordinates all builds and physical execution. This report is not a pass
-receipt. The work is additive to the unchanged v1 tests and uses the new private
-issuer's actual objects, not the P3 fact binder or imported LLVM.
+Status: root-executed local Linux x86-64 inspection/CLI and 5x3 raw-leaf controls
+passed as recorded below. This agent independently inspected retained logs/XML
+and build rules, without compiling or executing anything. Broader family,
+ARM, hosted CI and source-route qualification are not claimed by this receipt.
+The work is additive to unchanged v1 tests and uses the new private issuer's
+actual objects, not the P3 fact binder or imported LLVM.
 
 ## Inspection fixture
 
@@ -90,7 +92,8 @@ CTest registration and diagnostic matching.
 No compiler/runtime/default/source-route or performance harness changes belong
 to this lane. Existing source-time classifiers intentionally remain unchanged;
 new source execution requires a later exact classifier/binding qualification.
-No sanitizer, native, ARM, source, runtime or performance pass is asserted here.
+Only the local inspection/CLI and 5x3 normal/generated-ASan results below are
+asserted here; no broader family, ARM, source, runtime or performance pass follows.
 P1 remains INCONCLUSIVE_TIMING; these fixtures neither retry it nor infer speed
 from a register-accumulator code shape. The initial private variant is baseline
 x86-64/AArch64 only as selected by root; nonbaseline ISA admission is not tested
@@ -105,3 +108,69 @@ interface, which requires a typed attribute rather than a bare integer. The
 follow-up uses `ConstantOp::create(..., builder.getIndexAttr(1/42))`, preserving
 the late-tail gap and benign replay-only constant. No build was rerun by this
 agent, and the failed receipt remains evidence rather than a passing result.
+
+## Root-executed first native controls
+
+Retained evidence is in the sibling
+`/home/hamza-usta/mdslc-work/correctness-campaign-v1/build-peel-release`:
+
+| Receipt | SHA256 |
+| --- | --- |
+| `peel-first-controls.log` | `aa3018a86c6eb1edaea18c8f7ba5f12cdc49d0edb118d7745033674e33615be8` |
+| `peel-first-controls.xml` | `12a66652dfde32b60fcf7947c670dbc295ce6686eb011ebec596fae31d90ebe6` |
+| `peel-5x3-controls.log` | `c12968ac1953008f1dd4d468836e4b9c2971816a01dff5255047c57382339db9` |
+| `peel-5x3-controls.xml` | `29ffe3d09fbfa7e9ea27f00eeac90f5c73ecc604b4ff1d8855410cecd3e9f521` |
+
+`peel-first-controls` records 2/2 CTests passed, zero skipped: inspection reports
+627 checks, 56 upstream-valid semantic mutants, zero failures and zero
+unsupported mutants. Thus the semi-affine negative was actually valid MLIR and
+rejected by the independent envelope. The separate benign-42 replay control
+also passed its assertion. CLI reports 22 refusals and eight issued
+parameter/target sets; AArch64 emission here is not native ARM execution.
+
+`peel-5x3-controls` records 6/6 CTests passed, zero skipped: normal positive,
+normal corruption detection, generated-ASan positive, ASan corruption detection,
+tail OOB detection and full-tile OOB detection. The negative helper assertions
+require the generated-leaf heap-buffer-overflow diagnostic, not an arbitrary
+failure. These deliberately invalid capacity calls are not supported-call cases.
+
+Each of the two positive processes reports **1,618 cases / 558,043 checks / zero
+failures**. This is a cumulative count: it already includes the reused **269
+cases / 372,457 checks** printed first. Do not add that subset again. The added
+corpus contributes 1,349 cases / 185,586 checks per positive process.
+Strict-witness participation is full=852, tail-width-one=426 and tail-width-two=426;
+these counts overlap for mixed full+tail shapes and must not be added as disjoint
+cases. Eighty inapplicable short-K witness combinations were excluded explicitly,
+not silently counted as executed witnesses or reported as skipped CTests.
+
+The actually issued `tests/generated_cpu/peel-5_3-normal.ll` hashes to
+`7864ea0110a3567ad29c0f27d8a64369f05fb4f440625d457a4712b8021d3496`, exactly equal
+to preserved P3 `peeled-bound.ll`. This is a native closed-issuer reproduction;
+the execution target does not consume the P3 binder or that external file.
+
+## Independent wiring inspection
+
+No blocking mistake found in the reviewed wiring:
+
+- The new private CLI branch selects only `OutputTiledPeelNMKN`, validates the
+  existing 1..64 parameter carrier and refuses conflicting schedules/candidates,
+  imports, unknown flags and nonbaseline ISAs. The direct issuer repeats the
+  baseline-only and closed-target checks; no source-driver/default selection
+  was added.
+- `OutputPeelTests.cmake` registers a separate 44-test family: seven profiles,
+  six controls each, plus inspection and CLI. The generated 5x3 Ninja rules bind
+  the matching tile macros and actually link the new issued object. Its normal
+  leaf uses `-O2 -ffp-contract=off`; the ASan leaf additionally receives issuer
+  instrumentation attributes and Clang address instrumentation. Harness flags
+  separately retain contraction-off/rounding semantics and sanitizer linkage.
+- Both sanitizer capacity probes are registered separately; corruption still
+  matches the retained oracle's intentional nonzero failure receipt.
+- The LLVM footprint remains exactly two definitions, separate unflagged
+  multiply/add and the original narrow intrinsic/call allowlist. Only the
+  already-verified peeled nonunit-N recipe expects two arithmetic copies;
+  unit N and every old recipe still expect one. Existing aligned-C-only noalias
+  preservation and module verification remain mandatory after lowering.
+- Workflow filters give the new underscore-prefixed tests their own exact-44
+  gate, leaving the retained dot-prefixed 236-test sanitizer scope and separate
+  two-test SPIR-V gate intact. Registration/source inspection is not evidence
+  that either hosted gate has run or that all seven new profiles have passed.
