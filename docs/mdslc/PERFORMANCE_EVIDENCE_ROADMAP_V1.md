@@ -14,8 +14,11 @@ CPU source-time route measured here and confers no Vulkan source/runtime authori
 PR #99 has since completed that issuer boundary; merged PR #100 records P1's
 [bounded negative/inconclusive campaign](../performance/cpu/source-pattern-p1-2026-11-10.md),
 not a speedup. The evidence milestone is complete, not a full-matrix performance
-qualification. The reviewed follow-up trace is complete (#101); the current
-engineering gate is the separately private full-N/tail realization (#102).
+qualification. The reviewed follow-up trace is complete (#101); its private
+full-N/tail correctness gate (#102, P4 below) is now merged as PR #103.
+The immediate engineering gate is its separately explicit source connection
+(#104 / pending PR #105, P4b). P5 remains a later performance comparison, with
+harness preparation only: no new measurement or source qualification is implied.
 
 ## P1 — Authenticated source-time strict output-tile comparison
 
@@ -120,13 +123,40 @@ M1/M2 GEMV admission/execution, general tensors, sparse math and additional
 targets are non-goals, not prerequisites. This plan predates the separately
 recorded PR #100 collection and does not manufacture a passing performance result.
 
-## Current performance-motivated engineering gate
+## P4 — Private full-N/tail correctness: merged
 
-[Issue #102](https://github.com/onlyxItachi/MatcoreDSL/issues/102) is a private
-strict full-N/tail realization, justified by the
+[Issue #102](https://github.com/onlyxItachi/MatcoreDSL/issues/102) completed the
+private strict full-N/tail realization justified by the
 [P2/P3 research checkpoint](https://github.com/onlyxItachi/MatcoreDSL/blob/4f3cd4c/docs/mdslc/agent-reports/strict-output-tile-peeling-prototype-v1.md).
-The mechanism is observed for 5x3; general parameters require a new independent
-domain/dataflow proof and numerical/sanitizer qualification. Keep the unpeeled
-source route, defaults and strict permissions intact. This is not a tuning sweep.
-Future source connection and measurements need separately frozen contracts;
-P1 is not rerun or repaired after seeing its result.
+[PR #103](https://github.com/onlyxItachi/MatcoreDSL/pull/103) normally merged at
+`1f7c491f230251d04d42b5d4a0af5eaf29bcb685`, with the exact frozen tree. The
+branch-aware independent proof and upstream replay, full/tail numerical/alias/
+empty controls, actual generated sanitizer detections and native ARM gates
+passed; clean Release was 352/352, zero skips, and all 26 hosted checks passed.
+See the [bounded qualification record](agent-reports/strict-output-peel-integration-qualification-v1.md).
+This private result does not select source/default routes or establish speed.
+
+## P4b — Authenticated source connection: current pending gate
+
+[Issue #104](https://github.com/onlyxItachi/MatcoreDSL/issues/104), implemented
+under qualification in [PR #105](https://github.com/onlyxItachi/MatcoreDSL/pull/105),
+connects only a separately explicit source request. Retain old request/default
+behavior, original WHAT witnesses and strict numerical/effect/failure contracts.
+Require a distinct bound instance, exact actual full/tail consumption, typed
+source/compiler/artifact/publication ownership, conditional runtime-guard proof,
+source oracles, generated sanitizer checks and relocated producer-inaccessible
+installation. Focused local progress is not full/hosted/ARM/install qualification.
+This is exactly the immediate next engineering boundary, not a new benchmark.
+
+## P5 — New source-call comparison: harness preparation only
+
+A separate research branch is preparing a new bounded comparison harness;
+there is no comparison PR, completed qualification or new measurement yet.
+The P5 name denotes the performance comparison, not the pending P4b source gate.
+Do not collect timings before that source correctness/ownership boundary passes.
+Predeclare the new old/peeled/stock comparison, exact source-to-artifact joins,
+strict numerical controls, call/allocation/retained-ownership interval, code-size/
+inlining observations, affinity/order/noise/resource limits and budgets before
+collection. Keep failure, loss and inconclusive outcomes; infer no speed from
+register promotion. P1 is not rerun, repaired or reinterpreted after its result,
+and no automatic threshold/default policy follows from harness preparation.
