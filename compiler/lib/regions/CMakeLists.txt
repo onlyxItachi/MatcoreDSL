@@ -192,6 +192,7 @@ set(MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS "${MDSLC_CLOSED_CANDIDATES_HAS_OPENBLAS
 # Test variants use exactly this definition, with injection enabled only in the
 # dedicated archive. The default invocation produces the installed candidate set.
 include(GpuCandidates.cmake)
+include(SpirvIssuer.cmake)
 function(mdslc_add_closed_candidate_runtime target)
   cmake_parse_arguments(REGION "TESTING;NATIVE_ONLY;SHARED;SOURCE_PATTERN_KIT" "" "" ${ARGN})
   if(REGION_UNPARSED_ARGUMENTS)
