@@ -1,5 +1,7 @@
 """Synthetic receipts/command mocks only: no compiler, source executable or timing."""
 import copy
+from contextlib import redirect_stderr
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -109,6 +111,14 @@ class ContractTests(unittest.TestCase):
 
 
 class RunnerTests(unittest.TestCase):
+    def test_prepare_requires_explicit_linker_before_any_process(self):
+        argv=["run.py","prepare","--driver","/synthetic/driver","--prefix","/synthetic/prefix",
+              "--stock-profile","/synthetic/profile.json","--output","/synthetic/NEW-output"]
+        with patch.object(run.sys,"argv",argv),patch.object(run.subprocess,"run") as process,redirect_stderr(StringIO()):
+            with self.assertRaises(SystemExit) as error: run.main()
+            self.assertEqual(error.exception.code,2)
+            process.assert_not_called()
+
     def test_all_issued_stage_object_joins(self):
         manifest={key:"a"*64 for key in c.ISSUED_HASHES}
         run.join_issued(manifest,manifest)
@@ -170,7 +180,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_upstream_rpath_transform_mock_preserves_inputs_and_rejects_other_changes(self):
         # Toy bytes plus a mocked CMake command, NOT actual ELF transformation.
-        for fault in ("none","bytes","wrong-root","wrong-head","foreign-compile-input"):
+        for fault in ("none","bytes","wrong-root","wrong-head","foreign-compile-input","wrong-target"):
             with tempfile.TemporaryDirectory(prefix="p1-stock-synthetic-") as temporary:
                 root=Path(temporary); output=root/"capsule"; output.mkdir()
                 build=root/"build"; (build/"lib/regions/mdslc-region").mkdir(parents=True)
@@ -202,7 +212,9 @@ class RunnerTests(unittest.TestCase):
                     '#define REGION_CANDIDATES_SHA "'+run.file_identity(producer)["sha256"]+'"\n'
                     '#define REGION_INSTALLED_CANDIDATES_SHA "'+run.file_identity(installed)["sha256"]+'"\n')
                 compile_input=leaf if fault!="foreign-compile-input" else root/"foreign-build/lib/regions/strict-normal.ll"
-                ninja.write_text(f"build lib/libmatcore_closed_candidates_isolated_v1.so: LINK lib/regions/strict-normal.o\n  LINK_FLAGS = -Bsymbolic --version-script={export}\n"
+                target="lib/libmatcore_closed_candidates_isolated_v1.so" if fault!="wrong-target" else "lib/foreign_candidates.so"
+                ninja.write_text(f"build {target}: LINK lib/regions/strict-normal.o\n  LINK_FLAGS = -Bsymbolic --version-script={export}\n"
+                                 "build libmatcore_closed_candidates_isolated_v1.so: phony lib/libmatcore_closed_candidates_isolated_v1.so\n"
                                  f"build lib/regions/strict-normal.o: CUSTOM_COMMAND lib/regions/strict-normal.ll\n  COMMAND = cd {leaf.parent} && /synthetic/compiler -c -x ir {compile_input} -O2 -o {obj}\n"
                                  f"build lib/regions/strict-normal.ll: CUSTOM_COMMAND\n  COMMAND = cd {leaf.parent} && {issuer} --output {leaf}\n")
                 cmake=root/"synthetic-cmake"; cmake.write_bytes(b"never executed")

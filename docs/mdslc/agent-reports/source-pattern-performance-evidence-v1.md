@@ -84,3 +84,22 @@ Pending: final frozen-commit independent review; coordinated actual `.mdsl`
 compilation/SDK/profile and source/artifact/control checks; then, only on the
 declared exclusive host, a bounded collection. Any future negative, noisy,
 inconclusive or unsupported result must be retained without weakened gates.
+
+## Retained real-preparation refusal and focused follow-up
+
+After checkpoint `5591e8b`, the integration owner reported prepare-v2 successfully
+compiled all six executables: each timed host passed its 17 controls, and each
+canonical source passed 68 cases / 111292 checks / zero failures. No timing ran.
+The subsequent stock-profile gate correctly stopped the overall preparation:
+its suffix regex ambiguously matched both the real Ninja shared-library target
+and the normal basename-only phony alias. The retained v1/v2 evidence is not
+reclassified as a complete preparation or performance result.
+
+The authorized fix selects exactly the canonical producer-relative target before
+the colon. A synthetic positive includes both real and phony targets; a wrong
+real target cannot be rescued by the phony alias. Preparation also now requires
+explicit `--linker`: the actual driver's linker bytes, checked against each
+issued manifest, are authoritative rather than a default lld executable or a
+misleading CMake cache entry. The prior linker-hash refusal remains retained.
+The numerical source and frozen timing plan are unchanged. The follow-up Python
+suite passes 15 unittest methods; this lane still ran no compilation or timing.

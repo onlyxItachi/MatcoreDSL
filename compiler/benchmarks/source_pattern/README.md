@@ -127,6 +127,8 @@ python3 -B compiler/benchmarks/source_pattern/run.py summarize \
 
 CPU 2 above is an example of the owner's proposed host choice, never an automatic
 selection. No persistent affinity, governor or boost setting is changed.
+`--linker` is required: pass the actual driver linker whose bytes match the issued
+manifest, not an assumed executable or the potentially different CMake cache value.
 Collection allows <=20 seconds per process and one <=180-second total deadline,
 including initial/final controls and endpoint identities. Raw command logs have
 a 64 MiB cap; six generated binaries/four tile bundles/source/inspection artifacts

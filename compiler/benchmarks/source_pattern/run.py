@@ -320,7 +320,8 @@ def stock_profile(path, log, installed_dso, tools):
         inspector().output_tile_consumption(Path(str(paths["leaf"]) + ".transform.mlir").read_text(), Path(str(paths["leaf"]) + ".scheduled.mlir").read_text(), tiles)
     ninja = paths["build_ninja"].read_text()
     blocks = re.split(r"(?=^build )", ninja, flags=re.M)
-    links = [block for block in blocks if re.match(r"build [^\n]*libmatcore_closed_candidates_isolated_v1\.so:", block)]
+    canonical_target = "build " + str(paths["producer_candidate"].relative_to(build)) + ":"
+    links = [block for block in blocks if block.startswith(canonical_target)]
     c.require(len(links) == 1 and str(paths["object"].relative_to(build)) in links[0].splitlines()[0].split() and
               links[0].startswith("build " + str(paths["producer_candidate"].relative_to(build)) + ":") and
               "-Bsymbolic" in links[0] and str(source / "lib/regions/private_runtime_v2.exports") in links[0],
@@ -636,7 +637,7 @@ def main():
     prepare_parser.add_argument("--output", type=Path, required=True)
     prepare_parser.add_argument("--stock-profile", type=Path, required=True)
     prepare_parser.add_argument("--cxx", type=Path, default=Path("/usr/bin/clang++-21"))
-    prepare_parser.add_argument("--linker", type=Path, default=Path("/usr/bin/ld.lld-21"))
+    prepare_parser.add_argument("--linker", type=Path, required=True)
     collect_parser = modes.add_parser("collect")
     collect_parser.add_argument("--prepared", type=Path, required=True)
     collect_parser.add_argument("--output", type=Path, required=True)
