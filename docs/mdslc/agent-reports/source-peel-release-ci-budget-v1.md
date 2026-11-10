@@ -2,8 +2,10 @@
 
 The `clang-21-release` job budget changes from 60 to 90 minutes. Its matrix,
 commands, two-job build limit, serial CTest selection, per-test timeouts and
-production-without-tests package proof are unchanged. Debug, sanitizer, ARM and
-Windows budgets are unchanged. This is not a performance result or permission
+production-without-tests package proof are unchanged. This initial adjustment
+left Debug, sanitizer, ARM and Windows budgets unchanged; the subsequent
+[Debug deadline investigation](source-peel-debug-ci-budget-v1.md) is separate.
+This is not a performance result or permission
 to count cancelled jobs as passes.
 
 At compiler checkpoint `1ad7fe56b5fcb10efe37e523206228e9ef303f6a`, PR105's
