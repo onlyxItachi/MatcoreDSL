@@ -709,6 +709,13 @@ if(BUILD_TESTING)
   )
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      # Synthetic receipts and command mocks only: no compiler or timing run.
+      add_test(NAME benchmark.source_pattern.runner
+        COMMAND "${Python3_EXECUTABLE}" -B
+          "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/source_pattern/tests.py")
+      set_tests_properties(benchmark.source_pattern.runner PROPERTIES TIMEOUT 30)
+    endif()
     if(MDSLC_ENABLE_NATIVE_FRONTEND)
       set(MDSLC_REGION_TEST_AVAILABLE 0)
       if(TARGET matcore_mlir_two_gemm_region)
