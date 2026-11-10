@@ -1,10 +1,10 @@
 # MDSLC current state
 
-Canonical maintenance checkpoint: `a90e82ae947efcae77d1b1c78c38d87ea4369884`, normal merge of
-[PR #97](https://github.com/onlyxItachi/MatcoreDSL/pull/97) from exact premerge
-`dd64a369d4a4c730d0db09aca1edf86a16cda149`.
-The last compiler-capability checkpoint remains [PR #93](https://github.com/onlyxItachi/MatcoreDSL/pull/93),
-`e8e8008cb61b61a585d8bc1584ca320c6326472d`.
+Canonical engineering checkpoint: `243f6772ebf8cc7600d05776a2adbb8d8a0515d0`, normal merge of
+[PR #99](https://github.com/onlyxItachi/MatcoreDSL/pull/99) from exact premerge
+`06affd2ffea4a5459158a7ddcd0c4e75009ea90e`; their Git trees are identical.
+Its Windows-test prerequisite is [PR #97](https://github.com/onlyxItachi/MatcoreDSL/pull/97),
+merge `a90e82ae947efcae77d1b1c78c38d87ea4369884`.
 
 ## Architecture
 
@@ -19,13 +19,13 @@ Existing 2–8 TU program -> authenticated sources + checked host link
 Original frozen host -> sealed ABI thunk + intrinsically isolated helper LLVM
 Built-in GEMM -> Linalg/One-Shot -> CPU schedules / GPU outlining
 LLVM targets: x64 ISA variants, ARM64; NVVM sm_89 / ROCDL gfx1150
+Private static SPIR-V issuer -> checked shader bytes; no source/runtime route
 Source-time M/N tile request 1..64 -> same strict issuer + pinned PIC relink kit
   -> localized request-bound DSO + persistent no-clobber .mdslc-private bundle
 Source/entry/request/target/profile + produced LLVM -> typed final publication
 Strict tiles retain full increasing scalar K and separate f32 multiply/add.
 Reassociate permission -> separate AVX2/FMA realization (x64 only)
 Opt-in strict lhs pair -> panel4 CPU / qualified NVVM / ROCDL (Linux x64)
-GPU pair -> f1 guards; f2 invocation/completion/quarantine
 Guarded registry -> ordered publication, owning observations, sticky failure
 Matcore owns meaning/legality; MLIR transformation; LLVM machine lowering.
 Legacy mutating GEMM and separate platform/Python lanes remain intact.
@@ -33,13 +33,14 @@ Legacy mutating GEMM and separate platform/Python lanes remain intact.
 
 ## Material change
 
-PR97 makes synchronous/asynchronous Windows test diagnostics byte-preserving
-under Python's UTF-8 default; it changes no compiler/runtime semantics or target
-authority. Independent review and all 26 hosted checks passed; see the
-[qualification record](agent-reports/windows-diagnostic-capture-v1.md).
-The authenticated source-time HOW pattern remains governed by its
-[bounded contract](SOURCE_TIME_GEMM_PATTERN_V1.md) and
-[PR93 qualification](agent-reports/source-pattern-qualification-checkpoint-v1.md).
+PR99 closes [#89](https://github.com/onlyxItachi/MatcoreDSL/issues/89)'s bounded
+positive-static strict-f32 SPIR-V issuer: complete graph/ABI/strict-control and
+serialized-byte checks, independent adversarial review, AMD RADV physical samples
+and explicit unsupported-device refusals. It is default-OFF, private and not
+installed or source-connected. See the [contract](SPIRV_CLOSED_ISSUER_V1.md) and
+[qualification](agent-reports/spirv-issuer-integration-qualification-v1.md).
+PR97's [diagnostic transport fix](agent-reports/windows-diagnostic-capture-v1.md)
+changes test byte handling only. Existing CPU/GPU/provider routes are unchanged.
 
 ## Unsupported or unproven
 
@@ -52,7 +53,9 @@ unsupported. No automatic tuning, cost model, GPU tile mapping or performance wi
 No parity, general fusion/rank-N/views, automatic reuse, residency/asynchrony,
 zero-copy, Metal/NPU, generated-region Windows or universal compiler interchange.
 Existing [GPU target/work/failure and sanitizer limits](STAGED_GPU_CANDIDATES_V1.md)
-remain unchanged; this checkpoint provides no new GPU execution qualification.
+remain unchanged. New SPIR-V physical samples are test-only: no Vulkan source
+candidate, production completion/quarantine protocol, dynamic/zero issuer cases,
+full-envelope physical qualification, ICD-chain/install authority or performance.
 Opaque imports/cross-region optimization remain unsupported. Caller lifetimes/race
 freedom, runtime/allocation, trusted loading and provider/manual-link preconditions
 remain, not sandbox or crash atomicity. [#15](https://github.com/onlyxItachi/MatcoreDSL/issues/15)
@@ -61,10 +64,12 @@ is partial/open; [#20](https://github.com/onlyxItachi/MatcoreDSL/issues/20) desi
 
 ## Exactly one next boundary
 
-**[Issue #89](https://github.com/onlyxItachi/MatcoreDSL/issues/89): qualify a closed parameterized bounded static-shape SPIR-V strict GEMM issuer.**
-This remains the independent frontier, not a dependency or consequence of CPU
-source-time tiling. Falsify the reusable positive rank-2 family, complete graph/ABI/
-strict controls and independent target evidence; fixed 2x3x4 is only a control.
-No source/runtime authority. [Research PR #84](https://github.com/onlyxItachi/MatcoreDSL/pull/84)
-remains draft and unchanged; its [source-frontier audit](https://github.com/onlyxItachi/MatcoreDSL/blob/d214b017cad93ede7445148988f7aad36bd4573f/docs/mdslc/agent-reports/spirv-source-frontier-audit-v1.md)
-separates issuer proof from Vulkan failure/identity/artifact obligations.
+**[Issue #98](https://github.com/onlyxItachi/MatcoreDSL/issues/98): qualify authenticated strict source-time CPU tile performance evidence.**
+The existing correct source/instance/ownership route now permits a matched
+stock-versus-requested-tile experiment; more operations are not prerequisites.
+Keep full call/lifetime accounting, artifact identity and independent output
+checks, including losses and inconclusive outcomes. [PR #100](https://github.com/onlyxItachi/MatcoreDSL/pull/100)
+records a bounded negative/inconclusive campaign pending canonical integration.
+See the [performance roadmap](PERFORMANCE_EVIDENCE_ROADMAP_V1.md). No tuning or
+default change follows. [PR #84](https://github.com/onlyxItachi/MatcoreDSL/pull/84)
+remains the unchanged draft research track, not a Vulkan execution authority.

@@ -136,8 +136,25 @@ compared with retained PR93 artifacts under
 `mdslc-work/source-pattern-v1/integrated-gpu`: byte-identical. This is artifact
 preservation, not a new physical NVVM/ROCDL execution claim.
 
-The complete 308-test Release suite is in progress; final outcomes and exact
-hosted head/run identities will be appended before qualification/merge.
+At exact clean head `06affd2ffea4a5459158a7ddcd0c4e75009ea90e`, the complete local
+Release suite passed **308/308**, zero failures, 1220.17 seconds. Retained
+`release-frozen-ctest.log` SHA-256 is
+`702f484857dbd454be07c25d19137516fa8631206f46c9d5486b472fc892ab5e`;
+`release-frozen-ctest.xml` is
+`6d27bfcdaf05c97747ef9505685961cdc532eebc4f354ad703f386aee6a91440`.
+
+The first complete attempt is retained as **305/308**, not relabelled a pass.
+Three provenance gates correctly failed after integration documentation commits
+changed live HEAD during testing and left embedded benchmark provenance stale.
+The retained mismatch diagnostic's manifest SHA-256 is
+`03627fce357099b151e2341a018ac4803927ad5736ea7b3c96f208fe543f4b8b`
+at `/var/tmp/mdslc-parity-diagnostic-pGo0zTYJ/evidence/manifest.json`.
+It records `benchmark source commit differs from runner HEAD`, not a performance
+campaign. No guard was relaxed. Freeze, reconfigure and an actual rebuild restored
+the coherent checkpoint; the focused source-inaccessible/install/provenance tests
+then passed 3/3 before the full 308/308 run. The focused log SHA-256 is
+`d393d9dc7d2e7a28468496f10e568669d6b7ab0c6e5a3f0df50e99ead2388afa`.
+
 CI adds one explicitly checked SPIRV-Tools registration and a separate fixed
 two-test issuer/adversarial sanitizer gate without diluting the retained 236.
 Missing tools are not interpreted as a passed external validation gate.
@@ -145,4 +162,28 @@ Missing tools are not interpreted as a passed external validation gate.
 Windows diagnostic transport failures discovered in unrelated hosted tests are
 isolated in PR #97; they are neither hidden nor counted as SPIR-V failures.
 The supported Windows compiler/runtime remains outside this optional Linux-only
-issuer. No merge is authorized by this in-progress record alone.
+issuer.
+
+## Hosted qualification and canonical merge
+
+All **26 hosted status checks** passed on exact head `06affd2ffea4a5459158a7ddcd0c4e75009ea90e`:
+native [PR run 42723475822](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/42723475822)
+and [push run 42723467433](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/42723467433),
+Windows [42723475553](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/42723475553)
+and [42723467548](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/42723467548),
+AArch64 strict [42723475490](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/42723475490),
+hygiene and legacy CI. Existing declared ISA skips retain their original scope.
+
+The SPIR-V-enabled/vector-readiness Release row passed **304/304** (2512.40 seconds),
+including actual `generated_spirv.external_validation`; full Debug passed
+**301/301** (2912.51 seconds). The focused ASan+UBSan scope retained **236/236**,
+then separately asserted and passed the **2/2** issuer/adversarial tests. Test-only
+Vulkan dispatch was OFF in hosted CI; no hosted GPU execution claim follows.
+
+After independent review and these gates, PR #99 merged normally as
+**`243f6772ebf8cc7600d05776a2adbb8d8a0515d0`**, after prerequisite PR #97 merge
+`a90e82ae947efcae77d1b1c78c38d87ea4369884`. Qualified premerge and canonical merge
+have identical tree `793444ade29d7b4e68e8e9a7df3095abda613583`. Issue #89 closes only
+the stated compiler-private issuer boundary. PR #84 remains unchanged; no Vulkan
+source/runtime, dynamic/zero, full-envelope physical, install or performance
+authority was added. Issues #15 and #20 remain open and separate.
