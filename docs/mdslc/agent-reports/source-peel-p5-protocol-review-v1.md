@@ -54,9 +54,15 @@ only the preparation prerequisite is mocked, and subprocess execution is
 forbidden. This proves neither honest-path native preparation nor a complete
 preparation replay. Actual source compilation, source/end-K controls, DSO
 inspection and offline preparation audit must still pass before measurement.
-The initial 18-method protocol scope also passed under Python 3.15 and system
-Python 3.12; the unchanged P1 15-method suite passed. The integration owner must
-record final committed test/CI and any real campaign outcomes separately.
+The initial 18-method protocol scope also passed under the current default and
+system Python interpreters (live-verified as 3.14.3 and 3.14.4, not the stale
+3.12 label from earlier environment notes); the unchanged P1 15-method suite
+passed. At `9afff89`, the configured CTest interpreter is separately verified
+as Python 3.15.0a7: both P1/P5 synthetic CTests passed, 2/2, zero skips, 5.76s;
+the P5 28-method suite also passed directly under system Python 3.14.4.
+JUnit SHA256: `9b60fa6e6dca8a1dff70ef477c4e70cbcbcd976c7c18f3e3e11389ded0ed37be`.
+The integration owner must record hosted qualification and any real campaign
+outcomes separately. No native build or measurement was part of those tests.
 
 The new Linux/Python CTest is a separate synthetic-only test. It does not run
 timing on shared hosted CI or change existing sanitizer selection. No compiler,
