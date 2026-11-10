@@ -123,7 +123,8 @@ ARM64, Windows, GPU, Metal or NPU support is promised.
 
 The selected direction is the [performance evidence track](PERFORMANCE_EVIDENCE_ROADMAP_V1.md),
 not M1/M2. P1 is now retained in merged PR #100, including its negative/inconclusive
-result; #102 is the current private realization gate. New operations are not
+result; #102's private realization is merged as PR #103, and #104 / pending
+PR #105 is the current authenticated source-connection gate. New operations are not
 needed to measure the existing qualified GEMM implementation. P1 preserves its
 numerical/effect/artifact contract and compares matching measurement modes on an
 exclusive host. Broader math may be selected later and still requires its own

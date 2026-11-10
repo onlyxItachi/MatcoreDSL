@@ -12,8 +12,8 @@ not an executed correctness qualification or performance result.
 
 - [CURRENT_STATE.md](CURRENT_STATE.md) is authoritative for the canonical
   engineering checkpoint, supported envelope and exactly one immediate next
-  boundary. The current engineering merge is PR #100,
-  `52fb20a30cae0d001daebf5f71035ba071541181`; this re-entry began at PR #94's
+  boundary. The current engineering merge is PR #103,
+  `1f7c491f230251d04d42b5d4a0af5eaf29bcb685`; this re-entry began at PR #94's
   documentation checkpoint `b2597bed52de46604574f76eb33663788a5ab994`.
 - [Performance evidence roadmap v1](PERFORMANCE_EVIDENCE_ROADMAP_V1.md) defines
   P1: an authenticated source-time comparison of at least two strict CPU output
@@ -36,8 +36,11 @@ mathematical coverage or CPU timing evidence. The selected follow-up direction i
 P1 performance evidence for the already qualified CPU source-time tile route,
 tracked by Issue #98 / merged PR #100. Its bounded negative/inconclusive campaign
 is not a performance win or a completed whole-matrix comparison. The completed
-upstream diagnosis (#101) motivates exactly one current gate, #102: qualify a
-separate private full-N/tail realization without switching source/default routes.
+upstream diagnosis (#101) motivated the private full-N/tail correctness gate
+(#102), now merged as PR #103 without switching source/default routes. Exactly
+one current gate follows: #104 / pending PR #105 qualifies its separately explicit
+authenticated source connection. The fixed P5 comparison harness in draft
+PR #107 does not authorize timing before that source qualification passes.
 Do not infer Vulkan source/runtime execution, GPU timing work or concurrent
 implementation of every roadmap proposal from either boundary.
 

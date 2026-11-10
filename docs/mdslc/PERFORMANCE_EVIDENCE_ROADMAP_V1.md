@@ -150,8 +150,11 @@ This is exactly the immediate next engineering boundary, not a new benchmark.
 
 ## P5 — New source-call comparison: harness preparation only
 
-A separate research branch is preparing a new bounded comparison harness;
-there is no comparison PR, completed qualification or new measurement yet.
+A separate research branch and [draft PR #107](https://github.com/onlyxItachi/MatcoreDSL/pull/107)
+contain a fixed bounded comparison harness. Untimed preparation has passed its
+initial correctness/identity audit; there is no completed collection or new timing
+result. [Issue #106](https://github.com/onlyxItachi/MatcoreDSL/issues/106) retains
+the preregistration and preparation receipt, separate from PR105 qualification.
 The P5 name denotes the performance comparison, not the pending P4b source gate.
 Do not collect timings before that source correctness/ownership boundary passes.
 Predeclare the new old/peeled/stock comparison, exact source-to-artifact joins,
