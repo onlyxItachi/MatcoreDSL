@@ -6,12 +6,17 @@
 #include <memory>
 
 namespace matcore::mdslc::driver {
+// Closed source-request choice, not a runtime policy or an imported schedule.
+enum class SourcePatternRealizationV1 { OutputTiledMKN, OutputTiledPeelNMKN };
 struct OutputTileRequest {
   std::int64_t m = 0, n = 0;
+  SourcePatternRealizationV1 realization = SourcePatternRealizationV1::OutputTiledMKN;
 };
-OutputTileRequest parseOutputTileRequest(const std::string &);
+OutputTileRequest parseOutputTileRequest(const std::string &,
+    SourcePatternRealizationV1 = SourcePatternRealizationV1::OutputTiledMKN);
 void validateSourcePatternInvocation(codegen::ClosedCpuPolicy,
-    codegen::ClosedHostOptimization, bool compile_only);
+    codegen::ClosedHostOptimization, bool compile_only,
+    SourcePatternRealizationV1 = SourcePatternRealizationV1::OutputTiledMKN);
 
 class SourcePatternBundle {
 public:
