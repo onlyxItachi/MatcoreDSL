@@ -1,0 +1,330 @@
+// P1 ordinary C++ host, compiled only by authenticated mdslc-region.
+#include <matcore/region.h>
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cerrno>
+#include <cfenv>
+#include <charconv>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <set>
+#include <sstream>
+#include <stdexcept>
+#include <string_view>
+#include <vector>
+#include <sched.h>
+#include <sys/resource.h>
+#include <time.h>
+#include <unistd.h>
+
+namespace md = matcore::mdsl;
+MATCORE_REGION
+md::Result p1_pipeline(md::Storage A, md::Storage B, md::Storage C,
+                       md::Shape M, md::Shape K, md::Shape N) noexcept {
+  auto a = md::read(A, M, K);
+  auto b = md::read(B, K, N);
+  auto c = md::gemm(a, b, md::Numerics::strict_f32);
+  md::publish(c, C);
+  md::observe(C);
+  return md::complete();
+}
+
+#pragma STDC FENV_ACCESS ON
+#pragma STDC FP_CONTRACT OFF
+namespace {
+using Word = std::uint32_t;
+constexpr std::uint64_t seed = 0x4d44534c50310001ULL;
+constexpr unsigned warmups = 2, samples = 9, sequence_count = 4;
+constexpr std::uint64_t floor_ns = 1'000'000, payload_cap = 64ULL << 20;
+constexpr const char *scope = "source-region-call-return+Result-move;retained-ownership;release-excluded";
+struct Cell { unsigned m, k, n, repetitions; };
+constexpr std::array<Cell, 6> matrix{{{32,32,32,128}, {33,35,37,128},
+  {64,7,19,256}, {1,257,65,256}, {65,257,1,256}, {128,128,128,8}}};
+constexpr std::array<const char *,17> control_names{{"integer-rectangle", "non-fma", "increasing-k",
+  "subnormal-input", "underflow-rne", "signed-zero", "overflow-order", "infinity", "nan",
+  "zero-m", "zero-n", "zero-k", "input-output-alias", "owning-observation-survives-next-call",
+  "shape-failure-before-publication", "capacity-failure-before-publication", "caller-fp-restore"}};
+std::uint64_t checks = 0;
+void check(bool ok, const char *why) { ++checks; if (!ok) throw std::runtime_error(why); }
+Word bits(float value) { return std::bit_cast<Word>(value); }
+float value(Word word) { return std::bit_cast<float>(word); }
+bool same(Word expected, Word actual) {
+  return (expected & 0x7fffffffU) > 0x7f800000U ? (actual & 0x7fffffffU) > 0x7f800000U : expected == actual;
+}
+Word integer_bits(std::int64_t input) {
+  if (!input) return 0;
+  const auto magnitude = std::uint64_t(input < 0 ? -input : input);
+  check(magnitude < (1ULL << 24), "integer oracle outside exact f32 envelope");
+  const auto exponent = std::bit_width(magnitude) - 1;
+  return (input < 0 ? 0x80000000U : 0) | Word((exponent + 127) << 23) |
+         Word((magnitude << (23 - exponent)) & 0x7fffffU);
+}
+std::int64_t a_integer(unsigned i, unsigned p, unsigned sequence) {
+  return std::int64_t((17ULL * i + 5ULL * p + 3ULL * sequence + seed % 19) % 19) - 9;
+}
+std::int64_t b_integer(unsigned p, unsigned j) {
+  return std::int64_t((7ULL * p + 11ULL * j + (seed >> 32) % 23) % 23) - 11;
+}
+std::string quoted(std::string_view s) {
+  std::string out = "\"";
+  constexpr char hex[] = "0123456789abcdef";
+  for (unsigned char c : s) {
+    if (c == '"' || c == '\\') { out += '\\'; out += c; }
+    else if (c < 32) { out += "\\u00"; out += hex[c >> 4]; out += hex[c & 15]; }
+    else out += c;
+  }
+  return out + '"';
+}
+template<class T> std::string json_array(const T &values) {
+  std::ostringstream out; out << '['; bool comma = false;
+  for (const auto &v : values) { if (comma) out << ','; comma = true; out << v; }
+  return out.str() + ']';
+}
+std::vector<int> affinity() {
+  cpu_set_t set; CPU_ZERO(&set);
+  check(sched_getaffinity(0,sizeof(set),&set) == 0, "affinity unavailable");
+  std::vector<int> out;
+  for (int i=0;i<CPU_SETSIZE;++i) if(CPU_ISSET(i,&set)) out.push_back(i);
+  return out;
+}
+unsigned task_count() {
+  unsigned n=0; for(const auto &entry:std::filesystem::directory_iterator("/proc/self/task")) { (void)entry; ++n; }
+  return n;
+}
+std::vector<std::string> modules() {
+  // Executable mappings identify actually loaded files, not merely DT_NEEDED names.
+  std::ifstream input("/proc/self/maps"); check(bool(input), "loaded mappings unavailable");
+  std::set<std::string> result; std::string line;
+  while(std::getline(input,line)) {
+    std::istringstream fields(line); std::string address, permissions, offset, dev, inode, path;
+    fields >> address >> permissions >> offset >> dev >> inode; std::getline(fields,path);
+    const auto first=path.find_first_not_of(' ');
+    if(permissions.find('x')==std::string::npos || first==std::string::npos || path[first]!='/') continue;
+    path.erase(0,first); std::string decoded;
+    for(std::size_t i=0;i<path.size();++i) {
+      if(path[i]=='\\' && i+3<path.size() && path[i+1]>='0' && path[i+1]<='7' && path[i+2]>='0' && path[i+2]<='7' && path[i+3]>='0' && path[i+3]<='7') {
+        decoded+=char((path[i+1]-'0')*64+(path[i+2]-'0')*8+path[i+3]-'0'); i+=3;
+      } else decoded+=path[i];
+    }
+    check(!decoded.ends_with(" (deleted)"), "loaded file was deleted"); result.insert(decoded);
+  }
+  return {result.begin(),result.end()};
+}
+std::string module_json(const std::vector<std::string> &paths) {
+  std::ostringstream out; out << '[';
+  for(std::size_t i=0;i<paths.size();++i) { if(i)out<<','; out<<quoted(paths[i]); }
+  return out.str()+']';
+}
+md::Storage storage(std::vector<float> &v, unsigned rows, unsigned columns, md::Access access=md::Access::read_only) {
+  return {v.empty()?nullptr:v.data(),rows,columns,v.size(),access};
+}
+void inspect(const md::Result &result, unsigned m, unsigned n, const std::vector<Word> &expected) {
+  check(result.ok() && result.publication_count()==1 && result.observation_count()==1, "source completion/effect counts");
+  const auto observation=result.observation(0);
+  check(observation.valid() && observation.rows()==m && observation.columns()==n, "owning observation shape");
+  for(std::size_t i=0;i<expected.size();++i) check(same(expected[i],bits(observation.data()[i])), "source arithmetic/observation mismatch");
+}
+std::uint64_t live_bound(Cell c) {
+  return (5ULL*c.m*c.k+2ULL*c.k*c.n+(c.repetitions+8ULL)*c.m*c.n)*4 +
+         c.repetitions*(sizeof(md::Result)+128ULL)+4096;
+}
+struct Data {
+  Cell c;
+  std::array<std::vector<float>,sequence_count> a;
+  std::vector<float> b, output;
+  std::array<std::vector<Word>,sequence_count> expected;
+  explicit Data(Cell cell):c(cell) {
+    check(live_bound(c)<=payload_cap,"live payload budget exceeded");
+    b.resize(c.k*c.n); output.assign(c.m*c.n+2,value(0x42f60000));
+    for(unsigned p=0;p<c.k;++p) for(unsigned j=0;j<c.n;++j) b[p*c.n+j]=float(b_integer(p,j));
+    for(unsigned s=0;s<sequence_count;++s) {
+      a[s].resize(c.m*c.k); expected[s].resize(c.m*c.n);
+      for(unsigned i=0;i<c.m;++i) for(unsigned p=0;p<c.k;++p) a[s][i*c.k+p]=float(a_integer(i,p,s));
+      for(unsigned i=0;i<c.m;++i) for(unsigned j=0;j<c.n;++j) {
+        std::int64_t sum=0;
+        for(unsigned p=0;p<c.k;++p) {
+          sum+=a_integer(i,p,s)*b_integer(p,j);
+          check(sum>-(1LL<<24) && sum<(1LL<<24),"integer prefix loses f32 exactness");
+        }
+        expected[s][i*c.n+j]=integer_bits(sum);
+      }
+    }
+  }
+  [[gnu::noinline]] md::Result call(unsigned s) {
+    md::Storage destination{output.data()+1,c.m,c.n,std::uint64_t(c.m)*c.n,md::Access::read_write};
+    return p1_pipeline(storage(a[s],c.m,c.k),storage(b,c.k,c.n),destination,c.m,c.k,c.n);
+  }
+  void immutable() const {
+    for(unsigned s=0;s<sequence_count;++s) for(unsigned i=0;i<c.m;++i) for(unsigned p=0;p<c.k;++p)
+      check(bits(a[s][i*c.k+p])==integer_bits(a_integer(i,p,s)),"input A changed");
+    for(unsigned p=0;p<c.k;++p) for(unsigned j=0;j<c.n;++j)
+      check(bits(b[p*c.n+j])==integer_bits(b_integer(p,j)),"input B changed");
+    check(bits(output.front())==0x42f60000 && bits(output.back())==0x42f60000,"output canary changed");
+  }
+};
+std::uint64_t thread_ns() {
+  timespec time{}; check(clock_gettime(CLOCK_THREAD_CPUTIME_ID,&time)==0,"thread clock unavailable");
+  return std::uint64_t(time.tv_sec)*1'000'000'000ULL+time.tv_nsec;
+}
+struct Sample {
+  unsigned ordinal=0, tasks_before=0,tasks_after=0;
+  int cpu_before=-1,cpu_after=-1;
+  std::vector<int> affinity_before,affinity_after;
+  std::uint64_t wall=0,thread=0,involuntary=0,voluntary=0,rss_before=0,rss_after=0;
+  std::uint64_t output_hash=0xcbf29ce484222325ULL;
+  bool accepted=false;
+};
+Sample aggregate(Data &data,unsigned ordinal,int cpu) {
+  std::vector<md::Result> results; results.reserve(data.c.repetitions); // Outside timer, including metadata allocation.
+  Sample out; out.ordinal=ordinal; out.tasks_before=task_count(); out.affinity_before=affinity(); out.cpu_before=sched_getcpu();
+  check(out.tasks_before==1 && out.affinity_before==std::vector<int>{cpu} && out.cpu_before==cpu,"before aggregate placement/task guard");
+  rusage before{},after{},resident{}; check(getrusage(RUSAGE_THREAD,&before)==0,"before usage unavailable");
+  check(getrusage(RUSAGE_SELF,&resident)==0,"before process peak RSS unavailable");
+  out.rss_before=std::uint64_t(resident.ru_maxrss)*1024;
+  const auto thread_begin=thread_ns(); const auto begin=std::chrono::steady_clock::now();
+  for(unsigned r=0;r<data.c.repetitions;++r) results.emplace_back(data.call(r%sequence_count));
+  const auto end=std::chrono::steady_clock::now(); const auto thread_end=thread_ns();
+  check(getrusage(RUSAGE_THREAD,&after)==0,"after usage unavailable");
+  out.wall=std::chrono::duration_cast<std::chrono::nanoseconds>(end-begin).count(); out.thread=thread_end-thread_begin;
+  out.involuntary=after.ru_nivcsw-before.ru_nivcsw; out.voluntary=after.ru_nvcsw-before.ru_nvcsw;
+  check(getrusage(RUSAGE_SELF,&resident)==0,"after process peak RSS unavailable");
+  out.rss_after=std::uint64_t(resident.ru_maxrss)*1024;
+  out.tasks_after=task_count(); out.affinity_after=affinity(); out.cpu_after=sched_getcpu();
+  check(out.tasks_after==1 && out.affinity_after==std::vector<int>{cpu} && out.cpu_after==cpu,"after aggregate placement/task guard");
+  out.accepted=out.wall>=floor_ns && out.thread*10>=out.wall*9 && out.thread<=out.wall+100'000 && out.involuntary==0;
+  for(unsigned r=0;r<data.c.repetitions;++r) {
+    inspect(results[r],data.c.m,data.c.n,data.expected[r%sequence_count]);
+    const auto observed=results[r].observation(0);
+    for(std::size_t p=0;p<data.expected[r%sequence_count].size();++p) {
+      const auto word=bits(observed.data()[p]);
+      for(unsigned shift=0;shift<32;shift+=8) out.output_hash=(out.output_hash^((word>>shift)&255))*0x100000001b3ULL;
+    }
+  }
+  const auto &last=data.expected[(data.c.repetitions-1)%sequence_count];
+  for(std::size_t p=0;p<last.size();++p) check(bits(data.output[p+1])==last[p],"final publication mismatch");
+  data.immutable();
+  // Retained returned Result/Observation retirement is after the stop clock.
+  return out;
+}
+std::string sample_json(const Sample &s,Cell c) {
+  std::ostringstream out;
+  out<<"{\"ordinal\":"<<s.ordinal<<",\"calls\":"<<c.repetitions<<",\"verified_calls\":"<<c.repetitions
+     <<",\"verified_elements\":"<<std::uint64_t(c.repetitions)*c.m*c.n<<",\"output_hash\":"<<s.output_hash
+     <<",\"wall_ns\":"<<s.wall<<",\"thread_cpu_ns\":"<<s.thread<<",\"involuntary_switches\":"<<s.involuntary
+     <<",\"voluntary_switches\":"<<s.voluntary<<",\"task_count_before\":"<<s.tasks_before<<",\"task_count_after\":"<<s.tasks_after
+     <<",\"cpu_before\":"<<s.cpu_before<<",\"cpu_after\":"<<s.cpu_after<<",\"affinity_before\":"<<json_array(s.affinity_before)
+     <<",\"affinity_after\":"<<json_array(s.affinity_after)<<",\"rss_max_bytes_before\":"<<s.rss_before<<",\"rss_max_bytes_after\":"<<s.rss_after
+     <<",\"timing_accepted\":"<<(s.accepted?"true":"false")<<'}';
+  return out.str();
+}
+void numeric_control(std::array<Word,3> lhs,std::array<Word,3> rhs,Word wanted) {
+  std::vector<float> a(6),b(12),c(8,value(0x42f60000));
+  for(unsigned i=0;i<2;++i) for(unsigned p=0;p<3;++p) a[i*3+p]=value(lhs[p]);
+  for(unsigned p=0;p<3;++p) for(unsigned j=0;j<4;++j) b[p*4+j]=value(rhs[p]);
+  auto result=p1_pipeline(storage(a,2,3),storage(b,3,4),storage(c,2,4,md::Access::read_write),2,3,4);
+  inspect(result,2,4,std::vector<Word>(8,wanted));
+}
+void verify_controls() {
+  Data initial({2,3,4,4}); auto initial_result=initial.call(0); inspect(initial_result,2,4,initial.expected[0]); initial.immutable();
+  numeric_control({0xbf800000,0x3f800001,0},{0x3f800000,0x3f7ffffe,0},0);
+  numeric_control({0x4b800000,0x3f800000,0xcb800000},{0x3f800000,0x3f800000,0x3f800000},0);
+  numeric_control({1,0,0},{0x3f800000,0,0},1);
+  numeric_control({0x00800000,0,0},{0x3f000003,0,0},0x00400002);
+  numeric_control({0x80000000,0x80000000,0x80000000},{0x3f800000,0x3f800000,0x3f800000},0);
+  numeric_control({0x7f7fffff,0x7f7fffff,0xff7fffff},{0x3f800000,0x3f800000,0x3f800000},0x7f800000);
+  numeric_control({0x7f800000,0,0},{0x3f800000,0,0},0x7f800000);
+  numeric_control({0x7f800000,0,0},{0,0,0},0x7fc00000);
+  for(const Cell c:std::array<Cell,3>{{{0,3,4,1},{2,3,0,1},{2,0,4,1}}}) {
+    Data empty(c); auto result=empty.call(0); inspect(result,c.m,c.n,empty.expected[0]); empty.immutable();
+  }
+  std::vector<float> a{1,2,3,4,5,6},b{2,3,4,5,6,7};
+  auto aliased=p1_pipeline(storage(a,2,3),storage(b,3,2),storage(a,2,2,md::Access::read_write),2,3,2);
+  const std::vector<Word> alias_expected{integer_bits(28),integer_bits(34),integer_bits(64),integer_bits(79)};
+  inspect(aliased,2,2,alias_expected); for(unsigned p=0;p<4;++p) check(bits(a[p])==alias_expected[p],"aliased publication");
+  check(bits(a[4])==integer_bits(5) && bits(a[5])==integer_bits(6),"alias publication exceeded logical destination extent");
+  auto next=initial.call(1); inspect(next,2,4,initial.expected[1]); inspect(initial_result,2,4,initial.expected[0]);
+  std::vector<float> bad_shape_backing(16,1);
+  auto bad_b=storage(bad_shape_backing,4,4);
+  md::Storage destination{initial.output.data()+1,2,4,8,md::Access::read_write};
+  const auto before=initial.output;
+  auto bad_shape=p1_pipeline(storage(initial.a[0],2,3),bad_b,destination,2,3,4);
+  check(!bad_shape.ok() && bad_shape.error()==md::Error::shape_mismatch && bad_shape.failed_frontier()==2 && bad_shape.publication_count()==0 && bad_shape.observation_count()==0,"shape rejection frontier/category");
+  check(initial.output==before,"shape rejection mutated output");
+  destination.capacity_elements=7;
+  auto bad_capacity=p1_pipeline(storage(initial.a[0],2,3),storage(initial.b,3,4),destination,2,3,4);
+  check(!bad_capacity.ok() && bad_capacity.error()==md::Error::insufficient_capacity && bad_capacity.failed_frontier()==4 && bad_capacity.publication_count()==0 && bad_capacity.observation_count()==0,"capacity rejection frontier/category");
+  check(initial.output==before,"capacity rejection mutated output");
+  // Exact integers alone cannot falsify removal of the runtime FP scope.
+  const std::array<std::array<Word,3>,3> fp_lhs{{{0x3f800000,0x33c00000,0},
+    {0x7f7fffff,0x7f7fffff,0xff7fffff},{0x7f800000,0,0}}};
+  const std::array<Word,3> fp_expected{0x3f800001,0x7f800000,0x7fc00000};
+  for(unsigned test=0;test<fp_lhs.size();++test) {
+    std::vector<float> fa(3),fb(3,1),fc(1,17);
+    for(unsigned p=0;p<3;++p) fa[p]=value(fp_lhs[test][p]);
+    if(test==2) fb[0]=0;
+    auto av=storage(fa,1,3),bv=storage(fb,3,1),cv=storage(fc,1,1,md::Access::read_write);
+    fenv_t saved{}; check(fegetenv(&saved)==0,"save FP environment");
+    check(fesetround(FE_DOWNWARD)==0 && feclearexcept(FE_ALL_EXCEPT)==0 && feraiseexcept(FE_INEXACT)==0,"set caller FP environment");
+    errno=E2BIG; auto fp=p1_pipeline(av,bv,cv,1,3,1);
+    const bool restored=fegetround()==FE_DOWNWARD && fetestexcept(FE_ALL_EXCEPT)==FE_INEXACT && errno==E2BIG;
+    check(fesetenv(&saved)==0,"restore test FP environment"); check(restored,"caller FP/errno state changed");
+    inspect(fp,1,1,std::vector<Word>{fp_expected[test]});
+  }
+}
+unsigned number(std::string_view text) {
+  unsigned out=0; auto parsed=std::from_chars(text.data(),text.data()+text.size(),out);
+  if(text.empty() || parsed.ec!=std::errc{} || parsed.ptr!=text.data()+text.size()) throw std::invalid_argument("expected unsigned decimal");
+  return out;
+}
+std::string common() {
+  std::ostringstream out;
+  out<<"{\"schema\":\"matcore.source-pattern.p1\",\"version\":1,\"numerics\":\"strict_f32\",\"timing_scope\":"<<quoted(scope)
+     <<",\"release_inside_timing\":false,\"chooser_inside_timing\":true,\"implementation_thread_contract\":1"
+       ",\"continuous_thread_proof\":false,\"seed\":"<<seed<<",\"input_sequence\":"<<sequence_count;
+  return out.str();
+}
+} // namespace
+int main(int argc,char **argv) {
+  try {
+    if(argc==2 && std::string_view(argv[1])=="--verify-only") {
+      const auto before=modules(); verify_controls(); const auto after=modules(); check(before==after,"loaded modules changed");
+      std::cout<<common()<<",\"mode\":\"verify-only\",\"status\":\"CORRECTNESS_PASSED\",\"failures\":0,\"checks\":"<<checks<<",\"controls\":[";
+      for(unsigned i=0;i<control_names.size();++i) { if(i)std::cout<<','; std::cout<<quoted(control_names[i]); }
+      std::cout<<"],\"loaded_modules\":"<<module_json(after)<<"}\n"; return 0;
+    }
+    if(argc!=5 || std::string_view(argv[1])!="--measure" || std::string_view(argv[3])!="--cpu") throw std::invalid_argument("use --verify-only or --measure CELL --cpu CPU");
+    const unsigned index=number(argv[2]),cpu=number(argv[4]);
+    if(index>=matrix.size() || cpu>=CPU_SETSIZE) throw std::invalid_argument("cell/CPU outside frozen plan");
+    const auto loaded=modules(); const auto tasks_before=task_count(); const auto affinity_before=affinity();
+    check(tasks_before==1 && affinity_before==std::vector<int>{int(cpu)},"process placement/task guard");
+    const Cell c=matrix[index]; Data data(c);
+    std::vector<Sample> warm,measured;
+    for(unsigned i=0;i<warmups;++i) warm.push_back(aggregate(data,i,cpu));
+    bool accepted=true;
+    for(unsigned i=0;i<samples;++i) { measured.push_back(aggregate(data,i,cpu)); accepted &= measured.back().accepted; }
+    const auto tasks_after=task_count(); const auto affinity_after=affinity(); const auto after_modules=modules();
+    check(tasks_after==1 && affinity_after==affinity_before && after_modules==loaded,"process identity/placement drift");
+    std::cout<<common()<<",\"mode\":\"measure\",\"status\":"<<quoted(accepted?"MEASURED":"INCONCLUSIVE_TIMING")
+      <<",\"cell\":"<<index<<",\"m\":"<<c.m<<",\"k\":"<<c.k<<",\"n\":"<<c.n<<",\"repetitions\":"<<c.repetitions
+      <<",\"warmup_aggregates\":"<<warmups<<",\"timer_floor_ns\":"<<floor_ns<<",\"sizeof_result\":"<<sizeof(md::Result)
+      <<",\"retained_output_payload_bytes\":"<<std::uint64_t(c.repetitions)*c.m*c.n*4<<",\"live_payload_bound_bytes\":"<<live_bound(c)
+      <<",\"checked_timed_calls\":"<<std::uint64_t(samples)*c.repetitions<<",\"checked_timed_elements\":"<<std::uint64_t(samples)*c.repetitions*c.m*c.n
+      <<",\"checked_warmup_calls\":"<<std::uint64_t(warmups)*c.repetitions<<",\"process_task_count_before\":"<<tasks_before
+      <<",\"process_task_count_after\":"<<tasks_after<<",\"process_affinity_before\":"<<json_array(affinity_before)
+      <<",\"process_affinity_after\":"<<json_array(affinity_after)<<",\"loaded_modules\":"<<module_json(loaded)<<",\"warmups\":[";
+    for(unsigned i=0;i<warm.size();++i) { if(i)std::cout<<','; std::cout<<sample_json(warm[i],c); }
+    std::cout<<"],\"samples\":[";
+    for(unsigned i=0;i<measured.size();++i) { if(i)std::cout<<','; std::cout<<sample_json(measured[i],c); }
+    std::cout<<"]}\n"; return accepted?0:78;
+  } catch(const std::invalid_argument &error) {
+    std::cout<<common()<<",\"status\":\"REFUSED\",\"reason\":"<<quoted(error.what())<<"}\n"; return 78;
+  } catch(const std::exception &error) {
+    std::cout<<common()<<",\"status\":\"FAILED\",\"reason\":"<<quoted(error.what())<<"}\n"; return 1;
+  }
+}
