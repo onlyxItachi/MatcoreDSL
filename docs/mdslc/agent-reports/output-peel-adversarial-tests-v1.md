@@ -26,6 +26,19 @@ Both full and tail products are attacked independently:
 - wrong accumulator/yield, contraction/reassociation, missing/repeated/-0 fill;
 - allocation effects, invented alias/source authority and wrong result identity.
 
+Separate B-K and C-M view-length +/-1 mutants attack both copies, and separate
+tail C-N length +/-1 mutants keep the other operands' bounds unchanged. Some
+such lengths disappear under memref alias folding; they must be proven at the
+structured subview checkpoint, not inferred from surviving data addresses.
+
+Unused index operations are not automatically harmless: dynamic `dim(A,1+1)`
+and `dim(A,M)` can access an axis outside rank two, while a semi-affine apply
+dividing N by the dynamic expression `K*0` is undefined. These still have to
+pass native MLIR verification before a structural refusal counts. If upstream
+MLIR disallows the semi-affine form, its explicit unsupported count is reported
+and is not a semantic falsifier. The two dynamic-dimension cases require valid
+MLIR. The benign unused constant below remains a distinct replay-only control.
+
 A separate harmless dead index constant is required to reach only the replay
 diagnostic. This prevents the exact replay check from hiding a weak independent
 envelope. Failed inspections must leave originals and inspected inputs unchanged.

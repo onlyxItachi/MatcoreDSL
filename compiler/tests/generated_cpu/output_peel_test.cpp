@@ -22,7 +22,7 @@
 namespace cc = matcore::mdslc::cpu_candidate;
 namespace gp = matcore::mdslc::gemm_pattern;
 namespace {
-unsigned checks = 0, failures = 0, validMutants = 0;
+unsigned checks = 0, failures = 0, validMutants = 0, upstreamRefusals = 0;
 void check(bool condition, const std::string &label) {
   ++checks;
   if (!condition) {
@@ -72,6 +72,19 @@ bool replaceOperand(mlir::Operation *operation, mlir::Value oldValue,
 }
 mlir::memref::SubViewOp view(mlir::linalg::GenericOp op, unsigned operand) {
   return op->getOperand(operand).getDefiningOp<mlir::memref::SubViewOp>();
+}
+bool alterSubviewLength(mlir::ModuleOp module, unsigned branch,
+                        unsigned operand, unsigned axis, int adjustment) {
+  auto subview = view(roles(module).products[branch], operand);
+  if (!subview) return false;
+  auto length = mlir::dyn_cast<mlir::Value>(subview.getMixedSizes()[axis]);
+  if (!length) return false;
+  mlir::OpBuilder builder(subview);
+  auto delta = mlir::arith::ConstantOp::create(
+      builder, subview.getLoc(), builder.getIndexAttr(adjustment));
+  auto changed = mlir::arith::AddIOp::create(
+      builder, subview.getLoc(), length, delta.getResult());
+  return replaceOperand(subview, length, changed.getResult());
 }
 } // namespace
 
@@ -141,7 +154,8 @@ int main() {
   auto scheduled = gp::deriveStrictGemmOutputPeelNV1(*canonical.bufferized, tiles, error);
   if (!scheduled) return 1;
   const auto goodText = print(*scheduled);
-  const auto reject = [&](const std::string &label, auto mutate) {
+  const auto reject = [&](const std::string &label, auto mutate,
+                          bool requireUpstreamValidity = true) {
     mlir::OwningOpRef<mlir::ModuleOp> bad = scheduled->clone();
     const bool hit = mutate(*bad);
     check(hit && print(*bad) != goodText, "mutation reaches payload: " + label);
@@ -150,6 +164,11 @@ int main() {
       return mlir::success();
     });
     const bool valid = mlir::succeeded(mlir::verify(*bad));
+    if (!valid && !requireUpstreamValidity) {
+      ++upstreamRefusals;
+      std::printf("UNSUPPORTED upstream-MLIR mutant (not a semantic falsifier): %s\n", label.c_str());
+      return;
+    }
     check(valid, "adversary must remain valid MLIR: " + label);
     if (!valid) return; // An invalid-IR refusal is NOT a semantic falsifier.
     ++validMutants;
@@ -207,6 +226,18 @@ int main() {
   });
   for (unsigned branch : {0U, 1U}) {
     const auto suffix = branch ? " (tail)" : " (full)";
+    for (int adjustment : {-1, 1}) {
+      // View lengths can disappear during alias folding even when the data
+      // indices and another operand's loop extents survive unchanged.
+      reject("B K-view length " + std::to_string(adjustment) + suffix,
+             [&](mlir::ModuleOp module) {
+        return alterSubviewLength(module, branch, 1, 0, adjustment);
+      });
+      reject("C M-view length " + std::to_string(adjustment) + suffix,
+             [&](mlir::ModuleOp module) {
+        return alterSubviewLength(module, branch, 2, 0, adjustment);
+      });
+    }
     reject(std::string("N step becomes one") + suffix, [&](mlir::ModuleOp module) {
       auto graph = roles(module);
       (branch ? graph.tail : graph.full).getStepMutable().assign(constant(module, 1));
@@ -307,6 +338,11 @@ int main() {
     return width && replaceOperand(b, width, constant(module, 3)) &&
            replaceOperand(c, width, constant(module, 3));
   });
+  for (int adjustment : {-1, 1}) {
+    reject("tail C width only " + std::to_string(adjustment), [&](mlir::ModuleOp module) {
+      return alterSubviewLength(module, 1, 2, 1, adjustment);
+    });
+  }
   reject("full local width becomes tile plus one", [&](mlir::ModuleOp module) {
     auto product = roles(module).products[0];
     for (unsigned operand : {1U, 2U}) {
@@ -358,6 +394,36 @@ int main() {
     mlir::cast<mlir::func::ReturnOp>(function.front().back())->setOperand(0, function.getArgument(0));
     return true;
   });
+  reject("unused out-of-rank dim indexed by addi(1,1)", [&](mlir::ModuleOp module) {
+    auto function = roles(module).function;
+    mlir::OpBuilder builder(function.front().getTerminator());
+    const auto one = constant(module, 1);
+    auto index = mlir::arith::AddIOp::create(builder, function.getLoc(), one, one);
+    mlir::memref::DimOp::create(builder, function.getLoc(), function.getArgument(0), index.getResult());
+    return true;
+  });
+  reject("unused possibly out-of-rank dim indexed by dynamic M", [&](mlir::ModuleOp module) {
+    auto graph = roles(module);
+    mlir::OpBuilder builder(graph.function.front().getTerminator());
+    mlir::memref::DimOp::create(builder, graph.function.getLoc(),
+        graph.function.getArgument(0), graph.m.getUpperBound());
+    return true;
+  });
+  reject("unused semi-affine division by dynamic zero", [&](mlir::ModuleOp module) {
+    auto graph = roles(module);
+    auto a = view(graph.products[0], 0);
+    if (!a) return false;
+    auto k = mlir::dyn_cast<mlir::Value>(a.getMixedSizes()[1]);
+    if (!k) return false;
+    mlir::OpBuilder builder(graph.function.front().getTerminator());
+    auto zero = mlir::arith::MulIOp::create(builder, graph.function.getLoc(), k, constant(module, 0));
+    const auto numerator = mlir::getAffineSymbolExpr(0, &context);
+    const auto divisor = mlir::getAffineSymbolExpr(1, &context);
+    const auto map = mlir::AffineMap::get(0, 2, {numerator.floorDiv(divisor)}, &context);
+    mlir::affine::AffineApplyOp::create(builder, graph.function.getLoc(), map,
+        mlir::ValueRange{graph.tail.getUpperBound(), zero.getResult()});
+    return true;
+  }, false); // If upstream forbids semi-affine MLIR, record—not count—that refusal.
   // Harmless dead integer glue must pass the semantic envelope but still fail
   // exact recipe replay. This separates two obligations instead of allowing
   // replay to mask an incomplete independent graph proof above.
@@ -378,8 +444,8 @@ int main() {
   check(!gp::deriveStrictGemmOutputPeelNV1(*forged, tiles, error) && !error.empty() &&
             print(*forged) == forgedText,
         "forged canonical input cannot acquire derivation authority");
-  check(validMutants >= 35, "at least 35 independently valid semantic adversaries");
-  std::printf("output peel inspection: %u checks, %u valid mutants, %u failures\n",
-              checks, validMutants, failures);
+  check(validMutants >= 50, "at least 50 independently valid semantic adversaries");
+  std::printf("output peel inspection: %u checks, %u valid mutants, %u failures, "
+              "%u unsupported upstream mutants\n", checks, validMutants, failures, upstreamRefusals);
   return failures != 0;
 }
