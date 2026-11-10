@@ -12,12 +12,12 @@ not an executed correctness qualification or performance result.
 
 - [CURRENT_STATE.md](CURRENT_STATE.md) is authoritative for the canonical
   engineering checkpoint, supported envelope and exactly one immediate next
-  boundary. The current engineering merge is PR #103,
-  `1f7c491f230251d04d42b5d4a0af5eaf29bcb685`; this re-entry began at PR #94's
+  boundary. The source connection is PR #105; its exact canonical merge is
+  recorded in that checkpoint after integration. This re-entry began at PR #94's
   documentation checkpoint `b2597bed52de46604574f76eb33663788a5ab994`.
 - [Performance evidence roadmap v1](PERFORMANCE_EVIDENCE_ROADMAP_V1.md) defines
-  P1: an authenticated source-time comparison of at least two strict CPU output
-  tile requests on one exclusive host, without automatic dispatch thresholds.
+  the completed P1/P5 authenticated source-time comparisons and the next
+  measurement-method gate, without automatic dispatch thresholds.
 - [Mathematical correctness roadmap v1](MATHEMATICAL_CORRECTNESS_ROADMAP_V1.md)
   records actual operation coverage and future broader-math gates. Those gates
   remain useful proposals, not prerequisites for P1 or the current work queue.
@@ -33,21 +33,25 @@ PR #99 completed Issue #89's closed, parameterized, bounded-static-shape strict
 SPIR-V issuer without source/runtime authority; research PR #84 remains draft and
 unchanged. That independent target-proof boundary does not substitute for broader
 mathematical coverage or CPU timing evidence. The selected follow-up direction is
-P1 performance evidence for the already qualified CPU source-time tile route,
-tracked by Issue #98 / merged PR #100. Its bounded negative/inconclusive campaign
-is not a performance win or a completed whole-matrix comparison. The completed
+performance evidence for the qualified CPU source-time tile route. P1,
+tracked by Issue #98 / merged PR #100, retained a bounded negative/inconclusive
+campaign, not a performance win or a completed whole-matrix comparison. The completed
 upstream diagnosis (#101) motivated the private full-N/tail correctness gate
-(#102), now merged as PR #103 without switching source/default routes. Exactly
-one current gate follows: #104 / pending PR #105 qualifies its separately explicit
-authenticated source connection. The fixed P5 comparison harness in draft
-PR #107 does not authorize timing before that source qualification passes.
+(#102), merged as PR #103 without switching source/default routes. PR #105
+completed the separately explicit authenticated source connection. P5 / PR #107
+then collected one fixed campaign after qualification: every timing ratio is
+unqualified, despite passing correctness and identity audits. Exactly one next
+gate follows: [#108](https://github.com/onlyxItachi/MatcoreDSL/issues/108), a bounded
+prospective source-call measurement method with null/CPU-work/order falsifiers.
+Do not rerun or reinterpret P1/P5, infer speed from code generation, or treat
+sleep-only stopwatch calibration as CPU-work sensitivity evidence.
 Do not infer Vulkan source/runtime execution, GPU timing work or concurrent
 implementation of every roadmap proposal from either boundary.
 
 | Workstream | Required result | Not implied |
 | --- | --- | --- |
 | Target qualification | Exact admitted operation/profile on a pinned compiler, ABI, artifact and physical target, with checked completion/refusal | Every target, source integration from issuer-only evidence, or performance |
-| P1 performance evidence | Reproducible matched strict CPU source-time tile measurements on an exclusive host | A guaranteed win, numerical relaxation, automatic thresholds, BLAS parity or Issue #15 closure |
+| Performance evidence | Qualified source-call measurement method, then matching strict comparisons with retained negative/inconclusive outcomes | A guaranteed win, numerical relaxation, automatic thresholds, BLAS parity or Issue #15 closure |
 | Future broader mathematics | A distinct operation's numerical, shape, value, effect and failure contracts, then independently qualified execution | A dependency that blocks performance of existing GEMM, or support from indexing maps/degeneracies |
 
 Keep strict numerics, all-MAY-alias source Storage, ordered failure/effect

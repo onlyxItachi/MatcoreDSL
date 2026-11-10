@@ -2,8 +2,11 @@
 
 Starting canonical checkpoint: `243f6772ebf8cc7600d05776a2adbb8d8a0515d0`.
 Engineering scope: [Issue #102](https://github.com/onlyxItachi/MatcoreDSL/issues/102).
-Status: focused private qualification passed; full regression/hosted integration
-remain pending. Not a merge or speed claim.
+Status: bounded private qualification completed and normally merged in
+[PR #103](https://github.com/onlyxItachi/MatcoreDSL/pull/103) at
+`1f7c491f230251d04d42b5d4a0af5eaf29bcb685`. See the
+[final record](agent-reports/strict-output-peel-integration-qualification-v1.md).
+The focused counts below are historical, not new source or speed claims.
 
 This records the original private boundary. The separately requested source
 connection has its own [contract and qualification](SOURCE_TIME_OUTPUT_PEEL_V1.md);
@@ -63,9 +66,9 @@ Only the private baseline Linux x64/AArch64 issuer route is eligible for this
 qualification. Nonbaseline ISA requests are rejected. Target emission alone is
 not physical validation. The original private milestone added no source-time
 flag or source-consumption classifier. No build-default schedule, candidate
-registry or runtime adapter is switched to this realization. Existing source
-requests still select the old unpeeled pattern; a separate source request must
-meet the separately authenticated connection contract above.
+registry or runtime adapter is switched to this realization. Existing
+`--gemm-output-tiles` requests still select the old unpeeled pattern; a separate
+source request must meet the separately authenticated connection contract above.
 
 Raw private callers must provide valid dense f32 descriptors, live/race-free
 inputs, a disjoint private output and compatible FP controls. A/B may overlap.
@@ -105,11 +108,13 @@ This joins real private issuance to the observed mechanism; it does not connect
 a source program or measure performance. See the [implementation record](agent-reports/strict-output-peel-n-implementation-v1.md)
 and [independent fixtures/review](agent-reports/output-peel-adversarial-tests-v1.md).
 
-## Exactly one subsequent boundary
+## Subsequent boundary and current navigation
 
-After private qualification, connect an explicitly requested peeled realization
-to the existing authenticated source-time issuer with a distinct instance identity
-and exact consumption classifier. Preserve source closure, artifact ownership,
-effects and failure order; do not silently replace v1 requests. Only then does a
-new preregistered source-call comparison become meaningful. No tuning, threshold,
-performance win, BLAS parity or GPU schedule follows from private correctness.
+The original next gate, separately explicit authenticated source connection,
+completed qualification in [PR #105](https://github.com/onlyxItachi/MatcoreDSL/pull/105).
+Its distinct binding/consumption classifier preserves source closure, artifact
+ownership, effects, failure order and old requests; primitive issuance alone
+still grants no source authority. The subsequent P5 collection is timing-
+inconclusive, not a performance win. [CURRENT_STATE.md](CURRENT_STATE.md) and the
+[performance roadmap](PERFORMANCE_EVIDENCE_ROADMAP_V1.md) own the single current
+boundary. No tuning, threshold, BLAS parity or GPU schedule follows from this record.
