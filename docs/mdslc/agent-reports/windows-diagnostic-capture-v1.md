@@ -26,10 +26,24 @@ valid UTF-8 stdout plus invalid UTF-8 stderr with exit 7, and ordinary success,
 through both synchronous and asynchronous helpers. Exact outputs and statuses
 are checked. Local Python 3.15 and system Python 3.12 each passed 4/4 controls.
 An independent reviewer inspected the first fix and repeated its original 2/2
-controls; the asynchronous follow-up requires its own review and hosted run.
-`git diff --check` passed. Native hosted Windows validation remains a separate
-merge gate; no Linux run substitutes for it.
+controls, then reviewed the asynchronous follow-up and repeated all 4/4 controls
+without a remaining high/medium finding. `git diff --check` passed. Native hosted
+Windows validation remained a separate merge gate; no Linux run substituted for it.
+
+## Final qualification and normal merge
+
+Exact reviewed head `dd64a369d4a4c730d0db09aca1edf86a16cda149` completed all 26
+hosted status checks successfully before normal PR #97 merge
+`a90e82ae947efcae77d1b1c78c38d87ea4369884`. Both push and PR Windows runs passed:
+[42719989440](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/42719989440)
+and [42719998104](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/42719998104).
+The latter ran Release 52/52, Debug 33/33, the focused ASan runtime test 1/1 and
+the standalone ASan generated-source pipeline, without Windows skips. This is
+ASan evidence, not a Windows UBSan claim. Linux Release/Debug, focused ASan+UBSan,
+TSan, AArch64 strict, repository hygiene and legacy checks also passed at this
+head; existing declared ISA skips are not relabelled execution passes.
 
 This is a test-harness compatibility correction, not another compiler milestone.
-The operator's engineering frontier remains Issue #89 and broader mathematical
-coverage remains a separate correctness-first track.
+The operator's engineering frontier at this merge remains Issue #89. Owner-selected
+CPU performance evidence is Issue #98; broader mathematical coverage is separate,
+not a prerequisite for timing an already qualified operation/realization.
