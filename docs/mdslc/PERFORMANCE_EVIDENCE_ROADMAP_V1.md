@@ -11,8 +11,11 @@ optimal tile, dispatch threshold, provider parity or target qualification.
 [CURRENT_STATE.md](CURRENT_STATE.md) owns the current canonical engineering
 checkpoint; the existing SPIR-V issuer correctness boundary is independent of the
 CPU source-time route measured here and confers no Vulkan source/runtime authority.
-PR #99 has since completed that issuer boundary; PR #100 separately records P1's
-bounded negative/inconclusive campaign and its exact evidence, not a speedup.
+PR #99 has since completed that issuer boundary; merged PR #100 records P1's
+[bounded negative/inconclusive campaign](../performance/cpu/source-pattern-p1-2026-11-10.md),
+not a speedup. The evidence milestone is complete, not a full-matrix performance
+qualification. The reviewed follow-up trace is complete (#101); the current
+engineering gate is the separately private full-N/tail realization (#102).
 
 ## P1 — Authenticated source-time strict output-tile comparison
 
@@ -92,27 +95,38 @@ change, CPU/provider policy change, universal speedup, full BLAS parity, Issue #
 closure, new GPU/SPIR-V performance claim or public API/ABI freeze in P1. Any
 subsequent tuning or policy proposal needs its own correctness and evidence gates.
 
-## First issue
+## Completed P1 evidence boundary
 
 [Issue #98](https://github.com/onlyxItachi/MatcoreDSL/issues/98):
 **P1: authenticated strict source-time CPU tile performance evidence**.
 
 Acceptance gates:
 
-- [ ] Build one bounded authenticated source-region timing harness over the stock
+- [x] Build one bounded authenticated source-region timing harness over the stock
   route and at least two distinct explicit tile requests from one installation;
   preserve actual artifact consumption/ownership and all strict/effect guards.
-- [ ] Freeze and review the matrix, exact numerical/timing/resource/lifetime
+- [x] Freeze and review the matrix, exact numerical/timing/resource/lifetime
   contract, correctness corpus, host limits and campaign budgets before timings.
-- [ ] Pass all selected correctness, refusal and artifact controls without changing
+- [x] Pass all selected correctness, refusal and artifact controls without changing
   source semantics, candidates or provider policy to improve timing results.
-- [ ] Collect the bounded matching forward/reverse campaign only on an exclusive
+- [x] Collect the bounded matching forward/reverse campaign only on an exclusive
   host; authenticate raw identities, actual thread/affinity and outputs, keeping
   every failure/noise refusal instead of fabricating complete results.
-- [ ] Independently review the source-to-measurement binding and a digest-backed
+- [x] Independently review the source-to-measurement binding and a digest-backed
   per-shape summary, including negative/inconclusive outcomes; make no automatic
   threshold, broad speedup or Issue #15 closure claim.
 
 M1/M2 GEMV admission/execution, general tensors, sparse math and additional
 targets are non-goals, not prerequisites. This plan predates the separately
 recorded PR #100 collection and does not manufacture a passing performance result.
+
+## Current performance-motivated engineering gate
+
+[Issue #102](https://github.com/onlyxItachi/MatcoreDSL/issues/102) is a private
+strict full-N/tail realization, justified by the
+[P2/P3 research checkpoint](https://github.com/onlyxItachi/MatcoreDSL/blob/4f3cd4c/docs/mdslc/agent-reports/strict-output-tile-peeling-prototype-v1.md).
+The mechanism is observed for 5x3; general parameters require a new independent
+domain/dataflow proof and numerical/sanitizer qualification. Keep the unpeeled
+source route, defaults and strict permissions intact. This is not a tuning sweep.
+Future source connection and measurements need separately frozen contracts;
+P1 is not rerun or repaired after seeing its result.

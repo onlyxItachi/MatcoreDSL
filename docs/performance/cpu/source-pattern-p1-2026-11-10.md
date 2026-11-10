@@ -111,6 +111,15 @@ The source-bound binaries/private bundles must remain at their emitted paths;
 post-emission relocation is unsupported. These local files are not a remote
 archive or a guarantee against future temporary-directory retention policy.
 
+A small local preservation archive now exists under canonical ignored
+`benchmark_reports/source-pattern-p1-2026-11-10-v1/receipts.tar.gz`, SHA-256
+`bca273285907b0805a835ef28fb4753282482012b1fc61645beade8a6e8c474c`.
+It retains the profile, all three preparation attempts, collection, generated
+artifacts and raw receipts (about 1.1 MiB), not the SDK/toolchain. Archived
+collection bytes rejoin the identity below. This is not portable execution,
+artifact-import, resume or post-emission relocation authority; original paths
+remain frozen.
+
 | Identity | SHA-256 |
 | --- | --- |
 | `prepared-v3/prepared.json` | `c2446f8446947df0d1cca2c1182e0357b81a32c14e62490cd679531cde045c63` |
@@ -147,9 +156,29 @@ bit encoder. No remaining high/medium source or evidence-consistency finding was
 reported. Root also configured the separate minimal test-only CMake tree
 `configure-p1-contract`, verified exactly one matching CTest registration, and
 ran it successfully (1/1 CTest, 15 synthetic unittest methods, 1.60 seconds).
-No product build or benchmark ran in that CTest. Hosted integration remains
-pending at this documentation checkpoint;
-it does not authorize merge by itself.
+No product build or benchmark ran in that CTest.
+
+### Hosted qualification and normal merge
+
+All 26 hosted checks passed at exact premerge head
+`b52f068b53ca09045b7044beb9acd67faec2be4d`: Linux Release/Debug, retained
+ASan+UBSan/TSan scopes, Windows, native ARM64, hygiene and legacy CI. Native
+[PR run 42729972994](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/42729972994)
+and [push 42729920161](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/42729920161),
+Windows [42729972709](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/42729972709)
+and [42729920162](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/42729920162),
+and ARM64 [42729972733](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/42729972733)
+retain exact job evidence. Downloaded primary PR Release executed 304/304 and
+Debug 299/299, with zero skips; both executed the new synthetic harness test.
+The retained ASan+UBSan scope executed 236/236, zero skips. These are regression
+gates, not a rerun or improvement of the physical timing result.
+
+After independent review and all gates, PR #100 merged normally as
+`52fb20a30cae0d001daebf5f71035ba071541181`, atop PR99's canonical
+`243f6772ebf8cc7600d05776a2adbb8d8a0515d0`. Harness/report files were unchanged
+by merge. Issue #98 closes only this bounded evidence milestone; overall timing
+remains inconclusive and Issue #15 remains open. The measured producer/SDK at
+`06affd2` was not rebuilt or mutated to match the later merge SHA.
 
 The next justified question is a **bounded code-generation diagnosis of the
 33/35/37 stock-versus-5x3 loss**: identify actual scheduled-IR/LLVM/assembly
@@ -169,3 +198,8 @@ These are structural observations, not cache/DRAM measurements or proof of the
 whole-call slowdown's cause. The next trace should use upstream optimization
 machinery to explain that recurrence, not add facts already present or weaken
 alias/numerical contracts.
+
+That diagnostic is now retained in completed Issue #101 and the
+[reviewed P2/P3 research checkpoint](https://github.com/onlyxItachi/MatcoreDSL/blob/4f3cd4c/docs/mdslc/agent-reports/strict-output-tile-peeling-prototype-v1.md).
+It motivates separately gated private full-N/tail qualification in Issue #102,
+not reinterpretation of these measurements or immediate source/default adoption.

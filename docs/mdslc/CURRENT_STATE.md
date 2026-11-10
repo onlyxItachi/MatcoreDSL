@@ -1,10 +1,10 @@
 # MDSLC current state
 
-Canonical engineering checkpoint: `243f6772ebf8cc7600d05776a2adbb8d8a0515d0`, normal merge of
-[PR #99](https://github.com/onlyxItachi/MatcoreDSL/pull/99) from exact premerge
-`06affd2ffea4a5459158a7ddcd0c4e75009ea90e`; their Git trees are identical.
-Its Windows-test prerequisite is [PR #97](https://github.com/onlyxItachi/MatcoreDSL/pull/97),
-merge `a90e82ae947efcae77d1b1c78c38d87ea4369884`.
+Canonical engineering checkpoint: `52fb20a30cae0d001daebf5f71035ba071541181`, normal merge of
+[PR #100](https://github.com/onlyxItachi/MatcoreDSL/pull/100) from exact premerge
+`b52f068b53ca09045b7044beb9acd67faec2be4d`. Its harness/report files are unchanged
+by merge; main also retains [PR #99](https://github.com/onlyxItachi/MatcoreDSL/pull/99),
+`243f6772ebf8cc7600d05776a2adbb8d8a0515d0`, and Windows prerequisite PR #97.
 
 ## Architecture
 
@@ -33,14 +33,14 @@ Legacy mutating GEMM and separate platform/Python lanes remain intact.
 
 ## Material change
 
-PR99 closes [#89](https://github.com/onlyxItachi/MatcoreDSL/issues/89)'s bounded
-positive-static strict-f32 SPIR-V issuer: complete graph/ABI/strict-control and
-serialized-byte checks, independent adversarial review, AMD RADV physical samples
-and explicit unsupported-device refusals. It is default-OFF, private and not
-installed or source-connected. See the [contract](SPIRV_CLOSED_ISSUER_V1.md) and
-[qualification](agent-reports/spirv-issuer-integration-qualification-v1.md).
-PR97's [diagnostic transport fix](agent-reports/windows-diagnostic-capture-v1.md)
-changes test byte handling only. Existing CPU/GPU/provider routes are unchanged.
+PR100 adds an authenticated source-call performance harness and retains one
+fixed campaign: all correctness/identity gates passed, overall timing remains
+**inconclusive**. The only qualified stock comparison, M/K/N=33/35/37, found
+5x3 taking **2.45145x** the stock interval. This is a loss, not a speedup or parity.
+All 26 hosted checks passed. See the [reviewed evidence](../performance/cpu/source-pattern-p1-2026-11-10.md).
+No compiler/runtime/default/provider behavior changed. Earlier PR99's private
+SPIR-V [contract](SPIRV_CLOSED_ISSUER_V1.md) and
+[qualification](agent-reports/spirv-issuer-integration-qualification-v1.md) remain separate.
 
 ## Unsupported or unproven
 
@@ -64,12 +64,11 @@ is partial/open; [#20](https://github.com/onlyxItachi/MatcoreDSL/issues/20) desi
 
 ## Exactly one next boundary
 
-**[Issue #98](https://github.com/onlyxItachi/MatcoreDSL/issues/98): qualify authenticated strict source-time CPU tile performance evidence.**
-The existing correct source/instance/ownership route now permits a matched
-stock-versus-requested-tile experiment; more operations are not prerequisites.
-Keep full call/lifetime accounting, artifact identity and independent output
-checks, including losses and inconclusive outcomes. [PR #100](https://github.com/onlyxItachi/MatcoreDSL/pull/100)
-records a bounded negative/inconclusive campaign pending canonical integration.
-See the [performance roadmap](PERFORMANCE_EVIDENCE_ROADMAP_V1.md). No tuning or
-default change follows. [PR #84](https://github.com/onlyxItachi/MatcoreDSL/pull/84)
-remains the unchanged draft research track, not a Vulkan execution authority.
+**[Issue #102](https://github.com/onlyxItachi/MatcoreDSL/issues/102): qualify a separate private strict full-N/tail realization.**
+The [reviewed compile-only trace](https://github.com/onlyxItachi/MatcoreDSL/blob/4f3cd4c/docs/mdslc/agent-reports/strict-output-tile-peeling-prototype-v1.md)
+shows upstream peeling can expose register accumulators for 5x3; it also changes
+inlining/code size, so no speed inference follows. Before adoption, independently
+prove both domains and test full/tail numerical, alias, empty and sanitizer cases.
+Keep v1/source/default routes unchanged; source connection and new timings are
+later gates. See the [performance roadmap](PERFORMANCE_EVIDENCE_ROADMAP_V1.md).
+PR #84 remains the unchanged draft research track, not Vulkan execution authority.

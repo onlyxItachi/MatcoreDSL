@@ -121,8 +121,9 @@ ARM64, Windows, GPU, Metal or NPU support is promised.
 
 ## Performance follows the selected correctness envelope, not every math gate
 
-The selected next direction is the [P1 source-time strict tile
-comparison](PERFORMANCE_EVIDENCE_ROADMAP_V1.md), not M1/M2. New operations are not
+The selected direction is the [performance evidence track](PERFORMANCE_EVIDENCE_ROADMAP_V1.md),
+not M1/M2. P1 is now retained in merged PR #100, including its negative/inconclusive
+result; #102 is the current private realization gate. New operations are not
 needed to measure the existing qualified GEMM implementation. P1 preserves its
 numerical/effect/artifact contract and compares matching measurement modes on an
 exclusive host. Broader math may be selected later and still requires its own
