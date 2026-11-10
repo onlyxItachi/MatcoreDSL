@@ -24,10 +24,13 @@ int main(int argc, char **argv) {
     else if (option == "--schedule=row-contiguous" && !has_schedule) {
       has_schedule = true;
       schedule = candidate::StrictGemmScheduleV1::RowContiguousMKN;
-    } else if (option.starts_with("--output-tiles=") && !has_schedule) {
+    } else if ((option.starts_with("--output-tiles=") ||
+                option.starts_with("--output-tiles-peel-n=")) && !has_schedule) {
       has_schedule = true;
-      schedule = candidate::StrictGemmScheduleV1::OutputTiledMKN;
-      const auto value = option.substr(15);
+      const bool peelN = option.starts_with("--output-tiles-peel-n=");
+      schedule = peelN ? candidate::StrictGemmScheduleV1::OutputTiledPeelNMKN :
+                         candidate::StrictGemmScheduleV1::OutputTiledMKN;
+      const auto value = option.substr(peelN ? 22 : 15);
       const auto comma = value.find(',');
       auto parse = [](const std::string &text, std::int64_t &out) {
         if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos)
@@ -64,14 +67,17 @@ int main(int argc, char **argv) {
   if (reassociate && has_isa) valid = false;
   if (isa != candidate::StrictCpuIsaV1::Baseline &&
       (!has_schedule || target != candidate::CpuTargetV1::LinuxX86_64)) valid = false;
+  if (schedule == candidate::StrictGemmScheduleV1::OutputTiledPeelNMKN &&
+      isa != candidate::StrictCpuIsaV1::Baseline) valid = false;
   if (!valid) {
     llvm::errs()
         << "private built-in candidate generator: --output FILE [--asan] "
-           "[--schedule=row-contiguous | --output-tiles=M,N | --candidate=reassociate-register] "
+           "[--schedule=row-contiguous | --output-tiles=M,N | --output-tiles-peel-n=M,N | --candidate=reassociate-register] "
            "[--target=linux-x86_64 | --target=linux-aarch64]\n"
            "[--isa=baseline | --isa=avx | --isa=avx2 | --isa=avx512f]\n"
            "Output tiles are integers in [1,64]; K remains untiled and ordered.\n"
            "Nonbaseline ISA requires x86 row-contiguous or output-tiled strict.\n"
+           "Peeled N is a separate baseline-only private realization, not a source-driver option.\n"
            "AArch64 is a strict-only target; target selection is not runtime legality.\n"
            "No source/MLIR input is accepted. This does not admit a program.\n";
     return 2;

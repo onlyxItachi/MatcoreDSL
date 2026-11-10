@@ -45,5 +45,28 @@ bool verifyStrictGemmOutputTiledV1(mlir::ModuleOp scheduled,
                                   const OutputTilePatternV1 &tiles,
                                   std::string &error);
 
+// Separate compiler-owned HOW recipe: upstream N full-tile/tail peeling of
+// the same output decomposition. The original v1 recipe/graph is unchanged.
+// A unit N tile statically selects that existing graph (no remainder exists);
+// native loop.peel is not invoked and a failed peel is never suppressed.
+std::string strictGemmOutputPeelNTransformV1(const OutputTilePatternV1 &tiles,
+                                           std::string &error);
+mlir::OwningOpRef<mlir::ModuleOp> deriveStrictGemmOutputPeelNV1(
+    mlir::ModuleOp canonical_bufferized, const OutputTilePatternV1 &tiles,
+    std::string &error);
+
+// Branch-role proof of F = tile_n*floor(N/tile_n), full [0,F) and tail [F,N),
+// bounded M, both complete increasing K folds and exact A/B/C scalar dataflow,
+// plus parameter-bound upstream replay. The unit-N branch retains the exact
+// one-body v1 envelope, not a permissive loop/arithmetic-count range.
+// As above, dimensions are nonnegative valid dense private descriptors, with
+// signed tile increments bounded by M <= INT64_MAX-(tile_m-1) and
+// N <= INT64_MAX-(tile_n-1). F multiplication is representable because F<=N;
+// the tail has width <tile_n and does not create padding or another K fold.
+// Inspection is not source authentication or authority to execute supplied IR.
+bool verifyStrictGemmOutputPeelNV1(mlir::ModuleOp scheduled,
+                                  const OutputTilePatternV1 &tiles,
+                                  std::string &error);
+
 } // namespace matcore::mdslc::gemm_pattern
 #endif

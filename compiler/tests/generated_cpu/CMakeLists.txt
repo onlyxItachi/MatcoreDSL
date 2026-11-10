@@ -5,6 +5,7 @@ endif()
 
 include(StrictCpuIsaTests.cmake)
 include(OutputPatternTests.cmake)
+include(OutputPeelTests.cmake)
 
 if(TARGET mdslc-region)
   foreach(case IN ITEMS source same_value)

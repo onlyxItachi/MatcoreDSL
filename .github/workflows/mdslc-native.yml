@@ -556,6 +556,12 @@ jobs:
           grep -Fx 'Total Tests: 2' build-mdslc-asan-ubsan/spirv-issuer-test-list.txt
           ctest --test-dir build-mdslc-asan-ubsan --output-on-failure -j1 \
             -R '^generated_spirv\.(issuer|adversarial)$'
+          # Additive private full/tail realization: retain the old 236 and 2.
+          ctest --test-dir build-mdslc-asan-ubsan -N -R '^generated_cpu_output_peel\.' \
+            | tee build-mdslc-asan-ubsan/output-peel-test-list.txt
+          grep -Fx 'Total Tests: 44' build-mdslc-asan-ubsan/output-peel-test-list.txt
+          ctest --test-dir build-mdslc-asan-ubsan --output-on-failure -j1 \
+            -R '^generated_cpu_output_peel\.'
 
   clang-21-tsan-runtime:
     name: Clang 21.1.8 TSan runtime (Matcore MLIR and OpenBLAS disabled)
