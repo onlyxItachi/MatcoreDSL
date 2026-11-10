@@ -77,8 +77,9 @@ Two preparation refusals remain intact:
 42 processes, 36 measured cells, six initial/final control processes, 324 measured
 aggregates, **55728 checked timed calls / 41202432 checked timed output elements**,
 plus 12384 verified warmup calls / 9156096 warmup output elements. All output,
-source-effect, identity and host gates
-passed. Total collection time was 8.050592 seconds within the 180-second cap.
+source-effect, identity and global host-preflight/boundary gates passed; timing
+rejections are detailed below. Total collection time was 8.050592 seconds within
+the 180-second cap.
 
 ## Timing results, including missing comparisons
 
@@ -91,7 +92,7 @@ An inconclusive role is not repaired by dropping its rejected samples.
 | 32/32/32 | 128 | inconclusive | 14.1774 | 18.2527 | none: stock below floor |
 | 33/35/37 | 128 | 10.1547 | inconclusive | 24.8937 | 5x3 / stock = 2.45145 |
 | 64/7/19 | 256 | inconclusive | inconclusive | inconclusive | none |
-| 1/257/65 | 256 | inconclusive | 8.7904 | 13.7781 | none: stock preemption |
+| 1/257/65 | 256 | inconclusive | 8.7904 | 13.7781 | none: stock involuntary-switch gate |
 | 65/257/1 | 256 | inconclusive | inconclusive | inconclusive | none |
 | 128/128/128 | 8 | inconclusive | inconclusive | inconclusive | none |
 
@@ -143,7 +144,11 @@ that test. The independent collection review rechecked all 126 raw catalog files
 derivations and paired summaries. It recomputed all six output hashes using
 independent integer-prefix arithmetic and `struct` f32 encoding, not the harness's
 bit encoder. No remaining high/medium source or evidence-consistency finding was
-reported. Hosted integration remains pending at this documentation checkpoint;
+reported. Root also configured the separate minimal test-only CMake tree
+`configure-p1-contract`, verified exactly one matching CTest registration, and
+ran it successfully (1/1 CTest, 15 synthetic unittest methods, 1.60 seconds).
+No product build or benchmark ran in that CTest. Hosted integration remains
+pending at this documentation checkpoint;
 it does not authorize merge by itself.
 
 The next justified question is a **bounded code-generation diagnosis of the
@@ -152,3 +157,15 @@ differences while separating structural observations from causal performance
 proof. Do not infer a winning tile, new numerical permission or dispatch threshold.
 Broader comparisons need a separately preregistered floor/noise contract, not
 reinterpretation or retry of this frozen campaign.
+
+Two additional independent read-only inspections falsified a tempting proposed
+fix: both exact LLVM artifacts **already** annotate aligned-C argument 15
+`noalias`. The private adapter allocates fresh output while A/B remain live;
+allocated-C's duplicate pointer is bookkeeping, and A/B may alias each other.
+No output-alias metadata change is justified. The executed stock C-interface body
+keeps its scalar accumulator in XMM across K and unrolls K by four; the 5x3 body
+has scalar K steps and per-K C load/add/store sequences with N-tail branches.
+These are structural observations, not cache/DRAM measurements or proof of the
+whole-call slowdown's cause. The next trace should use upstream optimization
+machinery to explain that recurrence, not add facts already present or weaken
+alias/numerical contracts.
