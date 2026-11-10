@@ -792,6 +792,11 @@ if(BUILD_TESTING)
       # CTest through a focused replacement instead of silently dropping all
       # frontend coverage when bootstrap parity is unavailable.
       add_test(
+        NAME windows.diagnostic_capture
+        COMMAND "${Python3_EXECUTABLE}" -B
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/windows/test_diagnostic_capture.py"
+      )
+      add_test(
         NAME frontend.native.windows
         COMMAND
           "${Python3_EXECUTABLE}"
