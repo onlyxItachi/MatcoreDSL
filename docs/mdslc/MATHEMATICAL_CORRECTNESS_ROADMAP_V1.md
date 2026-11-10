@@ -97,10 +97,11 @@ contract; it may not silently broaden admission to get a passing example.
 
 ## Target qualification is an independent axis
 
-The current immediate frontier is Issue #89's closed bounded-static strict SPIR-V
-issuer. Positive-family generation and graph/ABI/numerical controls do not supply
+The planning baseline's immediate frontier was Issue #89's closed bounded-static
+strict SPIR-V issuer; PR #99 subsequently completed that bounded issuer contract.
+Positive-family generation and graph/ABI/numerical controls do not supply
 Vulkan source/runtime, device identity, failure/completion or artifact authority.
-PR #84 remains draft at this planning baseline. Disposition of that issue does
+PR #84 remains draft and unchanged. Disposition of that issue does
 not establish GEMV semantics or authorize a new public API.
 
 Existing source-time output tiles cover explicit single-TU native-baseline

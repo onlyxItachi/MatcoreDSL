@@ -11,6 +11,8 @@ optimal tile, dispatch threshold, provider parity or target qualification.
 [CURRENT_STATE.md](CURRENT_STATE.md) owns the current canonical engineering
 checkpoint; the existing SPIR-V issuer correctness boundary is independent of the
 CPU source-time route measured here and confers no Vulkan source/runtime authority.
+PR #99 has since completed that issuer boundary; PR #100 separately records P1's
+bounded negative/inconclusive campaign and its exact evidence, not a speedup.
 
 ## P1 — Authenticated source-time strict output-tile comparison
 
@@ -112,5 +114,5 @@ Acceptance gates:
   threshold, broad speedup or Issue #15 closure claim.
 
 M1/M2 GEMV admission/execution, general tensors, sparse math and additional
-targets are non-goals, not prerequisites. No benchmark was run while writing this
-plan, and this document does not manufacture a passing performance result.
+targets are non-goals, not prerequisites. This plan predates the separately
+recorded PR #100 collection and does not manufacture a passing performance result.

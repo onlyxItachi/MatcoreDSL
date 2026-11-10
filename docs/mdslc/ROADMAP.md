@@ -12,9 +12,9 @@ not an executed correctness qualification or performance result.
 
 - [CURRENT_STATE.md](CURRENT_STATE.md) is authoritative for the canonical
   engineering checkpoint, supported envelope and exactly one immediate next
-  boundary. At this documentation baseline, PR #93's engineering merge is
-  `e8e8008cb61b61a585d8bc1584ca320c6326472d`; PR #94's documentation checkpoint is
-  `b2597bed52de46604574f76eb33663788a5ab994`.
+  boundary. The current engineering merge is PR #99,
+  `243f6772ebf8cc7600d05776a2adbb8d8a0515d0`; this re-entry began at PR #94's
+  documentation checkpoint `b2597bed52de46604574f76eb33663788a5ab994`.
 - [Performance evidence roadmap v1](PERFORMANCE_EVIDENCE_ROADMAP_V1.md) defines
   P1: an authenticated source-time comparison of at least two strict CPU output
   tile requests on one exclusive host, without automatic dispatch thresholds.
@@ -26,16 +26,16 @@ not an executed correctness qualification or performance result.
   patterns](SOURCE_TIME_GEMM_PATTERN_V1.md) describes the bounded explicit CPU
   M/N tile lifecycle. Neither adds a non-GEMM operation.
 - The [coverage audit](agent-reports/correctness-coverage-audit-v1.md) grounds the
-  proposed first broader-math boundary in current code and contains an unfiled
-  issue proposal. It does not authorize implementation or remote changes.
+  proposed first broader-math boundary in the audited code. Its proposal was
+  subsequently filed as parked Issue #96; it is not the active performance queue.
 
-At this baseline the immediate correctness frontier is the closed, parameterized,
-bounded-static-shape strict SPIR-V issuer tracked by Issue #89. It must establish
-its positive family and negative controls without source/runtime authority;
-research PR #84 remains draft and unchanged at this baseline. That independent
-target-proof boundary does not substitute for broader mathematical coverage or
-CPU timing evidence. After its disposition, the selected follow-up direction is
-P1 performance evidence for the already qualified CPU source-time tile route.
+PR #99 completed Issue #89's closed, parameterized, bounded-static-shape strict
+SPIR-V issuer without source/runtime authority; research PR #84 remains draft and
+unchanged. That independent target-proof boundary does not substitute for broader
+mathematical coverage or CPU timing evidence. The selected follow-up direction is
+P1 performance evidence for the already qualified CPU source-time tile route,
+tracked by Issue #98 / PR #100. Its bounded negative/inconclusive campaign is
+not a performance win or a completed whole-matrix comparison.
 Do not infer Vulkan source/runtime execution, GPU timing work or concurrent
 implementation of every roadmap proposal from either boundary.
 
