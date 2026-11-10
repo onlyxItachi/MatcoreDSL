@@ -174,10 +174,13 @@ and [42723467548](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/4272346
 AArch64 strict [42723475490](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/42723475490),
 hygiene and legacy CI. Existing declared ISA skips retain their original scope.
 
-The SPIR-V-enabled/vector-readiness Release row passed **304/304** (2512.40 seconds),
-including actual `generated_spirv.external_validation`; full Debug passed
-**301/301** (2912.51 seconds). The focused ASan+UBSan scope retained **236/236**,
-then separately asserted and passed the **2/2** issuer/adversarial tests. Test-only
+The SPIR-V-enabled/vector-readiness Release row selected **304 tests: 285 passed,
+19 declared AVX-512 skips, zero failures** (2512.40 seconds), including actual
+`generated_spirv.external_validation`. Full Debug selected **301 tests: 282 passed,
+19 declared AVX-512 skips, zero failures** (2912.51 seconds). These skips are not
+passes. The focused ASan+UBSan scope retained **236/236**, then separately asserted
+and passed the **2/2** issuer/adversarial tests, with no skips in either scope.
+The local **308/308** Release run above also had no skips. Test-only
 Vulkan dispatch was OFF in hosted CI; no hosted GPU execution claim follows.
 
 After independent review and these gates, PR #99 merged normally as
