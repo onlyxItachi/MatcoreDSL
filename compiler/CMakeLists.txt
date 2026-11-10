@@ -715,6 +715,10 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" -B
           "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/source_pattern/tests.py")
       set_tests_properties(benchmark.source_pattern.runner PROPERTIES TIMEOUT 30)
+      add_test(NAME benchmark.source_pattern_peel.runner
+        COMMAND "${Python3_EXECUTABLE}" -B
+          "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/source_pattern_peel/tests.py")
+      set_tests_properties(benchmark.source_pattern_peel.runner PROPERTIES TIMEOUT 60)
     endif()
     if(MDSLC_ENABLE_NATIVE_FRONTEND)
       set(MDSLC_REGION_TEST_AVAILABLE 0)
