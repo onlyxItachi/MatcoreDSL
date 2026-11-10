@@ -2,7 +2,8 @@
 
 Starting canonical checkpoint: `243f6772ebf8cc7600d05776a2adbb8d8a0515d0`.
 Engineering scope: [Issue #102](https://github.com/onlyxItachi/MatcoreDSL/issues/102).
-Status: implementation and qualification in progress; not a merge or speed claim.
+Status: focused private qualification passed; full regression/hosted integration
+remain pending. Not a merge or speed claim.
 
 ## Why this boundary exists
 
@@ -81,6 +82,22 @@ separately. This contract is not evidence that those gates have already passed.
 
 In particular, tile N=3 needs numerical witnesses at mixed N=4,5,7,8; N=129 alone
 never exercises its tail. Cover odd/even K and the full/tail M boundary too.
+
+The initial local focused suite passed **44/44 CTests, zero CTest skips**. The
+inspector passed 627 checks, rejected 56 valid-MLIR semantic adversaries before
+replay, and reported zero unsupported upstream mutants. CLI checks refused 22
+invalid requests and issued eight parameter/target combinations. Fourteen
+normal/generated-ASan programs covered seven tile pairs: 27020 cumulative cases
+and 50958208 checks, with zero mismatches; reused cases are included, not added
+twice. Fourteen deliberate corruption controls and fourteen generated full/tail
+ASan violations were detected. Witnesses requiring more K terms than available
+are explicitly inapplicable, not counted as passes (1380 across the positive runs).
+
+The compiler-issued 5x3 LLVM is byte-identical to the reviewed P3 specimen,
+SHA-256 `7864ea0110a3567ad29c0f27d8a64369f05fb4f440625d457a4712b8021d3496`.
+This joins real private issuance to the observed mechanism; it does not connect
+a source program or measure performance. See the [implementation record](agent-reports/strict-output-peel-n-implementation-v1.md)
+and [independent fixtures/review](agent-reports/output-peel-adversarial-tests-v1.md).
 
 ## Exactly one subsequent boundary
 

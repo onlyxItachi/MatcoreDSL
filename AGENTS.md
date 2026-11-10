@@ -128,6 +128,13 @@ in `context.md`.
   independent scalar-envelope checks and existing source/private-leaf ownership.
   The output-tiled build selection is opt-in; it adds no automatic tuning policy
   or GPU mapping. See `docs/mdslc/PARAMETERIZED_GEMM_PATTERN_V1.md`.
+  The separately explicit private `--output-tiles-peel-n` realization retains
+  the old unpeeled pattern and all source/default routes. Its branch-aware
+  scalar envelope must prove disjoint complete full/tail N coverage, both strict
+  recurrences, bounded views and every consumed index fact before exact replay.
+  Unit N is a statically selected no-tail identity, not a suppressed upstream
+  failure. Baseline x64/AArch64 only; no source-time selection or imported-IR
+  authority follows. See `docs/mdslc/PRIVATE_STRICT_OUTPUT_PEEL_V1.md`.
   The separately requested source-time `--gemm-output-tiles M,N` route is bounded
   to single-TU native baseline `generated-strict` executables. Reuse the closed
   issuer and pinned private relink kit, never a submitted IR/object or callback.
