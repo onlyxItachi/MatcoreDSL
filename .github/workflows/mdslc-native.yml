@@ -354,9 +354,9 @@ jobs:
   clang-21-debug-mlir:
     name: Clang 21.1.8 Debug (Matcore MLIR enabled, OpenBLAS disabled)
     runs-on: ubuntu-24.04
-    # PR80's 45-minute runs timed out near the end without a testcase failure.
-    # Preserve the complete Debug scope; do not turn an incomplete run green.
-    timeout-minutes: 60
+    # PR105's complete Debug suite also reached the 60-minute job deadline.
+    # Preserve every test and per-test timeout; allow the complete scope to finish.
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
