@@ -316,6 +316,9 @@ jobs:
             ctest --test-dir build-mdslc -N -R '^driver\.source_pattern\.' \
               | tee build-mdslc/source-pattern-test-list.txt
             grep -Fx "Total Tests: 4" build-mdslc/source-pattern-test-list.txt
+            ctest --test-dir build-mdslc -N -R '^driver\.source_pattern_peel\.' \
+              | tee build-mdslc/source-pattern-peel-test-list.txt
+            grep -Fx "Total Tests: 4" build-mdslc/source-pattern-peel-test-list.txt
           fi
           if [[ "${{ matrix.vector_readiness_enable }}" == "ON" ]]; then
             ctest --test-dir build-mdslc --output-on-failure -j1 \
@@ -562,6 +565,12 @@ jobs:
           grep -Fx 'Total Tests: 44' build-mdslc-asan-ubsan/output-peel-test-list.txt
           ctest --test-dir build-mdslc-asan-ubsan --output-on-failure -j1 \
             -R '^generated_cpu_output_peel\.'
+          # Explicit source connection is separate from the 236/2/44 gates.
+          ctest --test-dir build-mdslc-asan-ubsan -N -R '^driver\.source_pattern_peel\.' \
+            | tee build-mdslc-asan-ubsan/source-pattern-peel-test-list.txt
+          grep -Fx 'Total Tests: 4' build-mdslc-asan-ubsan/source-pattern-peel-test-list.txt
+          ctest --test-dir build-mdslc-asan-ubsan --output-on-failure -j1 \
+            -R '^driver\.source_pattern_peel\.'
 
   clang-21-tsan-runtime:
     name: Clang 21.1.8 TSan runtime (Matcore MLIR and OpenBLAS disabled)
