@@ -78,8 +78,9 @@ a performance verdict from a shared build/test workload.
 
 ### P1c — Review evidence; choose a narrow next question
 
-Raw JSON/logs/manifests stay under ignored `benchmark_reports/`; commit only a
-reviewed summary and digest inventory. Publish absolute call times and matched
+Raw JSON/logs/manifests stay in campaign-only `benchmark_reports/` outside every
+Git worktree (the enclosing home directory can itself be a worktree); commit only
+a reviewed summary and digest inventory. Publish absolute call times and matched
 ratios by shape, spread/order sensitivity, excluded cases and losses as well as
 wins. Keep host/shape/interval scope explicit. A valid negative result passes the
 evidence milestone and may motivate one separately scoped diagnosis.

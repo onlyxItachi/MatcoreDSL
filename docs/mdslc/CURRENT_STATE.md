@@ -1,8 +1,10 @@
 # MDSLC current state
 
-Canonical engineering checkpoint: `e8e8008cb61b61a585d8bc1584ca320c6326472d`, normal merge of
-[PR #93](https://github.com/onlyxItachi/MatcoreDSL/pull/93) from exact premerge
-`598ee6ae3611de7521526592f3b3a597c569b2b2`.
+Canonical maintenance checkpoint: `a90e82ae947efcae77d1b1c78c38d87ea4369884`, normal merge of
+[PR #97](https://github.com/onlyxItachi/MatcoreDSL/pull/97) from exact premerge
+`dd64a369d4a4c730d0db09aca1edf86a16cda149`.
+The last compiler-capability checkpoint remains [PR #93](https://github.com/onlyxItachi/MatcoreDSL/pull/93),
+`e8e8008cb61b61a585d8bc1584ca320c6326472d`.
 
 ## Architecture
 
@@ -31,14 +33,13 @@ Legacy mutating GEMM and separate platform/Python lanes remain intact.
 
 ## Material change
 
-PR93 makes PR91's reusable HOW pattern available during authenticated source
-compilation: `--candidate generated-strict --gemm-output-tiles 3,5` (or another
-checked pair). Source, entry, requested instance, installation/profile and produced
-LLVM remain bound through final no-clobber publication. Defaults, strict numerics,
-effects, runtime/provider policy and GPU recipes are unchanged; runtime guards
-remain mandatory. See the [bounded contract](SOURCE_TIME_GEMM_PATTERN_V1.md) and
-[qualification record](agent-reports/source-pattern-qualification-checkpoint-v1.md)
-for exact heads, execution evidence, independent review and hosted skips.
+PR97 makes synchronous/asynchronous Windows test diagnostics byte-preserving
+under Python's UTF-8 default; it changes no compiler/runtime semantics or target
+authority. Independent review and all 26 hosted checks passed; see the
+[qualification record](agent-reports/windows-diagnostic-capture-v1.md).
+The authenticated source-time HOW pattern remains governed by its
+[bounded contract](SOURCE_TIME_GEMM_PATTERN_V1.md) and
+[PR93 qualification](agent-reports/source-pattern-qualification-checkpoint-v1.md).
 
 ## Unsupported or unproven
 
