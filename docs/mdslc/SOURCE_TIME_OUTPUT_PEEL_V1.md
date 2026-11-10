@@ -69,6 +69,40 @@ unchanged. The new outer schema is refused by the old complete manifest gate.
 Identical unit-N graph bytes alone cannot distinguish provenance. P1 itself
 requested only 3x5/5x3; this is not a claim of an old unit-N campaign bypass.
 
+### Retained sanitizer integration counterexample
+
+At source head `281a346d3cbb1aef2cb5bb96fb29e01d7abf3a31`, normal focused
+qualification passed 4/4, but actual sanitized source issuance refused the new
+3x5 request before linking/publication: the compiler-emitted peeled object
+imports `__asan_report_store_n` for unaligned output-lane SLP, absent from the
+old source object's allowlist. The same sanitized installation executed the old
+3x5 request's 68 cases / 111292 checks successfully. No new executable or bundle
+survived refusal. Normal correctness and private-leaf ASan execution therefore
+did not establish sanitized source integration.
+
+The correction permits only that exact fatal reporter for the sanitized
+explicit peeled realization. The old common list, uninstrumented route, unknown
+selectors, fixed-width `store8` and `_noabort` remain unchanged/refused. A
+compile-time truth table defends this narrow gate; it does not create an object
+import API. See the pinned [compiler-rt implementation](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/compiler-rt/lib/asan/asan_rtl.cpp).
+
+The counterexample is retained at
+`/var/tmp/mdslc-source-peel-asan-refusal-VNisCYfH`; refusal stderr SHA-256
+`83389b9d52f867b8cabc1ccc69bffd6baaeaa209a2a58baa1f8eb15bc3e9203c`.
+The old source control stdout hashes to
+`2a6ac559616ca1006b86c6bf4ae055ca4df6621f3009055df7cb8759faf76ecb`.
+The initial normal full-build attempt was deliberately interrupted at 490/497
+steps, before CTest, and is not a full regression pass.
+
+After the independently reviewed correction, the local ASan+UBSan source scope
+passed 4/4 CTests, zero skips, 171.96 seconds; its 158 mutation checks also passed.
+The actual source-owned DSO full/tail-N input-capacity violations were detected.
+Retained `build-source-peel-asan/store-report-fix-focus.log` SHA-256
+`a33d938f92a71c5c82b43e7416b42bb464ead3bec9a8c59dcad2881aa2aa9106`;
+JUnit `dc5e45650dbe4d5082902423f9207a583e93c96bd84db4cd7f7da67d1b679d65`.
+This remains focused local evidence, not a hosted/native-ARM/full-regression or
+merge claim. Later qualification must bind the corrected committed checkpoint.
+
 Support remains single-TU native-baseline Linux x64/AArch64 complete executables
 with `none` or checked forwarding. No `-c`, program mode, per-operation selection,
 other ISA candidate, fused-pair composition, GPU schedule, cache/import authority,

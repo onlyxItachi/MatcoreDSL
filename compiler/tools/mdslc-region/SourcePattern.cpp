@@ -14,6 +14,7 @@
 #include <iostream>
 #include <map>
 #include <set>
+#include <string_view>
 #include <sys/stat.h>
 #include <tuple>
 
@@ -166,7 +167,30 @@ void verifyKit(const Artifact &kit) {
     reject("relink kit lacks its exact adapter owner and missing-leaf closure");
 }
 
-void verifyLeafObject(const Artifact &object, bool sanitized) {
+constexpr bool peeledSanitizerStoreReport(bool sanitized,
+    SourcePatternRealizationV1 realization, std::string_view symbol) {
+  // Pinned Clang's unaligned output-lane SLP uses the fatal sized reporter.
+  // This is not a wildcard sanitizer namespace or an old-recipe policy change.
+  return sanitized && realization == SourcePatternRealizationV1::OutputTiledPeelNMKN &&
+         symbol == "__asan_report_store_n";
+}
+static_assert(peeledSanitizerStoreReport(true,
+    SourcePatternRealizationV1::OutputTiledPeelNMKN, "__asan_report_store_n"));
+static_assert(!peeledSanitizerStoreReport(false,
+    SourcePatternRealizationV1::OutputTiledPeelNMKN, "__asan_report_store_n") &&
+    !peeledSanitizerStoreReport(true,
+        SourcePatternRealizationV1::OutputTiledMKN, "__asan_report_store_n") &&
+    !peeledSanitizerStoreReport(true,
+        static_cast<SourcePatternRealizationV1>(-1), "__asan_report_store_n") &&
+    !peeledSanitizerStoreReport(true,
+        SourcePatternRealizationV1::OutputTiledPeelNMKN, "__asan_report_store8") &&
+    !peeledSanitizerStoreReport(true,
+        SourcePatternRealizationV1::OutputTiledPeelNMKN, "__asan_report_store_n_noabort") &&
+    !peeledSanitizerStoreReport(true,
+        SourcePatternRealizationV1::OutputTiledPeelNMKN, "untrusted_external_effect"));
+
+void verifyLeafObject(const Artifact &object, bool sanitized,
+                      SourcePatternRealizationV1 realization) {
   auto parsed = nativeObject(object, llvm::ELF::ET_REL);
   const auto &elf = *llvm::cast<ElfObject>(parsed.get());
   std::set<std::string> required{candidate::kStrictGemmSymbolV1, candidate::kStrictGemmCInterfaceV1};
@@ -185,7 +209,8 @@ void verifyLeafObject(const Artifact &object, bool sanitized) {
     if (name->empty()) continue;
     if (*flags & llvm::object::SymbolRef::SF_Undefined) {
       if (*name != "memset" && *name != "_GLOBAL_OFFSET_TABLE_" &&
-          !(sanitized && sanitizer_imports.contains(name->str())))
+          !(sanitized && sanitizer_imports.contains(name->str())) &&
+          !peeledSanitizerStoreReport(sanitized, realization, name->str()))
         reject("source-pattern leaf has an unknown external effect/import: " + name->str());
       continue;
     }
@@ -405,7 +430,7 @@ SourcePatternInstance::SourcePatternInstance(const Installation &installation,
   if (REGION_SANITIZED) process.argv.push_back("-fsanitize=address");
   runCompiler(process, "leaf compilation");
   issued_.push_back(Artifact::capture(object_path));
-  verifyLeafObject(issued_.back(), bool(REGION_SANITIZED));
+  verifyLeafObject(issued_.back(), bool(REGION_SANITIZED), tiles.realization);
   if (hooks.after_object) hooks.after_object(bundle.path());
   unchanged();
 
