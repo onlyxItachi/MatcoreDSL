@@ -1,12 +1,70 @@
 # MDSLC roadmap
 
-Status date: 2026-09-05
+Status date: 2026-11-10. This roadmap is gate-driven and additive to the existing
+Python/JIT lineage. **Correctness is the gate; performance is the next objective
+inside the qualified envelope.** The owner's later direction explicitly enters
+the performance-evidence phase after the selected correctness boundary; it does
+not require every future mathematical operation to be implemented first.
+A plan, topology carrier, emitted artifact or passing finite-value example is
+not an executed correctness qualification or performance result.
 
-The roadmap is gate-driven and additive to the existing Python/JIT lineage.
-The primary direction is now a compositional semantic compiler and CPU-first
-beta, not native-BLAS parity followed immediately by an API freeze. A backend
-is supported only after it compiles, links, executes, validates correctness,
-and passes its declared platform gates.
+## Current navigation and priority
+
+- [CURRENT_STATE.md](CURRENT_STATE.md) is authoritative for the canonical
+  engineering checkpoint, supported envelope and exactly one immediate next
+  boundary. The current engineering merge is PR #103,
+  `1f7c491f230251d04d42b5d4a0af5eaf29bcb685`; this re-entry began at PR #94's
+  documentation checkpoint `b2597bed52de46604574f76eb33663788a5ab994`.
+- [Performance evidence roadmap v1](PERFORMANCE_EVIDENCE_ROADMAP_V1.md) defines
+  P1: an authenticated source-time comparison of at least two strict CPU output
+  tile requests on one exclusive host, without automatic dispatch thresholds.
+- [Mathematical correctness roadmap v1](MATHEMATICAL_CORRECTNESS_ROADMAP_V1.md)
+  records actual operation coverage and future broader-math gates. Those gates
+  remain useful proposals, not prerequisites for P1 or the current work queue.
+- [Region compiler guide](REGION_COMPILER_V1.md) describes the current
+  source/value/effect contract; [source-time GEMM
+  patterns](SOURCE_TIME_GEMM_PATTERN_V1.md) describes the bounded explicit CPU
+  M/N tile lifecycle. Neither adds a non-GEMM operation.
+- The [coverage audit](agent-reports/correctness-coverage-audit-v1.md) grounds the
+  proposed first broader-math boundary in the audited code. Its proposal was
+  subsequently filed as parked Issue #96; it is not the active performance queue.
+
+PR #99 completed Issue #89's closed, parameterized, bounded-static-shape strict
+SPIR-V issuer without source/runtime authority; research PR #84 remains draft and
+unchanged. That independent target-proof boundary does not substitute for broader
+mathematical coverage or CPU timing evidence. The selected follow-up direction is
+P1 performance evidence for the already qualified CPU source-time tile route,
+tracked by Issue #98 / merged PR #100. Its bounded negative/inconclusive campaign
+is not a performance win or a completed whole-matrix comparison. The completed
+upstream diagnosis (#101) motivated the private full-N/tail correctness gate
+(#102), now merged as PR #103 without switching source/default routes. Exactly
+one current gate follows: #104 / pending PR #105 qualifies its separately explicit
+authenticated source connection. The fixed P5 comparison harness in draft
+PR #107 does not authorize timing before that source qualification passes.
+Do not infer Vulkan source/runtime execution, GPU timing work or concurrent
+implementation of every roadmap proposal from either boundary.
+
+| Workstream | Required result | Not implied |
+| --- | --- | --- |
+| Target qualification | Exact admitted operation/profile on a pinned compiler, ABI, artifact and physical target, with checked completion/refusal | Every target, source integration from issuer-only evidence, or performance |
+| P1 performance evidence | Reproducible matched strict CPU source-time tile measurements on an exclusive host | A guaranteed win, numerical relaxation, automatic thresholds, BLAS parity or Issue #15 closure |
+| Future broader mathematics | A distinct operation's numerical, shape, value, effect and failure contracts, then independently qualified execution | A dependency that blocks performance of existing GEMM, or support from indexing maps/degeneracies |
+
+Keep strict numerics, all-MAY-alias source Storage, ordered failure/effect
+frontiers, checked completion, source/artifact ownership and fail-closed target
+legality through every gate. Existing bounded CPU/GPU results remain useful;
+they do not promise all operations, dtypes, layouts or targets. No public API,
+ABI or backend-contract freeze follows from this priority update.
+
+## Historical record begins here — 2026-09-05
+
+The sections below preserve the CPU-beta pivot and the then-current post-beta
+campaign, including their exact evidence and limitations. Their branch names,
+status dates and words such as "now", "next" and "deferred" are historical,
+not the current execution queue. In particular, the tiled/dynamic GEMM study
+below is a past frontier, not today's next boundary. Use the current links above
+for present scope; do not reinterpret old inspection-only evidence as authority
+for later source-connected implementations.
 
 ## Authenticated pivot baseline
 

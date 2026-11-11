@@ -4,7 +4,9 @@ Issue #98 harness, not a timing result. This path never changes the production
 compiler/runtime, source API, numerical permission, default candidate or policy.
 It requires an already qualified, relocated Linux x64 21.1.8 installation.
 Compiling the `.mdsl` host and collecting timings are separately coordinated
-steps; the initial implementation has only synthetic Python validation.
+steps. The initial implementation had only synthetic Python validation; the
+[subsequent frozen campaign](../../../docs/performance/cpu/source-pattern-p1-2026-11-10.md)
+records actual controls and negative/inconclusive timing, not a speedup.
 
 ## Frozen experiment
 
@@ -125,7 +127,7 @@ python3 -B compiler/benchmarks/source_pattern/run.py summarize \
   --collection /var/tmp/mdslc-p1-NEW-collected/collection.json
 ```
 
-CPU 2 above is an example of the owner's proposed host choice, never an automatic
+CPU 2 above is an example of an explicitly selected logical CPU, never an automatic
 selection. No persistent affinity, governor or boost setting is changed.
 `--linker` is required: pass the actual driver linker whose bytes match the issued
 manifest, not an assumed executable or the potentially different CMake cache value.
