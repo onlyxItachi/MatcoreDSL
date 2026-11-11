@@ -6,8 +6,8 @@ operation/realization; this does **not** mean implementing every future math
 operation before timing the existing qualified GEMM route. Broader-math coverage
 remains separately documented, not a dependency of this plan.
 
-This document scopes evidence work only. It reports no new timing, speedup,
-optimal tile, dispatch threshold, provider parity or target qualification.
+This document scopes evidence work and links its completed results. It reports
+no speedup, optimal tile, dispatch threshold, provider parity or new target qualification.
 [CURRENT_STATE.md](CURRENT_STATE.md) owns the current canonical engineering
 checkpoint; the existing SPIR-V issuer correctness boundary is independent of the
 CPU source-time route measured here and confers no Vulkan source/runtime authority.
@@ -16,9 +16,11 @@ PR #99 has since completed that issuer boundary; merged PR #100 records P1's
 not a speedup. The evidence milestone is complete, not a full-matrix performance
 qualification. The reviewed follow-up trace is complete (#101); its private
 full-N/tail correctness gate (#102, P4 below) is now merged as PR #103.
-The immediate engineering gate is its separately explicit source connection
-(#104 / pending PR #105, P4b). P5 remains a later performance comparison, with
-harness preparation only: no new measurement or source qualification is implied.
+Its separately explicit source connection (#104 / PR #105, P4b) has completed
+qualification. P5's fixed collection is complete and entirely timing-inconclusive.
+Exactly one follow-up is [P6 / #108](https://github.com/onlyxItachi/MatcoreDSL/issues/108):
+prospective source-call measurement-method qualification, not an optimization or
+permission to reinterpret either completed campaign.
 
 ## P1 — Authenticated source-time strict output-tile comparison
 
@@ -136,30 +138,45 @@ passed; clean Release was 352/352, zero skips, and all 26 hosted checks passed.
 See the [bounded qualification record](agent-reports/strict-output-peel-integration-qualification-v1.md).
 This private result does not select source/default routes or establish speed.
 
-## P4b — Authenticated source connection: current pending gate
+## P4b — Authenticated source connection: qualification complete
+
+Normally merged in PR #105 at `6d30a204aa6f7224b736c2035de15ce20b0e6b3d`.
 
 [Issue #104](https://github.com/onlyxItachi/MatcoreDSL/issues/104), implemented
-under qualification in [PR #105](https://github.com/onlyxItachi/MatcoreDSL/pull/105),
+in [PR #105](https://github.com/onlyxItachi/MatcoreDSL/pull/105),
 connects only a separately explicit source request. Retain old request/default
 behavior, original WHAT witnesses and strict numerical/effect/failure contracts.
 Require a distinct bound instance, exact actual full/tail consumption, typed
 source/compiler/artifact/publication ownership, conditional runtime-guard proof,
 source oracles, generated sanitizer checks and relocated producer-inaccessible
-installation. Focused local progress is not full/hosted/ARM/install qualification.
-This is exactly the immediate next engineering boundary, not a new benchmark.
+installation. These gates completed: local Release 356/356, focused source
+ASan 4/4, installed execution, native ARM and all 26 final source CI checks.
+Retained ISA skips and unsanitized ARM limits remain explicit in the
+[qualification record](agent-reports/source-output-peel-qualification-v1.md).
 
-## P5 — New source-call comparison: harness preparation only
+## P5 — New source-call comparison: completed, timing inconclusive
 
-A separate research branch and [draft PR #107](https://github.com/onlyxItachi/MatcoreDSL/pull/107)
-contain a fixed bounded comparison harness. Untimed preparation has passed its
-initial correctness/identity audit; there is no completed collection or new timing
-result. [Issue #106](https://github.com/onlyxItachi/MatcoreDSL/issues/106) retains
-the preregistration and preparation receipt, separate from PR105 qualification.
-The P5 name denotes the performance comparison, not the pending P4b source gate.
-Do not collect timings before that source correctness/ownership boundary passes.
-Predeclare the new old/peeled/stock comparison, exact source-to-artifact joins,
-strict numerical controls, call/allocation/retained-ownership interval, code-size/
-inlining observations, affinity/order/noise/resource limits and budgets before
-collection. Keep failure, loss and inconclusive outcomes; infer no speed from
-register promotion. P1 is not rerun, repaired or reinterpreted after its result,
-and no automatic threshold/default policy follows from harness preparation.
+[PR #107](https://github.com/onlyxItachi/MatcoreDSL/pull/107) retains the fixed
+old/peeled/stock harness and its one 27.28-second collection after source/harness
+qualification and the operator gate in [#106](https://github.com/onlyxItachi/MatcoreDSL/issues/106).
+At collection, qualified PR105/107 heads were unmerged; the result retains their
+actual producer/SDK identities rather than relabeling artifacts after integration.
+All correctness and identity checks passed. Of 270 measured aggregates, 78 failed
+the frozen involuntary-switch predicate. No role pair qualified; **all 18 ratios
+are null**, including the primary. See the [independently reviewed result](../performance/cpu/source-pattern-p5-2026-11-10.md).
+No retry, sample rescue, timing-rule change or speed inference from register
+promotion follows. P1 stays immutable and its different retention contract
+precludes a cross-campaign timing ratio.
+
+## Exactly one next boundary — P6 measurement-method qualification
+
+[Issue #108](https://github.com/onlyxItachi/MatcoreDSL/issues/108) requires one
+prospective observed-wall source-call method with same-binary null, verified
+CPU-work and order/interval controls. Freeze the finite contract, discrimination
+goal, estimator, inclusion rules and budgets before independent confirmation
+data. A sleep-only design was rejected: an observer reporting a fixed baseline
+plus that phase could pass while ignoring CPU work. Reuse existing infrastructure;
+do not build a general framework. Failed/inconclusive qualification is legitimate.
+This cannot recover P1/P5 ratios, establish peeling speedup, qualify unrelated
+allocator/cache paths or select an ISA/provider/default policy. No P6 execution
+or new performance claim is recorded here.

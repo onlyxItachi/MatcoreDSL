@@ -2,8 +2,11 @@
 
 Scope: [Issue #104](https://github.com/onlyxItachi/MatcoreDSL/issues/104), dependent
 on the [private realization](PRIVATE_STRICT_OUTPUT_PEEL_V1.md).
-Status: implementation and qualification in progress; no merge or performance
+Status: implementation and bounded qualification complete; no performance
 claim. This document defines the bounded acceptance contract.
+Normally merged in PR #105 at `6d30a204aa6f7224b736c2035de15ce20b0e6b3d`.
+The [final qualification record](agent-reports/source-output-peel-qualification-v1.md)
+separates actual local/hosted/installed execution from retained earlier attempts.
 
 ## Request and ownership
 
@@ -100,16 +103,20 @@ The actual source-owned DSO full/tail-N input-capacity violations were detected.
 Retained `build-source-peel-asan/store-report-fix-focus.log` SHA-256
 `a33d938f92a71c5c82b43e7416b42bb464ead3bec9a8c59dcad2881aa2aa9106`;
 JUnit `dc5e45650dbe4d5082902423f9207a583e93c96bd84db4cd7f7da67d1b679d65`.
-This remains focused local evidence, not a hosted/native-ARM/full-regression or
-merge claim. Later qualification must bind the corrected committed checkpoint.
+That receipt remains focused historical evidence, not a substitute for the later
+committed-head full/hosted/native-ARM/installed qualification linked above.
 
 Support remains single-TU native-baseline Linux x64/AArch64 complete executables
 with `none` or checked forwarding. No `-c`, program mode, per-operation selection,
 other ISA candidate, fused-pair composition, GPU schedule, cache/import authority,
 post-publication relocation, autotuning or performance claim.
+Source-owned sanitizer qualification is x64-only; AArch64 source qualification
+is normal execution, not inherited from private-leaf sanitizer results.
 
-After source correctness/ownership qualification, exactly one next boundary is
-a separately preregistered source-call comparison against old and stock routes.
-It must retain negative/inconclusive outcomes and account for compilation,
-code-size/inlining, call/allocation interval and strict numerical equivalence.
-It must not rewrite the frozen P1 plan or infer speed from register promotion.
+The separately preregistered [P5 source-call comparison](../performance/cpu/source-pattern-p5-2026-11-10.md)
+has completed after source qualification. Correctness/identity passed, but no
+comparison pair met the frozen timing rules: all ratios remain null. Exactly
+one next boundary is [P6 / #108](https://github.com/onlyxItachi/MatcoreDSL/issues/108),
+prospective measurement-method qualification, not a rerun or relaxation of P5.
+Keep compilation, code-size/inlining, call/allocation/retained-ownership interval
+and strict numerical equivalence explicit. No speed follows from register promotion.
