@@ -85,6 +85,19 @@ are preserved local evidence, not a published backup or a locally re-executed CI
 build. No GitHub mutation, package/toolchain change, local native/build/test or
 benchmark execution was performed for this report.
 
+A no-overwrite local preservation copy is retained under ignored
+`benchmark_reports/source-peel-final-ci-2026-11-11-v1/receipts.tar.gz` in the
+canonical checkout: 503,579 bytes, SHA256
+`ab844738225c3fa334a500a229296b37fa4a47013ec01d198a2e110b27d635c8`.
+Its 215 original payload files include both receipt roots and only the three
+normal-merge receipts plus focused synthetic CTest log/XML from the integration
+directory. All 216 regular archive members (including its manifest) and every
+original byte were independently verified without extraction. No SDK/build,
+referenced-path traversal or benchmark collection is included. The embedded and
+sidecar manifest SHA256 is
+`8cf8f3a8498527ce08ff1fcbfb25a55e3e50f727bc23ebb70f076613c15d6075`.
+This local archive is not a remote backup or an executable import authority.
+
 ## P5 remains unchanged
 
 The [P5 result](../../performance/cpu/source-pattern-p5-2026-11-10.md) remains
