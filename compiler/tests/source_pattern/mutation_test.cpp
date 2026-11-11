@@ -65,7 +65,14 @@ struct Fixture {
         {installation.public_header.path.string(), installation.storage_header.path.string()}, region);
   }
 };
-struct Donor { std::string llvm, object, dso, manifest; };
+struct Donor { std::string llvm, object, dso, manifest, issuer_manifest; };
+Donor captureDonor(const dr::SourcePatternBundle &bundle,
+                   const dr::SourcePatternInstance &issued) {
+  issued.unchanged();
+  return {read(bundle.path() / "gemm.ll"), read(bundle.path() / "gemm.o"),
+          read(issued.candidatePath()), read(bundle.path() / "source-pattern.manifest"),
+          read(bundle.path() / "gemm.ll.manifest")};
+}
 Donor donor(const dr::Installation &installation, dr::OutputTileRequest tiles) {
   Fixture fixture("donor");
   dr::SourcePatternBundle bundle(fixture.output);
@@ -73,9 +80,7 @@ Donor donor(const dr::Installation &installation, dr::OutputTileRequest tiles) {
   if (!admitted) throw std::runtime_error(admitted.error);
   auto issued = dr::SourcePatternInstance::issue(installation, bundle, *admitted.evidence,
       "pipeline", cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None, tiles);
-  issued.unchanged();
-  return {read(bundle.path() / "gemm.ll"), read(bundle.path() / "gemm.o"),
-          read(issued.candidatePath()), read(bundle.path() / "source-pattern.manifest")};
+  return captureDonor(bundle, issued);
 }
 struct MutationTrace {
   enum class Kind { CapturedInput, ChangedArtifact, PreexistingIssuedOutput };
@@ -93,7 +98,8 @@ struct MutationTrace {
   }
 };
 template<class MakeHook>
-void reject(const dr::Installation &installation, const char *label, MakeHook make_hook) {
+void reject(const dr::Installation &installation, dr::OutputTileRequest tiles,
+            const char *label, MakeHook make_hook) {
   Fixture fixture(label);
   fs::path bundle_path;
   MutationTrace trace;
@@ -110,7 +116,7 @@ void reject(const dr::Installation &installation, const char *label, MakeHook ma
     try {
       auto instance = dr::SourcePatternInstance::issueForTesting(installation, bundle,
           *admitted.evidence, "pipeline", cg::ClosedCpuPolicy::GeneratedStrict,
-          cg::ClosedHostOptimization::None, {3, 5}, hooks);
+          cg::ClosedHostOptimization::None, tiles, hooks);
       instance.unchanged();
     } catch (const std::exception &failure) { rejected = true; error = failure.what(); }
     check(rejected && trace.expectedRefusal(error),
@@ -119,9 +125,195 @@ void reject(const dr::Installation &installation, const char *label, MakeHook ma
   }
   check(!fs::exists(bundle_path), std::string(label) + " removed only its failed owned bundle");
 }
+std::string manifestField(const std::string &manifest, const std::string &key) {
+  const auto prefix = key + "=";
+  const auto position = manifest.find("\n" + prefix);
+  const auto begin = manifest.starts_with(prefix) ? prefix.size() :
+      position == std::string::npos ? std::string::npos : position + 1 + prefix.size();
+  if (begin == std::string::npos) throw std::runtime_error("missing issued manifest field: " + key);
+  const auto end = manifest.find('\n', begin);
+  if (end == std::string::npos || end == begin || manifest.find("\n" + prefix, begin) != std::string::npos)
+    throw std::runtime_error("ambiguous issued manifest field: " + key);
+  return manifest.substr(begin, end - begin);
 }
-int main() {
+void crossRealizationControls(const dr::Installation &installation, std::int64_t m,
+                              std::int64_t n) {
+  const auto parameters = std::to_string(m) + "x" + std::to_string(n);
+  Fixture fixture("same-source-realizations-" + parameters), other("different-source-" + parameters);
+  const auto peeled_output = fixture.outputs->path() / "peeled-executable";
+  dr::SourcePatternBundle old_bundle(fixture.output), peeled_bundle(peeled_output);
+  dr::Staging old_stage(fixture.outputs->path()), peeled_stage(fixture.outputs->path());
+  for (const auto *stage : {&old_stage, &peeled_stage}) {
+    dr::write(stage->path / "host.ll", "");
+    dr::write(stage->path / "result", "");
+  }
+  const auto control_stage = [&](const std::string &direction, const char *kind) {
+    return fixture.outputs->path() / (direction + "-" + kind);
+  };
+  // Admission freezes the actual source context. Do not let directory creation
+  // impersonate a typed source/request/compilation rejection later in this test.
+  for (const auto *direction : {"old", "peeled"})
+    for (const auto *kind : {"bytes", "binding", "source", "factory"})
+      fs::create_directory(control_stage(direction, kind));
+  auto admitted = fixture.admit(installation), stale = other.admit(installation);
+  if (!admitted || !stale) throw std::runtime_error(admitted.error + stale.error);
+  const dr::OutputTileRequest old_request{m, n, dr::SourcePatternRealizationV1::OutputTiledMKN};
+  const dr::OutputTileRequest peeled_request{m, n, dr::SourcePatternRealizationV1::OutputTiledPeelNMKN};
+  auto old_instance = dr::SourcePatternInstance::issue(installation, old_bundle, *admitted.evidence,
+      "pipeline", cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None, old_request);
+  auto peeled_instance = dr::SourcePatternInstance::issue(installation, peeled_bundle, *admitted.evidence,
+      "pipeline", cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None, peeled_request);
+  const auto old = captureDonor(old_bundle, old_instance), peeled = captureDonor(peeled_bundle, peeled_instance);
+  check(manifestField(old.manifest, "source_context_sha256") ==
+            manifestField(peeled.manifest, "source_context_sha256") &&
+            manifestField(old.manifest, "pattern_parameters") == manifestField(peeled.manifest, "pattern_parameters") &&
+            manifestField(old.manifest, "region_name_hex") == manifestField(peeled.manifest, "region_name_hex"),
+        parameters + " opposite realizations share the exact source, entry and tile request");
+  check(manifestField(old.manifest, "schema") == "matcore-source-output-pattern-v1" &&
+            manifestField(peeled.manifest, "schema") == "matcore-source-output-peel-n-v1" &&
+            manifestField(peeled.manifest, "realization") == "output-tiled-peel-n-mkn" &&
+            old.issuer_manifest != peeled.issuer_manifest &&
+            manifestField(old.manifest, "binding_sha256") != manifestField(peeled.manifest, "binding_sha256") &&
+            manifestField(old.manifest, "candidate_soname") != manifestField(peeled.manifest, "candidate_soname") &&
+            old.dso != peeled.dso,
+        parameters + " source/issuer manifests and request-bound SONAME/DSO distinguish realizations");
+  if (n == 1)
+    check(old.llvm == peeled.llvm && old.object == peeled.object &&
+              manifestField(old.manifest, "llvm_sha256") == manifestField(peeled.manifest, "llvm_sha256") &&
+              manifestField(old.manifest, "object_sha256") == manifestField(peeled.manifest, "object_sha256"),
+          parameters + " no-tail identity has equal LLVM/object bytes without equal execution authority");
+  else
+    check(old.llvm != peeled.llvm && old.object != peeled.object,
+          parameters + " both valid same-tile donors actually differ in scheduled code");
+  auto old_inputs = old_instance.compilerInputs(old_stage.path / "helper", *admitted.evidence);
+  auto peeled_inputs = peeled_instance.compilerInputs(peeled_stage.path / "helper", *admitted.evidence);
+  auto old_compiled = cg::compileExperimentalRegionToLLVM(*admitted.evidence, old_inputs,
+      cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None);
+  auto peeled_compiled = cg::compileExperimentalRegionToLLVM(*admitted.evidence, peeled_inputs,
+      cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None);
+  if (!old_compiled || !peeled_compiled) throw std::runtime_error(old_compiled.error + peeled_compiled.error);
+  old_instance.verifyCompilation(*old_compiled.compilation);
+  peeled_instance.verifyCompilation(*peeled_compiled.compilation);
+  check(true, parameters + " both source/instance/compilation pairs pass independent positive controls");
+  const std::string bytes_error = "source-pattern artifact bytes differ from the immutable issued candidate binding";
+  const std::string source_error = "source-pattern artifact differs from the authenticated source/entry/policy binding";
+  const std::string pairing_error = "source-pattern publication differs from its compiler-produced source/instance/LLVM pairing";
+  const auto typed = [&](const char *direction, const dr::SourcePatternInstance &instance,
+      const cg::ExperimentalCompilerInputs &inputs, const cg::ExperimentalCompilerInputs &opposite_inputs,
+      const Donor &opposite, const cg::ExperimentalLLVMCompilation &compiled,
+      const cg::ExperimentalLLVMCompilation &opposite_compiled, const dr::Staging &stage,
+      const fs::path &output) {
+    const auto refuse_input = [&](cg::ExperimentalCompilerInputs changed,
+        const fe::AuthenticatedClosedRegionEvidence &evidence, const char *kind,
+        const std::string &expected) {
+      changed.staging_directory = control_stage(direction, kind);
+      const auto result = cg::compileExperimentalRegionToLLVM(evidence, changed,
+          cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None);
+      check(!result && result.error == expected &&
+                !fs::exists(changed.staging_directory / "region-helper.cpp"),
+            parameters + " " + direction + " typed " + kind + " swap reaches its exact pre-helper refusal: " + result.error);
+    };
+    auto foreign_bytes = inputs;
+    for (auto &artifact : foreign_bytes.symbol_artifacts)
+      if (artifact.owner == cg::SymbolArtifactOwner::PrivateCandidates)
+        artifact.bytes = llvm::MemoryBufferRef(opposite.dso, "valid same-tile opposite realization");
+    refuse_input(foreign_bytes, *admitted.evidence, "bytes", bytes_error);
+    auto foreign_binding = inputs;
+    foreign_binding.source_pattern_binding = opposite_inputs.source_pattern_binding;
+    refuse_input(foreign_binding, *admitted.evidence, "binding", bytes_error);
+    refuse_input(inputs, *stale.evidence, "source", source_error);
+    bool factory_refused = false;
+    std::string factory_error;
+    try { (void)instance.compilerInputs(control_stage(direction, "factory"), *stale.evidence); }
+    catch (const std::exception &failure) { factory_refused = true; factory_error = failure.what(); }
+    check(factory_refused && factory_error == source_error,
+          parameters + " " + direction + " input factory refuses another authenticated source at the typed seal");
+    const auto refuse_compilation = [&](const cg::ExperimentalLLVMCompilation &changed, const char *kind) {
+      bool refused = false;
+      std::string error;
+      try { dr::compileSourcePatternAndPublish(installation, stage, output, changed, instance); }
+      catch (const std::exception &failure) { refused = true; error = failure.what(); }
+      check(refused && error == pairing_error && !fs::exists(output) &&
+                read(stage.path / "host.ll").empty() && read(stage.path / "result").empty(),
+            parameters + " " + direction + " " + kind + " swap reaches exact pre-link pairing refusal: " + error);
+    };
+    refuse_compilation(opposite_compiled, "complete compiled-result");
+    auto transferred_seal = compiled;
+    transferred_seal.source_pattern_compilation = opposite_compiled.source_pattern_compilation;
+    refuse_compilation(transferred_seal, "compiled-result seal only");
+    instance.verifyCompilation(compiled);
+    check(true, parameters + " " + direction + " original typed compilation remains valid after refusals");
+  };
+  typed("old", old_instance, old_inputs, peeled_inputs, peeled, *old_compiled.compilation,
+        *peeled_compiled.compilation, old_stage, fixture.output);
+  typed("peeled", peeled_instance, peeled_inputs, old_inputs, old, *peeled_compiled.compilation,
+        *old_compiled.compilation, peeled_stage, peeled_output);
+  // Foreign code is always produced by the closed issuer, not caller IR. For
+  // unit N, equal LLVM/object bytes are not mutations; DSO and manifest seals
+  // are still different and must fail in both directions.
+  const auto phases = [&](dr::OutputTileRequest request, const Donor &replacement,
+                          const std::string &direction) {
+    const auto label = "same-tiles-" + parameters + "-" + direction;
+    if (n != 1) {
+      reject(installation, request, (label + "-llvm").c_str(), [&](auto &hooks, auto &, MutationTrace &trace) {
+        hooks.after_issue = [&](const fs::path &path) {
+          dr::write(path / "gemm.ll", replacement.llvm);
+          trace.changed_path = path / "gemm.ll"; trace.completed = true;
+        };
+      });
+      reject(installation, request, (label + "-object").c_str(), [&](auto &hooks, auto &, MutationTrace &trace) {
+        hooks.after_object = [&](const fs::path &path) {
+          dr::write(path / "gemm.o", replacement.object);
+          trace.changed_path = path / "gemm.o"; trace.completed = true;
+        };
+      });
+    }
+    reject(installation, request, (label + "-dso").c_str(), [&](auto &hooks, auto &, MutationTrace &trace) {
+      hooks.after_dso = [&](const fs::path &path) {
+        for (const auto &entry : fs::directory_iterator(path))
+          if (entry.path().extension() == ".so") {
+            if (trace.completed) throw std::runtime_error("ambiguous issued candidate DSO");
+            dr::write(entry.path(), replacement.dso);
+            trace.changed_path = entry.path(); trace.completed = true;
+          }
+      };
+    });
+    reject(installation, request, (label + "-manifest").c_str(), [&](auto &hooks, auto &, MutationTrace &trace) {
+      trace.kind = MutationTrace::Kind::PreexistingIssuedOutput;
+      hooks.after_dso = [&](const fs::path &path) {
+        dr::write(path / "source-pattern.manifest", replacement.manifest);
+        trace.changed_path = path / "source-pattern.manifest"; trace.completed = true;
+      };
+    });
+  };
+  phases(old_request, peeled, "old-replaced-by-peeled");
+  phases(peeled_request, old, "peeled-replaced-by-old");
+}
+}
+int main(int argc, char **argv) {
   try {
+    const bool peel_n = argc == 2 && std::string(argv[1]) == "--peel-n";
+    if (argc != 1 && !peel_n)
+      throw std::runtime_error("usage: source-pattern-mutations [--peel-n]");
+    const auto realization = peel_n ? dr::SourcePatternRealizationV1::OutputTiledPeelNMKN :
+                                     dr::SourcePatternRealizationV1::OutputTiledMKN;
+    const auto tiles = [realization](std::int64_t m, std::int64_t n) {
+      return dr::OutputTileRequest{m, n, realization};
+    };
+    const auto unknown = static_cast<dr::SourcePatternRealizationV1>(-1);
+    bool unknown_parse_refused = false, unknown_invocation_refused = false;
+    try { (void)dr::parseOutputTileRequest("3,5", unknown); }
+    catch (const std::exception &failure) {
+      unknown_parse_refused = std::string(failure.what()) == "unknown source-pattern realization";
+    }
+    try {
+      dr::validateSourcePatternInvocation(cg::ClosedCpuPolicy::GeneratedStrict,
+          cg::ClosedHostOptimization::None, false, unknown);
+    } catch (const std::exception &failure) {
+      unknown_invocation_refused = std::string(failure.what()) == "unknown source-pattern realization";
+    }
+    check(unknown_parse_refused, "tile parser refuses an unknown typed realization instead of selecting the old route");
+    check(unknown_invocation_refused, "source invocation refuses an unknown typed realization before issuance");
     // Synthetic refusal-classifier controls are separate from the real issue
     // mutations below. A partial hook or path-prefix coincidence cannot pass.
     MutationTrace classifier;
@@ -134,22 +326,22 @@ int main() {
               !classifier.expectedRefusal("unrelated exception: " + classifier.changed_path.string()),
           "path prefix or unrelated exception cannot satisfy a changed-artifact control");
     const auto installation = dr::Installation::pinnedBuildTreeForTesting();
-    const auto foreign = donor(installation, {5, 3});
-    const auto stale = donor(installation, {3, 5});
+    const auto foreign = donor(installation, tiles(5, 3));
+    const auto stale = donor(installation, tiles(3, 5));
     check(foreign.llvm != stale.llvm && foreign.object != stale.object && foreign.dso != stale.dso,
           "independent valid source donors differ in tile realization");
     {
       Fixture bound("consumer-binding"), other("other-source-binding");
       dr::SourcePatternBundle bundle(bound.output);
+      const auto stage = [&](const char *name) { return bound.outputs->path() / name; };
+      for (const auto *name : {"positive", "wrong-source-factory", "other-source-direct-consumer",
+                              "candidate-policy-change", "optimization-change", "sanitizer-profile-change",
+                              "valid-candidate-bytes-change", "worker-contract-change"})
+        fs::create_directory(stage(name));
       auto a = bound.admit(installation), b = other.admit(installation);
       if (!a || !b) throw std::runtime_error(a.error + b.error);
       auto instance = dr::SourcePatternInstance::issue(installation, bundle, *a.evidence,
-          "pipeline", cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None, {3, 5});
-      const auto stage = [&](const char *name) {
-        auto path = bound.outputs->path() / name;
-        fs::create_directory(path);
-        return path;
-      };
+          "pipeline", cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None, tiles(3, 5));
       auto inputs = instance.compilerInputs(stage("positive"), *a.evidence);
       const auto positive = cg::compileExperimentalRegionToLLVM(*a.evidence, inputs,
           cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None);
@@ -208,12 +400,12 @@ int main() {
 )cpp");
       dr::write(fixture.main, two_entries);
       dr::SourcePatternBundle bundle(fixture.output);
+      const auto staging = fixture.outputs->path() / "entry-consumer";
+      fs::create_directory(staging);
       auto a = fixture.admit(installation), b = fixture.admit(installation, "alternate");
       if (!a || !b) throw std::runtime_error(a.error + b.error);
       auto instance = dr::SourcePatternInstance::issue(installation, bundle, *a.evidence,
-          "pipeline", cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None, {3, 5});
-      const auto staging = fixture.outputs->path() / "entry-consumer";
-      fs::create_directory(staging);
+          "pipeline", cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None, tiles(3, 5));
       auto inputs = instance.compilerInputs(staging, *a.evidence);
       const auto changed = cg::compileExperimentalRegionToLLVM(*b.evidence, inputs,
           cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None);
@@ -243,11 +435,11 @@ int main() {
       auto a = a_fixture.admit(installation), b = b_fixture.admit(installation);
       if (!a || !b) throw std::runtime_error(a.error + b.error);
       auto a_instance = dr::SourcePatternInstance::issue(installation, a_bundle, *a.evidence,
-          "pipeline", cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None, {3, 5});
+          "pipeline", cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None, tiles(3, 5));
       auto b_instance = dr::SourcePatternInstance::issue(installation, b_bundle, *b.evidence,
-          "pipeline", cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None, {3, 5});
+          "pipeline", cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None, tiles(3, 5));
       auto tiles_instance = dr::SourcePatternInstance::issue(installation, tiles_bundle, *a.evidence,
-          "pipeline", cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None, {5, 3});
+          "pipeline", cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None, tiles(5, 3));
       auto inputs = a_instance.compilerInputs(a_stage.path / "helper", *a.evidence);
       auto compiled = cg::compileExperimentalRegionToLLVM(*a.evidence, inputs,
           cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None);
@@ -313,9 +505,13 @@ int main() {
       check(executed.launched && executed.exit_code == 0 && executed.stderr_text.empty(),
             "exact typed publication executes the original source's independent 1x1 expectation");
     }
+    if (peel_n) {
+      crossRealizationControls(installation, 3, 5);
+      crossRealizationControls(installation, 5, 1);
+    }
     for (const auto phase : {0, 1, 2}) {
       const auto source_label = "main-after-phase-" + std::to_string(phase);
-      reject(installation, source_label.c_str(), [&](auto &hooks, auto &fixture, MutationTrace &trace) {
+      reject(installation, tiles(3, 5), source_label.c_str(), [&](auto &hooks, auto &fixture, MutationTrace &trace) {
         trace.kind = MutationTrace::Kind::CapturedInput;
         auto change = [&](const fs::path &) {
           dr::write(fixture.main, std::string(source) + "\n// stale closure\n");
@@ -326,7 +522,7 @@ int main() {
         else hooks.after_dso = change;
       });
       const auto header_label = "header-after-phase-" + std::to_string(phase);
-      reject(installation, header_label.c_str(), [&](auto &hooks, auto &fixture, MutationTrace &trace) {
+      reject(installation, tiles(3, 5), header_label.c_str(), [&](auto &hooks, auto &fixture, MutationTrace &trace) {
         trace.kind = MutationTrace::Kind::CapturedInput;
         auto change = [&](const fs::path &) {
           dr::write(fixture.header, std::string(helper) + "\n// stale physical inclusion\n");
@@ -337,20 +533,20 @@ int main() {
         else hooks.after_dso = change;
       });
     }
-    reject(installation, "valid-other-tiles-llvm", [&](auto &hooks, auto &, MutationTrace &trace) {
+    reject(installation, tiles(3, 5), "valid-other-tiles-llvm", [&](auto &hooks, auto &, MutationTrace &trace) {
       hooks.after_issue = [&](const fs::path &path) {
         dr::write(path / "gemm.ll", foreign.llvm);
         trace.changed_path = path / "gemm.ll"; trace.completed = true;
       };
     });
-    reject(installation, "valid-other-tiles-object", [&](auto &hooks, auto &, MutationTrace &trace) {
+    reject(installation, tiles(3, 5), "valid-other-tiles-object", [&](auto &hooks, auto &, MutationTrace &trace) {
       hooks.after_object = [&](const fs::path &path) {
         dr::write(path / "gemm.o", foreign.object);
         trace.changed_path = path / "gemm.o"; trace.completed = true;
       };
     });
     const auto replace_dso = [&](const Donor &replacement, const char *label) {
-      reject(installation, label, [&](auto &hooks, auto &, MutationTrace &trace) {
+      reject(installation, tiles(3, 5), label, [&](auto &hooks, auto &, MutationTrace &trace) {
         hooks.after_dso = [&](const fs::path &path) {
           bool found = false;
           for (const auto &entry : fs::directory_iterator(path))
@@ -365,13 +561,13 @@ int main() {
     };
     replace_dso(foreign, "valid-other-tiles-dso");
     replace_dso(stale, "valid-stale-source-dso");
-    reject(installation, "forged-issued-MLIR", [&](auto &hooks, auto &, MutationTrace &trace) {
+    reject(installation, tiles(3, 5), "forged-issued-MLIR", [&](auto &hooks, auto &, MutationTrace &trace) {
       hooks.after_issue = [&](const fs::path &path) {
         dr::write(path / "gemm.ll.semantic.mlir", read(path / "gemm.ll.semantic.mlir") + "\n// submitted authority\n");
         trace.changed_path = path / "gemm.ll.semantic.mlir"; trace.completed = true;
       };
     });
-    reject(installation, "stale-manifest-prepopulation", [&](auto &hooks, auto &, MutationTrace &trace) {
+    reject(installation, tiles(3, 5), "stale-manifest-prepopulation", [&](auto &hooks, auto &, MutationTrace &trace) {
       trace.kind = MutationTrace::Kind::PreexistingIssuedOutput;
       hooks.after_dso = [&](const fs::path &path) {
         dr::write(path / "source-pattern.manifest", stale.manifest);
@@ -400,7 +596,7 @@ int main() {
       };
       try {
         auto instance = dr::SourcePatternInstance::issueForTesting(installation, bundle, *admitted.evidence,
-            "pipeline", cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None, {3, 5}, hooks);
+            "pipeline", cg::ClosedCpuPolicy::GeneratedStrict, cg::ClosedHostOptimization::None, tiles(3, 5), hooks);
         instance.unchanged();
       } catch (const std::exception &failure) { race_rejected = true; race_error = failure.what(); }
     }
@@ -411,7 +607,8 @@ int main() {
     check(read(foreign_directory / "sentinel") == "caller bytes must survive\n" &&
               fs::exists(original_bundle.string() + ".moved"),
           "path substitution did not delete foreign or moved owned bytes");
-    std::cout << "Source pattern phase controls: " << checks << " checks; " << failures << " failures\n";
+    std::cout << (peel_n ? "Source pattern peel-N phase controls: " : "Source pattern phase controls: ")
+              << checks << " checks; " << failures << " failures\n";
     return failures ? 1 : 0;
   } catch (const std::exception &failure) {
     std::cerr << "independent source-pattern setup failed: " << failure.what() << '\n';

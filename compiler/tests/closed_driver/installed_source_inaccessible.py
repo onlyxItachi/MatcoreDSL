@@ -60,18 +60,27 @@ def main():
             return result
 
         clone_clean_commit(args.git, repository, source, commit)
-        pattern_inputs = root / "source-pattern-inputs"
+        pattern_inputs = root / "source_pattern"
         pattern_inputs.mkdir()
         for name in ("connected.mdsl", "same_value.mdsl", "rhs.mdsl", "math_helper.h"):
             shutil.copyfile(source / "compiler/tests/source_pattern" / name, pattern_inputs / name)
         # Keep the independent artifact classifier beside the surviving
         # consumer, not in either disposable producer directory.
-        pattern_inspector = root / "source-pattern-inspector.py"
+        pattern_inspector = pattern_inputs / "run.py"
         shutil.copyfile(source / "compiler/tests/source_pattern/run.py", pattern_inspector)
         sys.dont_write_bytecode = True
         spec = importlib.util.spec_from_file_location("installed_pattern_inspector", pattern_inspector)
         inspector = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(inspector)
+        peel_inputs = root / "source_pattern_peel"
+        peel_inputs.mkdir()
+        for name in ("run.py", "end_k.mdsl"):
+            shutil.copyfile(source / "compiler/tests/source_pattern_peel" / name,
+                            peel_inputs / name)
+        peel_spec = importlib.util.spec_from_file_location(
+            "installed_peel_inspector", peel_inputs / "run.py")
+        peel_inspector = importlib.util.module_from_spec(peel_spec)
+        peel_spec.loader.exec_module(peel_inspector)
         consumer = root / "consumer.mdsl"
         shutil.copyfile(source / "compiler/examples/experimental/two_gemm.mdsl", consumer)
         forwarding_consumer = root / "forwarding-consumer.mdsl"
@@ -154,6 +163,67 @@ def main():
                     "dso_sha256", "candidate_soname", "binding_sha256"):
             if requested_patterns[0][key] == requested_patterns[1][key]:
                 raise RuntimeError("installed requests did not own distinct realized source instances")
+        peeled_patterns = []
+        for tiles in ((3, 5), (5, 3)):
+            executable = root / f"installed-source-peel-{tiles[0]}-{tiles[1]}"
+            run([driver, pattern_inputs / "connected.mdsl", "--region", "source_pattern_pipeline",
+                 "--candidate", "generated-strict", "--gemm-output-tiles-peel-n",
+                 f"{tiles[0]},{tiles[1]}", "-o", executable])
+            info, hashes = peel_inspector.validate_bundle(
+                executable, tiles, "source_pattern_pipeline", "none", False, run)
+            result = run([executable])
+            inspector.semantic_summary(result.stdout, False)
+            if result.stderr:
+                raise RuntimeError("relocated peeled source emitted positive execution diagnostics")
+            bundle = Path(str(executable) + ".mdslc-private")
+            issued_hashes[str(executable)] = hashlib.sha256(executable.read_bytes()).hexdigest()
+            issued_hashes.update({str(bundle / name): sha for name, sha in hashes.items()})
+            peeled_patterns.append(info)
+            sensitive = root / f"installed-source-peel-end-k-{tiles[0]}-{tiles[1]}"
+            run([driver, peel_inputs / "end_k.mdsl", "--region", "source_peel_end_k",
+                 "--candidate", "generated-strict", "--gemm-output-tiles-peel-n",
+                 f"{tiles[0]},{tiles[1]}", "-o", sensitive])
+            _, sensitive_hashes = peel_inspector.validate_bundle(
+                sensitive, tiles, "source_peel_end_k", "none", False, run)
+            sensitive_result = run([sensitive, tiles[0], tiles[1]])
+            peel_inspector.end_k_summary(sensitive_result.stdout)
+            if sensitive_result.stderr:
+                raise RuntimeError("relocated source full/tail numerical oracle emitted diagnostics")
+            sensitive_bundle = Path(str(sensitive) + ".mdslc-private")
+            issued_hashes[str(sensitive)] = hashlib.sha256(sensitive.read_bytes()).hexdigest()
+            issued_hashes.update({str(sensitive_bundle / name): sha for name, sha in sensitive_hashes.items()})
+        for key in ("semantic_sha256", "structured_sha256", "bufferized_sha256"):
+            if any(info[key] != requested_patterns[0][key] for info in peeled_patterns):
+                raise RuntimeError("installed peeled realization changed original WHAT witnesses")
+        for key in ("transform_sha256", "scheduled_sha256", "llvm_sha256", "object_sha256",
+                    "dso_sha256", "candidate_soname", "binding_sha256"):
+            if peeled_patterns[0][key] == peeled_patterns[1][key]:
+                raise RuntimeError("installed peeled requests lack distinct consumed instances")
+        # For unit N the computation is deliberately identical. Request identity
+        # must still differ, and the old inspection schema must not relabel it.
+        unit_patterns = []
+        for label, flag, inspect in (
+                ("old", "--gemm-output-tiles", inspector),
+                ("peel", "--gemm-output-tiles-peel-n", peel_inspector)):
+            executable = root / ("installed-unit-" + label)
+            run([driver, pattern_inputs / "connected.mdsl", "--region", "source_pattern_pipeline",
+                 "--candidate", "generated-strict", flag, "5,1", "-o", executable])
+            info, hashes = inspect.validate_bundle(
+                executable, (5, 1), "source_pattern_pipeline", "none", False, run)
+            result = run([executable])
+            inspector.semantic_summary(result.stdout, False)
+            if result.stderr:
+                raise RuntimeError("relocated unit-N positive emitted diagnostics")
+            bundle = Path(str(executable) + ".mdslc-private")
+            issued_hashes[str(executable)] = hashlib.sha256(executable.read_bytes()).hexdigest()
+            issued_hashes.update({str(bundle / name): sha for name, sha in hashes.items()})
+            unit_patterns.append(info)
+        for key in ("transform_sha256", "scheduled_sha256", "llvm_sha256", "object_sha256"):
+            if unit_patterns[0][key] != unit_patterns[1][key]:
+                raise RuntimeError("installed unit-N identity unexpectedly changed computation")
+        for key in ("schema", "issuer_manifest_sha256", "binding_sha256", "candidate_soname", "dso_sha256"):
+            if unit_patterns[0][key] == unit_patterns[1][key]:
+                raise RuntimeError("installed unit-N requests lost distinct realization identity")
         forged_headers = root / "forged-source-headers" / "matcore"
         forged_headers.mkdir(parents=True)
         shutil.copyfile(installed / "include/matcore/region.h", forged_headers / "region.h")
@@ -164,6 +234,13 @@ def main():
         if (forged_executable.exists() or Path(str(forged_executable) + ".mdslc-private").exists() or
                 not refused.stderr.startswith("mdslc-region:")):
             raise RuntimeError("installed source forgery obtained or leaked a private source instance")
+        forged_peel = root / "forged-source-peel"
+        refused = run([driver, pattern_inputs / "connected.mdsl", "--region", "source_pattern_pipeline",
+                       "--candidate", "generated-strict", "--gemm-output-tiles-peel-n", "3,5",
+                       "-o", forged_peel, "--", "-I" + str(forged_headers.parent)], expected=1)
+        if (forged_peel.exists() or Path(str(forged_peel) + ".mdslc-private").exists() or
+                not refused.stderr.startswith("mdslc-region:")):
+            raise RuntimeError("installed peeled source forgery obtained or leaked a private instance")
         for filename in ("libmatcore_closed_candidates_source_pattern_v1.a", "private_runtime_v2.exports"):
             material = list(installed.rglob(filename))
             if len(material) != 1:
@@ -182,6 +259,12 @@ def main():
                      "-o", missing_executable], expected=1)
                 if missing_executable.exists() or Path(str(missing_executable) + ".mdslc-private").exists():
                     raise RuntimeError("missing relink material silently fell back or leaked source output")
+                missing_peel = root / ("peeled-without-" + filename)
+                run([driver, pattern_inputs / "connected.mdsl", "--region", "source_pattern_pipeline",
+                     "--candidate", "generated-strict", "--gemm-output-tiles-peel-n", "3,5",
+                     "-o", missing_peel], expected=1)
+                if missing_peel.exists() or Path(str(missing_peel) + ".mdslc-private").exists():
+                    raise RuntimeError("missing relink material silently fell back for peeled source")
             finally:
                 hidden.rename(live)
         for candidate in ("native-strict", "generated-strict", "automatic"):
@@ -302,6 +385,7 @@ def main():
             raise RuntimeError("installed driver recreated producer trees")
         print(f"PASS closed source/build-inaccessible package at {commit}: "
               "two explicit 3x5/5x3 source-time requests; actual distinct bound DSO/leaf linkage; "
+              "two separate peeled requests, end-K/full/tail source oracles and old/new unit-N identity controls; "
               "68-case strict/source-effect oracle each; all bundle/SDK hashes retained; copied-header forgery refused; "
               "3 policies, exact math, retained observations and ordered late failure; "
               "same-source none/forwarding executed after producer removal with checked call reference; "

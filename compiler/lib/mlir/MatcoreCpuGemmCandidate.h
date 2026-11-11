@@ -66,13 +66,14 @@ bool verifyStrictGemmBufferizedV1(mlir::ModuleOp module,
 // The unchanged source adapter skips empty output/zero K and only enters a leaf
 // after nonempty f32 output byte bounds, which are strictly stronger. This is
 // not a new semantic dimension limit, source check, or failure frontier.
-// OutputTiledPeelNMKN is private-issuer-only and does not connect to that source
-// adapter. Its raw callers retain the same preconditions explicitly.
+// OutputTiledPeelNMKN retains the same raw caller preconditions. Only a separate
+// authenticated source-driver request may connect it to the checked adapter;
+// neither this primitive API nor its inspection manifest grants source authority.
 enum class StrictGemmScheduleV1 {
   ScalarMNK,
   RowContiguousMKN,
   OutputTiledMKN,
-  // Separately requested private realization; not a source-driver selection.
+  // Separately requested realization; never an automatic/default selection.
   // Existing output-tiled artifacts and default routes retain their v1 graph.
   OutputTiledPeelNMKN,
 };

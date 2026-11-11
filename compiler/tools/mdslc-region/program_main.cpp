@@ -32,8 +32,8 @@ ProgramInvocation parseProgram(int argc, char **argv) {
       result.output = fs::absolute(next());
     } else if (argument == "-c") result.compile_only = true;
     else if (argument == "--candidate") result.policy = parseCandidatePolicy(next());
-    else if (argument == "--gemm-output-tiles")
-      reject("--gemm-output-tiles is unavailable for --program; use a single-source executable invocation");
+    else if (argument == "--gemm-output-tiles" || argument == "--gemm-output-tiles-peel-n")
+      reject(argument + " is unavailable for --program; use a single-source executable invocation");
     else if (argument == "--optimization") {
       if (result.optimization_seen) reject("duplicate --optimization");
       result.optimization_seen = true;

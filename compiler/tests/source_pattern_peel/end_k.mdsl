@@ -1,0 +1,113 @@
+// Narrow source-observable full/tail corpus. The unchanged connected.mdsl suite
+// separately supplies broad scalar/effect/FP/empty/alias/failure-order controls.
+#include "../source_pattern/math_helper.h"
+#include <array>
+#include <bit>
+#include <cfenv>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <string_view>
+#include <vector>
+
+namespace md = matcore::mdsl;
+MATCORE_REGION
+md::Result source_peel_end_k(md::Storage A, md::Storage B, md::Storage C,
+                            md::Shape M, md::Shape K, md::Shape N) noexcept {
+  auto a = md::read(A, M, K);
+  auto b = md::read(B, K, N);
+  auto c = source_pattern_math::product(a, b);
+  md::publish(c, C);
+  md::observe(C);
+  return md::complete();
+}
+
+namespace {
+struct Witness {
+  std::array<std::uint32_t, 3> a, b;
+  unsigned terms;
+  std::uint32_t expected;
+  bool negative_zero = false;
+};
+// Same independently frozen analytic constants as the private peeled-leaf
+// fixture, not values calculated by the generated implementation or its LLVM.
+constexpr Witness witnesses[]{
+  {{0xbf800000,0x3f800001,0},{0x3f800000,0x3f7ffffe,0},2,0},
+  {{0x4b800000,0x3f800000,0xcb800000},{0x3f800000,0x3f800000,0x3f800000},3,0},
+  {{0x3f800000,0x33c00000,0},{0x3f800000,0x3f800000,0},2,0x3f800001},
+  {{1,0,0},{0x3f800000,0,0},1,1},
+  {{0x80000001,0,0},{0x3f800000,0,0},1,0x80000001},
+  {{0x00800000,0,0},{0x3f000000,0,0},1,0x00400000},
+  {{0x00800000,0,0},{0x3f000003,0,0},1,0x00400002},
+  {{0x7f7fffff,0,0},{0x40000000,0,0},1,0x7f800000},
+  {{0x7f800000,0,0},{0,0,0},1,0x7fc00000},
+  {{0x7f800000,0xff800000,0},{0x3f800000,0x3f800000,0},2,0x7fc00000},
+  {{0x7fc01234,0,0},{0x3f800000,0,0},1,0x7fc00000},
+  {{0x80000000,0,0},{0x3f800000,0,0},1,0,true}};
+unsigned cases=0, checks=0, failures=0, full=0, tail1=0, tail2=0, inapplicable=0;
+bool corrupt=false;
+void check(bool okay) {
+  ++checks;
+  if (!okay && failures++ < 8) std::fprintf(stderr,"FAIL source peel end-K: output/effect/immutability oracle\n");
+}
+std::uint32_t bits(float value) { return std::bit_cast<std::uint32_t>(value); }
+bool same(float actual, std::uint32_t expected) {
+  return (expected & 0x7fffffffU) > 0x7f800000U ? std::isnan(actual) : bits(actual)==expected;
+}
+void run(unsigned m,unsigned k,unsigned n,const Witness *witness) {
+  ++cases;
+  std::vector<float> a(m*k,std::bit_cast<float>(witness && witness->negative_zero ? 0x80000000U : 0U));
+  std::vector<float> b(k*n,1.0F), c(m*n+2,123.0F);
+  for(unsigned i=0;i<m;++i) {
+    if(witness) for(unsigned q=0;q<witness->terms;++q)
+      a[i*k+k-witness->terms+q]=std::bit_cast<float>(witness->a[q]);
+    else a[i*k+k-1]=float(i+1);
+  }
+  if(witness) for(unsigned q=0;q<witness->terms;++q) for(unsigned j=0;j<n;++j)
+    b[(k-witness->terms+q)*n+j]=std::bit_cast<float>(witness->b[q]);
+  else for(unsigned j=0;j<n;++j) b[(k-1)*n+j]=float(j+1);
+  const auto before_a=a,before_b=b;
+  auto result=source_peel_end_k({a.data(),m,k,a.size()}, {b.data(),k,n,b.size()},
+      {c.data()+1,m,n,m*n,md::Access::read_write},m,k,n);
+  check(result.ok() && result.publication_count()==1 && result.observation_count()==1);
+  if(corrupt) c[1]=999.0F;
+  auto observation=result.observation(0);
+  check(observation.valid() && observation.rows()==m && observation.columns()==n);
+  for(unsigned i=0;i<m;++i) for(unsigned j=0;j<n;++j) {
+    const auto expected=witness ? witness->expected : bits(float((i+1)*(j+1)));
+    check(same(c[1+i*n+j],expected));
+    // Check the owning source observation after destroying publication contents.
+    c[1+i*n+j]=321.0F;
+    if(observation.valid()) check(same(observation.data()[i*n+j],expected));
+  }
+  check(bits(c.front())==bits(123.0F) && bits(c.back())==bits(123.0F));
+  for(unsigned i=0;i<a.size();++i) check(bits(a[i])==bits(before_a[i]));
+  for(unsigned i=0;i<b.size();++i) check(bits(b[i])==bits(before_b[i]));
+}
+}
+int main(int argc,char **argv) {
+  if(argc!=3 && !(argc==4 && std::string_view(argv[3])=="--corrupt-output")) return 2;
+  corrupt=argc==4;
+  char *end_m=nullptr,*end_n=nullptr;
+  const auto tm=std::strtoul(argv[1],&end_m,10),tn=std::strtoul(argv[2],&end_n,10);
+  if(!end_m || *end_m || !end_n || *end_n || tm<1 || tm>64 || tn<3 || tn>64) return 2;
+  std::fenv_t caller;
+  if(std::fegetenv(&caller) || std::fesetenv(FE_DFL_ENV) || std::fegetround()!=FE_TONEAREST) return 2;
+  for(unsigned m : {unsigned(tm),unsigned(tm+1)})
+    for(unsigned n : {unsigned(tn+1),unsigned(tn+2),unsigned(2*tn+1),unsigned(2*tn+2)})
+      for(unsigned k : {1U,2U,3U,4U,5U,6U,33U,65U}) {
+        run(m,k,n,nullptr); // Last-K-only, lane-distinct exact integer product.
+        for(const auto &witness : witnesses) {
+          if(k<witness.terms) { ++inapplicable; continue; }
+          run(m,k,n,&witness);
+          ++full;
+          tail1 += n%tn==1;
+          tail2 += n%tn==2;
+        }
+      }
+  if(std::fesetenv(&caller)) return 2;
+  std::printf("Source peel end-K oracle: %u cases; %u checks; %u failures; full=%u tail1=%u tail2=%u; inapplicable-K=%u\n",
+      cases,checks,failures,full,tail1,tail2,inapplicable);
+  return failures!=0;
+}

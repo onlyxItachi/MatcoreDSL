@@ -31,9 +31,14 @@ Invocation parse(int argc, char **argv) {
     else if (argument == "--candidate") {
       ++args.candidate_count;
       args.policy = parseCandidatePolicy(value());
-    } else if (argument == "--gemm-output-tiles") {
-      if (args.output_tiles) reject("duplicate --gemm-output-tiles");
-      args.output_tiles = parseOutputTileRequest(value());
+    } else if (argument == "--gemm-output-tiles" || argument == "--gemm-output-tiles-peel-n") {
+      const auto realization = argument == "--gemm-output-tiles" ?
+          SourcePatternRealizationV1::OutputTiledMKN : SourcePatternRealizationV1::OutputTiledPeelNMKN;
+      if (args.output_tiles) {
+        if (args.output_tiles->realization == realization) reject("duplicate " + argument);
+        reject("--gemm-output-tiles and --gemm-output-tiles-peel-n are mutually exclusive");
+      }
+      args.output_tiles = parseOutputTileRequest(value(), realization);
     } else if (argument == "--optimization") {
       if (args.optimization_seen) reject("duplicate --optimization");
       args.optimization_seen = true;
@@ -48,10 +53,13 @@ Invocation parse(int argc, char **argv) {
     else reject("unknown or unsupported argument: " + argument);
   }
   if (args.source.empty() || args.output.empty() || args.region.empty())
-    reject(std::string("usage: mdslc-region source.mdsl --region qualified_name [-c] [--candidate ") + candidatePolicyUsage() + "] [--optimization " + optimizationUsage() + "] [--gemm-output-tiles M,N] -o NEW_OUTPUT [-- bounded C++ include/macro options]");
+    reject(std::string("usage: mdslc-region source.mdsl --region qualified_name [-c] [--candidate ") + candidatePolicyUsage() + "] [--optimization " + optimizationUsage() + "] [--gemm-output-tiles M,N | --gemm-output-tiles-peel-n M,N] -o NEW_OUTPUT [-- bounded C++ include/macro options]");
   if (args.output_tiles) {
-    if (args.candidate_count != 1) reject("--gemm-output-tiles requires exactly one --candidate generated-strict");
-    validateSourcePatternInvocation(args.policy, args.optimization, args.compile_only);
+    const std::string option = args.output_tiles->realization == SourcePatternRealizationV1::OutputTiledMKN ?
+        "--gemm-output-tiles" : "--gemm-output-tiles-peel-n";
+    if (args.candidate_count != 1) reject(option + " requires exactly one --candidate generated-strict");
+    validateSourcePatternInvocation(args.policy, args.optimization, args.compile_only,
+        args.output_tiles->realization);
   }
   return args;
 }

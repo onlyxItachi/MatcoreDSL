@@ -730,10 +730,10 @@ StrictGemmArtifactV1 issueStrictGemmArtifactV1(mlir::MLIRContext &context,
         (peelN ? "pattern_derivation=parameter-bound-pinned-upstream-replay-and-full-tail-envelope\n" :
                  "pattern_derivation=parameter-bound-pinned-upstream-replay-and-scalar-envelope\n") +
         "pattern_step_precondition=M<=INT64_MAX-(tile_m-1);N<=INT64_MAX-(tile_n-1)\n" +
-        (peelN ? "pattern_source_guard=not_connected_no_source_authority\n" :
+        (peelN ? "pattern_source_guard=caller_obligation_not_discharged_by_primitive_issuer\n" :
                  "pattern_source_guard=existing_nonempty_output_byte_bounds;empty_math_bypasses_leaf\n");
   if (peelN)
-    result.manifest += "pattern_source_selection=unavailable_private_issuer_only\n"
+    result.manifest += "pattern_source_selection=primitive_issuer_never_authorizes_source\n"
         "pattern_n_partition=full:[0,tile_n*floor(N/tile_n));tail:[tile_n*floor(N/tile_n),N)\n"
         "pattern_unit_n=no_tail_original_v1_graph\n";
   if (isa != StrictCpuIsaV1::Baseline)

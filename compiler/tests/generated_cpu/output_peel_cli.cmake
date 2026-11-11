@@ -40,7 +40,7 @@ foreach(target IN ITEMS linux-x86_64 linux-aarch64)
     file(READ "${output}.manifest" manifest)
     if(NOT manifest MATCHES "\nschedule=output-tiled-peel-n-mkn\n" OR
        NOT manifest MATCHES "\npattern=matcore-gemm-output-tile-peel-n-v1\n" OR
-       NOT manifest MATCHES "\npattern_source_selection=unavailable_private_issuer_only\n")
+       NOT manifest MATCHES "\npattern_source_selection=primitive_issuer_never_authorizes_source\n")
       message(FATAL_ERROR "Peeled private pattern identity/authority is missing")
     endif()
   endforeach()

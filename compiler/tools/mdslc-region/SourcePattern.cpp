@@ -14,6 +14,7 @@
 #include <iostream>
 #include <map>
 #include <set>
+#include <string_view>
 #include <sys/stat.h>
 #include <tuple>
 
@@ -166,7 +167,30 @@ void verifyKit(const Artifact &kit) {
     reject("relink kit lacks its exact adapter owner and missing-leaf closure");
 }
 
-void verifyLeafObject(const Artifact &object, bool sanitized) {
+constexpr bool peeledSanitizerStoreReport(bool sanitized,
+    SourcePatternRealizationV1 realization, std::string_view symbol) {
+  // Pinned Clang's unaligned output-lane SLP uses the fatal sized reporter.
+  // This is not a wildcard sanitizer namespace or an old-recipe policy change.
+  return sanitized && realization == SourcePatternRealizationV1::OutputTiledPeelNMKN &&
+         symbol == "__asan_report_store_n";
+}
+static_assert(peeledSanitizerStoreReport(true,
+    SourcePatternRealizationV1::OutputTiledPeelNMKN, "__asan_report_store_n"));
+static_assert(!peeledSanitizerStoreReport(false,
+    SourcePatternRealizationV1::OutputTiledPeelNMKN, "__asan_report_store_n") &&
+    !peeledSanitizerStoreReport(true,
+        SourcePatternRealizationV1::OutputTiledMKN, "__asan_report_store_n") &&
+    !peeledSanitizerStoreReport(true,
+        static_cast<SourcePatternRealizationV1>(-1), "__asan_report_store_n") &&
+    !peeledSanitizerStoreReport(true,
+        SourcePatternRealizationV1::OutputTiledPeelNMKN, "__asan_report_store8") &&
+    !peeledSanitizerStoreReport(true,
+        SourcePatternRealizationV1::OutputTiledPeelNMKN, "__asan_report_store_n_noabort") &&
+    !peeledSanitizerStoreReport(true,
+        SourcePatternRealizationV1::OutputTiledPeelNMKN, "untrusted_external_effect"));
+
+void verifyLeafObject(const Artifact &object, bool sanitized,
+                      SourcePatternRealizationV1 realization) {
   auto parsed = nativeObject(object, llvm::ELF::ET_REL);
   const auto &elf = *llvm::cast<ElfObject>(parsed.get());
   std::set<std::string> required{candidate::kStrictGemmSymbolV1, candidate::kStrictGemmCInterfaceV1};
@@ -185,7 +209,8 @@ void verifyLeafObject(const Artifact &object, bool sanitized) {
     if (name->empty()) continue;
     if (*flags & llvm::object::SymbolRef::SF_Undefined) {
       if (*name != "memset" && *name != "_GLOBAL_OFFSET_TABLE_" &&
-          !(sanitized && sanitizer_imports.contains(name->str())))
+          !(sanitized && sanitizer_imports.contains(name->str())) &&
+          !peeledSanitizerStoreReport(sanitized, realization, name->str()))
         reject("source-pattern leaf has an unknown external effect/import: " + name->str());
       continue;
     }
@@ -258,10 +283,20 @@ void newPrivateOutput(const fs::path &path) {
   if (fs::symlink_status(path).type() != fs::file_type::not_found)
     reject("source-pattern issued output already exists: " + path.string());
 }
+const char *sourcePatternOption(SourcePatternRealizationV1 realization) {
+  switch (realization) {
+  case SourcePatternRealizationV1::OutputTiledMKN: return "--gemm-output-tiles";
+  case SourcePatternRealizationV1::OutputTiledPeelNMKN: return "--gemm-output-tiles-peel-n";
+  }
+  reject("unknown source-pattern realization");
+}
 } // namespace
 
-OutputTileRequest parseOutputTileRequest(const std::string &text) {
+OutputTileRequest parseOutputTileRequest(const std::string &text,
+    SourcePatternRealizationV1 realization) {
+  const std::string option = sourcePatternOption(realization);
   OutputTileRequest result;
+  result.realization = realization;
   const auto comma = text.find(',');
   auto parse = [](const std::string &field, std::int64_t &value) {
     if (field.empty() || field.front() == '0' ||
@@ -273,17 +308,19 @@ OutputTileRequest parseOutputTileRequest(const std::string &text) {
   if (comma == std::string::npos || !parse(text.substr(0, comma), result.m) ||
       !parse(text.substr(comma + 1), result.n) ||
       !matcore::mdslc::gemm_pattern::validateOutputTilePatternV1({result.m, result.n}, error))
-    reject("--gemm-output-tiles requires canonical decimal M,N in [1,64], without leading zeros");
+    reject(option + " requires canonical decimal M,N in [1,64], without leading zeros");
   return result;
 }
 void validateSourcePatternInvocation(codegen::ClosedCpuPolicy policy,
-    codegen::ClosedHostOptimization optimization, bool compile_only) {
+    codegen::ClosedHostOptimization optimization, bool compile_only,
+    SourcePatternRealizationV1 realization) {
+  const std::string option = sourcePatternOption(realization);
   if (policy != codegen::ClosedCpuPolicy::GeneratedStrict)
-    reject("--gemm-output-tiles requires explicit --candidate generated-strict");
-  if (compile_only) reject("--gemm-output-tiles is unavailable with -c; its private DSO requires complete executable linking");
+    reject(option + " requires explicit --candidate generated-strict");
+  if (compile_only) reject(option + " is unavailable with -c; its private DSO requires complete executable linking");
   if (optimization != codegen::ClosedHostOptimization::None &&
       optimization != codegen::ClosedHostOptimization::PublicationReadForwarding)
-    reject("--gemm-output-tiles is incompatible with strict-fused-pair");
+    reject(option + " is incompatible with strict-fused-pair");
 }
 
 SourcePatternBundle::SourcePatternBundle(const fs::path &output)
@@ -357,15 +394,17 @@ SourcePatternInstance::SourcePatternInstance(const Installation &installation,
           installation.installed.candidates.parent_path() / REGION_RELINK_KIT_FILENAME, REGION_RELINK_KIT_SHA)),
       exports_(Artifact::capture(installation.installed.build_tree ? fs::path(REGION_BUILD_EXPORTS) :
           installation.installed.candidates.parent_path() / REGION_EXPORTS_FILENAME, REGION_EXPORTS_SHA)) {
-  validateSourcePatternInvocation(policy, optimization, false);
+  validateSourcePatternInvocation(policy, optimization, false, tiles.realization);
   if (!host_ || !evidence.entryBinding() || evidence.program().regions.size() != 1 ||
       evidence.program().regions.front().name != region)
     reject("source-pattern instance requires its authenticated named source closure");
   verifyKit(kit_);
   unchanged();
   mlir::MLIRContext context;
+  const bool peel_n = tiles.realization == SourcePatternRealizationV1::OutputTiledPeelNMKN;
   auto artifact = candidate::issueStrictGemmArtifactV1(context, bool(REGION_SANITIZED),
-      candidate::StrictGemmScheduleV1::OutputTiledMKN, target,
+      peel_n ? candidate::StrictGemmScheduleV1::OutputTiledPeelNMKN :
+               candidate::StrictGemmScheduleV1::OutputTiledMKN, target,
       candidate::StrictCpuIsaV1::Baseline, {tiles.m, tiles.n});
   if (!artifact) reject(artifact.error);
   const std::vector<std::pair<std::string, std::string>> stages{
@@ -391,15 +430,18 @@ SourcePatternInstance::SourcePatternInstance(const Installation &installation,
   if (REGION_SANITIZED) process.argv.push_back("-fsanitize=address");
   runCompiler(process, "leaf compilation");
   issued_.push_back(Artifact::capture(object_path));
-  verifyLeafObject(issued_.back(), bool(REGION_SANITIZED));
+  verifyLeafObject(issued_.back(), bool(REGION_SANITIZED), tiles.realization);
   if (hooks.after_object) hooks.after_object(bundle.path());
   unchanged();
 
-  std::string manifest = "schema=matcore-source-output-pattern-v1\nsource_authority=authenticated_in_process_source_closure\n";
+  std::string manifest = peel_n ?
+      "schema=matcore-source-output-peel-n-v1\nsource_authority=authenticated_in_process_source_closure\n" :
+      "schema=matcore-source-output-pattern-v1\nsource_authority=authenticated_in_process_source_closure\n";
   auto add = [&](const std::string &key, const std::string &value) { manifest += key + "=" + value + "\n"; };
   add("source_context_sha256", host_->identity());
   add("region_name_hex", llvm::toHex(llvm::arrayRefFromStringRef(region), true));
   add("candidate", "generated-strict");
+  if (peel_n) add("realization", "output-tiled-peel-n-mkn");
   add("optimization", codegen::closedHostOptimizationName(optimization));
   add("pattern_parameters", "M:" + std::to_string(tiles.m) + ",N:" + std::to_string(tiles.n) + ",K:untiled");
   add("toolchain", "21.1.8"); add("target", candidate::cpuTargetTripleV1(target));
@@ -419,7 +461,9 @@ SourcePatternInstance::SourcePatternInstance(const Installation &installation,
   add("transform_sha256", digest(artifact.transform_ir)); add("scheduled_sha256", digest(artifact.scheduled_ir));
   add("llvm_sha256", digest(artifact.llvm_ir)); add("object_sha256", issued_.back().sha);
   std::string binding;
-  boundField(binding, "matcore-source-output-pattern-binding-v1"); boundField(binding, manifest);
+  boundField(binding, peel_n ? "matcore-source-output-peel-n-binding-v1" :
+                              "matcore-source-output-pattern-binding-v1");
+  boundField(binding, manifest);
   const auto identity = digest(binding);
   add("binding_sha256", identity);
   soname_ = "libmdslc-pattern-" + identity + ".so";

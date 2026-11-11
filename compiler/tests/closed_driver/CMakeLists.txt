@@ -187,4 +187,27 @@ if(TARGET mdslc-region)
     add_test(NAME driver.source_pattern.phase_mutations COMMAND matcore_source_pattern_mutation_test)
     set_tests_properties(driver.source_pattern.phase_mutations PROPERTIES TIMEOUT 900)
   endif()
+
+  # Separately requested full-N/tail realization. Do not broaden the retained
+  # v1 classifiers or renumber their sanitizer qualification scope.
+  foreach(source_peel_case IN ITEMS connected refusals)
+    add_test(NAME driver.source_pattern_peel.${source_peel_case}
+      COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../source_pattern_peel/run.py"
+        --driver "$<TARGET_FILE:mdslc-region>" --case "${source_peel_case}"
+        --cxx "${MDSLC_CLANGXX_EXECUTABLE}"
+        --runtime "$<TARGET_FILE:matcore_runtime>" ${source_pattern_flags})
+    set_tests_properties(driver.source_pattern_peel.${source_peel_case}
+      PROPERTIES TIMEOUT 900 ENVIRONMENT "TMPDIR=${CMAKE_CURRENT_BINARY_DIR};PYTHONDONTWRITEBYTECODE=1")
+  endforeach()
+  add_test(NAME driver.source_pattern_peel.runner
+    COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../source_pattern_peel/runner_test.py")
+  set_tests_properties(driver.source_pattern_peel.runner PROPERTIES TIMEOUT 60
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+  if(TARGET matcore_source_pattern_mutation_test)
+    add_test(NAME driver.source_pattern_peel.phase_mutations
+      COMMAND matcore_source_pattern_mutation_test --peel-n)
+    set_tests_properties(driver.source_pattern_peel.phase_mutations PROPERTIES TIMEOUT 900)
+  endif()
 endif()

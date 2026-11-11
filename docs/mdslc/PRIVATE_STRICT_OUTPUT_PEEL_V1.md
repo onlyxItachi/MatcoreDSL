@@ -5,6 +5,11 @@ Engineering scope: [Issue #102](https://github.com/onlyxItachi/MatcoreDSL/issues
 Status: focused private qualification passed; full regression/hosted integration
 remain pending. Not a merge or speed claim.
 
+This records the original private boundary. The separately requested source
+connection has its own [contract and qualification](SOURCE_TIME_OUTPUT_PEEL_V1.md);
+it does not promote primitive manifests into source authority. Historical
+qualification below must not be read as source-connection evidence.
+
 ## Why this boundary exists
 
 The authenticated source-time performance experiment retained a loss and an
@@ -56,17 +61,18 @@ that arbitrary two-copy code is correct.
 
 Only the private baseline Linux x64/AArch64 issuer route is eligible for this
 qualification. Nonbaseline ISA requests are rejected. Target emission alone is
-not physical validation. No source-time flag, source-consumption classifier,
-build-default schedule, candidate registry, installed execution contract or runtime
-adapter is switched to this realization. The usual source driver still requests
-the old unpeeled pattern.
+not physical validation. The original private milestone added no source-time
+flag or source-consumption classifier. No build-default schedule, candidate
+registry or runtime adapter is switched to this realization. Existing source
+requests still select the old unpeeled pattern; a separate source request must
+meet the separately authenticated connection contract above.
 
 Raw private callers must provide valid dense f32 descriptors, live/race-free
 inputs, a disjoint private output and compatible FP controls. A/B may overlap.
 They retain the existing signed next-IV bounds:
 `M <= INT64_MAX-(tile_m-1)`, `N <= INT64_MAX-(tile_n-1)`, checked extents and
-addressable byte counts. The old source adapter's byte guards/empty bypass do not
-authorize a new source route. Raw K=0 still fills C with +0 with null A/B data;
+addressable byte counts. The source adapter's byte guards/empty bypass alone do not
+authorize source issuance. Raw K=0 still fills C with +0 with null A/B data;
 empty output performs no data access. No source failure frontier is modified.
 
 ## Required qualification

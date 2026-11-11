@@ -93,6 +93,13 @@ jobs:
           grep -Fx 'Total Tests: 44' build-arm/output-peel-test-list.txt
           ctest --test-dir build-arm --output-on-failure -j1 \
             -R '^generated_cpu_output_peel\.' --output-junit output-peel-junit.xml
+      - name: Qualify separately requested source full-N and tail instances
+        run: |
+          ctest --test-dir build-arm -N -R '^driver\.source_pattern_peel\.' \
+            | tee build-arm/source-pattern-peel-test-list.txt
+          grep -Fx 'Total Tests: 4' build-arm/source-pattern-peel-test-list.txt
+          ctest --test-dir build-arm --output-on-failure -j1 \
+            -R '^driver\.source_pattern_peel\.' --output-junit source-pattern-peel-junit.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -102,6 +109,8 @@ jobs:
             build-arm/native-cpu-junit.xml
             build-arm/output-peel-junit.xml
             build-arm/output-peel-test-list.txt
+            build-arm/source-pattern-peel-junit.xml
+            build-arm/source-pattern-peel-test-list.txt
             build-arm/Testing/Temporary/LastTest.log
             build-arm/lib/regions/strict-normal.ll*
             build-arm/lib/regions/strict-normal.o
