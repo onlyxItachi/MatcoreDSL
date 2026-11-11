@@ -999,6 +999,13 @@ if(BUILD_TESTING)
         --nm "${MDSLC_PACKAGE_NM_EXECUTABLE}"
         --readobj "${MDSLC_PACKAGE_READOBJ_EXECUTABLE}"
     )
+    add_test(
+      NAME package.installed_test_root_safety
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/package/run_installed_test_root_safety_tests.py"
+        --cmake "${CMAKE_COMMAND}"
+    )
 
     if(NOT WIN32 AND MDSLC_ENABLE_NATIVE_FRONTEND)
       find_program(MDSLC_PACKAGE_GIT_EXECUTABLE NAMES git REQUIRED)

@@ -10,6 +10,13 @@ import subprocess
 import sys
 
 
+# Importing the guard must not write bytecode into the source checkout before
+# it has validated the requested scratch path.
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from installed_test_scratch import prepare_test_root
+
+
 VC_REDISTRIBUTABLE_PATTERN = re.compile(
     r"^(?:vcruntime140(?:_[0-9]+)?|msvcp140(?:_[0-9]+|_atomic_wait|_codecvt_ids)?|"
     r"concrt140|vcomp140)\.dll$",
@@ -295,7 +302,10 @@ def main() -> int:
     parser.add_argument("--cmake", required=True)
     parser.add_argument("--source-dir", required=True)
     parser.add_argument("--producer-build-dir", required=True)
-    parser.add_argument("--test-root", required=True)
+    parser.add_argument(
+        "--test-root", required=True,
+        help="owned scratch container; each run is retained in a new child",
+    )
     parser.add_argument("--cxx-compiler", required=True)
     parser.add_argument(
         "--matcore-mlir-available", choices=("ON", "OFF"), required=True
@@ -314,9 +324,14 @@ def main() -> int:
     executable_suffix = ".exe" if is_windows else ""
     artifact_suffix = ".lib" if is_windows else ".o"
 
-    test_root = Path(args.test_root).resolve()
-    if test_root.exists():
-        shutil.rmtree(test_root)
+    repository = Path(__file__).resolve().parents[3]
+    test_root, producer_build = prepare_test_root(
+        args.test_root,
+        args.producer_build_dir,
+        owner="installed-consumer",
+        repository=repository,
+        source_directories=(Path(args.source_dir),),
+    )
     source = test_root / "source"
     build = test_root / "build"
     staging_prefix = test_root / "install-staging"
@@ -331,7 +346,7 @@ def main() -> int:
     run([
         args.cmake,
         "--install",
-        str(Path(args.producer_build_dir).resolve()),
+        str(producer_build),
         "--prefix",
         str(staging_prefix),
     ])
@@ -374,7 +389,6 @@ def main() -> int:
     if missing:
         raise RuntimeError(f"installed package is incomplete: {missing}")
 
-    repository = Path(__file__).resolve().parents[3]
     source_public_header = repository / "compiler" / "include" / "matcore" / "mdsl.h"
     driver = prefix / "bin" / f"mdslc++{executable_suffix}"
     extractor = prefix / "bin" / f"matcore-extract{executable_suffix}"
