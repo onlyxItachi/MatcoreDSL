@@ -1,8 +1,18 @@
 # Authenticated source output-peel: qualification checkpoint v1
 
-Status: **ALL 26 HOSTED CHECKS SUCCESSFUL; normal merge pending** for
+Status: **ALL 26 HOSTED CHECKS SUCCESSFUL; normally merged 2026-11-11** in
 [PR #105](https://github.com/onlyxItachi/MatcoreDSL/pull/105), implementing
 [Issue #104](https://github.com/onlyxItachi/MatcoreDSL/issues/104).
+Canonical source merge: `6d30a204aa6f7224b736c2035de15ce20b0e6b3d`, parents
+`c903351f7009848a00c83498e50183135e9c6404` (PR95) and qualified head
+`cf154deacea2bddb3240660c1af27ff4ffbc4042`. Its tree
+`2aab2289ccfa246c5f921b2e741263fc96217e48` exactly matches the independent merge
+projection. Production/tests/headers/workflows match that qualified head; the
+whole compiler tree differs only by P1 README navigation from PR95. This is
+source/tree equivalence, not a new binary build or a relabeling of P5's SDK.
+The qualification and historical attempt receipts below retain their actual
+pre-merge identities and executed scopes.
+
 Frozen source is `1ad7fe56b5fcb10efe37e523206228e9ef303f6a`, tree
 `4e784afa700c447fe28b19e55443ed55b2ce140c`. The source worktree was inspected
 clean. Completed evidence now includes the frozen local 356-test regression,
@@ -15,10 +25,9 @@ checks and two Release deadline cancellations**. The first CI-only follow-up,
 Release/Windows/TSan/ASan/ARM scopes and cancelled Debug prefixes remain distinct
 historical evidence below; no cancellation is counted as a pass.
 
-Current PR head is **`cf154deacea2bddb3240660c1af27ff4ffbc4042`**, with all 26
-fresh checks successful and the PR ready for review, but still open/unmerged.
-Canonical main remains `1f7c491f230251d04d42b5d4a0af5eaf29bcb685`; no source
-engineering merge is claimed here. The current head includes the reviewed Release and
+At qualification, PR head **`cf154deacea2bddb3240660c1af27ff4ffbc4042`** had all 26
+fresh checks successful while still open/unmerged. Canonical main then was
+`1f7c491f230251d04d42b5d4a0af5eaf29bcb685`. That qualified head includes the reviewed Release and
 Debug 60-to-90-minute job budgets and their reports/clarifier only. Tracked
 compiler/runtime/test/header and source-contract files remain byte-identical to
 `1ad7fe5...`; the producer and installed SDK remain frozen there. Completed
@@ -32,7 +41,7 @@ This writer inspected existing source, logs/XML and the preservation receipt;
 no configure, build, compiler/generated program, sanitizer or benchmark was
 run to prepare this report. Earlier lane reports describe their historical
 authored/initially pending status. The results below are retained root-run
-local/hosted evidence, not a canonical merge or final support declaration.
+local/hosted evidence; the subsequent canonical merge is separately identified above.
 
 ## Additive request and immutable ownership
 
@@ -332,8 +341,8 @@ No cancelled job is relabeled passing, silently omitted, or used to weaken the
 scope. These were not source-code/contract counterexamples, but their original
 acceptance gates were incomplete. The subsequent `d346022...` result was 24
 successful checks and two cancelled Debug jobs, not complete qualification.
-Current `cf154de...` CI subsequently passed all 26 checks; normal merge remains
-pending. Earlier cancellations remain cancelled, not retroactively passing.
+The later `cf154de...` CI passed all 26 checks before the normal merge recorded
+above. Earlier cancellations remain cancelled, not retroactively passing.
 
 ### Completed d346 Windows and TSan regression scopes
 
@@ -400,8 +409,8 @@ private generated-leaf sanitizer coverage, **not sanitized AArch64 source-driver
 or source-owned-DSO qualification**. The exact import gate still refuses
 unobserved sanitized target imports. All source-ASan evidence in this record
 remains x64-only. These are completed `d346022...` scopes, not final-head ARM
-passes; completed current-head scopes appear separately below. Normal merge
-remains pending.
+passes; completed qualified-head scopes appear separately below. These receipts
+predate the normal merge recorded above.
 
 ### Completed d346 x64 ASan+UBSan scope
 
@@ -492,9 +501,9 @@ Release jobs completed under their unchanged role-specific selections at the
 prefixes nor substitutes for current-head CI. The representative log is bound
 to synthetic `411335b...` and old head `d346022...` only.
 
-### Current cf154de: all hosted checks successful, normal merge pending
+### Qualified cf154de: all hosted checks successful before normal merge
 
-Current PR head `cf154deacea2bddb3240660c1af27ff4ffbc4042` has synthetic checkout
+At qualification, PR head `cf154deacea2bddb3240660c1af27ff4ffbc4042` had synthetic checkout
 `9d30589bbdd9624cdfef63c6c2107488e35537c8`, with parents `1f7c491...` and
 that exact head. Both complete trees equal
 `0330fb5748277b3fe8f6b89f13986173c3d10674`; local Git and retained commit JSON
@@ -523,8 +532,8 @@ does not add Windows source-peel support.
 The final retained `hosted105-cf-final-status.json` binds exactly this head and
 contains **26 `COMPLETED` / `SUCCESS` check records**, without a pending, failed,
 cancelled or skipped check. That snapshot was captured just before marking the
-PR ready (`isDraft=true` at capture); a subsequent live query confirms the same
-26 successful checks, `isDraft=false`, state `OPEN` and no merge commit. These
+PR ready (`isDraft=true` at capture); a subsequent pre-merge query confirmed the
+same 26 successful checks, `isDraft=false`, state `OPEN` and no merge commit. These
 whole-check conclusions are distinct from CTest hardware skips below.
 
 The separate `selected-final.json` receipt joins six additional successful PR
@@ -563,8 +572,9 @@ The required Release role's conditional production-proof step is explicitly
 the producer-without-tests proof. Other Release jobs have whole-job `SUCCESS`
 records in the final rollup; their per-scope execution counts were not recounted
 here. Likewise, no CTest execution/skip totals are invented for the other
-unrecounted successful checks. Completed current-head CI is not a normal merge:
-main remains the private PR103 checkpoint until that separate action occurs.
+unrecounted successful checks. Completed qualification was separate from merging:
+main was still the private PR103 checkpoint at that collection-time snapshot;
+the subsequent actual canonical source merge is recorded at the top.
 
 ## Independent preservation receipt
 
@@ -682,8 +692,8 @@ The intended source contract remains single-TU native-baseline Linux x64/AArch64
 complete executables with `none` or separately checked forwarding. Local frozen
 regression/normal installation, local x64 source ASan and native ARM normal-source
 scopes and current-head hosted qualification are complete as bounded above.
-Normal merge remains pending before this becomes the canonical engineering
-checkpoint; that is not a P5 collection prerequisite. No sanitized-source
+The subsequent normal merge is recorded above; it was not a P5 collection
+prerequisite. No sanitized-source
 AArch64 qualification is claimed.
 Other ISAs, GPU mappings, multi-TU,
 post-publication relocation, automatic selection and general executable imports

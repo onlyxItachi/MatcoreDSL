@@ -4,6 +4,7 @@ Scope: [Issue #104](https://github.com/onlyxItachi/MatcoreDSL/issues/104), depen
 on the [private realization](PRIVATE_STRICT_OUTPUT_PEEL_V1.md).
 Status: implementation and bounded qualification complete; no performance
 claim. This document defines the bounded acceptance contract.
+Normally merged in PR #105 at `6d30a204aa6f7224b736c2035de15ce20b0e6b3d`.
 The [final qualification record](agent-reports/source-output-peel-qualification-v1.md)
 separates actual local/hosted/installed execution from retained earlier attempts.
 

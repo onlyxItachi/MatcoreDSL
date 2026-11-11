@@ -140,6 +140,8 @@ This private result does not select source/default routes or establish speed.
 
 ## P4b — Authenticated source connection: qualification complete
 
+Normally merged in PR #105 at `6d30a204aa6f7224b736c2035de15ce20b0e6b3d`.
+
 [Issue #104](https://github.com/onlyxItachi/MatcoreDSL/issues/104), implemented
 in [PR #105](https://github.com/onlyxItachi/MatcoreDSL/pull/105),
 connects only a separately explicit source request. Retain old request/default

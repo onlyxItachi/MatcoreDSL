@@ -12,8 +12,8 @@ not an executed correctness qualification or performance result.
 
 - [CURRENT_STATE.md](CURRENT_STATE.md) is authoritative for the canonical
   engineering checkpoint, supported envelope and exactly one immediate next
-  boundary. The source connection is PR #105; its exact canonical merge is
-  recorded in that checkpoint after integration. This re-entry began at PR #94's
+  boundary. The source connection is merged PR #105 at
+  `6d30a204aa6f7224b736c2035de15ce20b0e6b3d`. This re-entry began at PR #94's
   documentation checkpoint `b2597bed52de46604574f76eb33663788a5ab994`.
 - [Performance evidence roadmap v1](PERFORMANCE_EVIDENCE_ROADMAP_V1.md) defines
   the completed P1/P5 authenticated source-time comparisons and the next
