@@ -259,6 +259,11 @@ bool verifyCanonicalContractionTopologyV1(
     error = "contraction topology requires lhs, rhs, and destination maps/ranks";
     return false;
   }
+  if (llvm::any_of(topology.indexing_maps,
+                   [](mlir::AffineMap map) { return !map; })) {
+    error = "contraction topology requires non-null indexing maps";
+    return false;
+  }
   mlir::MLIRContext *context = topology.indexing_maps.front().getContext();
   if (!context || llvm::any_of(topology.indexing_maps, [&](mlir::AffineMap map) {
         return map.getContext() != context;

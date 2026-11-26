@@ -313,10 +313,81 @@ void testAdversarialTopologyMutations() {
   if (!encoded)
     return;
 
+  // Counts must be checked before the first map is accessed, independently of
+  // handle validity. Cover empty, short and oversized vectors at every caller.
+  for (unsigned count : {0U, 1U, 2U, 4U}) {
+    for (bool change_maps : {false, true}) {
+      auto malformed_counts = canonical.topology;
+      if (change_maps)
+        malformed_counts.indexing_maps.resize(
+            count, canonical.topology.indexing_maps.front());
+      else
+        malformed_counts.operand_ranks.resize(count, 2);
+      const std::string count_error =
+          "contraction topology requires lhs, rhs, and destination maps/ranks";
+      error = "stale diagnostic";
+      check(!bridge::verifyCanonicalContractionTopologyV1(malformed_counts,
+                                                          error) &&
+                error == count_error,
+            "topology verifier must diagnose malformed map/rank counts");
+      error.clear();
+      check(!bridge::encodeContractionTopologyV1(builder, malformed_counts,
+                                                 error) &&
+                error == count_error,
+            "encoder must reject malformed map/rank counts");
+      error.clear();
+      check(!bridge::verifyStructuredIndexingAgainstContractionTopologyV1(
+                malformed_counts, canonical.topology.indexing_maps,
+                canonical.topology.iterator_types,
+                canonical.topology.operand_ranks, error) &&
+                error == count_error,
+            "structured carrier check must reject malformed map/rank counts");
+    }
+  }
+
+  // Exercise every nonempty subset, including a null first handle: getContext
+  // cannot be used to test whether an AffineMap itself is valid.
+  for (unsigned mask = 1; mask < 8; ++mask) {
+    auto null_maps = canonical.topology;
+    for (unsigned index = 0; index < 3; ++index)
+      if (mask & (1U << index))
+        null_maps.indexing_maps[index] = {};
+    error = "stale diagnostic";
+    check(!bridge::verifyCanonicalContractionTopologyV1(null_maps, error) &&
+              !error.empty() && error != "stale diagnostic",
+          "topology verifier must diagnose every subset of null map handles");
+    error.clear();
+    check(!bridge::encodeContractionTopologyV1(builder, null_maps, error) &&
+              !error.empty(),
+          "encoder must reject null maps before constructing attributes");
+    error.clear();
+    check(!bridge::verifyStructuredIndexingAgainstContractionTopologyV1(
+              null_maps, canonical.topology.indexing_maps,
+              canonical.topology.iterator_types,
+              canonical.topology.operand_ranks, error) && !error.empty(),
+          "structured carrier check must reject a topology with null maps");
+  }
+  check(bridge::verifyCanonicalContractionTopologyV1(canonical.topology, error) &&
+            error.empty(),
+        "valid topology must still verify and clear a preceding diagnostic");
+  auto dot = bridge::buildCanonicalContractionTopologyV1(context, Operation::Dot);
+  check(dot && dot.topology.indexing_maps[2] &&
+            dot.topology.indexing_maps[2].getNumResults() == 0 &&
+            bridge::verifyCanonicalContractionTopologyV1(dot.topology, error) &&
+            bridge::encodeContractionTopologyV1(builder, dot.topology, error),
+        "valid rank-zero DOT output map is not a null map handle");
+
   check(!bridge::encodeContractionTopologyV1(builder, changed_map, error),
         "encoder must fail closed on a noncanonical topology");
   mlir::MLIRContext other_context;
   mlir::Builder other_builder(&other_context);
+  auto other_topology = bridge::buildCanonicalContractionTopologyV1(
+      other_context, Operation::Gemm);
+  auto mixed_context = canonical.topology;
+  mixed_context.indexing_maps[1] = other_topology.topology.indexing_maps[1];
+  check(!bridge::verifyCanonicalContractionTopologyV1(mixed_context, error) &&
+            !error.empty(),
+        "non-null maps from mixed MLIR contexts must still be rejected");
   check(!bridge::encodeContractionTopologyV1(other_builder,
                                              canonical.topology, error),
         "encoder must reject topology maps from another MLIR context");
