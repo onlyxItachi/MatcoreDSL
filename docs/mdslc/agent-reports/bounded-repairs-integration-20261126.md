@@ -101,6 +101,21 @@ for #126 and `8bb4822bc49ae9d172d182badd7e34f6eb493df1` for #123, each with the 
 file tree as its respective PR head. This does not claim a checkout identity for
 jobs whose logs were not yet available.
 
+The superseded PR #125 canonical-merge push native run `45846224672` was also
+cancelled after main advanced to PR #124. Its Windows run `45846224364` had
+already succeeded. This does not alter the 26 successful pre-merge checks of
+PR #125; neither cancelled post-merge work nor a later tree qualifies an earlier
+revision retroactively. The latest canonical push remains separate evidence.
+
+Fresh Windows push/PR runs for composed #123 (`45846391018`, `45846399525`)
+both passed: Release 53/53, Debug 33/33, focused ASan 1/1, zero CTest skips.
+The #126 push/PR runs (`45846387061`, `45846396830`) passed the same counts.
+These workflows also passed
+installed ABI, relocated-consumer, artifact and distribution checks. Inner Python
+platform skips are not represented by those CTest skip totals. Windows uses the
+existing MLIR-disabled platform lane: these passes do not execute the null-map
+MLIR verifier or establish generated-region Windows support.
+
 The prior full 346/346 suite belongs to `0fd5f767dd9ddcf15a19a4223897edd4279eb41e`;
 the prior post-Windows 11/11 suite belongs to `d011979041f058417bda2452787550ef791c344f`.
 Neither qualifies the new combined heads. See the original
