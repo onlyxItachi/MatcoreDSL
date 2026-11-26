@@ -13,10 +13,12 @@ At most two concurrent subagents; the explicitly selected reviewers were
 | --- | --- | --- | --- |
 | [#125](https://github.com/onlyxItachi/MatcoreDSL/pull/125), Windows prerequisite | `be8c59f804f559a66b9c6b2fb8042fde4f6f6023` | `26f4b43397c8358d182b2e62df97361d73f48280` | `bd805d5fad73bb360693b5d36d182eadadad8425` |
 | [#124](https://github.com/onlyxItachi/MatcoreDSL/pull/124), exact GPU versions (#115) | `fa84e8895f15e38a611c3f0febb6e9e2bda3188a` | `b90540fdd84ebd1f2ac871642d56308787b5112a` | `db97a36d383bc5a0c23146e8f4153cbff7cd1a67` |
+| [#126](https://github.com/onlyxItachi/MatcoreDSL/pull/126), nondestructive scratch roots (#110) | `1203dc45e97b59e78e0043797841e74e26eebe9e` | `e6338e72a2d6d3d70bd2ad2f5abca9b069edbf3b` | `49023a9247bc27d41808d02dabbd340fd2218bfd` |
 
-Both merged heads had 26/26 completed successful hosted checks, not cancelled
-or pending checks. Normal merge parents preserve the original heads. PR #125
-parent main was the starting checkpoint; PR #124 parent main was PR #125's merge.
+Each merged head had 26/26 completed successful retained hosted checks, not
+cancelled or pending checks. Normal merge parents preserve the original heads.
+PR #125 parent main was the starting checkpoint; subsequent merges follow the
+table order. Superseded/duplicate cancellations are separate, never passes.
 Tree identity does not turn old performance artifacts into measurements of a
 new revision. Windows CI built and uploaded distribution-candidate ZIPs;
 no product release was promoted or published.
@@ -58,10 +60,10 @@ Current-head hosted evidence for #124:
 [Windows PR](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/45832479639).
 The complete PR check rollup was re-read as 26 successful checks before merge.
 
-## Remaining repairs: fresh composed-head qualification pending
+## Composed repair qualification
 
-#110 PR #126 and #119 PR #123 are still drafts, not canonical changes in this
-checkpoint. The normal composition commits are `1203dc45e97b59e78e0043797841e74e26eebe9e`
+#110 PR #126 is merged after all 26 retained jobs passed. #119 PR #123 remains a
+draft pending the last native jobs. The normal composition commits are `1203dc45e97b59e78e0043797841e74e26eebe9e`
 and `7cfb30ca7238bf80799fa387aa13417b11ad816d`, respectively. They preserve prior
 heads `f0d0ac18f1b2a06c79b6b7b7e8fba0cb6dccd782` and
 `bc8327b56934bc8848dab8280b06b9e7ca272697`. Independent read-only review found
@@ -92,7 +94,7 @@ containers gained new retained children `c17/run-nd9fmaxe` and
 Earlier children were not reset or removed. This is same-tree package evidence,
 unlike the earlier cross-tree harness qualification.
 
-Changing PR bases triggered duplicate hosted runs. Only the older duplicates
+During push/base reconciliation, duplicate hosted runs appeared. Only the older duplicates
 and superseded-head native runs were cancelled, never treated as passes. Retained
 current PR native runs are #126 `45846397089` and #123 `45846399430`; their push
 runs remain `45846387015` and `45846391251`. Independent read-only audit of the
@@ -124,6 +126,29 @@ existing downstream/runtime scopes, not direct sanitizer or ARM execution of the
 new null-handle cases. No such direct qualification, or MLIR 22 qualification,
 is claimed. The issue's bounded verifier acceptance does not require a new
 sanitizer policy or changed ARM qualification scope.
+
+Both fresh ARM64 runs ([#126](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/45846396899),
+[#123](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/45846399622)) passed
+all three schedules. Each scalar/output-tiled lane executed 130 closed-source
+tests; each row-contiguous lane executed 132, with no skips in those scopes.
+Every lane also passed the separate 44 private-peel and four source-peel gates.
+This is native AArch64 correctness qualification, not a performance measurement.
+
+The current-head Linux row-contiguous Release PR jobs also completed successfully:
+[#126 job 140001074718](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/45846397089/job/140001074718)
+and [#123 job 140001081328](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/45846399430/job/140001081328).
+Each ran 352/352 CTests with no CTest-level failures/skips in the logs, including the
+direct `mlir.structured.contraction-model-v1` unit. Their remaining job steps
+also succeeded. Other native matrix lanes remained pending at this observation.
+
+The current-head Debug jobs also passed 352/352 CTests without CTest-level skips:
+[#126 job 140001074590](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/45846397089/job/140001074590)
+and [#123 job 140001081435](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/45846399430/job/140001081435).
+The #123 log explicitly includes the updated contraction-model test. Focused
+ASan+UBSan jobs [140001074149](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/45846397089/job/140001074149)
+and [140001081560](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/45846399430/job/140001081560)
+each passed their separate 236/2/44/4 gates with no CTest-level skip markers.
+The direct unit/ASan selection distinction above still applies.
 
 The prior full 346/346 suite belongs to `0fd5f767dd9ddcf15a19a4223897edd4279eb41e`;
 the prior post-Windows 11/11 suite belongs to `d011979041f058417bda2452787550ef791c344f`.

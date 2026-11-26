@@ -1,8 +1,8 @@
 # MDSLC current state
 
-Latest canonical engineering checkpoint: `b90540fdd84ebd1f2ac871642d56308787b5112a`,
-normal merge of [PR #124](https://github.com/onlyxItachi/MatcoreDSL/pull/124)
-after the Windows prerequisite [PR #125](https://github.com/onlyxItachi/MatcoreDSL/pull/125).
+Latest canonical engineering checkpoint: `e6338e72a2d6d3d70bd2ad2f5abca9b069edbf3b`,
+normal merge of [PR #126](https://github.com/onlyxItachi/MatcoreDSL/pull/126)
+after the Windows and exact-version prerequisites (#125, #124).
 See the [repair integration record](agent-reports/bounded-repairs-integration-20261126.md).
 The latest source feature remains [PR #105](https://github.com/onlyxItachi/MatcoreDSL/pull/105);
 P5's executed producer/SDK remains frozen at `1ad7fe56b5fcb10efe37e523206228e9ef303f6a`.
@@ -36,7 +36,10 @@ Legacy mutating GEMM and separate platform/Python lanes remain intact.
 Exact GPU tool-version gates now reject near matches, ambiguous headers and
 contradictory NVIDIA release fields. Windows CI selects an installed compatible
 MSVC toolset without changing pinned Clang; empty snapshot paths fail explicitly.
-Both reviewed PR heads passed all 26 hosted checks. Per-worker skips and earlier
+Installed-package test runners now guard canonical path identity, reject unowned
+roots and retain each run in a new owned child instead of resetting old data.
+All three reviewed heads
+passed their 26 retained hosted checks. Per-worker skips and earlier
 failed qualifications remain recorded. No execution authority or numerical policy
 changed; source-time tiles retain their [existing qualification](agent-reports/source-output-peel-qualification-v1.md).
 
