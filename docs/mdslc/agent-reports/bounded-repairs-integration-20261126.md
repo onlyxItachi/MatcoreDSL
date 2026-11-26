@@ -46,12 +46,14 @@ no product release was promoted or published.
 - **#110:** validate lexical path components, then compare canonical identities,
   require bounded ownership markers for existing containers, and create a new
   exclusive retained run child. Safe equivalent registered-root spellings remain
-  supported; protected-path aliases cannot bypass the guard. No recursive reset
+  supported; the tested Linux double-leading-slash spellings cannot bypass
+  protected-source or build-child checks. No recursive reset
   of prior runs; existing unmarked roots are refused unchanged. The original
   double-leading-slash bypass and its correction remain in the
   [implementation](issue110-test-root-ownership-v1.md) and
   [independent review](issue110-independent-review-62-v1.md).
-  This is not a hostile concurrent-filesystem or mount-alias sandbox.
+  Hostile concurrent mutation, mount/export aliases and filesystems with
+  nonstandard case semantics are outside this ordinary-filesystem guarantee.
 - **#119:** after checking vector lengths, reject null affine-map handles before
   any context access. Preserve canonical topology, mixed-context rejection and
   valid zero-result DOT maps. Tests cover all seven nonempty null-slot subsets
