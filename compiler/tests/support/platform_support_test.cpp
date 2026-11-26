@@ -473,8 +473,15 @@ void test_file_snapshot(const std::filesystem::path &directory) {
 
   const support::FileSnapshotV1 invalid =
       support::capture_file_snapshot_v1({}, error);
-  expect(!error.empty() && !invalid.exists && !invalid.identity,
+  expect(!error.empty() && !invalid.exists && !invalid.identity &&
+             invalid.normalized_path.empty() &&
+             invalid.path_identity_chain.empty(),
          "invalid snapshot input fails closed without an identity");
+  const support::FileSnapshotV1 recovered =
+      support::capture_file_snapshot_v1(fixture, error);
+  expect(error.empty() && recovered.exists && recovered.regular_file &&
+             support::same_file_identity_v1(first.identity, recovered.identity),
+         "valid snapshot clears the preceding invalid-path diagnostic");
 }
 
 void test_atomic_replacement(const std::filesystem::path &directory) {
