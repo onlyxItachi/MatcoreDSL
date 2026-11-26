@@ -65,3 +65,41 @@ structured GEMM, derived certificate, bufferized GEMM and CPU runtime lowering):
 coherent 21.1.8 tuple and OpenBLAS-disabled configuration described above.
 Broader standalone/hosted qualification remains separate; no merge or release
 qualification follows from these local results.
+
+## Complete local regression and prerequisite composition
+
+On 2026-11-26, clean source
+`0fd5f767dd9ddcf15a19a4223897edd4279eb41e` was reconfigured and built in the
+existing `../build-null-maps-release` directory, then tested with
+`ctest --output-on-failure -j1`: **346/346 passed, zero failures, zero skips**
+in 3232.48 seconds. This is a full run of the registered standalone suite for
+that configuration, not a fresh-build claim. It includes frontend/IR/MLIR,
+runtime/planner, source-generated execution, ownership/failure negatives,
+installed/relocated and source-inaccessible package tests. Configuration stays
+Release, native/bootstrap/MLIR/regions ON, OpenBLAS and GPU issuers OFF,
+`capture-v0` default and scalar built-in schedule, using the coherent 21.1.8
+tuple above. Generated-leaf ASan tests in this suite do not constitute a fully
+instrumented compiler build or GPU execution evidence.
+
+The preserved raw CTest log is
+`../build-null-maps-release/issue119-ctest-20261126.log`, SHA-256
+`d373151fa5ec4e76bd83f5154d0bf92786b7d0f9e3ee9ee9b864538bff7ef77d`.
+
+Normal merge `d011979041f058417bda2452787550ef791c344f` then incorporated
+reviewed Windows prerequisite
+`be8c59f804f559a66b9c6b2fb8042fde4f6f6023` ([PR #125](https://github.com/onlyxItachi/MatcoreDSL/pull/125)).
+There was no overlap with the issue's verifier/test changes. Reconfiguration
+and the complete incremental build succeeded with Ninja `-j2` (28 steps).
+The composed tree passed **11/11 focused CTests, zero skips**: the six MLIR
+contracts listed above, platform snapshots, native frontend focused tests,
+frozen-host independence, artifact-symbol ownership and authenticated host
+thunks. Direct contraction testing again reported **325 checks, zero failures**;
+diff and repository-hygiene checks passed.
+
+The composed-test log is
+`../build-null-maps-release/issue119-composed-ctest-20261126.log`, SHA-256
+`82b19276ee509afe6506d8449e1674f34d81d1171686110b451eb6eab3c529fc`.
+The 346-test result belongs to the pre-composition SHA, not the later merge or
+this report-only update. Fresh exact-head hosted qualification remains required
+before integration. No default, numerical contract, execution authority or
+performance claim changed.
