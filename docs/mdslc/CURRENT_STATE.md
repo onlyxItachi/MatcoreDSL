@@ -1,8 +1,8 @@
 # MDSLC current state
 
-Latest canonical engineering checkpoint: `e6338e72a2d6d3d70bd2ad2f5abca9b069edbf3b`,
-normal merge of [PR #126](https://github.com/onlyxItachi/MatcoreDSL/pull/126)
-after the Windows and exact-version prerequisites (#125, #124).
+Latest canonical engineering checkpoint: `30112dcbe9d7d3df69c563b5fd56a06cb6c0a829`,
+normal merge of [PR #123](https://github.com/onlyxItachi/MatcoreDSL/pull/123)
+after the Windows, exact-version and scratch-root repairs (#125, #124, #126).
 See the [repair integration record](agent-reports/bounded-repairs-integration-20261126.md).
 The latest source feature remains [PR #105](https://github.com/onlyxItachi/MatcoreDSL/pull/105);
 P5's executed producer/SDK remains frozen at `1ad7fe56b5fcb10efe37e523206228e9ef303f6a`.
@@ -38,9 +38,10 @@ contradictory NVIDIA release fields. Windows CI selects an installed compatible
 MSVC toolset without changing pinned Clang; empty snapshot paths fail explicitly.
 Installed-package test runners now guard canonical path identity, reject unowned
 roots and retain each run in a new owned child instead of resetting old data.
-All three reviewed heads
-passed their 26 retained hosted checks. Per-worker skips and earlier
-failed qualifications remain recorded. No execution authority or numerical policy
+The contraction verifier rejects null maps before context access and preserves
+valid zero-result DOT maps. All four reviewed heads passed their 26 retained
+hosted checks. Per-worker skips and earlier failed qualifications remain recorded.
+No execution authority or numerical policy
 changed; source-time tiles retain their [existing qualification](agent-reports/source-output-peel-qualification-v1.md).
 
 [P5](../performance/cpu/source-pattern-p5-2026-11-10.md) is complete but

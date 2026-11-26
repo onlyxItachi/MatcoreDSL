@@ -14,6 +14,7 @@ At most two concurrent subagents; the explicitly selected reviewers were
 | [#125](https://github.com/onlyxItachi/MatcoreDSL/pull/125), Windows prerequisite | `be8c59f804f559a66b9c6b2fb8042fde4f6f6023` | `26f4b43397c8358d182b2e62df97361d73f48280` | `bd805d5fad73bb360693b5d36d182eadadad8425` |
 | [#124](https://github.com/onlyxItachi/MatcoreDSL/pull/124), exact GPU versions (#115) | `fa84e8895f15e38a611c3f0febb6e9e2bda3188a` | `b90540fdd84ebd1f2ac871642d56308787b5112a` | `db97a36d383bc5a0c23146e8f4153cbff7cd1a67` |
 | [#126](https://github.com/onlyxItachi/MatcoreDSL/pull/126), nondestructive scratch roots (#110) | `1203dc45e97b59e78e0043797841e74e26eebe9e` | `e6338e72a2d6d3d70bd2ad2f5abca9b069edbf3b` | `49023a9247bc27d41808d02dabbd340fd2218bfd` |
+| [#123](https://github.com/onlyxItachi/MatcoreDSL/pull/123), null contraction maps (#119) | `7cfb30ca7238bf80799fa387aa13417b11ad816d` | `30112dcbe9d7d3df69c563b5fd56a06cb6c0a829` | `8c25e04eff43d4b6db501d72058600554a3be1f2` |
 
 Each merged head had 26/26 completed successful retained hosted checks, not
 cancelled or pending checks. Normal merge parents preserve the original heads.
@@ -42,6 +43,23 @@ no product release was promoted or published.
   [independent review](issue115-final-independent-review-62-v1.md).
   Version parsing is qualification, not authentication against a lying executable;
   no new GPU execution or performance claim follows.
+- **#110:** validate lexical path components, then compare canonical identities,
+  require bounded ownership markers for existing containers, and create a new
+  exclusive retained run child. Safe equivalent registered-root spellings remain
+  supported; protected-path aliases cannot bypass the guard. No recursive reset
+  of prior runs; existing unmarked roots are refused unchanged. The original
+  double-leading-slash bypass and its correction remain in the
+  [implementation](issue110-test-root-ownership-v1.md) and
+  [independent review](issue110-independent-review-62-v1.md).
+  This is not a hostile concurrent-filesystem or mount-alias sandbox.
+- **#119:** after checking vector lengths, reject null affine-map handles before
+  any context access. Preserve canonical topology, mixed-context rejection and
+  valid zero-result DOT maps. Tests cover all seven nonempty null-slot subsets
+  and malformed map/rank lengths through verification, encoding and structured
+  checks. The historical guard-removal SIGSEGV witness and restored passing
+  result remain in the [implementation report](issue119-null-contraction-maps-v1.md).
+  Independent source review accepted the bounded internal verifier fix, not a
+  demonstrated public-source exploit or new operation surface.
 
 Current-head hosted evidence for #125:
 [native PR](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/45830648162),
@@ -62,8 +80,8 @@ The complete PR check rollup was re-read as 26 successful checks before merge.
 
 ## Composed repair qualification
 
-#110 PR #126 is merged after all 26 retained jobs passed. #119 PR #123 remains a
-draft pending the last native jobs. The normal composition commits are `1203dc45e97b59e78e0043797841e74e26eebe9e`
+Both #110 PR #126 and #119 PR #123 merged only after their 26 retained jobs passed.
+The normal composition commits are `1203dc45e97b59e78e0043797841e74e26eebe9e`
 and `7cfb30ca7238bf80799fa387aa13417b11ad816d`, respectively. They preserve prior
 heads `f0d0ac18f1b2a06c79b6b7b7e8fba0cb6dccd782` and
 `bc8327b56934bc8848dab8280b06b9e7ca272697`. Independent read-only review found
@@ -139,7 +157,7 @@ The current-head Linux row-contiguous Release PR jobs also completed successfull
 and [#123 job 140001081328](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/45846399430/job/140001081328).
 Each ran 352/352 CTests with no CTest-level failures/skips in the logs, including the
 direct `mlir.structured.contraction-model-v1` unit. Their remaining job steps
-also succeeded. Other native matrix lanes remained pending at this observation.
+also succeeded.
 
 The current-head Debug jobs also passed 352/352 CTests without CTest-level skips:
 [#126 job 140001074590](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/45846397089/job/140001074590)
@@ -149,6 +167,24 @@ ASan+UBSan jobs [140001074149](https://github.com/onlyxItachi/MatcoreDSL/actions
 and [140001081560](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/45846399430/job/140001081560)
 each passed their separate 236/2/44/4 gates with no CTest-level skip markers.
 The direct unit/ASan selection distinction above still applies.
+
+The last #123 MLIR-enabled, OpenBLAS-disabled PR Release job
+[140001081802](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/45846399430/job/140001081802)
+passed 355/355 CTests with no CTest-level skips. The same-head push Debug job
+[140001057095](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/45846391251/job/140001057095)
+had **333 passed, 19 AVX-512 skips, zero failures**: one packed-runtime, 13 strict-ISA
+and five output-pattern cases were skipped on that worker. Its updated contraction
+unit passed. The separate PR Debug worker executed all 352; no skipped test is
+counted as physical qualification by the worker that skipped it.
+
+Final independent gate audit reauthenticated #123's unchanged head, all eight
+retained workflows / 26 jobs, zero pending/failed/cancelled retained jobs and
+zero unresolved review threads. The cached test merge still used old base
+`1203dc45`; retargeted main `e6338e72` had exactly the same base tree. Both the
+tested tree and final canonical merge equal the accepted head tree in the table.
+Source/composition and final gate reviews were independent agent reviews;
+there were no submitted GitHub approval reviews. Root separately repeated the
+live gate checks before each normal merge. No forced merge or history rewrite.
 
 The prior full 346/346 suite belongs to `0fd5f767dd9ddcf15a19a4223897edd4279eb41e`;
 the prior post-Windows 11/11 suite belongs to `d011979041f058417bda2452787550ef791c344f`.
