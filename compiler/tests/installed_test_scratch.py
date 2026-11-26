@@ -7,7 +7,7 @@ run is removed: each invocation gets a new exclusive child on every platform.
 
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePath
 import stat
 import tempfile
 
@@ -21,13 +21,31 @@ class TestRootError(RuntimeError):
     """A requested scratch container has no safe ownership contract."""
 
 
+def check_namespace(path: PurePath) -> None:
+    # Windows realpath can retain a device prefix for an explicitly prefixed
+    # input but drop it for the same ordinary drive/UNC path. Do not mix those
+    # namespaces in either side of a containment check or in a marker.
+    if path.drive.startswith(("\\\\?\\", "\\\\.\\")):
+        raise TestRootError(f"Windows device namespace is not supported: {path}")
+
+
+def resolve_identity(path: Path, *, strict: bool = False) -> Path:
+    check_namespace(path)
+    resolved = path.resolve(strict=strict)
+    check_namespace(resolved)
+    return resolved
+
+
 def lexical_absolute(spelling: str, description: str) -> Path:
     path = Path(spelling)
+    check_namespace(path)
     if not spelling or ".." in path.parts or (path.drive and not path.is_absolute()):
         raise TestRootError(
             f"{description} has an unsafe lexical spelling: {spelling!r}"
         )
-    return Path(os.path.abspath(spelling))
+    absolute = Path(os.path.abspath(spelling))
+    check_namespace(absolute)
+    return absolute
 
 
 def is_link(status: os.stat_result) -> bool:
@@ -104,9 +122,14 @@ def prepare_test_root(
         raise TestRootError(f"producer build has no regular CMakeCache.txt: {build}")
     exists = check_directory_path(root, "test root")
 
-    repository = repository.resolve()
-    sources = tuple(path.resolve() for path in source_directories)
-    protected = (build, repository, Path.home().resolve(), *sources)
+    # Only now resolve build/root: resolving first would hide link components;
+    # comparing abspath with realpath would split aliases (e.g. Linux //tmp).
+    build = resolve_identity(build, strict=True)
+    root = resolve_identity(root, strict=exists)
+    repository = resolve_identity(repository)
+    home = resolve_identity(Path.home())
+    sources = tuple(resolve_identity(path) for path in source_directories)
+    protected = (build, repository, home, *sources)
     if root == Path(root.anchor) or any(
         root == path or root in path.parents for path in protected
     ):

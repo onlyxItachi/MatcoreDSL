@@ -117,3 +117,59 @@ Independent review and exact-head CI remain outstanding. This report is not
 merge/release qualification. No runtime/compiler semantics, public APIs,
 workflow, #121 install-layout work, toolchain installation, benchmark, GPU
 execution, or `CURRENT_STATE.md` change is included.
+
+## 2026-11-26: correction after independent review
+
+Review rejected the preceding implementation at
+`4f94d7a1d4c5f5d717e89231dae7e0fc4417494d`: on Linux, `abspath` retains an
+exactly-double leading slash while `Path.resolve()` does not. Using the former
+for the candidate root/build and the latter for protected sources made both
+protection and ownership depend on spelling.
+
+The shared guard still checks the **lexical** root/build components for links,
+reparse points and directory type before resolving anything there. It now uses
+resolved paths consistently for the protection comparisons, registered child,
+marker, returned build and actual scratch creation. An old marker containing a
+noncanonical identity is refused, not migrated or rewritten. Ordinary Windows
+drive and UNC paths are not rejected by the namespace check; explicit Win32
+device namespaces are refused because a prefix may survive native resolution.
+Neither entry point needed another change.
+
+Linux x86_64, kernel `7.0.0-44-generic`, Python `3.14.3`, CMake `4.3.2`.
+With `worktree` set to this issue checkout and `fixture_parent` to a disposable
+directory outside it:
+
+```sh
+TMPDIR="$fixture_parent" python3 -B \
+  "$worktree/compiler/tests/package/run_installed_test_root_safety_tests.py" \
+  --cmake /usr/bin/cmake
+```
+
+**27 test methods: 25 passed, 2 skipped** (native Windows junction and
+device-namespace tests). The new negatives launch both real runners, with
+their actual source copied into a sentinel-bearing disposable checkout for
+the repository case. They reject a new aliased checkout child and both mixed
+spellings of an unrelated build child; the consumer also refuses an aliased
+consumer-source root. Each checks the diagnostic, absence of the install
+boundary, and an unchanged complete fixture snapshot. Existing real-CLI
+link/reparse rejection and registered/external repeat controls remain in the
+suite; only the POSIX link cases ran natively here.
+
+The positive alias test creates only the legitimate registered child of an
+in-checkout build. On the second invocation it changes the build/root
+spellings, reaches the synthetic install boundary again, and verifies both
+the original run and marker are unchanged. As a red control, running
+`python3 -B -m unittest -v run_installed_test_root_safety_tests.InstalledTestRootSafety.test_cli_double_slash_registered_root_reuses_canonical_marker`
+from a disposable baseline copy's `compiler/tests/package` directory, with
+the corrected test and unmodified `4f94d7a` helper/runners, produced the
+expected two subtest failures: both old markers had a noncanonical double
+slash. No old runner was invoked against a protected path. Python in-memory
+syntax compilation of both changed scripts and `git diff --check` passed.
+
+The namespace classifier was also tested with Windows path objects on Linux;
+this is **not** native Windows execution. These are path-spelling guards for
+caller-controlled paths, not a volume-identity or mount-namespace sandbox:
+separately mounted/exported aliases and filesystems with nonstandard case
+semantics are not qualified. No real package build/install, native Windows
+execution, full suite or hosted CI was run by this agent. The retained-run
+policy and outstanding integration gates above still apply.

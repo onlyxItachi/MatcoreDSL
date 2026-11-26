@@ -12,7 +12,7 @@ import contextlib
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import shutil
 import stat
 import subprocess
@@ -96,18 +96,32 @@ class InstalledTestRootSafety(unittest.TestCase):
         self.assertEqual(build, self.build)
         return run
 
-    def cli(self, owner: str, root: Path, *, build: Path | None = None):
+    def copied_runner(self, owner: str) -> Path:
+        # The real entry point derives its repository from __file__. Exercise
+        # that boundary in a disposable checkout, never in the real one.
+        tests = self.repository / "compiler" / "tests"
+        original = RUNNERS[owner]
+        runner = tests / original.relative_to(TESTS)
+        runner.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(TESTS / "installed_test_scratch.py", tests / "installed_test_scratch.py")
+        shutil.copyfile(original, runner)
+        return runner
+
+    def cli(
+        self, owner: str, root: Path, *, build: Path | None = None,
+        runner: Path | None = None, source: Path | None = None,
+    ):
         command = [
             sys.executable,
             "-B",
-            str(RUNNERS[owner]),
+            str(runner if runner is not None else RUNNERS[owner]),
             "--cmake", CMAKE,
             "--producer-build-dir", str(build if build is not None else self.build),
             "--test-root", str(root),
         ]
         if owner == "installed-consumer":
             command += [
-                "--source-dir", str(self.source),
+                "--source-dir", str(self.source if source is None else source),
                 "--cxx-compiler", "unused-compiler",
                 "--matcore-mlir-available", "OFF",
                 "--default-semantic-pipeline", "capture-v0",
@@ -253,6 +267,70 @@ class InstalledTestRootSafety(unittest.TestCase):
     def test_cli_protected_consumer_source_and_child(self) -> None:
         self.rejected("installed-consumer", self.source, "equals or contains a protected path")
         self.rejected("installed-consumer", self.source / "absent", "inside a protected source")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux // path aliases")
+    def test_cli_double_slash_protected_paths(self) -> None:
+        def alias(path: Path) -> Path:
+            return Path("/" + str(path))
+
+        for owner in RUNNERS:
+            runner = self.copied_runner(owner)
+            with self.subTest(owner=owner, case="repo child"):
+                self.rejected(
+                    owner, alias(self.repository / "absent"), "inside a protected source",
+                    runner=runner,
+                )
+            child = self.build / "unrelated" / owner
+            for root, build in ((alias(child), self.build), (child, alias(self.build))):
+                with self.subTest(owner=owner, root=root, build=build):
+                    self.rejected(owner, root, "inside producer build must be", build=build)
+        self.rejected("installed-consumer", alias(self.source), "equals or contains a protected path")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux // path aliases")
+    def test_cli_double_slash_registered_root_reuses_canonical_marker(self) -> None:
+        # Exercise the registered-child exception for a build inside the repo.
+        self.build = self.build.rename(self.repository / self.build.name)
+        for owner in RUNNERS:
+            runner = self.copied_runner(owner)
+            root = self.registered(owner)
+            with self.subTest(owner=owner):
+                first = self.cli(owner, Path("/" + str(root)), runner=runner)
+                self.assertNotEqual(first.returncode, 0, first.stdout)
+                self.assertIn(INSTALL_BOUNDARY, first.stdout)
+                first_run, = root.glob("run-*")
+                before = snapshot(first_run)
+                marker = (root / scratch.SENTINEL).read_bytes()
+                self.assertEqual(json.loads(marker)["test_root"], str(root))
+                second = self.cli(owner, root, build=Path("/" + str(self.build)), runner=runner)
+                self.assertNotEqual(second.returncode, 0, second.stdout)
+                self.assertIn(INSTALL_BOUNDARY, second.stdout)
+                self.assertEqual(len(list(root.glob("run-*"))), 2)
+                self.assertEqual(snapshot(first_run), before)
+                self.assertEqual((root / scratch.SENTINEL).read_bytes(), marker)
+
+    def test_windows_namespace_classification(self) -> None:
+        for spelling in ("//?/C:/temp", "//./C:/temp", "//?/UNC/server/share/temp"):
+            with self.subTest(spelling=spelling), self.assertRaisesRegex(
+                scratch.TestRootError, "device namespace"
+            ):
+                scratch.check_namespace(PureWindowsPath(spelling))
+        for spelling in ("C:/runner temp/MDSLC external consumer ünicode", "//server/share/temp"):
+            scratch.check_namespace(PureWindowsPath(spelling))
+
+    @unittest.skipUnless(os.name == "nt", "native Windows device namespace test")
+    def test_cli_windows_device_namespace(self) -> None:
+        def device(path: Path) -> Path:
+            spelling = path.as_posix()
+            if spelling.startswith("//"):
+                return Path("//?/UNC/" + spelling[2:])
+            return Path("//?/" + spelling)
+
+        for owner in RUNNERS:
+            with self.subTest(owner=owner):
+                self.rejected(owner, device(self.build / "absent"), "device namespace")
+                self.rejected(owner, self.root / owner, "device namespace", build=device(self.build))
+        self.rejected("installed-consumer", self.root / "external", "device namespace",
+                      source=device(self.source))
 
     def test_protected_repository_and_home_are_unchanged(self) -> None:
         # Substitute only disposable paths: never pass a real checkout/home to
