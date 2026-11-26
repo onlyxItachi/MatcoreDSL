@@ -1,11 +1,11 @@
 # MDSLC current state
 
-Canonical source/product checkpoint: `6d30a204aa6f7224b736c2035de15ce20b0e6b3d`,
-normal merge after PR #95 of [PR #105](https://github.com/onlyxItachi/MatcoreDSL/pull/105).
-Its qualified PR head is `cf154deacea2bddb3240660c1af27ff4ffbc4042`.
-P5's executed producer/SDK stays frozen at
-`1ad7fe56b5fcb10efe37e523206228e9ef303f6a`; the later merge is not P5's producer.
-See the [integration record](agent-reports/source-peel-canonical-integration-v1.md).
+Latest canonical engineering checkpoint: `b90540fdd84ebd1f2ac871642d56308787b5112a`,
+normal merge of [PR #124](https://github.com/onlyxItachi/MatcoreDSL/pull/124)
+after the Windows prerequisite [PR #125](https://github.com/onlyxItachi/MatcoreDSL/pull/125).
+See the [repair integration record](agent-reports/bounded-repairs-integration-20261126.md).
+The latest source feature remains [PR #105](https://github.com/onlyxItachi/MatcoreDSL/pull/105);
+P5's executed producer/SDK remains frozen at `1ad7fe56b5fcb10efe37e523206228e9ef303f6a`.
 
 ## Architecture
 
@@ -33,13 +33,12 @@ Legacy mutating GEMM and separate platform/Python lanes remain intact.
 
 ## Material change and evidence
 
-PR105 connects separately explicit `--gemm-output-tiles-peel-n M,N` requests
-through existing authenticated ownership, with a distinct schema/binding domain.
-Old/default requests and numerical/provider policy stay unchanged. Local Release
-356/356 and committed x64 source ASan 4/4 passed; final source CI had all 26 checks
-successful. Selected x64 baselines retained unrelated AVX512 skips; new source
-gates had none. ARM source qualification is normal, not source-ASan.
-See the [bounded qualification](agent-reports/source-output-peel-qualification-v1.md).
+Exact GPU tool-version gates now reject near matches, ambiguous headers and
+contradictory NVIDIA release fields. Windows CI selects an installed compatible
+MSVC toolset without changing pinned Clang; empty snapshot paths fail explicitly.
+Both reviewed PR heads passed all 26 hosted checks. Per-worker skips and earlier
+failed qualifications remain recorded. No execution authority or numerical policy
+changed; source-time tiles retain their [existing qualification](agent-reports/source-output-peel-qualification-v1.md).
 
 [P5](../performance/cpu/source-pattern-p5-2026-11-10.md) is complete but
 `INCONCLUSIVE_TIMING`: all 18 ratios null, 78/270 measured aggregates rejected
