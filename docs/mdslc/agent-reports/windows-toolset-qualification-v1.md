@@ -42,3 +42,34 @@ candidate, including Release/Debug, relocated external consumer, C17 ABI,
 artifact checks, focused ASan and distribution upload. A successful configure
 alone cannot establish restoration. Until then, the three repair PRs must not
 be merged on the strength of older green Windows results.
+
+## First hosted correction result and second prerequisite
+
+Source `6be2cd0451edae06752191a77b4cebdb6b5bf8f4`, with report-only review
+commit `53399315c13d0da56eba13eabe6f335dad154897`, configured and built on
+[the same Windows lane](https://github.com/onlyxItachi/MatcoreDSL/actions/runs/45829291153).
+Release passed **51/52**, including the installed consumer/C17 ABI. The only
+failure was `support.platform.v1`: its pre-existing assertion requires empty
+snapshot input to fail with a diagnostic and no existence/identity result.
+The log does not identify which conjunct failed. No later Debug/ASan or
+distribution qualification follows from this partially completed run.
+
+`capture_file_snapshot_v1` previously delegated the empty-path decision to
+`std::filesystem::absolute`, unlike the neighboring normalizer's explicit
+empty-path refusal. Enforce the existing test contract before any filesystem
+call. This follow-up is a separate focused production-guard commit, not a
+test waiver or a change to the admitted path/numerical/execution model. Extend
+the negative assertion to require an empty normalized path/identity chain and
+check that a following valid snapshot succeeds and clears the diagnostic.
+The original workflow-only change remains intact in history. Independent review
+and a fresh complete Windows run are still required for this new source head.
+
+Local follow-up: configured a small Release bootstrap-only build with the
+installed Clang 21.1.8, native frontend/MLIR/regions/OpenBLAS OFF, and built only
+`matcore_platform_support_v1_test` with Ninja `-j1` (five compile/link steps).
+`ctest -R '^support\.platform\.v1$' -j1` passed **1/1**, zero skips on Linux.
+This tests the shared guard and valid-path regression, not the Windows native
+implementation or the hosted failure witness. Diff and repository-hygiene
+checks passed. An initial local YAML assertion script assumed every workflow
+step had a `name`; it failed on an unnamed `uses` step. Correcting that local
+inspection to use `get` passed without changing the workflow or its checks.
