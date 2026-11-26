@@ -18,7 +18,8 @@ Both merged heads had 26/26 completed successful hosted checks, not cancelled
 or pending checks. Normal merge parents preserve the original heads. PR #125
 parent main was the starting checkpoint; PR #124 parent main was PR #125's merge.
 Tree identity does not turn old performance artifacts into measurements of a
-new revision. No release payload was rebuilt or published by this campaign.
+new revision. Windows CI built and uploaded distribution-candidate ZIPs;
+no product release was promoted or published.
 
 ## Qualified changes and negative results
 
@@ -79,6 +80,26 @@ a missing required CMake script argument, and a nonexistent `/usr/local/bin/cmak
 passed to the scratch suite (six failing subcases, two platform skips). None was
 counted as a pass. The registered suite uses `/usr/bin/cmake` and `/usr/bin/python3`;
 no test/source expectation was weakened to accommodate the invocation mistakes.
+The two registered CTests were then repeated with their configured executables:
+both passed (90 GPU plus seven retained Clang controls; scratch 25 passed and
+two native-Windows-only skips on Linux).
+
+The same clean composed producer also passed a real installed C17 compile/link/run
+probe authenticating all 15 public exports, and a real relocated consumer
+configure/build/run/rebuild/no-op/semantic-capability probe. Existing owned scratch
+containers gained new retained children `c17/run-nd9fmaxe` and
+`consumer/run-z6dmsw3m` under `mdslc-work/issue-hunt-20261112/package-probes-20261126`.
+Earlier children were not reset or removed. This is same-tree package evidence,
+unlike the earlier cross-tree harness qualification.
+
+Changing PR bases triggered duplicate hosted runs. Only the older duplicates
+and superseded-head native runs were cancelled, never treated as passes. Retained
+current PR native runs are #126 `45846397089` and #123 `45846399430`; their push
+runs remain `45846387015` and `45846391251`. Independent read-only audit of the
+retained hygiene checkout logs confirmed synthetic merge `b5ec0b6a94034303bc3cd8cf6a65e3b3f975a61f`
+for #126 and `8bb4822bc49ae9d172d182badd7e34f6eb493df1` for #123, each with the same
+file tree as its respective PR head. This does not claim a checkout identity for
+jobs whose logs were not yet available.
 
 The prior full 346/346 suite belongs to `0fd5f767dd9ddcf15a19a4223897edd4279eb41e`;
 the prior post-Windows 11/11 suite belongs to `d011979041f058417bda2452787550ef791c344f`.
