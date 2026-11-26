@@ -46,3 +46,22 @@ unused-parameter warnings; they were not suppressed or refactored.
 Independent review, affected broader regression tests, hosted CI and merge
 qualification are separate gates; the focused results alone do not qualify a
 release or establish public-source reachability of the old null dereference.
+
+## Resumed qualification, 2026-11-26
+
+Live canonical main and this branch's base remain the starting checkpoint
+above. The independent review of `1301ca70e0e09a84e3e75cb9e61619cf8df7f92e`
+accepted the bounded guard but requested explicit malformed-count coverage.
+The added controls exercise map counts and rank counts of 0, 1, 2 and 4 through
+the verifier, encoder and structured-carrier checker; each requires the count
+diagnostic before any map access. No production behavior changed in this step.
+
+Rebuilt the existing Release contraction target with Ninja `-j2`:
+**325 checks, zero failures**, focused CTest **1/1 passed**, zero skips.
+Built and ran the six affected MLIR tests (contraction model, core semantics,
+structured GEMM, derived certificate, bufferized GEMM and CPU runtime lowering):
+**6/6 passed**, zero skips. `git diff --check` and
+`bash tests/check_repository_hygiene.sh` also passed. These results use the same
+coherent 21.1.8 tuple and OpenBLAS-disabled configuration described above.
+Broader standalone/hosted qualification remains separate; no merge or release
+qualification follows from these local results.
