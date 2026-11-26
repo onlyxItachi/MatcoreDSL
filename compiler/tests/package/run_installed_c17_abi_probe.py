@@ -4,9 +4,14 @@ import argparse
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
+
+
+# Keep even rejected invocations read-only with respect to the source checkout.
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from installed_test_scratch import prepare_test_root
 
 
 EXPORT_PATTERN = re.compile(
@@ -71,18 +76,23 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cmake", required=True)
     parser.add_argument("--producer-build-dir", required=True)
-    parser.add_argument("--test-root", required=True)
+    parser.add_argument(
+        "--test-root", required=True,
+        help="owned scratch container; each run is retained in a new child",
+    )
     parser.add_argument("--c-compiler", required=True)
     parser.add_argument("--nm", default="nm")
     parser.add_argument("--readobj", default="llvm-readobj")
     args = parser.parse_args()
 
     source = Path(__file__).resolve().with_name("installed_c17_abi_probe.c")
-    producer_build = Path(args.producer_build_dir).resolve()
-    test_root = Path(args.test_root).resolve()
+    test_root, producer_build = prepare_test_root(
+        args.test_root,
+        args.producer_build_dir,
+        owner="installed-c17-abi",
+        repository=Path(__file__).resolve().parents[3],
+    )
     is_windows = os.name == "nt"
-    if test_root.exists():
-        shutil.rmtree(test_root)
     prefix = test_root / "relocated strict C prefix"
     prefix.mkdir(parents=True)
 
