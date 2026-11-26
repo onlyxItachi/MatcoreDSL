@@ -116,6 +116,15 @@ platform skips are not represented by those CTest skip totals. Windows uses the
 existing MLIR-disabled platform lane: these passes do not execute the null-map
 MLIR verifier or establish generated-region Windows support.
 
+Coverage routing is explicit: the new null-handle/malformed-count unit cases run
+in local Release and in the full Linux MLIR-enabled Release/Debug CTest suites.
+The current focused ASan+UBSan regex and ARM64 closed-source qualification regex
+do **not** select `mlir.structured.contraction-model-v1`. Those lanes check their
+existing downstream/runtime scopes, not direct sanitizer or ARM execution of the
+new null-handle cases. No such direct qualification, or MLIR 22 qualification,
+is claimed. The issue's bounded verifier acceptance does not require a new
+sanitizer policy or changed ARM qualification scope.
+
 The prior full 346/346 suite belongs to `0fd5f767dd9ddcf15a19a4223897edd4279eb41e`;
 the prior post-Windows 11/11 suite belongs to `d011979041f058417bda2452787550ef791c344f`.
 Neither qualifies the new combined heads. See the original
