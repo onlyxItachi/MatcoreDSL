@@ -28,3 +28,5 @@ foreach(mdslc_forged_output IN ITEMS
       "near-version forgery was admitted: ${mdslc_forged_output}")
   endif()
 endforeach()
+
+include("${CMAKE_CURRENT_LIST_DIR}/gpu_toolchain_version_contract.cmake")
