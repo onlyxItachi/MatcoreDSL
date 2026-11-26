@@ -122,7 +122,7 @@ set(gpu_version_control_count 0)
 function(check_gpu_version name tool banner expected_token expected_status)
   # Extraction checks distinguish a complete near-version token from silently
   # truncating it to the qualified version, as well as checking gate admission.
-  mdslc_extract_gpu_tool_version_token("${tool}" "${banner}" token)
+  mdslc_extract_gpu_tool_version_token("${tool}" "${banner}" token release)
   if(NOT token STREQUAL expected_token)
     message(FATAL_ERROR
       "${name}: expected token '${expected_token}', got '${token}'")
@@ -149,6 +149,13 @@ function(check_gpu_version name tool banner expected_token expected_status)
     string(FIND "${error}" "reported '${expected_token}'" reported_position)
     if(reported_position EQUAL -1)
       message(FATAL_ERROR "${name}: diagnostic omitted the complete rejected token: ${error}")
+    endif()
+  endif()
+  if(ARGC GREATER 5)
+    string(REGEX REPLACE "[ \t\r\n]+" " " diagnostic "${error}")
+    string(FIND "${diagnostic}" "${ARGV5}" detail_position)
+    if(detail_position EQUAL -1)
+      message(FATAL_ERROR "${name}: missing diagnostic detail '${ARGV5}': ${error}")
     endif()
   endif()
   math(EXPR count "${gpu_version_control_count} + 1")
@@ -206,8 +213,28 @@ check_gpu_version(lld_split_marker lld "LLD\n21.1.8" "" 1)
 check_gpu_version(lld_unknown_vendor lld "Unqualified LLD 21.1.8" "" 1)
 check_gpu_version(ptxas_bare_token ptxas "V13.3.73" "" 1)
 check_gpu_version(ptxas_other_tool ptxas "nvcc: NVIDIA (R) Cuda compiler driver\nCuda compilation tools, release 13.3, V13.3.73" "" 1)
-check_gpu_version(ptxas_misleading_marker ptxas "${ptxas_header}\nBuilt with V13.3.73\nCuda compilation tools, release 99.0, V99.0.0" "99.0.0" 1)
+check_gpu_version(ptxas_misleading_marker ptxas "${ptxas_header}\nBuilt with V13.3.73\nCuda compilation tools, release 99.0, V99.0.0" "" 1)
 check_gpu_version(ptxas_split_marker ptxas "${ptxas_header}\nCuda compilation tools, release 13.3,\nV13.3.73" "" 1)
 check_gpu_version(ptxas_missing_v ptxas "${ptxas_header}\nCuda compilation tools, release 13.3, 13.3.73" "" 1)
+
+check_gpu_version(llc_quoted_dependency llc
+  "Acme LLVM version 21.1.80\nBuilt against:\n  LLVM version 21.1.8" "" 1)
+check_gpu_version(lld_quoted_dependency lld
+  "Acme LLD 21.1.80\nRequired linker:\n  LLD 21.1.8" "" 1)
+check_gpu_version(llc_interrupted_preamble llc
+  "LLVM (http://llvm.org/):\nRequired tool:\n  LLVM version 21.1.8" "" 1)
+check_gpu_version(ptxas_conflicting_release ptxas
+  "${ptxas_header}\nCuda compilation tools, release 12.8, V13.3.73" "13.3.73" 1
+  "conflicting release '12.8'")
+check_gpu_version(ptxas_malformed_then_nvcc ptxas
+  "${ptxas_header}\nCuda compilation tools, release 13.3, 13.3.730\nnvcc: NVIDIA (R) Cuda compiler driver\nCuda compilation tools, release 13.3, V13.3.73" "" 1)
+check_gpu_version(ptxas_quoted_dependency ptxas
+  "${ptxas_header}\nRequired toolkit:\n  Cuda compilation tools, release 13.3, V13.3.73" "" 1)
+check_gpu_version(ptxas_extra_malformed_release ptxas
+  "${ptxas_banner}\nCuda compilation tools, release broken" "" 1)
+check_gpu_version(llc_multiline_crlf llc
+  "\r\nLLVM (http://llvm.org/): \r\n\tDebian LLVM version 21.1.8\r\n  Optimized build." "21.1.8" 0)
+string(REPLACE "\n" "\r\n" ptxas_crlf "${ptxas_banner}")
+check_gpu_version(ptxas_full_crlf ptxas "${ptxas_crlf}" "13.3.73" 0)
 
 message(STATUS "GPU toolchain versions: ${gpu_version_control_count}/${gpu_version_control_count} parser and production-gate controls passed")

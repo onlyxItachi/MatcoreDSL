@@ -13,41 +13,53 @@ function(mdslc_extract_clang_version_token version_output result_variable)
   endif()
 endfunction()
 
-# GPU tools have different stable markers from Clang. Recognize complete
-# version lines, not an incidental version elsewhere in a multi-line banner.
-# LLVM/LLD permit the upstream, Ubuntu and Debian spellings; horizontal
-# whitespace/indentation and LF/CRLF line endings are accepted. NVIDIA's token
-# must be on its "Cuda compilation tools" line in a ptxas banner. Metadata is
-# allowed only after whitespace: punctuation and prerelease/build suffixes
-# attached to the version remain part of the token and fail exact comparison.
-# Multiple authoritative version lines are ambiguous and fail closed.
-function(mdslc_extract_gpu_tool_version_token tool version_output result_variable)
+# Parse only a supported leading header. A quoted dependency in the banner
+# tail cannot supply a missing version. Reject a second version record rather
+# than choosing between them. Keep NVIDIA's independent release field so the
+# gate can diagnose an inconsistent pair without discarding the actual token.
+function(mdslc_extract_gpu_tool_version_token tool version_output result_variable release_variable)
   set(${result_variable} "" PARENT_SCOPE)
+  set(${release_variable} "" PARENT_SCOPE)
+  string(REPLACE "\r\n" "\n" banner "${version_output}")
+  if(banner MATCHES "\r")
+    return()
+  endif()
+  set(next_line "[ \t]*\n[ \t\n]*")
   if(tool STREQUAL "llc")
-    set(marker "(^|[\r\n])[ \t]*((Ubuntu|Debian)[ \t]+)?LLVM[ \t]+version[ \t]+")
+    set(marker "((Ubuntu|Debian)[ \t]+)?LLVM[ \t]+version")
+    set(header "(LLVM[ \t]+\\(http://llvm\\.org/\\):${next_line})?${marker}[ \t]+")
     set(token_group 4)
   elseif(tool STREQUAL "lld")
-    set(marker "(^|[\r\n])[ \t]*((Ubuntu|Debian)[ \t]+)?LLD[ \t]+")
-    set(token_group 4)
+    set(marker "((Ubuntu|Debian)[ \t]+)?LLD")
+    set(header "${marker}[ \t]+")
+    set(token_group 3)
   elseif(tool STREQUAL "ptxas")
-    if(NOT version_output MATCHES
-       "^[ \t\r\n]*ptxas:[ \t]+NVIDIA[ \t]+\\(R\\)[ \t]+Ptx[ \t]+optimizing[ \t]+assembler([ \t]*[\r\n]|$)")
-      return()
-    endif()
-    set(marker "(^|[\r\n])[ \t]*Cuda[ \t]+compilation[ \t]+tools,[ \t]+release[ \t]+[0-9]+\\.[0-9]+,[ \t]+V")
-    set(token_group 2)
+    set(marker "Cuda[ \t]+compilation[ \t]+tools,")
+    set(header "ptxas:[ \t]+NVIDIA[ \t]+\\(R\\)[ \t]+Ptx[ \t]+optimizing[ \t]+assembler${next_line}")
+    string(APPEND header
+      "(Copyright[ \t]+\\(c\\)[ \t]+[0-9]+(-[0-9]+)?[ \t]+NVIDIA[ \t]+Corporation${next_line})?"
+      "(Built[ \t]+on[ \t]+[^\n \t]+${next_line})?"
+      "${marker}[ \t]+release[ \t]+([0-9]+\\.[0-9]+),[ \t]+V")
+    set(token_group 5)
   else()
     message(FATAL_ERROR "Unknown GPU version-token tool '${tool}'")
   endif()
 
-  string(REGEX MATCHALL "${marker}" markers "${version_output}")
-  list(LENGTH markers marker_count)
-  if(NOT marker_count EQUAL 1)
+  if(NOT banner MATCHES "^[ \t\n]*${header}([^ \t\n]+)")
     return()
   endif()
-  string(REGEX MATCH "${marker}([^ \t\r\n]+)" version_match "${version_output}")
-  if(NOT version_match STREQUAL "")
-    set(${result_variable} "${CMAKE_MATCH_${token_group}}" PARENT_SCOPE)
+  set(token "${CMAKE_MATCH_${token_group}}")
+  if(tool STREQUAL "ptxas")
+    set(release "${CMAKE_MATCH_4}")
+  endif()
+  string(LENGTH "${CMAKE_MATCH_0}" header_length)
+  string(SUBSTRING "${banner}" ${header_length} -1 tail)
+  if(tail MATCHES "\n[ \t]*${marker}([ \t\n]|$)")
+    return()
+  endif()
+  set(${result_variable} "${token}" PARENT_SCOPE)
+  if(tool STREQUAL "ptxas")
+    set(${release_variable} "${release}" PARENT_SCOPE)
   endif()
 endfunction()
 
@@ -55,13 +67,20 @@ endfunction()
 # recipes. Version banner checks are qualification checks, not authentication of
 # an executable capable of lying about its identity.
 function(mdslc_require_gpu_tool_version tool required_version version_output)
-  mdslc_extract_gpu_tool_version_token("${tool}" "${version_output}" reported_version)
-  if(NOT reported_version STREQUAL required_version)
+  mdslc_extract_gpu_tool_version_token("${tool}" "${version_output}" reported_version release)
+  set(detail "")
+  if(tool STREQUAL "ptxas" AND NOT reported_version STREQUAL "")
+    string(FIND "${reported_version}" "${release}." release_position)
+    if(NOT release_position EQUAL 0)
+      set(detail " with conflicting release '${release}'")
+    endif()
+  endif()
+  if(NOT reported_version STREQUAL required_version OR NOT detail STREQUAL "")
     if(reported_version STREQUAL "")
       set(reported_version "<missing or ambiguous supported version token>")
     endif()
     message(FATAL_ERROR
       "GPU ${tool} qualification requires exactly ${required_version}; "
-      "reported '${reported_version}'")
+      "reported '${reported_version}'${detail}")
   endif()
 endfunction()
