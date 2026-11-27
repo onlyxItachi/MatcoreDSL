@@ -1,8 +1,10 @@
 # MDSLC current state
 
-Canonical source/product checkpoint: `6d30a204aa6f7224b736c2035de15ce20b0e6b3d`,
-normal merge after PR #95 of [PR #105](https://github.com/onlyxItachi/MatcoreDSL/pull/105).
-Its qualified PR head is `cf154deacea2bddb3240660c1af27ff4ffbc4042`.
+Latest canonical engineering/evidence checkpoint:
+`1c1221e89272eb2ad6ff058b8e26de4653f3a93d`, normal merge of
+[PR #107](https://github.com/onlyxItachi/MatcoreDSL/pull/107).
+The source/product feature checkpoint remains
+`6d30a204aa6f7224b736c2035de15ce20b0e6b3d` ([PR #105](https://github.com/onlyxItachi/MatcoreDSL/pull/105)).
 P5's executed producer/SDK stays frozen at
 `1ad7fe56b5fcb10efe37e523206228e9ef303f6a`; the later merge is not P5's producer.
 See the [integration record](agent-reports/source-peel-canonical-integration-v1.md).
@@ -40,6 +42,8 @@ Old/default requests and numerical/provider policy stay unchanged. Local Release
 successful. Selected x64 baselines retained unrelated AVX512 skips; new source
 gates had none. ARM source qualification is normal, not source-ASan.
 See the [bounded qualification](agent-reports/source-output-peel-qualification-v1.md).
+PR107's final head also passed all 26 fresh hosted checks; actual scopes and
+explicit skips are retained in its [final CI record](agent-reports/source-peel-final-ci-v1.md).
 
 [P5](../performance/cpu/source-pattern-p5-2026-11-10.md) is complete but
 `INCONCLUSIVE_TIMING`: all 18 ratios null, 78/270 measured aggregates rejected
